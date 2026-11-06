@@ -1,6 +1,6 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { createHash } from 'node:crypto';
-import { and, asc, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm';
 import { schema, type Db, type IngestMessage, type MatchCandidate } from '@gogo/database';
 import {
   ProviderConfigurationError,
@@ -116,6 +116,8 @@ const PAUSED_STATUSES: string[] = ['paused_provider_quota', 'paused_provider_una
  */
 @Injectable()
 export class PlaceImportJobService {
+  private readonly logger = new Logger(PlaceImportJobService.name);
+
   constructor(
     @Inject(DB) private readonly db: Db,
     private readonly resolver: PlaceResolverService,
@@ -1375,11 +1377,56 @@ export class PlaceImportJobService {
       return;
     }
 
-    await this.db
-      .update(schema.placeIngestRows)
-      .set({ ...base, status: 'ready' })
-      .where(eq(schema.placeIngestRows.id, rowId));
-    this.countRow('ready');
+    // The catalogue can still be empty while many rows in this job resolve to
+    // the same provider ID. Reserve one ready row per identity before publish:
+    // otherwise the atomic creation claim correctly rejects all its siblings.
+    // This job-scoped lock serializes concurrent chunks/confirmations without
+    // claiming a canonical identity or taking any existing-place locks.
+    const status = await this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select({ jobId: schema.placeIngestRows.jobId })
+        .from(schema.placeIngestRows)
+        .where(eq(schema.placeIngestRows.id, rowId))
+        .limit(1);
+      if (!row) throw AppError.notFound('ROW_NOT_FOUND', 'Import row not found');
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`place-import:${row.jobId}:${details.providerPlaceId}`}, 0))`,
+      );
+      const [sibling] = await tx
+        .select({ matchedPlaceId: schema.placeIngestRows.matchedPlaceId })
+        .from(schema.placeIngestRows)
+        .where(
+          and(
+            eq(schema.placeIngestRows.jobId, row.jobId),
+            eq(schema.placeIngestRows.resolvedGooglePlaceId, details.providerPlaceId),
+            ne(schema.placeIngestRows.id, rowId),
+            inArray(schema.placeIngestRows.status, ['ready', 'imported']),
+          ),
+        )
+        .limit(1);
+      const status = sibling ? 'duplicate' : 'ready';
+      await tx
+        .update(schema.placeIngestRows)
+        .set({
+          ...base,
+          status,
+          matchedPlaceId: sibling?.matchedPlaceId ?? null,
+          errors: sibling
+            ? [
+                {
+                  code: 'PLACE_DUPLICATE_IN_JOB',
+                  field: 'google_maps_url',
+                  message: 'Google Place ID đã có trong một dòng khác của lượt nhập này',
+                },
+              ]
+            : [],
+        })
+        .where(eq(schema.placeIngestRows.id, rowId));
+      return status;
+    });
+    this.countRow(status, status === 'duplicate' ? 'PLACE_DUPLICATE_IN_JOB' : undefined);
+    if (status === 'duplicate')
+      this.metrics.increment('place_duplicate_candidates_total', { kind: 'provider_id' });
   }
 
   /**
@@ -1971,13 +2018,21 @@ export class PlaceImportJobService {
         const placeId = await this.createPlaceFromRow(row, job.mode as ImportMode, adminId);
         created.push(placeId);
       } catch (err) {
+        const cause = placeCreateFailure(err);
+        this.logger.error({
+          event: 'place_import.place_create_failed',
+          job_id: jobId,
+          row_id: row.id,
+          error_code: cause.code,
+          error_message: cause.message,
+        });
         failed.push({
           rowId: row.id,
           code: err instanceof AppError ? err.code : 'PLACE_CREATE_FAILED',
         });
         await this.failRow(row.id, {
           code: 'PLACE_CREATE_FAILED',
-          message: err instanceof Error ? err.message : 'Unexpected error',
+          message: cause.message,
         });
       }
     }
@@ -2687,6 +2742,52 @@ export function staleContactErrors(normalized: NormalizedImportRow): IngestMessa
 /** `normalized_input` is stored as jsonb; the writer is the only shape source. */
 function normalizedOf(row: IngestRow): NormalizedImportRow {
   return (row.normalizedInput ?? {}) as NormalizedImportRow;
+}
+
+/**
+ * Drizzle wraps PostgreSQL errors with SQL and bound parameters in its message.
+ * Unwrap causes, but emit only codes and known diagnostic text: neither SQL,
+ * detail, arbitrary provider messages nor stacks can expose sheet/contact data.
+ */
+function placeCreateFailure(error: unknown): { code: string; message: string } {
+  const messages: Record<string, string> = {
+    DUPLICATE_VENUE: 'Google identity already belongs to another place',
+    PLACE_IDENTITY_CONFLICT: 'Google identity has conflicting owners',
+    PLACE_ARCHIVED: 'Cannot attach an identity to an archived place',
+    PLACE_NOT_FOUND: 'Place not found',
+    ROW_NOT_RESOLVED: 'Import row has no resolved provider identity',
+    PROVIDER_UNAVAILABLE: 'Cannot verify provider place right now',
+    PROVIDER_IDENTITY_CHANGED: 'Provider identity changed; review again',
+    PLACE_NOT_YET_OPEN: 'Place has not opened yet',
+    '23502': 'null value violates not-null constraint',
+    '23503': 'foreign key constraint violation',
+    '23505': 'duplicate key value violates unique constraint',
+    '23514': 'check constraint violation',
+    '22P02': 'invalid input syntax',
+    '25P02': 'current transaction is aborted',
+    '40001': 'could not serialize access',
+    '40P01': 'deadlock detected',
+    '55P03': 'canceling statement due to lock timeout',
+    '57014': 'statement canceled',
+  };
+  let result = { code: 'UNKNOWN', message: 'Unexpected place creation error (message redacted)' };
+  const seen = new Set<object>();
+  for (
+    let depth = 0;
+    depth < 8 && error && typeof error === 'object' && !seen.has(error);
+    depth++
+  ) {
+    seen.add(error);
+    const current = error as { code?: unknown; cause?: unknown };
+    if (typeof current.code === 'string' && /^[A-Z0-9_]{2,64}$/.test(current.code)) {
+      result = {
+        code: current.code,
+        message: messages[current.code] ?? 'Place creation error (message redacted)',
+      };
+    }
+    error = current.cause;
+  }
+  return result;
 }
 
 function confidenceText(value: number | undefined): string | null {
