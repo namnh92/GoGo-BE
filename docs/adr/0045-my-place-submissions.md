@@ -73,8 +73,12 @@ Dùng request logs HTTP chung và histogram `my_place_submissions_query_duration
 không label để quan sát thời gian query cả khi lỗi. Không thêm metric theo user/submission, không log payload hoặc
 chuỗi lý do CMS; không có side effect, audit write hay provider call khi đọc.
 Không thêm package hay loại event. Rollout: áp migration 0085 trước code;
-backfill chỉ thêm bảng mới, không thay proposal cũ. Rollback code có thể giữ bảng
-attribution để không mất lịch sử; nếu cần gỡ schema, dừng writer mới trước rồi
-roll-forward bằng migration `DROP TABLE place_submission_contributors` (mất
-attribution mới, chỉ làm sau khi lưu bản sao). Claude chạy full gates; Astra review thiết
+backfill chỉ thêm bảng mới, không thay proposal cũ. Rollback: ngừng client gọi
+endpoint history mới trước khi rollback API, giữ bảng attribution để không mất
+lịch sử đã ghi. Writer cũ không ghi người góp sau; không khôi phục được attribution
+thiếu trong thời gian rollout hỗn hợp hoặc rollback. Nếu cần gỡ schema, rollback
+và drain mọi reader/writer dùng bảng, lưu bản sao attribution rồi roll-forward
+bằng migration `DROP TABLE place_submission_contributors` đã kiểm tra trên snapshot
+(mất attribution đã ghi). Quy trình chi tiết ở runbook GoGo-BE#788 trong
+`docs/runbooks.md`. Claude chạy full gates; Astra review thiết
 kế và CODEOWNER duyệt contract/quyền trước merge vào re-design.
