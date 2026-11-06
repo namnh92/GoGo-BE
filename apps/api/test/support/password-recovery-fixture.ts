@@ -3,7 +3,7 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { GenericContainer } from 'testcontainers';
 import IORedis from 'ioredis';
@@ -48,7 +48,7 @@ export async function post(
   url: string,
   payload: object,
   context: Context = {},
-) {
+): Promise<LightMyRequestResponse> {
   return api(app).inject({
     method: 'POST',
     url,
@@ -57,7 +57,10 @@ export async function post(
     headers: { ...context.headers, ...(context.key ? { 'idempotency-key': context.key } : {}) },
   });
 }
-export async function me(app: NestFastifyApplication, token: string) {
+export async function me(
+  app: NestFastifyApplication,
+  token: string,
+): Promise<LightMyRequestResponse> {
   return api(app).inject({
     method: 'GET',
     url: '/v1/me',
@@ -144,7 +147,7 @@ export async function recoveryFixture(
       AUTH_JWT_SECRET: JWT_KEY,
       AUTH_RECOVERY_KEY: RECOVERY_KEY,
       AUTH_RECOVERY_MAIL_ADAPTER: options.disabled ? 'disabled' : 'sink',
-      LOG_LEVEL: options.telemetry ? 'info' : 'silent',
+      LOG_LEVEL: options.telemetry ? 'info' : 'error',
       DB_POOL_MAX: '3',
       TRUST_PROXY: 'false',
       SENTRY_DSN: '',
