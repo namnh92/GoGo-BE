@@ -9,7 +9,7 @@
 Thêm `GET /v1/me/place-submissions` trong module ingestion. Controller chỉ
 validate query, đặt `Cache-Control: no-store` rồi gọi application service.
 AuthGuard hiện hữu xác thực session; service từ chối mọi actor không phải user.
-Điều kiện `submitted_by_user_id = actor.id` nằm trong SQL của mọi trang, không
+Điều kiện người gửi đầu tiên hoặc attribution của `actor.id` nằm trong SQL của mọi trang, không
 nhận user ID từ client và không trao quyền theo cursor.
 
 Response dùng projection riêng, không dùng DTO moderation: id, status,
@@ -32,26 +32,49 @@ Tuple được validate datetime/UUID trước khi cast SQL. Limit 1–100, mặ
 Mỗi lần mở lại bắt đầu trang đầu để nhận trạng thái hiện tại. Không đảm bảo
 snapshot qua nhiều request; dòng mới hơn cursor xuất hiện khi refresh.
 
-## Giới hạn sở hữu hiện hữu
+## Attribution khi dedupe (F-01, Astra r1)
 
 FR-INGEST-012 dedupe nhiều người gửi cùng provider ID vào một proposal và tăng
-submissionCount. Schema hiện chỉ giữ người gửi đầu tiên, không giữ danh sách
-người góp sau. Endpoint này liệt kê proposal do account đó sở hữu; không cấp
-quyền vào proposal của người khác vì từng dedupe. Không thể backfill danh tính
-đã không được lưu. Theo dõi mọi người gửi dedupe cần thiết kế attribution và
-delete/export tương ứng; chờ owner quyết phạm vi, không âm thầm thay ownership.
+submissionCount. Bảng bổ sung `place_submission_contributors` giữ cặp khóa chính
+`(user_id, submission_id)` và thời điểm ghi nhận; không giữ note hay PII khác.
+Người gửi đầu tiên vẫn ở proposal để giữ nghiệp vụ moderation/credit hiện hữu.
+Mọi lần submit của user ghi attribution cùng transaction với upsert proposal;
+partial unique index pending đảm bảo chỉ một draft cả khi submit đồng thời.
+Submit lặp vẫn tăng counter nhưng không lặp attribution. Chỉ proposal mới phát
+event `place.submission_created`, cùng transaction. Metric pending/deduped ghi
+sau commit; không thêm label người gửi.
+
+History và polling cho phép người gửi đầu tiên hoặc user có attribution; chỉ
+trả projection an toàn hiện hữu, không trả note hay danh tính người góp khác.
+Guest giữ nguyên quyền room-scoped và polling của người gửi đầu tiên; bảng này
+chỉ ghi user đã đăng ký. Thứ tự/cursor vẫn theo proposal, không theo lần góp.
+
+Migration 0085 backfill người gửi đầu tiên còn active. Không thể khôi phục danh
+tính người từng dedupe mà trước đây không lưu. Điều kiện người gửi đầu tiên vẫn
+được giữ để tương thích dữ liệu cũ và producer chưa nâng cấp trong rollout.
+Tất cả writer phải nâng cấp trước khi coi attribution cho submit mới là đầy đủ.
+
+Export thêm section `placeSubmissions` chỉ gồm id, status, createdAt, decidedAt
+của account; đọc theo trang và tính vào giới hạn bytes hiện hữu. Account erasure
+xóa attribution trong transaction chung, hard-delete user/proposal có cascade.
+Submit lấy account lock rồi kiểm tra active giống luồng erasure, tránh tái tạo
+attribution sau xóa account. Xóa một account không xóa proposal của người còn lại.
 
 ## Kiểm chứng và vận hành
 
 Integration test HTTP + Postgres/Testcontainers: anonymous/guest/admin; cách ly
 hai account và guest rows; trang rỗng; ties/microseconds; insert giữa hai trang;
 cursor account khác; bốn trạng thái; key từ chối an toàn; ảnh đã duyệt; đọc lại
-sau quyết định và đăng nhập mới; query/cursor sai trả envelope 400.
+sau quyết định và đăng nhập mới; A/B submit cùng provider ID, submit lặp,
+quyết định approved/rejected/merged, không lộ PII; query/cursor sai trả envelope 400.
 Unit test kiểm tra từ chối actor/cursor trước DB và projection không lộ field.
 
 Dùng request logs HTTP chung và histogram `my_place_submissions_query_duration_ms`
 không label để quan sát thời gian query cả khi lỗi. Không thêm metric theo user/submission, không log payload hoặc
 chuỗi lý do CMS; không có side effect, audit write hay provider call khi đọc.
-Không thêm package, schema/migration hoặc event. Rollback: client ngừng gọi
-endpoint rồi rollback code/contract. Claude chạy full gates; Astra review thiết
+Không thêm package hay loại event. Rollout: áp migration 0085 trước code;
+backfill chỉ thêm bảng mới, không thay proposal cũ. Rollback code có thể giữ bảng
+attribution để không mất lịch sử; nếu cần gỡ schema, dừng writer mới trước rồi
+roll-forward bằng migration `DROP TABLE place_submission_contributors` (mất
+attribution mới, chỉ làm sau khi lưu bản sao). Claude chạy full gates; Astra review thiết
 kế và CODEOWNER duyệt contract/quyền trước merge vào re-design.

@@ -32,7 +32,7 @@ type SubmissionRow = {
   decided_at: Date | string | null;
 };
 
-/** Account-owned history; never reuse the moderator's richer projection. */
+/** Account contribution history; never reuse the moderator's richer projection. */
 @Injectable()
 export class MyPlaceSubmissionsService {
   constructor(
@@ -43,7 +43,12 @@ export class MyPlaceSubmissionsService {
 
   async list(actor: Actor, options: { limit: number; cursor?: string | undefined }) {
     if (actor.type !== 'user') throw AppError.forbidden();
-    const where = [sql`s.submitted_by_user_id = ${actor.id}::uuid`];
+    const where = [
+      sql`(s.submitted_by_user_id = ${actor.id}::uuid or exists (
+      select 1 from place_submission_contributors c
+      where c.submission_id = s.id and c.user_id = ${actor.id}::uuid
+    ))`,
+    ];
     if (options.cursor !== undefined) {
       const { at, id } = decodeCursor(options.cursor);
       where.push(sql`(s.created_at, s.id) < (${at}::timestamptz, ${id}::uuid)`);

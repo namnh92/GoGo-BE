@@ -4840,14 +4840,15 @@ paths:
       summary: List the signed-in account's place submissions
       description: |
         Registered users only; guest and CMS admin actors receive 403.
-        Ownership is selected server-side from the authenticated account, on
+        Contribution access is selected server-side from the authenticated account, on
         every page. Newest first by immutable `(createdAt, id)` descending.
         Reopen from the first page to see current decisions; no client-held
         submission IDs are needed. Cursors preserve timestamp microseconds.
 
-        Uses the existing original-submitter ownership model: deduplicated
-        submissions retain only the first submitter, so later contributors
-        are not granted access to that shared submission. No provider calls.
+        All registered contributors recorded on a deduplicated proposal see
+        that same proposal and its current decision once per account. Original
+        submitters remain included. Earlier deduplicated contributors whose
+        identities were never stored cannot be backfilled. No provider calls.
         Names come from the result place or review draft when available;
         missing names and photos are omitted. Photos are approved editorial
         or community catalogue media only. Raw moderator reasons, contributor
@@ -4863,7 +4864,7 @@ paths:
           schema: { type: string, minLength: 1, maxLength: 512 }
       responses:
         '200':
-          description: Account-owned submissions; an empty list is a successful response.
+          description: Account contributions; an empty list is a successful response.
           headers:
             Cache-Control:
               schema: { type: string, const: no-store }
@@ -4878,11 +4879,12 @@ paths:
     get:
       operationId: getPlaceSubmission
       tags: [places]
-      summary: Poll a submission (owner only)
+      summary: Poll a submission (recorded contributor or original submitter only)
       description: >
-        Owner only (registered user or guest). `rejectionReason` is a stable
-        public key when rejected; absent for historical decisions without a key
-        and for other statuses. Internal moderation notes are never returned.
+        Original submitter (registered user or guest) or recorded registered
+        contributor only. `rejectionReason` is a stable public key when rejected;
+        absent for historical decisions without a key and for other statuses.
+        Internal moderation notes are never returned.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -20140,6 +20142,21 @@ components:
       properties:
         assistantCreditBalance: { type: integer, minimum: 0 }
         exportedAt: { type: string, format: date-time }
+        placeSubmissions:
+          type: array
+          description: >
+            The account's original and attributed shared place proposals, once
+            per proposal. Excludes contributor notes, provider IDs, moderator
+            free text and other contributors' identities.
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, status, createdAt, decidedAt]
+            properties:
+              id: { type: string, format: uuid }
+              status: { type: string, enum: [pending, approved, rejected, merged] }
+              createdAt: { type: string, format: date-time }
+              decidedAt: { type: [string, 'null'], format: date-time }
         assistantConversations:
           type: array
           description: >

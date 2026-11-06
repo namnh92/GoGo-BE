@@ -2270,14 +2270,15 @@ export interface paths {
         /**
          * List the signed-in account's place submissions
          * @description Registered users only; guest and CMS admin actors receive 403.
-         *     Ownership is selected server-side from the authenticated account, on
+         *     Contribution access is selected server-side from the authenticated account, on
          *     every page. Newest first by immutable `(createdAt, id)` descending.
          *     Reopen from the first page to see current decisions; no client-held
          *     submission IDs are needed. Cursors preserve timestamp microseconds.
          *
-         *     Uses the existing original-submitter ownership model: deduplicated
-         *     submissions retain only the first submitter, so later contributors
-         *     are not granted access to that shared submission. No provider calls.
+         *     All registered contributors recorded on a deduplicated proposal see
+         *     that same proposal and its current decision once per account. Original
+         *     submitters remain included. Earlier deduplicated contributors whose
+         *     identities were never stored cannot be backfilled. No provider calls.
          *     Names come from the result place or review draft when available;
          *     missing names and photos are omitted. Photos are approved editorial
          *     or community catalogue media only. Raw moderator reasons, contributor
@@ -2300,8 +2301,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Poll a submission (owner only)
-         * @description Owner only (registered user or guest). `rejectionReason` is a stable public key when rejected; absent for historical decisions without a key and for other statuses. Internal moderation notes are never returned.
+         * Poll a submission (recorded contributor or original submitter only)
+         * @description Original submitter (registered user or guest) or recorded registered contributor only. `rejectionReason` is a stable public key when rejected; absent for historical decisions without a key and for other statuses. Internal moderation notes are never returned.
          */
         get: operations["getPlaceSubmission"];
         put?: never;
@@ -10676,6 +10677,17 @@ export interface components {
             assistantCreditBalance?: number;
             /** Format: date-time */
             exportedAt?: string;
+            /** @description The account's original and attributed shared place proposals, once per proposal. Excludes contributor notes, provider IDs, moderator free text and other contributors' identities. */
+            placeSubmissions?: {
+                /** Format: uuid */
+                id: string;
+                /** @enum {string} */
+                status: "pending" | "approved" | "rejected" | "merged";
+                /** Format: date-time */
+                createdAt: string;
+                /** Format: date-time */
+                decidedAt: string | null;
+            }[];
             /**
              * @description 2.0.0-alpha.3 (GoGo-BE#713, owner-delegated SA decision Q2). The account's retained GoGo AI conversations (90-day retention, so only what still exists). Populated since 2.0.0-alpha.4, when the module landed; a client must still treat absent and `[]` alike.
              *
@@ -15287,7 +15299,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Account-owned submissions; an empty list is a successful response. */
+            /** @description Account contributions; an empty list is a successful response. */
             200: {
                 headers: {
                     "Cache-Control"?: "no-store";

@@ -8,6 +8,7 @@ import {
   numeric,
   pgEnum,
   pgTable,
+  primaryKey,
   smallint,
   text,
   timestamp,
@@ -427,5 +428,23 @@ export const placeSubmissions = pgTable(
       (${t.status} = 'rejected' AND ${t.rejectionReason} IN
       ('duplicate_place', 'incorrect_location', 'permanently_closed', 'not_public_place', 'inappropriate_content', 'other'))`,
     ),
+  ],
+);
+
+/** One account attribution per shared proposal; contains no contributor input. */
+export const placeSubmissionContributors = pgTable(
+  'place_submission_contributors',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    submissionId: uuid('submission_id')
+      .notNull()
+      .references(() => placeSubmissions.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.submissionId] }),
+    index('place_submission_contributors_submission_idx').on(t.submissionId),
   ],
 );

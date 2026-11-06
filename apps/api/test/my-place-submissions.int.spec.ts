@@ -4,11 +4,12 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { schema } from '@gogo/database';
-import { TokenService } from '@gogo/modules';
+import { TokenService, UserContentService } from '@gogo/modules';
 import { PLACE_PROVIDER, type FakePlaceProvider } from '@gogo/providers';
 
 let container: StartedPostgreSqlContainer;
@@ -27,6 +28,26 @@ const list = (token = owner.token, query = '') =>
     remoteAddress: ip(),
     headers: { authorization: `Bearer ${token}` },
   });
+
+const submit = (token: string, googlePlaceId: string, note?: string) =>
+  api().inject({
+    method: 'POST',
+    url: '/v1/place-submissions',
+    remoteAddress: ip(),
+    headers: { authorization: `Bearer ${token}` },
+    payload: { googlePlaceId, note },
+  });
+function seedProvider() {
+  const googlePlaceId = `shared-${randomUUID()}`;
+  (app.get(PLACE_PROVIDER) as FakePlaceProvider).seed({
+    providerPlaceId: googlePlaceId,
+    name: 'Shared café',
+    addressText: 'Hà Nội',
+    lat: 21.02,
+    lng: 105.84,
+  });
+  return googlePlaceId;
+}
 
 beforeAll(async () => {
   container = await new PostgreSqlContainer('postgis/postgis:16-3.4')
@@ -81,6 +102,204 @@ async function submission(over: Partial<typeof schema.placeSubmissions.$inferIns
 }
 
 describe('GET /v1/me/place-submissions (#788)', () => {
+  it.each(['approved', 'rejected', 'merged'] as const)(
+    'retains both contributors to one proposal after reopening and a %s decision',
+    async (status) => {
+      const googlePlaceId = seedProvider();
+      const first = await submit(owner.token, googlePlaceId, 'A private@example.test');
+      expect(first.statusCode, first.body).toBe(201);
+      const id = first.json().submissionId as string;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const second = await submit(other.token, googlePlaceId, 'B private@example.test');
+        expect(second.statusCode, second.body).toBe(201);
+        expect(second.json()).toEqual({ status: 'PENDING', submissionId: id, deduped: true });
+      }
+      const proposals = await db.select().from(schema.placeSubmissions);
+      expect(proposals).toHaveLength(1);
+      expect(proposals[0]).toMatchObject({ id, submissionCount: 3, submittedByUserId: owner.id });
+      expect(
+        (await db.select().from(schema.placeSubmissionContributors))
+          .map((row) => row.userId)
+          .sort(),
+      ).toEqual([owner.id, other.id].sort());
+      // An unrelated proposal remains private even when the accounts share another.
+      await submission({ note: 'Unrelated A contribution' });
+      const reopened: string[] = [];
+      for (const email of ['my-submissions-owner@gogo.id.vn', 'my-submissions-other@gogo.id.vn']) {
+        const login = await api().inject({
+          method: 'POST',
+          url: '/v1/auth/login',
+          remoteAddress: ip(),
+          payload: { email, password: 'Sufficiently-long-pw1!' },
+        });
+        expect(login.statusCode, login.body).toBe(201);
+        const token = login.json().accessToken as string;
+        reopened.push(token);
+        const pending = await list(token);
+        expect(pending.statusCode, pending.body).toBe(200);
+        expect(pending.json().items).toContainEqual({
+          id,
+          status: 'pending',
+          createdAt: expect.any(String),
+          updatedAt: expect.any(String),
+        });
+      }
+      expect((await list(reopened[1]!)).json().items).toHaveLength(1);
+      const [place] = await db
+        .insert(schema.places)
+        .values({
+          name: 'GoGo shared café',
+          nameNormalized: 'gogo shared cafe',
+          geom: { x: 105.84, y: 21.02 },
+        })
+        .returning();
+      await db
+        .update(schema.placeSubmissions)
+        .set({
+          status,
+          resultPlaceId: status === 'rejected' ? null : place!.id,
+          decisionReason: 'Moderator private@example.test',
+          decidedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.placeSubmissions.id, id));
+      for (const token of reopened) {
+        const response = await list(token);
+        expect(response.statusCode, response.body).toBe(200);
+        expect(response.json().items.find((item: { id: string }) => item.id === id)).toEqual({
+          id,
+          status,
+          ...(status === 'rejected'
+            ? { rejectionReason: 'MODERATION_REJECTED' }
+            : { placeId: place!.id, name: 'GoGo shared café' }),
+          createdAt: expect.any(String),
+          updatedAt: expect.any(String),
+          decidedAt: expect.any(String),
+        });
+        const poll = await api().inject({
+          method: 'GET',
+          url: `/v1/place-submissions/${id}`,
+          remoteAddress: ip(),
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(poll.statusCode, poll.body).toBe(200);
+        expect(poll.json().status).toBe(status);
+      }
+    },
+  );
+
+  it('deduplicates simultaneous first submissions with one event and both attributions', async () => {
+    const googlePlaceId = seedProvider();
+    const responses = await Promise.all([
+      submit(owner.token, googlePlaceId),
+      submit(other.token, googlePlaceId),
+    ]);
+    for (const response of responses) expect(response.statusCode, response.body).toBe(201);
+    const id = responses[0]!.json().submissionId;
+    expect(responses[1]!.json().submissionId).toBe(id);
+    expect(responses.map((response) => response.json().deduped).sort()).toEqual([false, true]);
+    expect(await db.select().from(schema.placeSubmissions)).toMatchObject([
+      { id, submissionCount: 2 },
+    ]);
+    expect(await db.select().from(schema.placeSubmissionContributors)).toHaveLength(2);
+    const events = await db.execute(sql`select id from outbox_events
+      where resource_id = ${id} and event_type = 'place.submission_created'`);
+    expect(events.rows).toHaveLength(1);
+    for (const token of [owner.token, other.token]) {
+      expect((await list(token)).json().items.map((item: { id: string }) => item.id)).toEqual([id]);
+    }
+  });
+
+  it('rolls back proposal creation and dedupe counts when attribution cannot persist', async () => {
+    const googlePlaceId = seedProvider();
+    const first = await submit(owner.token, googlePlaceId);
+    expect(first.statusCode, first.body).toBe(201);
+    await db.execute(sql`create function test_reject_attribution() returns trigger language plpgsql as $$
+      begin raise exception 'attribution storage unavailable'; end $$;
+      create trigger test_reject_attribution before insert on place_submission_contributors
+      for each row execute function test_reject_attribution()`);
+    try {
+      for (const providerId of [googlePlaceId, seedProvider()]) {
+        const response = await submit(other.token, providerId);
+        expect(response.statusCode, response.body).toBe(500);
+      }
+      expect(await db.select().from(schema.placeSubmissions)).toMatchObject([
+        { id: first.json().submissionId, submissionCount: 1 },
+      ]);
+      expect(await db.select().from(schema.placeSubmissionContributors)).toHaveLength(1);
+      expect((await list(other.token)).json()).toEqual({ items: [], nextCursor: null });
+    } finally {
+      await db.execute(sql`drop trigger test_reject_attribution on place_submission_contributors;
+        drop function test_reject_attribution()`);
+    }
+  });
+
+  it('exports only the account’s shared attribution and erases it without deleting A’s proposal', async () => {
+    const registered = await api().inject({
+      method: 'POST',
+      url: '/v1/auth/register',
+      remoteAddress: ip(),
+      payload: {
+        email: `erased-${randomUUID()}@gogo.id.vn`,
+        password: 'Sufficiently-long-pw1!',
+        displayName: 'Contributor',
+      },
+    });
+    expect(registered.statusCode, registered.body).toBe(201);
+    const token = registered.json().accessToken as string;
+    const other = { token, id: app.get(TokenService).verifyAccessToken(token).sub };
+    const googlePlaceId = seedProvider();
+    const first = await submit(owner.token, googlePlaceId, 'A private@example.test');
+    expect(first.statusCode, first.body).toBe(201);
+    const second = await submit(other.token, googlePlaceId, 'B private@example.test');
+    expect(second.statusCode, second.body).toBe(201);
+    await submission({ note: 'A unrelated private@example.test' });
+    const service = app.get(UserContentService);
+    const exported = await service.exportData({ type: 'user', id: other.id, sessionId: 'export' });
+    expect(exported.placeSubmissions).toEqual([
+      {
+        id: first.json().submissionId,
+        status: 'pending',
+        createdAt: expect.any(String),
+        decidedAt: null,
+      },
+    ]);
+    await service.deleteForUser(other.id, { actorType: 'user', actorId: other.id });
+    expect(
+      (await db.select().from(schema.placeSubmissionContributors)).map((row) => row.userId),
+    ).toEqual([owner.id]);
+    expect(await db.select().from(schema.placeSubmissions)).toHaveLength(2);
+    expect((await list(owner.token)).json().items).toHaveLength(2);
+  });
+
+  it('backfills a pre-attribution snapshot and cascades links when a proposal is deleted', async () => {
+    const legacy = await submission();
+    await submission({ submittedByUserId: null, submittedByGuestSessionId: randomUUID() });
+    const [deleted] = await db
+      .insert(schema.users)
+      .values({ displayName: 'Deleted', status: 'deleted' })
+      .returning();
+    await submission({ submittedByUserId: deleted!.id });
+    const migration = await readFile(
+      path.resolve(__dirname, '../../../migrations/0085_place-submission-contributors.sql'),
+      'utf8',
+    );
+    const rollback = new Error('restore snapshot after migration verification');
+    await expect(
+      db.transaction(async (tx) => {
+        await tx.execute(sql`drop table place_submission_contributors`);
+        await tx.execute(sql.raw(migration));
+        const links = await tx.select().from(schema.placeSubmissionContributors);
+        expect(links).toEqual([
+          { userId: owner.id, submissionId: legacy.id, createdAt: legacy.createdAt },
+        ]);
+        await tx.delete(schema.placeSubmissions).where(eq(schema.placeSubmissions.id, legacy.id));
+        expect(await tx.select().from(schema.placeSubmissionContributors)).toEqual([]);
+        throw rollback;
+      }),
+    ).rejects.toBe(rollback);
+  });
+
   it('requires authentication and refuses authenticated guest and admin actors', async () => {
     const anonymous = await api().inject({ method: 'GET', url: '/v1/me/place-submissions' });
     expect(anonymous.statusCode).toBe(401);

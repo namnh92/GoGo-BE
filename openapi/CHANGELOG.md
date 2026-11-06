@@ -21,10 +21,18 @@ Rejected trả key `rejectionReason: MODERATION_REJECTED` để client dịch; k
 trả lý do CMS dạng tự do, ghi chú hoặc định danh người khác. Chỉ dùng ảnh
 catalogue editorial/community đã duyệt; không gọi provider hoặc lưu thêm dữ liệu Google.
 
-Giữ mô hình sở hữu hiện tại: khi dedupe, chỉ người gửi đầu tiên được lưu làm
-chủ sở hữu; không suy đoán danh tính người gửi sau. Chi tiết và giới hạn trong
-`docs/adr/0045-my-place-submissions.md`. Client sinh lại types từ phiên bản này.
-Rollback: ngừng gọi endpoint trước khi rollback API; không có migration.
+Khi dedupe, lưu attribution cho từng user đã đăng ký; danh sách và polling
+cho phép người gửi đầu tiên hoặc contributor đã ghi nhận đọc cùng proposal,
+mỗi proposal một lần trên mỗi account. Không thể khôi phục danh tính contributor
+cũ chưa được lưu. Guest giữ quyền polling của người gửi đầu tiên.
+Export thêm `placeSubmissions` chỉ gồm id, status, createdAt, decidedAt;
+xóa account xóa attribution của account đó. Polling và CMS giữ taxonomy reason key
+của #787; CMS vẫn bắt buộc `rejectionReason` khi từ chối.
+Chi tiết và giới hạn trong `docs/adr/0045-my-place-submissions.md`.
+Client sinh lại types từ phiên bản này. Rollout: áp migration
+`0085_place-submission-contributors` trước API. Rollback: ngừng gọi endpoint
+trước khi rollback API; có thể giữ bảng attribution để bảo toàn lịch sử.
+Nếu cần gỡ bảng, dừng writer mới và lưu bản sao trước khi DROP TABLE theo ADR.
 
 ## 7.0.0-alpha.1 — Required submission rejection keys (GoGo-BE#787 / PR #790)
 
