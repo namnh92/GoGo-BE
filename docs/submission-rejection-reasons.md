@@ -50,8 +50,40 @@ thiếu key ở bản ghi lịch sử. Xem `openapi/CHANGELOG.md`.
 0084 thêm cột text nullable, không default/backfill/rewrite dữ liệu cũ.
 CHECK chỉ cho sáu key trên trạng thái rejected, cho phép null để giữ lịch sử và
 hỗ trợ binary cũ khi rollback. App bắt buộc key cho mọi rejection mới.
-ADD CHECK NOT VALID rồi VALIDATE giảm thời gian giữ khóa mạnh; lock_timeout 5s
-ngăn DDL chờ khóa lâu. Thử forward/rollback trên dữ liệu local, không chạy DEV.
+0082 chỉ ADD COLUMN và ADD CHECK NOT VALID, không scan dữ liệu cũ. CHECK NOT VALID
+vẫn kiểm tra mọi INSERT/UPDATE mới. Drizzle gom **mọi migration đang pending vào
+một transaction**, giữ ACCESS EXCLUSIVE của ADD COLUMN tới COMMIT. Vì vậy tách
+VALIDATE sang file migration khác vẫn giữ khóa mạnh suốt scan và không giải quyết
+vấn đề. `lock_timeout = 5s` chỉ giới hạn thời gian chờ lấy khóa, không giới hạn
+thời gian giữ khóa.
+
+Rollout gồm hai invocation tuần tự trên cùng database (thử local trước, không
+tự chạy DEV):
+
+1. Chạy `pnpm db:migrate`; chỉ tiếp tục khi lệnh thành công và đã trả về, tức DDL
+   đã COMMIT. Không bọc hai bước trong một transaction ngoài.
+2. Chạy validation ngoài migration journal, trong transaction mới:
+
+   ```sh
+   psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f scripts/ops/validate-submission-rejection-reason.sql
+   ```
+
+   Script dùng SET LOCAL lock_timeout 5s và COMMIT riêng. Scan dùng
+   SHARE UPDATE EXCLUSIVE, cho phép SELECT/INSERT/UPDATE/DELETE tiếp tục; tránh
+   chạy cùng DDL/maintenance có khóa xung đột. Không chuyển script vào `migrations/`.
+
+3. Xác nhận `convalidated = true` trước khi chốt rollout:
+
+   ```sql
+   SELECT convalidated FROM pg_constraint
+   WHERE conrelid = 'place_submissions'::regclass
+     AND conname = 'place_submissions_rejection_reason_check';
+   ```
+
+Nếu validation lỗi/timeout, giữ schema additive và CHECK NOT VALID đang enforce
+write mới; kiểm tra nguyên nhân rồi chạy lại bước 2. Script có thể chạy lại cả
+sau thành công. Nếu 0082 đã được áp dụng từ bản cũ có VALIDATE, không sửa journal
+hay chạy lại DDL; kiểm tra trạng thái constraint, bước 2 là an toàn khi chạy lại.
 
 Ưu tiên rollback binary trước, **giữ cột additive** để không mất key đã ghi.
 Nếu cần rollback schema: dừng writer, export cặp id/rejection_reason nếu cần giữ
