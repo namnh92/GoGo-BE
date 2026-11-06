@@ -1,10 +1,14 @@
 import { z } from 'zod';
 
-/**
- * Password policy: length is the primary control (NIST 800-63B); no
- * composition theatre beyond requiring it not be trivially short.
- */
-export const passwordSchema = z.string().min(10).max(128);
+// Unicode case supports Vietnamese keyboards; length keeps login's UTF-16 cap.
+export const passwordSchema = z
+  .string()
+  .min(8)
+  .max(128)
+  .regex(/\p{Lu}/u, 'Password must contain an uppercase letter')
+  .regex(/\p{Ll}/u, 'Password must contain a lowercase letter')
+  .regex(/[0-9]/, 'Password must contain a digit (0-9)')
+  .regex(/[^\p{L}\p{N}\p{M}]/u, 'Password must contain a special character');
 
 export const registerSchema = z.object({
   email: z.string().trim().toLowerCase().email().max(254),
@@ -19,6 +23,18 @@ export const loginSchema = z.object({
   password: z.string().min(1).max(128),
 });
 export type LoginDto = z.infer<typeof loginSchema>;
+
+export const recoveryRequestSchema = z.object({
+  email: registerSchema.shape.email,
+});
+export type RecoveryRequestDto = z.infer<typeof recoveryRequestSchema>;
+
+export const recoveryCompleteSchema = recoveryRequestSchema.extend({
+  challengeId: z.string().uuid(),
+  code: z.string().regex(/^[0-9]{6}$/),
+  password: passwordSchema,
+});
+export type RecoveryCompleteDto = z.infer<typeof recoveryCompleteSchema>;
 
 export const refreshSchema = z.object({
   refreshToken: z.string().min(20).max(128).optional(),

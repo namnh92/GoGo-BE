@@ -145,3 +145,36 @@ export const loginAttempts = pgTable(
     index('login_attempts_ip_idx').on(t.ipHash, t.createdAt),
   ],
 );
+
+export const passwordRecoveryChallenges = pgTable(
+  'password_recovery_challenges',
+  {
+    emailDigest: text('email_digest').primaryKey(),
+    id: uuid('id').notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+    codeDigest: text('code_digest').notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    resendAvailableAt: timestamp('resend_available_at', { withTimezone: true }).notNull(),
+    consumedAt: timestamp('consumed_at', { withTimezone: true }),
+  },
+  (t) => [
+    check('password_recovery_attempts_bounded', sql`${t.attempts} between 0 and 5`),
+    index('password_recovery_expiry_idx').on(t.expiresAt),
+  ],
+);
+
+export const passwordRecoveryReplays = pgTable(
+  'password_recovery_replays',
+  {
+    key: text('key').primaryKey(),
+    fingerprint: text('fingerprint').notNull(),
+    body: jsonb('body').$type<{
+      challengeId: string;
+      expiresAt: string;
+      resendAvailableAt: string;
+    }>(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [index('password_recovery_replay_expiry_idx').on(t.expiresAt)],
+);

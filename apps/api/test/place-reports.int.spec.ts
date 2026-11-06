@@ -59,7 +59,7 @@ async function account() {
     remoteAddress: ip(),
     payload: {
       email: `report-${seq}@gogo.id.vn`,
-      password: 'sufficiently-long-pw',
+      password: 'Sufficiently-long-pw1!',
       displayName: 'Người báo',
     },
   });

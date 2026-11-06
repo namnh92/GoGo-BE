@@ -34,7 +34,7 @@ async function registerUser(email: string, displayName = 'User') {
     method: 'POST',
     url: '/v1/auth/register',
     remoteAddress: ip(),
-    payload: { email, password: 'sufficiently-long-pw', displayName },
+    payload: { email, password: 'Sufficiently-long-pw1!', displayName },
   });
   const body = res.json();
   return { token: body.accessToken as string, userId: body.userId as string };

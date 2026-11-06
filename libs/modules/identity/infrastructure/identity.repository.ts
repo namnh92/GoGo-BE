@@ -4,6 +4,7 @@ import { schema, type Db } from '@gogo/database';
 import { DB } from '../../shared/tokens';
 import { writeAudit } from '../../shared/audit';
 import type { Tx } from '../../shared/outbox';
+import { lockAuthEmail } from './recovery.repository';
 
 export type UserRow = typeof schema.users.$inferSelect;
 export type AuthSessionRow = typeof schema.authSessions.$inferSelect;
@@ -12,6 +13,29 @@ export type GuestSessionRow = typeof schema.guestSessions.$inferSelect;
 @Injectable()
 export class IdentityRepository {
   constructor(@Inject(DB) private readonly db: Db) {}
+
+  async withAuthTransaction<T>(
+    email: string | null,
+    userId: string | null,
+    work: (repo: IdentityRepository, user: UserRow | undefined) => Promise<T>,
+  ): Promise<T> {
+    return this.db.transaction(async (tx) => {
+      if (email !== null) await lockAuthEmail(tx, email);
+      const [user] = await tx
+        .select()
+        .from(schema.users)
+        .where(
+          userId !== null
+            ? eq(schema.users.id, userId)
+            : and(
+                sql`lower(${schema.users.email}) = ${email}`,
+                sql`${schema.users.status} <> 'deleted'`,
+              ),
+        )
+        .for('update');
+      return work(new IdentityRepository(tx as unknown as Db), user);
+    });
+  }
 
   findUserByEmail(email: string): Promise<UserRow | undefined> {
     return this.db

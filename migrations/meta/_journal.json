@@ -540,6 +540,13 @@
       "when": 1791676800000,
       "tag": "0078_push-device-identity",
       "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1793923200000,
+      "tag": "0079_consumer-password-recovery",
+      "breakpoints": true
     }
   ]
 }

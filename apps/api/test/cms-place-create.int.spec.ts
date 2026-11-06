@@ -647,7 +647,7 @@ describe('#440 permissions', () => {
       remoteAddress: ip(),
       payload: {
         email: `c440-user-${uniq()}@gogo.id.vn`,
-        password: 'sufficiently-long-pw',
+        password: 'Sufficiently-long-pw1!',
         displayName: 'U',
       },
     });

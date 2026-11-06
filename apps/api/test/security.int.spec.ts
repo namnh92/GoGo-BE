@@ -42,7 +42,7 @@ async function register(email: string) {
     method: 'POST',
     url: '/v1/auth/register',
     remoteAddress: ip(),
-    payload: { email, password: 'sufficiently-long-pw', displayName: 'User' },
+    payload: { email, password: 'Sufficiently-long-pw1!', displayName: 'User' },
   });
   const body = res.json();
   return { token: body.accessToken as string, userId: body.userId as string };
@@ -200,7 +200,7 @@ describe('broken authentication (A07)', () => {
       remoteAddress: ip(),
       payload: {
         email: 'sec-refresh-as-access@gogo.id.vn',
-        password: 'sufficiently-long-pw',
+        password: 'Sufficiently-long-pw1!',
         displayName: 'U',
       },
     });

@@ -32,16 +32,47 @@ import {
 } from './rate-limit-redis';
 import { FallbackRateLimitStore, RedisRateLimitStore } from './redis-rate-limit.store';
 import { SessionsController } from './sessions.controller';
+import { PasswordRecoveryController } from './password-recovery.controller';
+import { PasswordRecoveryService, RecoveryCrypto } from '../application/password-recovery.service';
+import { RecoveryRepository } from '../infrastructure/recovery.repository';
+import {
+  RecoveryMailSender,
+  RecoveryMailSink,
+  UnconfiguredRecoveryMailSender,
+} from '../infrastructure/recovery-mail';
 
 /**
  * BE-BFF-002. AuthGuard + RateLimitGuard are registered globally here:
  * every route in the app is authenticated deny-by-default unless @Public().
  */
 @Module({
-  controllers: [AuthController, SessionsController],
+  controllers: [AuthController, SessionsController, PasswordRecoveryController],
   providers: [
     PasswordService,
     IdentityRepository,
+    RecoveryRepository,
+    PasswordRecoveryService,
+    {
+      provide: RecoveryCrypto,
+      useFactory: (config: IdentityConfig) =>
+        new RecoveryCrypto(
+          config.AUTH_RECOVERY_KEY ||
+            (config.APP_ENV === 'dev' && config.NODE_ENV !== 'production'
+              ? randomBytes(48).toString('base64url')
+              : ''),
+        ),
+      inject: [APP_CONFIG],
+    },
+    {
+      provide: RecoveryMailSender,
+      useFactory: (config: IdentityConfig) =>
+        config.AUTH_RECOVERY_MAIL_ADAPTER === 'sink' &&
+        config.APP_ENV === 'dev' &&
+        (config.NODE_ENV !== 'production' || (config.AUTH_RECOVERY_KEY?.length ?? 0) >= 32)
+          ? new RecoveryMailSink()
+          : new UnconfiguredRecoveryMailSender(),
+      inject: [APP_CONFIG],
+    },
     {
       provide: TokenService,
       useFactory: (config: IdentityConfig) =>

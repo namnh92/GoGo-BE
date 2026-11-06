@@ -161,7 +161,7 @@ describe('CMS auth + RBAC (CMS-001, FR-CMS-001, SRS §15.7)', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: ip(),
-      payload: { email: 'user@gogo.id.vn', password: 'sufficiently-long-pw', displayName: 'U' },
+      payload: { email: 'user@gogo.id.vn', password: 'Sufficiently-long-pw1!', displayName: 'U' },
     });
     const res = await api().inject({
       method: 'GET',
@@ -2366,7 +2366,7 @@ describe('CMS app users, rooms and plans (BE-CMS-G7 #246)', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: ip(),
-      payload: { email, password: 'user-password-123', displayName: 'Nạn nhân' },
+      payload: { email, password: 'User-password-123!', displayName: 'Nạn nhân' },
     });
     expect(register.statusCode).toBe(201);
     const userToken = register.json().accessToken as string;
@@ -2398,7 +2398,7 @@ describe('CMS app users, rooms and plans (BE-CMS-G7 #246)', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: ip(),
-      payload: { email, password: 'user-password-123', displayName: 'Bị cấm' },
+      payload: { email, password: 'User-password-123!', displayName: 'Bị cấm' },
     });
     const userId = (
       await db.select().from(schema.users).where(eq(schema.users.email, email)).limit(1)
@@ -2410,7 +2410,7 @@ describe('CMS app users, rooms and plans (BE-CMS-G7 #246)', () => {
       method: 'POST',
       url: '/v1/auth/login',
       remoteAddress: ip(),
-      payload: { email, password: 'user-password-123' },
+      payload: { email, password: 'User-password-123!' },
     });
     expect(login.statusCode).toBe(401);
   });
@@ -2709,7 +2709,7 @@ describe('privacy-request ledger (BE-CMS-G12 #255, ADR-0011)', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: ip(),
-      payload: { email, password: 'user-password-123', displayName: email.split('@')[0] },
+      payload: { email, password: 'User-password-123!', displayName: email.split('@')[0] },
     });
     expect(res.statusCode).toBe(201);
     const [row] = await db.select().from(schema.users).where(eq(schema.users.email, email));
@@ -3184,7 +3184,11 @@ describe('moderation queue (CMS-007, FR-CMS-005)', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: ip(),
-      payload: { email: 'reviewer@gogo.id.vn', password: 'sufficiently-long-pw', displayName: 'R' },
+      payload: {
+        email: 'reviewer@gogo.id.vn',
+        password: 'Sufficiently-long-pw1!',
+        displayName: 'R',
+      },
     });
     const [place] = await db
       .insert(schema.places)
@@ -3576,7 +3580,7 @@ describe('moderation queues: filter, count, cursor paging (BE-CMS-G1 #219)', () 
       remoteAddress: ip(),
       payload: {
         email: 'queue-outsider@gogo.id.vn',
-        password: 'sufficiently-long-pw',
+        password: 'Sufficiently-long-pw1!',
         displayName: 'O',
       },
     });
@@ -3726,7 +3730,7 @@ describe('CMS account list (BE-CMS-G2 #220)', () => {
       remoteAddress: ip(),
       payload: {
         email: 'acctlist-outsider@gogo.id.vn',
-        password: 'sufficiently-long-pw',
+        password: 'Sufficiently-long-pw1!',
         displayName: 'O',
       },
     });
@@ -3894,7 +3898,7 @@ describe('CMS media upload (BE-CMS-G5 #227)', () => {
       remoteAddress: ip(),
       payload: {
         email: 'upload227-outsider@gogo.id.vn',
-        password: 'sufficiently-long-pw',
+        password: 'Sufficiently-long-pw1!',
         displayName: 'O',
       },
     });
@@ -6661,7 +6665,7 @@ describe('RBAC: hierarchical read, exact-match write (BE-IMP-008, #143)', () => 
       remoteAddress: ip(),
       payload: {
         email: 'rbac-reviewer@gogo.id.vn',
-        password: 'sufficiently-long-pw',
+        password: 'Sufficiently-long-pw1!',
         displayName: 'R',
       },
     });
@@ -6736,7 +6740,7 @@ describe('audit request context (BE-IMP-007)', () => {
       remoteAddress: '10.99.0.8',
       payload: {
         email: 'audit-user@gogo.id.vn',
-        password: 'sufficiently-long-pw',
+        password: 'Sufficiently-long-pw1!',
         displayName: 'U',
       },
     });
@@ -6914,7 +6918,7 @@ describe('SEC-001 emergency takedown (break-glass)', () => {
       remoteAddress: ip(),
       payload: {
         email: 'bg-reviewer@gogo.id.vn',
-        password: 'sufficiently-long-pw',
+        password: 'Sufficiently-long-pw1!',
         displayName: 'R',
       },
     });

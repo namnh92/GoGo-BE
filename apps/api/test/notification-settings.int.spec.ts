@@ -41,7 +41,7 @@ async function register(label: string) {
     remoteAddress: ip(),
     payload: {
       email: `${label}-${Date.now()}@gogo.id.vn`,
-      password: 'sufficiently-long-pw',
+      password: 'Sufficiently-long-pw1!',
       displayName: label,
     },
   });

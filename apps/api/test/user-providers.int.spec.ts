@@ -39,7 +39,7 @@ async function register(email: string) {
     method: 'POST',
     url: '/v1/auth/register',
     remoteAddress: ip(),
-    payload: { email, password: 'sufficiently-long-pw', displayName: email.split('@')[0] },
+    payload: { email, password: 'Sufficiently-long-pw1!', displayName: email.split('@')[0] },
   });
   const b = res.json();
   return { token: b.accessToken as string, userId: b.userId as string };
@@ -332,7 +332,7 @@ describe('saved/review/profile/privacy (BE-BFF-009)', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: ip(),
-      payload: { email: 'gone@gogo.id.vn', password: 'sufficiently-long-pw', displayName: 'Mới' },
+      payload: { email: 'gone@gogo.id.vn', password: 'Sufficiently-long-pw1!', displayName: 'Mới' },
     });
     expect(again.statusCode).toBe(201);
   });
@@ -596,7 +596,7 @@ async function loginAgain(email: string) {
     method: 'POST',
     url: '/v1/auth/login',
     remoteAddress: ip(),
-    payload: { email, password: 'sufficiently-long-pw' },
+    payload: { email, password: 'Sufficiently-long-pw1!' },
   });
   return { token: res.json().accessToken as string };
 }

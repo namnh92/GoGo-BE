@@ -300,7 +300,7 @@ export async function startAssistantFixture(
     const res = await inject({
       method: 'POST',
       url: '/v1/auth/register',
-      payload: { email, password: 'sufficiently-long-pw', displayName: email.split('@')[0] },
+      payload: { email, password: 'Sufficiently-long-pw1!', displayName: email.split('@')[0] },
     });
     if (res.statusCode !== 201) throw new Error(`register ${res.statusCode} ${res.body}`);
     return res.json().accessToken as string;

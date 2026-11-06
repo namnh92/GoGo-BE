@@ -114,6 +114,64 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/password-recovery/request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request an in-app password recovery code
+         * @description Always returns the same 202 shape for eligible, missing, guest,
+         *     passwordless, disabled and deleted accounts. No code is returned.
+         *     Active password accounts may recover even if email was unverified.
+         *     Six-digit code expires after 300 seconds; resend replaces the proof.
+         *     Limits count all requests, including replays: 1/minute + 3/hour/email,
+         *     10/minute + 50/hour/IP. Cooldown is 60 seconds, also on replay.
+         *     Idempotency is scoped to IP + operation + key for 24 hours; same key
+         *     and normalized body replays the original result even after resend.
+         *     A changed body returns 422. Account-specific delivery failure still
+         *     returns 202 and invalidates the affected challenge internally.
+         *     Production is disabled until mail and shared fail-closed quotas exist.
+         */
+        post: operations["requestPasswordRecovery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/password-recovery/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Consume a recovery code and replace the password
+         * @description Single-use proof, at most five failed attempts. Invalid, expired,
+         *     exhausted, superseded, consumed or ineligible proofs return the same
+         *     400 RECOVERY_INVALID. Limits: 10/15 minutes/email, 30/15 minutes/IP.
+         *     Success verifies the account email if needed, revokes every consumer
+         *     session and refresh token, and clears login lockout. No new session is
+         *     issued; sign in again. No history is moved or merged.
+         *     Idempotency is scoped to IP + operation + key for 24 hours. Completion
+         *     replay commits with the reset; a matching retry returns 204 without
+         *     resetting again. A changed body returns 422. Limits apply to retries.
+         */
+        post: operations["completePasswordRecovery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/refresh": {
         parameters: {
             query?: never;
@@ -10654,6 +10712,15 @@ export interface components {
         };
     };
     responses: {
+        /** @description SERVICE_UNAVAILABLE (retryable true) — the authoritative consumer session lookup encountered an operational database connection, pool or query timeout/unavailability. Retry with backoff; cached state cannot authorize access. SQL/schema/permission/configuration errors retain existing error handling. */
+        SessionLookupUnavailable: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
         /** @description The client's ETag still matches. No body, by definition — this is the whole saving the tag exists for. */
         NotModified: {
             headers: {
@@ -10913,6 +10980,7 @@ export interface operations {
                 "application/json": {
                     /** Format: email */
                     email: string;
+                    /** @description 8 to 128 UTF-16 code units (the existing login length cap), without trimming or normalization. Supplementary characters such as emoji occupy two units. Requires at least one Unicode uppercase letter (Lu), one Unicode lowercase letter (Ll), one ASCII digit (0-9), and one special character outside Unicode letters, numbers and combining marks (L, N, M). Vietnamese letters such as Đ and ă satisfy the respective case requirements. Whitespace and emoji count as special characters. Policy failures return BadRequest with code VALIDATION_FAILED and a field_errors entry whose field is password; the password is never echoed. */
                     password: string;
                     displayName: string;
                     /** @description Opaque guest token to re-parent guest history (FR-AUTH-003). */
@@ -10971,6 +11039,124 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             429: components["responses"]["RateLimited"];
+        };
+    };
+    requestPasswordRecovery: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: email */
+                    email: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Accepted without confirming account eligibility or delivery */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        challengeId: string;
+                        /** Format: date-time */
+                        expiresAt: string;
+                        /** Format: date-time */
+                        resendAvailableAt: string;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description IDEMPOTENCY_KEY_REUSED — key was used with a different normalized body */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            /** @description RECOVERY_MAIL_NOT_CONFIGURED (retryable false), or global RECOVERY_UNAVAILABLE (retryable true) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    completePasswordRecovery: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: email */
+                    email: string;
+                    /** Format: uuid */
+                    challengeId: string;
+                    code: string;
+                    /** @description Same registration policy: Unicode uppercase and lowercase, ASCII digit, and a character outside Unicode L/N/M. Failures use VALIDATION_FAILED with field_errors[].field=password. */
+                    password: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Password replaced; sign in again */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description RECOVERY_INVALID, VALIDATION_FAILED, or INVALID_IDEMPOTENCY_KEY */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description IDEMPOTENCY_KEY_REUSED */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            /** @description RECOVERY_MAIL_NOT_CONFIGURED (retryable false), or RECOVERY_UNAVAILABLE (retryable true) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     refreshSession: {
@@ -11076,6 +11262,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getMe: {
@@ -11097,6 +11284,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     deleteAccount: {
@@ -11115,6 +11303,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     updateProfile: {
@@ -11143,6 +11332,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             429: components["responses"]["RateLimited"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     setAvatar: {
@@ -11216,6 +11406,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             429: components["responses"]["RateLimited"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     listRooms: {
@@ -11246,6 +11437,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     createRoom: {
@@ -11289,6 +11481,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             403: components["responses"]["Forbidden"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getRoom: {
@@ -11313,6 +11506,7 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     updateRoomConstraints: {
@@ -11353,6 +11547,7 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     transitionRoom: {
@@ -11386,6 +11581,7 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     renameRoom: {
@@ -11418,6 +11614,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     streamRoomEvents: {
@@ -11484,6 +11681,7 @@ export interface operations {
                     "application/json": components["schemas"]["RoomMember"][];
                 };
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     removeRoomMember: {
@@ -11507,6 +11705,7 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     previewRoomInvite: {
@@ -11565,6 +11764,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     createRoomInvite: {
@@ -11600,6 +11800,7 @@ export interface operations {
                     };
                 };
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     revokeRoomInvite: {
@@ -11621,6 +11822,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     joinRoom: {
@@ -11680,6 +11882,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     joinRoomAsGuest: {
@@ -11750,6 +11953,7 @@ export interface operations {
                 content?: never;
             };
             400: components["responses"]["BadRequest"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     removeRoomSeedPlace: {
@@ -11771,6 +11975,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getMyPreferences: {
@@ -11805,6 +12010,7 @@ export interface operations {
                     };
                 };
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     saveMyPreferences: {
@@ -11845,6 +12051,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             409: components["responses"]["Conflict"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     completeMyPreferences: {
@@ -11876,6 +12083,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     createUpload: {
@@ -11951,6 +12159,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AssistantUserOnly"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     listAssistantConversations: {
@@ -11979,6 +12188,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AssistantUserOnly"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     createAssistantConversation: {
@@ -12054,6 +12264,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AssistantUserOnly"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     deleteAssistantConversation: {
@@ -12076,6 +12287,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AssistantUserOnly"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     renameAssistantConversation: {
@@ -12109,6 +12321,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AssistantUserOnly"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     listAssistantMessages: {
@@ -12137,6 +12350,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AssistantUserOnly"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     sendAssistantMessage: {
@@ -12273,6 +12487,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AssistantUserOnly"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     setAssistantMessageFeedback: {
@@ -12304,6 +12519,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AssistantUserOnly"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     clearAssistantMessageFeedback: {
@@ -12328,6 +12544,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AssistantUserOnly"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getAssistantProposal: {
@@ -12353,6 +12570,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AssistantUserOnly"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     confirmAssistantProposal: {
@@ -12446,6 +12664,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AssistantUserOnly"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getAdministrativeVersion: {
@@ -13801,6 +14020,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["RateLimited"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     generateSuggestions: {
@@ -13825,6 +14045,7 @@ export interface operations {
             };
             409: components["responses"]["Conflict"];
             429: components["responses"]["RateLimited"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getCurrentSuggestions: {
@@ -13847,6 +14068,7 @@ export interface operations {
                     "application/json": components["schemas"]["SuggestionsCurrent"];
                 };
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     castVote: {
@@ -13884,6 +14106,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             409: components["responses"]["Conflict"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     finalizeVotes: {
@@ -13926,6 +14149,7 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getCurrentPlan: {
@@ -13949,6 +14173,7 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getPlan: {
@@ -13971,6 +14196,7 @@ export interface operations {
                     "application/json": components["schemas"]["Plan"];
                 };
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     editPlanStops: {
@@ -14009,6 +14235,7 @@ export interface operations {
                 };
             };
             409: components["responses"]["Conflict"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     regeneratePlan: {
@@ -14042,6 +14269,7 @@ export interface operations {
                 };
             };
             409: components["responses"]["Conflict"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     lockPlanStop: {
@@ -14072,6 +14300,7 @@ export interface operations {
                 };
             };
             409: components["responses"]["Conflict"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     completePlanStop: {
@@ -14094,6 +14323,7 @@ export interface operations {
                 content?: never;
             };
             409: components["responses"]["Conflict"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     checkinPlanStop: {
@@ -14178,6 +14408,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             429: components["responses"]["RateLimited"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getPlaceImport: {
@@ -14199,6 +14430,7 @@ export interface operations {
                 content?: never;
             };
             403: components["responses"]["Forbidden"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     listServiceAreas: {
@@ -14267,6 +14499,7 @@ export interface operations {
                     "application/json": components["schemas"]["SavedItem"][];
                 };
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     saveItem: {
@@ -14288,6 +14521,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     unsaveItem: {
@@ -14309,6 +14543,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     createReview: {
@@ -14340,6 +14575,7 @@ export interface operations {
                     "application/json": components["schemas"]["Review"];
                 };
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     exportMyData: {
@@ -14361,6 +14597,7 @@ export interface operations {
                 };
             };
             429: components["responses"]["RateLimited"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     requestSecureExport: {
@@ -14463,6 +14700,7 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     downloadSecureExport: {
@@ -14571,6 +14809,7 @@ export interface operations {
                     };
                 };
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     registerPushSubscription: {
@@ -14726,6 +14965,7 @@ export interface operations {
                 };
             };
             429: components["responses"]["RateLimited"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getPlaceSubmission: {
@@ -14762,6 +15002,7 @@ export interface operations {
                 };
             };
             403: components["responses"]["Forbidden"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     cmsListPlaceSubmissions: {
@@ -15397,6 +15638,7 @@ export interface operations {
                     "application/json": components["schemas"]["MyReview"][];
                 };
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     updateReview: {
@@ -15428,6 +15670,7 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     markReviewHelpful: {
@@ -15454,6 +15697,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["RateLimited"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     unmarkReviewHelpful: {
@@ -15480,6 +15724,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["RateLimited"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     listMyReviewReactions: {
@@ -15504,6 +15749,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     markNotificationRead: {
@@ -15524,6 +15770,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getPushIdentityToken: {
@@ -15909,6 +16156,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["RateLimited"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getNotificationPreferences: {
@@ -15934,6 +16182,7 @@ export interface operations {
                     }[];
                 };
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     setNotificationPreference: {
@@ -15961,6 +16210,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getNotificationSettings: {
@@ -15988,6 +16238,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     setNotificationSettings: {
@@ -16022,6 +16273,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getDocsPage: {
