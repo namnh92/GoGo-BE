@@ -404,6 +404,7 @@ export const placeSubmissions = pgTable(
      * A draft: saving it decides nothing and creates no place. Holds no
      * provider content.
      */
+    submissionRevision: integer('submission_revision').notNull().default(1),
     reviewDraft: jsonb('review_draft').$type<SubmissionReviewDraft>(),
     reviewedByAdminId: uuid('reviewed_by_admin_id'),
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }),

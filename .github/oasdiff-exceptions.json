@@ -130,6 +130,19 @@
       "reason": "The shape (GoGo-MobileApp#398 rev 7 D4) requires the audience `public`, so a campaign response can carry it. Only GoGo-CMS reads these routes and learns the value in GoGo-CMS#270. Contract moved to MAJOR 4.0.0-alpha.1 with this change.",
       "note": "revisionCommit is a PR head; a later commit that only edits this file leaves openapi/gogo.v1.yaml byte-identical.",
       "diagnostic": "in API POST /cms/campaigns/{id}/schedule added the new `public` enum value to the `audienceType` response property for the response status `201`"
+    },
+    {
+      "id": "BE-774-taxonomy-kind-amenity-list",
+      "issue": "https://github.com/namnh92/GoGo-BE/issues/774",
+      "decidedAt": "2026-11-06",
+      "decidedBy": "owner in-session on PR #775: delegated the CI fix using repository contract rules and the established response-enum precedent",
+      "baseCommit": "d00ad717a54bc6e4e604e1660171a2da1528f657",
+      "baseSha256": "d25726b1bfd6afb5f9c997a13206243949ce85a74a0c682cc3a962d8fcb22296",
+      "revisionBasis": "88cc196db4fe71756804d2d804c7b6353ec8bb6b with info.version changed from 5.2.0-alpha.1 to 6.0.0-alpha.1",
+      "revisionSha256": "01d48364bc0f00234dba68435fc289caadd665691164646dcf19d2b4eb992675",
+      "diagnostic": "in API GET /cms/taxonomies added the new `amenity` enum value to the `items/kind` response property for the response status `200`",
+      "reason": "ADR-0040: discovery introduces the amenity taxonomy kind. The closed response enum excluded it, so existing GoGo-CMS Zod readers reject the whole list. Follow BE#747 / PR #749: MAJOR 6.0.0-alpha.1, consumer migration note in openapi/CHANGELOG.md, and one exact-byte exception. CMS must sync its contract/generated client, runtime enum, selector and labels before rollout.",
+      "note": "The revision hash identifies the final YAML bytes; no revisionCommit is claimed because this session forbids git writes. Changing either contract or adding any unrecorded finding still fails."
     }
   ]
 }

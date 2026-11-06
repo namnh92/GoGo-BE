@@ -7,20 +7,22 @@ import { decodeCursor, SearchService } from '../application/search.service';
 const csv = (max: number) =>
   z
     .string()
-    .transform((v) =>
-      v
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .slice(0, max),
-    )
+    .transform((v) => [
+      ...new Set(
+        v
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
+      ),
+    ])
+    .pipe(z.array(z.string().min(1).max(64)).max(max))
     .optional();
 
 /**
  * FR-SEARCH-002 (SE-010): multi-category, free-form radius and per-person
  * price bounds, suited-for, lodging opt-in, open-at.
  */
-const searchQuerySchema = z
+export const searchQuerySchema = z
   .object({
     q: z.string().trim().max(200).optional(),
     lat: z.coerce.number().min(-90).max(90).optional(),
@@ -31,7 +33,15 @@ const searchQuerySchema = z
       .transform((v) => (v === 'now' ? new Date() : new Date(v)))
       .optional(),
     categories: csv(10),
-    suitedFor: z.enum(['couple', 'group', 'family']).optional(),
+    suitedFor: csv(10),
+    amenities: csv(10),
+    moods: csv(10),
+    settings: csv(10),
+    locale: z.enum(['vi', 'en']).default('vi'),
+    includeTotal: z
+      .enum(['true', 'false'])
+      .transform((v) => v === 'true')
+      .optional(),
     priceMinPerPerson: z.coerce.number().int().min(0).optional(),
     priceMaxPerPerson: z.coerce.number().int().min(0).optional(),
     minRating: z.coerce.number().min(0).max(5).optional(),
@@ -56,6 +66,17 @@ const searchQuerySchema = z
     cursor: z.string().max(200).optional(),
     limit: z.coerce.number().int().min(1).max(50).default(20),
   })
+  .refine((v) => (v.lat === undefined) === (v.lng === undefined), {
+    message: 'lat/lng go together',
+    path: ['lat'],
+  })
+  .refine(
+    (v) =>
+      v.priceMinPerPerson === undefined ||
+      v.priceMaxPerPerson === undefined ||
+      v.priceMinPerPerson <= v.priceMaxPerPerson,
+    { message: 'price range is inverted', path: ['priceMinPerPerson'] },
+  )
   .refine((v) => v.sort !== 'distance' || (v.lat !== undefined && v.lng !== undefined), {
     message: 'distance sort requires lat/lng',
     path: ['sort'],
@@ -88,6 +109,11 @@ export class SearchController {
       openAt: query.openAt,
       categories: query.categories,
       suitedFor: query.suitedFor,
+      amenities: query.amenities,
+      moods: query.moods,
+      settings: query.settings,
+      locale: query.locale,
+      includeTotal: query.includeTotal,
       priceMinPerPerson: query.priceMinPerPerson,
       priceMaxPerPerson: query.priceMaxPerPerson,
       minRating: query.minRating,

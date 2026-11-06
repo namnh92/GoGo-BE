@@ -2,7 +2,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { sql } from 'drizzle-orm';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -76,6 +76,7 @@ let ledger: DbUsageLedger;
 let registry: MetricsRegistry;
 let imports: PlaceImportJobService;
 let stub: ReturnType<typeof installGoogleStub>;
+let repeatFixturesDir: string | undefined;
 
 const api = () => app.getHttpAdapter().getInstance();
 let ipc = 0;
@@ -204,6 +205,7 @@ afterAll(async () => {
   await app?.close();
   await pool?.end();
   await container?.stop();
+  if (repeatFixturesDir) rmSync(repeatFixturesDir, { recursive: true, force: true });
 });
 
 /**
@@ -218,8 +220,10 @@ afterAll(async () => {
  * Runs before the first snapshot, so its own provider calls are outside every
  * scenario's window.
  */
-async function seedCatalogue(actors: { user: string; moderator: string }): Promise<void> {
-  const fixtures = loadFixtures();
+async function seedCatalogue(
+  actors: { user: string; moderator: string },
+  fixtures = loadFixtures(),
+): Promise<void> {
   for (const seed of fixtures.seededCatalog) {
     const resolved = await api().inject({
       method: 'POST',
@@ -256,7 +260,7 @@ async function seedCatalogue(actors: { user: string; moderator: string }): Promi
 }
 
 /**
- * Put the catalog back where `seedCatalogue` left it.
+ * Restore the catalog shape with distinct synthetic venue identities.
  *
  * Scenarios D and E create places; a second run against their leftovers would
  * find every "new" place already imported and take a completely different —
@@ -267,14 +271,34 @@ async function seedCatalogue(actors: { user: string; moderator: string }): Promi
  * The ledger is deliberately *not* reset: the runner diffs it per scenario, so
  * yesterday's counts in the row cannot reach today's numbers.
  */
-async function resetCatalogue(actors: { user: string; moderator: string }): Promise<void> {
+async function resetCatalogue(
+  actors: { user: string; moderator: string },
+  fixtures: ReturnType<typeof loadFixtures>,
+): Promise<void> {
   await db.execute(sql`
     truncate table
       places, place_provider_sources, place_submissions,
       place_ingest_jobs, place_ingest_rows, place_identity_conflicts
     restart identity cascade
   `);
-  await seedCatalogue(actors);
+  await seedCatalogue(actors, fixtures);
+}
+
+/**
+ * #774 retains grant identities after source deletion. Reapproving the same
+ * venues after TRUNCATE must therefore fail. Give the repeat distinct ids in
+ * every input (including the stub responses and sheet), keeping names, geometry,
+ * scenario composition, provider calls and the frozen cost figures unchanged.
+ */
+function createRepeatFixtures(): string {
+  const artifacts = path.resolve(__dirname, '../../../artifacts');
+  mkdirSync(artifacts, { recursive: true });
+  const dir = mkdtempSync(path.join(artifacts, 'cost-baseline-repeat-'));
+  for (const file of ['scenarios.json', 'google-catalog.json', 'scenario-e-sheet.csv']) {
+    const original = readFileSync(path.join(FIXTURES_DIR, file), 'utf8');
+    writeFileSync(path.join(dir, file), original.replaceAll('GOGOBASE_', 'GOGOBASE_REPEAT_'));
+  }
+  return dir;
 }
 
 describe('#336 — frozen baseline, re-frozen by #338', () => {
@@ -391,11 +415,24 @@ describe('#336 — frozen baseline, re-frozen by #338', () => {
       writeFileSync(ARTIFACT, `${JSON.stringify(first, null, 2)}\n`);
     }
 
-    // The plan's acceptance criterion, run rather than asserted on paper —
-    // from the same starting state, which is what "consecutive" has to mean
-    // for scenarios that create catalog rows.
-    await resetCatalogue({ user, moderator });
-    const second = await runBaseline({ ...options, name: 'after-pr5-stub-repeat' });
+    // Repeat the same experiment with fresh identities: #774's immutable grant
+    // history survives resetCatalogue, as it does a real source deletion.
+    repeatFixturesDir = createRepeatFixtures();
+    const repeatFixtures = loadFixtures(repeatFixturesDir);
+    stub.restore();
+    stub = installGoogleStub(loadCatalog(repeatFixturesDir));
+    await resetCatalogue({ user, moderator }, repeatFixtures);
+    const second = await runBaseline({
+      ...options,
+      name: 'after-pr5-stub-repeat',
+      fixtures: repeatFixtures,
+      fixturesDir: repeatFixturesDir,
+    });
+    for (const scenario of second.scenarios) {
+      for (const assertion of scenario.functional.assertions) {
+        expect(assertion.pass, `repeat ${scenario.id} · ${JSON.stringify(assertion)}`).toBe(true);
+      }
+    }
     const repeat = compareBaselines(first, second);
     expect(repeat.agrees, formatComparison(repeat)).toBe(true);
 

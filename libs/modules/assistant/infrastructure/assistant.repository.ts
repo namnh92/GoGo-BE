@@ -1,3 +1,4 @@
+import { lockAssistantAccount } from '../../shared/assistant-credits';
 import { Inject, Injectable } from '@nestjs/common';
 import { sql, type SQL } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
@@ -405,6 +406,8 @@ export class AssistantRepository {
       context: { kind: AssistantContextKind; id: string } | null;
       leaseOwner: string;
       leaseMs: number;
+      allowanceSource?: 'daily' | 'credit';
+      acceptedAt?: Date;
     },
   ): Promise<{ user: MessageRow; assistant: MessageRow; ledgerId: string }> {
     const ctxKind = input.context?.kind ?? null;
@@ -428,7 +431,7 @@ export class AssistantRepository {
     const user = rowsOf<MessageRow>(userRes)[0]!;
     const assistant = rowsOf<MessageRow>(assistantRes)[0]!;
     const ledgerRes = await tx.execute(sql`
-      insert into assistant_usage_ledger (user_id, message_id) values (${input.userId}, ${assistant.id})
+      insert into assistant_usage_ledger (user_id, message_id, allowance_source, accepted_at) values (${input.userId}, ${assistant.id}, ${input.allowanceSource ?? 'daily'}, ${input.acceptedAt?.toISOString() ?? new Date().toISOString()}::timestamptz)
       returning id`);
     await tx.execute(sql`
       update assistant_conversations set
@@ -441,9 +444,7 @@ export class AssistantRepository {
 
   /** Serializes one account's sends so two cannot both take the last slot. */
   async lockAccount(tx: Tx, userId: string): Promise<void> {
-    await tx.execute(
-      sql`select pg_advisory_xact_lock(hashtextextended(${`assistant:${userId}`}, 0))`,
-    );
+    await lockAssistantAccount(tx, userId);
   }
 
   /**
@@ -556,7 +557,7 @@ export class AssistantRepository {
     const res = await exec.execute(sql`
       select
         (select count(*)::int from assistant_usage_ledger
-          where user_id = ${userId} and accepted_at >= ${dayStart.toISOString()}::timestamptz) as today,
+          where user_id = ${userId} and allowance_source = 'daily' and accepted_at >= ${dayStart.toISOString()}::timestamptz) as today,
         coalesce((select json_agg(accepted_at order by accepted_at) from assistant_usage_ledger
           where user_id = ${userId} and accepted_at >= ${burstStart.toISOString()}::timestamptz), '[]'::json) as burst`);
     const row = rowsOf<{ today: number; burst: (string | Date)[] }>(res)[0]!;

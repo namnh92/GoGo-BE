@@ -1,3 +1,5 @@
+import { grantSubmissionCredits, lockAssistantAccount } from '../../shared/assistant-credits';
+import type { Tx } from '../../shared/outbox';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
 import { schema, type Db, type SubmissionReviewDraft } from '@gogo/database';
@@ -1204,26 +1206,31 @@ export class PlaceSubmissionService {
     await this.assertTaxonomiesExist(draft.taxonomyIds);
     const stored = normalizeDraftContact(draft, 'save');
 
-    const [updated] = await this.db
-      .update(schema.placeSubmissions)
-      .set({
-        reviewDraft: stored,
-        reviewedByAdminId: adminId,
-        reviewedAt: sql`now()`,
-        updatedAt: sql`now()`,
-      })
-      .where(eq(schema.placeSubmissions.id, id))
-      .returning();
+    const updated = await this.db.transaction(async (tx) => {
+      await this.lockPendingSubmission(tx, row);
+      const [updated] = await tx
+        .update(schema.placeSubmissions)
+        .set({
+          reviewDraft: stored,
+          reviewedByAdminId: adminId,
+          reviewedAt: sql`now()`,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(schema.placeSubmissions.id, id))
+        .returning();
 
-    await writeAudit(this.db, {
-      actorType: 'admin',
-      actorId: adminId,
-      action: 'place_submission.reviewed',
-      resourceType: 'place_submission',
-      resourceId: id,
-      // The fields touched, not their values: the draft itself is on the row
-      // and the log is for who changed what, not a second copy of the content.
-      diff: { fields: Object.keys(draft).sort() },
+      await writeAudit(tx, {
+        actorType: 'admin',
+        actorId: adminId,
+        action: 'place_submission.reviewed',
+        resourceType: 'place_submission',
+        resourceId: id,
+        // The fields touched, not their values: the draft itself is on the row
+        // and the log is for who changed what, not a second copy of the content.
+        diff: { fields: Object.keys(draft).sort() },
+      });
+
+      return updated;
     });
 
     return {
@@ -1275,56 +1282,65 @@ export class PlaceSubmissionService {
       throw AppError.conflict('ALREADY_DECIDED', 'Submission already decided');
     }
 
-    let resultPlaceId: string | null = row.resultPlaceId;
-    if (decision === 'approved') {
-      resultPlaceId = await this.createDraftFromSubmission(row, adminId);
-    } else if (decision === 'merged') {
-      if (!mergeIntoPlaceId) {
-        throw AppError.badRequest('MERGE_TARGET_REQUIRED', 'mergeIntoPlaceId is required');
+    const finalize = async (tx: Tx, resultPlaceId: string | null) => {
+      await tx
+        .update(schema.placeSubmissions)
+        .set({
+          status: decision,
+          decidedByAdminId: adminId,
+          decisionReason: reason,
+          decidedAt: sql`clock_timestamp()`,
+          updatedAt: sql`clock_timestamp()`,
+          resultPlaceId,
+        })
+        .where(eq(schema.placeSubmissions.id, id));
+      if (decision === 'approved' && row.submittedByUserId) {
+        await grantSubmissionCredits(
+          tx,
+          row.submittedByUserId,
+          row.id,
+          `google:${row.googlePlaceId}`,
+        );
       }
-      /**
-       * #528 — the target has to exist, and the refusal has to say so.
-       *
-       * `result_place_id` is a foreign key, so a target that does not exist
-       * already failed — as a constraint violation on the way out, which
-       * reaches the moderator as a 500 about our database rather than as
-       * "there is no such place". The console now picks a target by searching
-       * the catalogue, so a typed id should be rare; a rare error is still an
-       * error somebody has to read.
-       *
-       * Nothing about the target is written. Merging records where this
-       * proposal went; it does not copy the submission over the place, which
-       * is what "preserve existing merge semantics" means here.
-       */
-      const [target] = await this.db
-        .select({ id: schema.places.id })
-        .from(schema.places)
-        .where(eq(schema.places.id, mergeIntoPlaceId))
-        .limit(1);
-      if (!target) throw AppError.notFound('MERGE_TARGET_NOT_FOUND', 'Target place not found');
-      resultPlaceId = mergeIntoPlaceId;
-      await this.dedup.emitReindex(mergeIntoPlaceId, 'merged');
+      await writeAudit(tx, {
+        actorType: 'admin',
+        actorId: adminId,
+        action: 'place_submission.decided',
+        resourceType: 'place_submission',
+        resourceId: id,
+        diff: { decision, reason, resultPlaceId },
+      });
+      await writeOutbox(tx, {
+        eventType: 'place.submission_decided',
+        resourceType: 'place_submission',
+        resourceId: id,
+        payload: { decision, resultPlaceId },
+      });
+    };
+    let resultPlaceId: string | null;
+    if (decision === 'approved') {
+      resultPlaceId = await this.createDraftFromSubmission(row, adminId, finalize);
+    } else {
+      resultPlaceId = await this.db.transaction(async (tx) => {
+        await this.lockPendingSubmission(tx, row);
+        let targetId: string | null = null;
+        if (decision === 'merged') {
+          if (!mergeIntoPlaceId)
+            throw AppError.badRequest('MERGE_TARGET_REQUIRED', 'mergeIntoPlaceId is required');
+          const target = await tx
+            .select({ id: schema.places.id })
+            .from(schema.places)
+            .where(eq(schema.places.id, mergeIntoPlaceId))
+            .limit(1);
+          if (!target.length)
+            throw AppError.notFound('MERGE_TARGET_NOT_FOUND', 'Target place not found');
+          targetId = mergeIntoPlaceId;
+          await this.dedup.emitReindex(targetId, 'merged', tx);
+        }
+        await finalize(tx, targetId);
+        return targetId;
+      });
     }
-
-    await this.db
-      .update(schema.placeSubmissions)
-      .set({
-        status: decision,
-        decidedByAdminId: adminId,
-        decisionReason: reason,
-        decidedAt: sql`now()`,
-        updatedAt: sql`now()`,
-        resultPlaceId,
-      })
-      .where(eq(schema.placeSubmissions.id, id));
-    await writeAudit(this.db, {
-      actorType: 'admin',
-      actorId: adminId,
-      action: 'place_submission.decided',
-      resourceType: 'place_submission',
-      resourceId: id,
-      diff: { decision, reason, resultPlaceId },
-    });
     this.metrics.increment('mobile_place_submissions_total', { status: decision });
     // How long a proposal waited before an editor acted on it (spec §13).
     this.metrics.observe(
@@ -1332,18 +1348,30 @@ export class PlaceSubmissionService {
       (Date.now() - row.createdAt.getTime()) / 3_600_000,
       { decision },
     );
-    await writeOutbox(this.db, {
-      eventType: 'place.submission_decided',
-      resourceType: 'place_submission',
-      resourceId: id,
-      payload: { decision, resultPlaceId },
-    });
     return { id, status: decision, placeId: resultPlaceId ?? undefined };
+  }
+
+  private async lockPendingSubmission(
+    tx: Tx,
+    prepared: typeof schema.placeSubmissions.$inferSelect,
+  ) {
+    const [current] = await tx
+      .select()
+      .from(schema.placeSubmissions)
+      .where(eq(schema.placeSubmissions.id, prepared.id))
+      .for('update')
+      .limit(1);
+    if (!current || current.status !== 'pending')
+      throw AppError.conflict('ALREADY_DECIDED', 'Submission already decided');
+    if (current.submissionRevision !== prepared.submissionRevision)
+      throw AppError.conflict('SUBMISSION_CHANGED', 'Submission changed during preparation');
+    return current;
   }
 
   private async createDraftFromSubmission(
     row: typeof schema.placeSubmissions.$inferSelect,
     adminId: string,
+    finalize: (tx: Tx, placeId: string) => Promise<void>,
   ): Promise<string> {
     const draft: SubmissionReviewDraft = row.reviewDraft ?? {};
     /**
@@ -1373,6 +1401,11 @@ export class PlaceSubmissionService {
       throw AppError.conflict('PROVIDER_UNAVAILABLE', 'Cannot verify provider place right now');
     }
     const d = outcome.details;
+    if (d.providerPlaceId !== row.googlePlaceId)
+      throw AppError.conflict(
+        'PROVIDER_IDENTITY_CHANGED',
+        'Provider identity changed; review again',
+      );
     const score = await this.resolver.scoreFor(d, null, row.categoryKey);
     let mappingWrite: Awaited<ReturnType<AdministrativeResolverService['persistWithin']>> | null =
       null;
@@ -1416,6 +1449,18 @@ export class PlaceSubmissionService {
 
     return this.db
       .transaction(async (tx) => {
+        // Account first: erasure may clear submission ownership while holding it.
+        if (row.submittedByUserId) await lockAssistantAccount(tx, row.submittedByUserId);
+        await this.lockPendingSubmission(tx, row);
+        await this.dedup.lockGoogleIdentities(tx, [row.googlePlaceId]);
+        await this.dedup.assertGoogleIdentityOwner(tx, row.googlePlaceId);
+        const existing =
+          await tx.execute(sql`select place_id from place_provider_sources where provider = 'google_places' and external_id = ${row.googlePlaceId}
+          union all select place_id from place_sources where provider = 'google' and external_id = ${row.googlePlaceId}
+          union all select result_place_id as place_id from place_submissions where google_place_id = ${row.googlePlaceId} and status in ('approved','merged')
+          union all select null::uuid as place_id from assistant_credit_ledger where venue_identity = ${`google:${row.googlePlaceId}`} limit 1`);
+        if (existing.rows.length)
+          throw AppError.conflict('DUPLICATE_VENUE', 'Venue already exists; merge the submission');
         const [place] = await tx
           .insert(schema.places)
           .values({
@@ -1539,19 +1584,16 @@ export class PlaceSubmissionService {
           });
         }
 
+        await this.dedup.upsertProviderSource(
+          { placeId: place!.id, details: d, derivedScore: score, fetchTier: d.fetchTier },
+          tx,
+        );
+        await this.dedup.emitReindex(place!.id, 'published', tx);
+        await finalize(tx, place!.id);
         return place!.id;
       })
-      .then(async (placeId) => {
-        // Counted only now: the write is real once the transaction that made it
-        // has committed.
+      .then((placeId) => {
         if (mappingWrite) this.administrative.countPersist(mappingWrite);
-        await this.dedup.upsertProviderSource({
-          placeId,
-          details: d,
-          derivedScore: score,
-          fetchTier: d.fetchTier,
-        });
-        await this.dedup.emitReindex(placeId, 'published');
         return placeId;
       });
   }

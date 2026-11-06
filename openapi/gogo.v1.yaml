@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 5.1.0-alpha.1
+  version: 6.0.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -683,8 +683,15 @@ paths:
         being read: one vote is enough. Each row carries the progress needed to
         draw it, so a "your rooms" screen makes one call, not one per room. The
         invite code is deliberately absent — a list screen has no reason to hand
-        one out.
+        one out. view=home selects at most one room across all eligible memberships;
+        nextCursor is always null and cursor/status overrides are rejected (400).
+        Active rooms with no past explicit end come first, ordered by absolute
+        proximity of effective start to now (future active starts allowed; unknown
+        start last). Then collecting/matching/ready with future start, earliest
+        first. UUID descending breaks ties. Terminal/draft and unscheduled non-active
+        rooms are excluded; no persisted status changes on read.
       parameters:
+        - { name: view, in: query, schema: { type: string, enum: [home] } }
         - name: status
           in: query
           description: Repeatable or comma-separated; unknown values are ignored.
@@ -3520,7 +3527,7 @@ paths:
         - name: kinds
           in: query
           schema: { type: string }
-          description: Comma-separated kind filter (mood,category,setting,dietary,accessibility,spending_style,suitability,checkin_tag)
+          description: Comma-separated kind filter (mood,category,setting,dietary,accessibility,spending_style,suitability,checkin_tag,amenity)
       responses:
         '200':
           description: Taxonomy keys with i18n labels
@@ -3545,6 +3552,15 @@ paths:
         area matches only places with a VERIFIED mapping from the same dataset.
         A code that is not current or not under its province is 400; a dataset
         that is not the published one is 409 ADMINISTRATIVE_VERSION_CHANGED.
+        Filter dimensions intersect (AND); categories/moods/settings/suitability
+        match any selected value (OR); dietary/accessibility/amenities require ALL.
+        Lists are deduplicated; more than ten distinct values and unknown/inactive
+        or wrong-kind keys are 400. Incomplete lat/lng and inverted prices are 400.
+        includeTotal=true returns exact meta.totalCount under the same statement
+        snapshot as the page, including empty pages. Omitted otherwise. Counts can
+        change between requests. Configurable counted-request rate/concurrency and
+        whole-statement timeout apply; retryable 503 SEARCH_COUNT_UNAVAILABLE means
+        retry without totals. Defaults are 20/min/IP, 4 concurrent/process, 500ms.
       security: []
       parameters:
         - { name: q, in: query, schema: { type: string, maxLength: 200 } }
@@ -3553,7 +3569,37 @@ paths:
         - { name: radiusM, in: query, schema: { type: integer, minimum: 100, maximum: 100000 } }
         - { name: openAt, in: query, schema: { type: string }, description: "'now' or ISO-8601" }
         - { name: categories, in: query, schema: { type: string }, description: CSV, multi-select }
-        - { name: suitedFor, in: query, schema: { type: string, enum: [couple, group, family] } }
+        - {
+            name: suitedFor,
+            in: query,
+            schema: { type: string },
+            description: 'CSV suitability keys (couple, group, family, work_reading); OR, score >=0.5',
+          }
+        - {
+            name: amenities,
+            in: query,
+            schema: { type: string },
+            description: 'CSV; ALL required. cashless_payment expands to card_payment OR qr_payment; wifi,power_outlets requires both.',
+          }
+        - {
+            name: moods,
+            in: query,
+            schema: { type: string },
+            description: CSV active mood keys; OR,
+          }
+        - {
+            name: settings,
+            in: query,
+            schema: { type: string },
+            description: CSV active setting keys; OR,
+          }
+        - { name: locale, in: query, schema: { type: string, enum: [vi, en], default: vi } }
+        - {
+            name: includeTotal,
+            in: query,
+            schema: { type: boolean, default: false },
+            description: Exact matching count before cursor/limit; full count cost even with limit=1.,
+          }
         - { name: priceMinPerPerson, in: query, schema: { type: integer, minimum: 0 } }
         - { name: priceMaxPerPerson, in: query, schema: { type: integer, minimum: 0 } }
         - { name: minRating, in: query, schema: { type: number, minimum: 0, maximum: 5 } }
@@ -3607,8 +3653,12 @@ paths:
                       weightsVersion: { type: string }
                       sort: { type: string }
                       location: { $ref: '#/components/schemas/SearchLocation' }
+                      totalCount: { type: integer, minimum: 0 }
+                      totalCountAccuracy: { type: string, enum: [exact] }
         '400': { $ref: '#/components/responses/BadRequest' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503':
+          description: Retryable SEARCH_COUNT_UNAVAILABLE; retry without includeTotal.
         '429': { $ref: '#/components/responses/RateLimited' }
 
   /places/{id}:
@@ -8155,6 +8205,43 @@ paths:
         '200': { description: Transitioned; suspended places leave search immediately }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /cms/places/{id}/verification:
+    put:
+      operationId: setVenueVerification
+      tags: [cms]
+      summary: Verify or revoke independently checked venue identity and location
+      description: Moderator or super_admin. Evidence type and reference required for verified. If-Match binds both identity and verification revisions from CMS detail. Equivalent repeat decisions preserve verifiedAt; audit and ETag advance atomically. Quality and safety are never certified.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - {
+            name: If-Match,
+            in: header,
+            required: true,
+            schema: { type: string },
+            description: CMS detail verification.etag,
+          }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SetVenueVerification' }
+      responses:
+        '200':
+          description: Verification decision; same ETag in body and header
+          headers:
+            ETag:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsVenueVerification' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '412': { description: PRECONDITION_FAILED; reload identity and verification }
+        '428': { description: PRECONDITION_REQUIRED; If-Match missing }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
   /cms/places/{id}/hours:
     put:
       operationId: cmsSetPlaceHours
@@ -8513,6 +8600,7 @@ paths:
                 spending_style,
                 suitability,
                 checkin_tag,
+                amenity,
               ]
         - { name: isActive, in: query, schema: { type: boolean } }
       responses:
@@ -8547,6 +8635,7 @@ paths:
                       spending_style,
                       suitability,
                       checkin_tag,
+                      amenity,
                     ]
                 key: { type: string, pattern: '^[a-z0-9_]{2,40}$' }
                 labels:
@@ -13357,10 +13446,63 @@ components:
             properties:
               placeId: { type: string, format: uuid }
               name: { type: string }
+    VenueVerification:
+      type: object
+      description: Venue identity and location independently checked by a CMS admin; never certifies quality or safety. Revoked on material name/address/location change; requires re-verification. No evidence or actor exposed publicly.
+      required: [status]
+      properties:
+        status: { type: string, enum: [unverified, verified] }
+        verifiedAt: { type: string, format: date-time }
+    CmsVenueVerification:
+      allOf:
+        - $ref: '#/components/schemas/VenueVerification'
+        - type: object
+          required: [identityRevision, version, etag]
+          properties:
+            identityRevision: { type: integer, minimum: 1 }
+            version: { type: integer, minimum: 0 }
+            etag: { type: string, example: '"1:0"' }
+    SetVenueVerification:
+      type: object
+      required: [status, reason]
+      properties:
+        status: { type: string, enum: [unverified, verified] }
+        evidenceType:
+          type: string
+          enum: [site_visit, official_registry, venue_document]
+          description: Independently approved evidence establishing BOTH venue identity and location; required for verified.
+        evidenceReference:
+          {
+            type: string,
+            minLength: 1,
+            maxLength: 500,
+            description: Required for verified; CMS-only evidence reference.,
+          }
+        reason: { type: string, minLength: 1, maxLength: 500 }
     PlaceSearchResult:
       type: object
-      required: [id, name, lat, lng, isLodging, open, reasonCodes, confidence]
+      required:
+        [id, name, lat, lng, isLodging, open, reasonCodes, confidence, verification, taxonomies]
       properties:
+        taxonomies:
+          type: array
+          items:
+            type: object
+            required: [kind, key]
+            properties:
+              kind: { type: string, enum: [category, mood, setting, amenity] }
+              key: { type: string }
+        areaSummary:
+          type: object
+          description: Current VERIFIED administrative mapping only; commune preferred, province fallback; actual label locale reported.
+          required: [datasetVersion, provinceCode, communeCode, label, locale]
+          properties:
+            datasetVersion: { type: string }
+            provinceCode: { type: string }
+            communeCode: { type: [string, 'null'] }
+            label: { type: string }
+            locale: { type: string, enum: [vi, en] }
+        verification: { $ref: '#/components/schemas/VenueVerification' }
         id: { type: string, format: uuid }
         name: { type: string }
         addressText: { type: string }
@@ -15745,6 +15887,7 @@ components:
       type: object
       required: [gogoRatingCount]
       properties:
+        verification: { $ref: '#/components/schemas/VenueVerification' }
         id: { type: string, format: uuid }
         name: { type: string }
         description: { type: string }
@@ -17414,6 +17557,8 @@ components:
         decisionMode: { type: string, enum: [match, vote, host] }
         participantCount: { type: integer }
         title: { type: string }
+        startAt: { type: [string, 'null'], format: date-time }
+        endAt: { type: [string, 'null'], format: date-time }
         scheduledDate: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
         myRole: { type: string, enum: [host, member, guest] }
@@ -17583,6 +17728,7 @@ components:
           updatedAt,
         ]
       properties:
+        verification: { $ref: '#/components/schemas/CmsVenueVerification' }
         id: { type: string, format: uuid }
         name: { type: string }
         description: { type: [string, 'null'] }
@@ -17783,6 +17929,7 @@ components:
               spending_style,
               suitability,
               checkin_tag,
+              amenity,
             ]
         key: { type: string }
         labels:
@@ -19108,15 +19255,19 @@ components:
     # ── GoGo AI assistant (GoGo-BE#713) ───────────────────────────────────────
     AssistantStatus:
       type: object
-      required: [state, dailyMessageLimit, remainingToday, resetsAt]
+      required: [state, dailyMessageLimit, remainingToday, resetsAt, creditBalance]
       properties:
+        creditBalance:
+          type: integer
+          minimum: 0
+          description: 'No-expiry contributor credits. Prospective registered-user submission approval grants +50 once. Daily allowance first, then one credit per accepted user send (202), including later provider failure. Replay/rejection costs zero; credits never bypass burst/readiness/budget gates.'
         state:
           type: string
           description: >
             `enabled` — sending works. `disabled` — kill switch off
             (`assistant.enabled`), or the environment cannot take new replies
             (for example its spending limit is reached). `limit_reached` — this account's daily
-            messages are spent until `resetsAt`. Unknown values mean "cannot
+            messages and contributor credits are both spent until `resetsAt`. Unknown values mean "cannot
             send now".
           x-extensible-enum: [enabled, disabled, limit_reached]
         dailyMessageLimit:
@@ -19645,6 +19796,7 @@ components:
         reviews, reviewReactions, notificationSettings) is described on
         `exportMyData`. Unknown sections may appear; ignore them.
       properties:
+        assistantCreditBalance: { type: integer, minimum: 0 }
         exportedAt: { type: string, format: date-time }
         assistantConversations:
           type: array

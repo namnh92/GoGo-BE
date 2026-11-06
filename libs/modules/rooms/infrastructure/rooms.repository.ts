@@ -79,6 +79,7 @@ export type NewConstraint = {
 };
 
 export type RoomListRow = {
+  end_at?: Date | string | null;
   id: string;
   type: string;
   status: string;
@@ -116,6 +117,7 @@ export class RoomsRepository {
   async listRoomsForActor(input: {
     actorType: 'user' | 'guest';
     actorId: string;
+    homeAt?: Date | undefined;
     statuses?: string[] | undefined;
     limit: number;
     cursor?: { updatedAt: string; id: string } | undefined;
@@ -126,6 +128,10 @@ export class RoomsRepository {
         : sql`rm.guest_session_id = ${input.actorId}`;
 
     const conditions = [sql`rm.removed_at is null`, membership];
+    if (input.homeAt) {
+      conditions.push(sql`(rc.end_at is null or rc.end_at >= ${input.homeAt.toISOString()}::timestamptz) and (
+        r.status = 'active' or (r.status in ('collecting', 'matching', 'ready') and coalesce(rc.start_at, r.scheduled_date) >= ${input.homeAt.toISOString()}::timestamptz))`);
+    }
     if (input.statuses?.length) {
       // `status` is an enum; comparing it to a text[] needs the cast, or
       // Postgres refuses the operator outright.
@@ -139,7 +145,7 @@ export class RoomsRepository {
 
     const rows = await this.db.execute(sql`
       select r.id, r.type, r.status, r.decision_mode, r.participant_count,
-             r.title, coalesce(rc.start_at, r.scheduled_date) as scheduled_date, r.updated_at, r.code,
+             r.title, coalesce(rc.start_at, r.scheduled_date) as scheduled_date, rc.end_at, r.updated_at, r.code,
              rm.id as my_member_id, rm.role as my_role,
              (select count(*)::int from room_members m
                where m.room_id = r.id and m.removed_at is null) as member_count,
@@ -153,8 +159,14 @@ export class RoomsRepository {
       join room_members rm on rm.room_id = r.id
       left join room_constraints rc on rc.room_id = r.id and rc.version = r.constraint_version
       where ${sql.join(conditions, sql` and `)}
-      order by r.updated_at desc, r.id desc
-      limit ${input.limit + 1}
+      order by ${
+        input.homeAt
+          ? sql`case when r.status = 'active' then 0 else 1 end,
+        case when r.status = 'active' then abs(extract(epoch from (coalesce(rc.start_at, r.scheduled_date) - ${input.homeAt.toISOString()}::timestamptz)))
+          else extract(epoch from coalesce(rc.start_at, r.scheduled_date)) end asc nulls last, r.id desc`
+          : sql`r.updated_at desc, r.id desc`
+      }
+      limit ${input.homeAt ? 1 : input.limit + 1}
     `);
     return rows.rows as RoomListRow[];
   }

@@ -1,3 +1,4 @@
+import { creditBalance } from '../../shared/assistant-credits';
 import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import { schema, type Db } from '@gogo/database';
@@ -250,5 +251,6 @@ export async function collectUserExport(
     },
     reviewReactions,
     assistantConversations,
+    assistantCreditBalance: await creditBalance(db, userId),
   };
 }

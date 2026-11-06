@@ -1,3 +1,5 @@
+import { schema } from '@gogo/database';
+import { verificationSchema } from '../../shared/venue-verification';
 import {
   Body,
   Controller,
@@ -1064,6 +1066,30 @@ export class CmsCatalogController {
     return this.catalog.getPlace(id);
   }
 
+  @ManualIdempotency()
+  @RequireRole('moderator')
+  @Put(':id/verification')
+  async setVerification(
+    @CurrentActor() actor: Actor,
+    @Param('id', Uuid) id: string,
+    @Headers('if-match') ifMatch: string | undefined,
+    @Headers('idempotency-key') key: string | undefined,
+    @Req() req: FastifyRequest,
+    @Body(new ZodValidationPipe(verificationSchema)) body: z.infer<typeof verificationSchema>,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ) {
+    if (!key) throw AppError.badRequest('IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+    const result = await this.catalog.setVerification(
+      actor.id,
+      id,
+      ifMatch,
+      body,
+      idempotencyScope(req, key),
+    );
+    void reply.header('etag', result.etag);
+    return result;
+  }
+
   @Patch(':id')
   update(
     @CurrentActor() actor: Actor,
@@ -1267,15 +1293,7 @@ export const taxonomyLabelSchema = z
   });
 
 const taxonomyCreateSchema = z.object({
-  kind: z.enum([
-    'mood',
-    'category',
-    'setting',
-    'dietary',
-    'accessibility',
-    'spending_style',
-    'suitability',
-  ]),
+  kind: z.enum(schema.taxonomyKind.enumValues),
   key: z.string().regex(/^[a-z0-9_]{2,40}$/),
   labels: z.record(z.string(), taxonomyLabelSchema),
   sortOrder: z.number().int().min(0).optional(),
@@ -1303,18 +1321,7 @@ const collectionStatusSchema = z.object({
 const collectionItemsSchema = z.object({ placeIds: z.array(z.string().uuid()).max(100) });
 /** The CMS list defaults to BOTH active and inactive — that is the point. */
 const taxonomyListQuery = z.object({
-  kind: z
-    .enum([
-      'mood',
-      'category',
-      'setting',
-      'dietary',
-      'accessibility',
-      'spending_style',
-      'suitability',
-      'checkin_tag',
-    ])
-    .optional(),
+  kind: z.enum(schema.taxonomyKind.enumValues).optional(),
   isActive: z
     .enum(['true', 'false'])
     .transform((value) => value === 'true')

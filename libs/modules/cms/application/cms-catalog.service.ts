@@ -1,3 +1,8 @@
+import {
+  readVenueVerification,
+  setVenueVerification,
+  verificationSchema,
+} from '../../shared/venue-verification';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
@@ -857,6 +862,16 @@ function contactAudit(plan: ContactWritePlan) {
 /** CMS-002/003/004 — canonical place editing, sources/hours/prices, dedup. */
 @Injectable()
 export class CmsCatalogService {
+  setVerification(
+    adminId: string,
+    placeId: string,
+    ifMatch: string | undefined,
+    input: typeof verificationSchema._output,
+    scope: IdempotencyScope,
+  ) {
+    return setVenueVerification(this.db, adminId, placeId, ifMatch, input, scope);
+  }
+
   constructor(
     @Inject(DB) private readonly db: Db,
     /**
@@ -1388,6 +1403,7 @@ export class CmsCatalogService {
      * timeout once already (#425). This is two indexed queries and no resolver
      * work, so it costs less in series than it would in parallel.
      */
+    const verification = await readVenueVerification(this.db, placeId);
     const administrative = await placeAdministrativeSummary(this.db, {
       administrativeMappingStatus: row.administrative_mapping_status,
       provinceCode: row.province_code,
@@ -1398,6 +1414,7 @@ export class CmsCatalogService {
     });
 
     return {
+      verification,
       id: row.id,
       name: row.name,
       description: row.description,
@@ -1727,6 +1744,7 @@ export class CmsCatalogService {
         if (codesAsserted) await assertCurrentPair(tx, dataset!, codes);
 
         if (input.googlePlaceId !== undefined) {
+          await this.dedup.lockGoogleIdentities(tx, [input.googlePlaceId]);
           await this.assertGoogleIdentityFree(input.googlePlaceId, tx);
         }
 
@@ -2627,10 +2645,21 @@ export class CmsCatalogService {
    *   recompute on demand.
    */
   async mergePlaces(adminId: string, canonicalId: string, duplicateId: string) {
-    if (canonicalId === duplicateId) {
+    if (canonicalId.toLowerCase() === duplicateId.toLowerCase()) {
       throw AppError.badRequest('INVALID_MERGE', 'Cannot merge a place into itself');
     }
     await this.db.transaction(async (tx) => {
+      await this.dedup.lockPlaces(tx, [canonicalId, duplicateId]);
+      const identities = await tx.execute(sql`
+        select external_id from place_provider_sources
+          where provider = 'google_places' and place_id in (${canonicalId}::uuid, ${duplicateId}::uuid)
+        union select external_id from place_sources
+          where provider = 'google' and place_id in (${canonicalId}::uuid, ${duplicateId}::uuid)
+      `);
+      await this.dedup.lockGoogleIdentities(
+        tx,
+        (identities.rows as { external_id: string }[]).map((r) => r.external_id),
+      );
       for (const table of [
         schema.placeSources,
         schema.placeProviderSources,

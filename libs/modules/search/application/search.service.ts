@@ -18,6 +18,7 @@ import {
   normalizeWebsite,
   type ContactField,
 } from '../../shared/place-contact';
+import { assertValidSelections } from '../../shared/taxonomy-selections';
 import { DB } from '../../shared/tokens';
 import { validateAreaSelection } from '../../administrative/application/area-selection';
 import { gogoRatingOutcome, toGogoRating } from '../../reviews/domain/gogo-rating';
@@ -177,6 +178,28 @@ export class SearchService {
 
   async search(filters: SearchFilters, actorAnalyticsId?: string) {
     const startedAt = Date.now();
+    const selections = Object.fromEntries(
+      [
+        ['category', filters.categories],
+        ['mood', filters.moods],
+        ['setting', filters.settings],
+        [
+          'amenity',
+          filters.amenities?.flatMap((k) =>
+            k === 'cashless_payment' ? ['card_payment', 'qr_payment'] : [k],
+          ),
+        ],
+        [
+          'suitability',
+          typeof filters.suitedFor === 'string' ? [filters.suitedFor] : filters.suitedFor,
+        ],
+        ['dietary', filters.dietary],
+        ['accessibility', filters.accessibility],
+      ]
+        .filter((entry) => Array.isArray(entry[1]) && entry[1].length)
+        .map(([kind, keys]) => [kind, keys]),
+    ) as Record<string, string[]>;
+    if (Object.keys(selections).length) await assertValidSelections(this.db, selections);
     // Precedence: a position the client sends wins; an area applies only
     // without one; the two are never intersected into an empty page. The
     // client decides whether its fix is fresh enough to send.
@@ -216,9 +239,10 @@ export class SearchService {
 
     const at = filters.openAt ?? new Date();
     const placeIds = page.map((r) => r.id);
-    const [hoursAll, gogoRatings] = await Promise.all([
+    const [hoursAll, gogoRatings, facts] = await Promise.all([
       this.repo.hoursFor(placeIds),
       loadGogoRatings(this.db, placeIds),
+      this.repo.factsFor(placeIds, filters.locale ?? 'vi'),
     ]);
     const hoursByPlace = new Map<string, HoursRow[]>();
     for (const h of hoursAll) {
@@ -230,6 +254,10 @@ export class SearchService {
     const results = page.map((row) => ({
       ...this.toResult(row, hoursByPlace.get(row.id) ?? [], at, filters),
       ...gogoRatings.get(row.id)!,
+      // Verification shares the page identity snapshot, never the later facts read.
+      verification: row.verification ?? { status: 'unverified' },
+      taxonomies: facts.find((f) => f.id === row.id)?.taxonomies ?? [],
+      areaSummary: facts.find((f) => f.id === row.id)?.area_summary ?? undefined,
     }));
 
     // SE-006 — the denominator. Zero-result counts were already recorded, but
@@ -267,7 +295,14 @@ export class SearchService {
     return {
       results,
       nextCursor: hasMore && last ? encodeCursor(last.sort_value, last.id, filters.scoredAt) : null,
-      meta: { weightsVersion: version, sort: filters.sort, location },
+      meta: {
+        weightsVersion: version,
+        sort: filters.sort,
+        location,
+        ...(filters.includeTotal
+          ? { totalCount: rows.totalCount, totalCountAccuracy: 'exact' as const }
+          : {}),
+      },
     };
   }
 
@@ -384,6 +419,7 @@ export class SearchService {
       name: row['name'] as string,
       description: (row['description'] as string | null) ?? undefined,
       status: row['status'] as string,
+      verification: row['verification'] ?? { status: 'unverified' },
       addressText: contact.values.addressText,
       areaKey: (row['area_key'] as string | null) ?? undefined,
       lat: num(row['lat'])!,

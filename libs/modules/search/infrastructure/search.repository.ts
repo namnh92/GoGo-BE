@@ -4,6 +4,8 @@ import { type Db } from '@gogo/database';
 import { APP_CONFIG, type ProvenanceConfig } from '../../shared/config';
 import { googleProvenanceRows } from '../../shared/google-provenance';
 import { providerStatusSubquery } from '../../shared/provider-status';
+import { AppError } from '../../shared/app-error';
+import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { DB } from '../../shared/tokens';
 import { PUBLIC_REVIEW_STATUS } from '../../reviews/domain/public-review';
 import { toSearchQuery } from '../domain/normalize';
@@ -34,7 +36,12 @@ export type SearchFilters = {
   /** UTC instant to evaluate opening hours at (converted to VN local inside). */
   openAt?: Date | undefined;
   categories?: string[] | undefined;
-  suitedFor?: 'couple' | 'group' | 'family' | undefined;
+  suitedFor?: string | string[] | undefined;
+  amenities?: string[] | undefined;
+  moods?: string[] | undefined;
+  settings?: string[] | undefined;
+  includeTotal?: boolean | undefined;
+  locale?: 'vi' | 'en' | undefined;
   priceMinPerPerson?: number | undefined;
   priceMaxPerPerson?: number | undefined;
   minRating?: number | undefined;
@@ -56,8 +63,19 @@ export type SearchFilters = {
     { datasetVersion: string; provinceCode: string; communeCode: string | null } | undefined;
 };
 
+export type SearchRows = SearchRow[] & { totalCount?: number };
+
 export type SearchRow = {
   id: string;
+  verification?: { status: 'verified' | 'unverified'; verifiedAt?: string };
+  taxonomies?: { kind: string; key: string }[];
+  area_summary?: {
+    datasetVersion: string;
+    provinceCode: string;
+    communeCode: string | null;
+    label: string;
+    locale: string;
+  };
   photo_id: string | null;
   photo_key: string | null;
   photo_width: number | null;
@@ -143,9 +161,16 @@ function notProviderClosed(): SQL {
  */
 @Injectable()
 export class SearchRepository {
+  private countedInFlight = 0;
   constructor(
     @Inject(DB) private readonly db: Db,
-    @Optional() @Inject(APP_CONFIG) private readonly config?: ProvenanceConfig,
+    @Optional()
+    @Inject(APP_CONFIG)
+    private readonly config?: ProvenanceConfig & {
+      SEARCH_COUNT_TIMEOUT_MS?: number;
+      SEARCH_COUNT_MAX_CONCURRENT?: number;
+    },
+    @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
   ) {}
 
   /** Default on: off is the state that serves ingestion places unattributed. */
@@ -153,7 +178,7 @@ export class SearchRepository {
     return this.config?.PROVENANCE_UNIFIED_READS ?? true;
   }
 
-  async search(f: SearchFilters, w: SearchWeights): Promise<SearchRow[]> {
+  async search(f: SearchFilters, w: SearchWeights): Promise<SearchRows> {
     const conditions: SQL[] = [sql`p.status = 'published'`, notProviderClosed()];
 
     const q = f.q ? toSearchQuery(f.q) : '';
@@ -164,7 +189,7 @@ export class SearchRepository {
           ? sql` or exists (
               select 1 from place_taxonomies pt
               join taxonomies t on t.id = pt.taxonomy_id
-              where pt.place_id = p.id and t.kind = 'category'
+              where pt.place_id = p.id and t.is_active and t.kind = 'category'
                 and t.key = any((${pgArray(synKeys)})::text[]))`
           : sql``;
       conditions.push(
@@ -197,7 +222,7 @@ export class SearchRepository {
       conditions.push(sql`exists (
         select 1 from place_taxonomies pt
         join taxonomies t on t.id = pt.taxonomy_id
-        where pt.place_id = p.id and t.kind = 'category'
+        where pt.place_id = p.id and t.is_active and t.kind = 'category'
           and t.key = any((${pgArray(f.categories)})::text[])
       )`);
     }
@@ -209,7 +234,29 @@ export class SearchRepository {
     }
 
     if (f.suitedFor) {
-      conditions.push(sql`coalesce((p.suitability ->> ${f.suitedFor})::numeric, 0) >= 0.5`);
+      const keys = Array.isArray(f.suitedFor) ? f.suitedFor : [f.suitedFor];
+      if (keys.length)
+        conditions.push(
+          sql`(${sql.join(
+            keys.map((key) => sql`coalesce((p.suitability ->> ${key})::numeric, 0) >= 0.5`),
+            sql` or `,
+          )})`,
+        );
+    }
+    for (const [kind, keys] of [
+      ['mood', f.moods],
+      ['setting', f.settings],
+    ] as const) {
+      if (keys?.length)
+        conditions.push(
+          sql`exists (select 1 from place_taxonomies pt join taxonomies t on t.id = pt.taxonomy_id where pt.place_id = p.id and t.is_active and t.kind = ${kind} and t.key = any(${pgArray(keys)}::text[]))`,
+        );
+    }
+    for (const key of new Set(f.amenities ?? [])) {
+      const alternatives = key === 'cashless_payment' ? ['card_payment', 'qr_payment'] : [key];
+      conditions.push(
+        sql`exists (select 1 from place_taxonomies pt join taxonomies t on t.id = pt.taxonomy_id where pt.place_id = p.id and t.is_active and t.kind = 'amenity' and t.key = any(${pgArray(alternatives)}::text[]))`,
+      );
     }
 
     if (f.minRating !== undefined) {
@@ -220,12 +267,13 @@ export class SearchRepository {
       ['dietary', f.dietary],
       ['accessibility', f.accessibility],
     ] as const) {
-      if (keys && keys.length > 0) {
+      const distinctKeys = [...new Set(keys)];
+      if (distinctKeys.length > 0) {
         conditions.push(sql`(
           select count(distinct t.key) from place_taxonomies pt
           join taxonomies t on t.id = pt.taxonomy_id
-          where pt.place_id = p.id and t.kind = ${kind} and t.key = any((${pgArray(keys)})::text[])
-        ) = ${keys.length}`);
+          where pt.place_id = p.id and t.is_active and t.kind = ${kind} and t.key = any((${pgArray(distinctKeys)})::text[])
+        ) = ${distinctKeys.length}`);
       }
     }
 
@@ -290,15 +338,21 @@ export class SearchRepository {
               ? sql`-coalesce(p.curated_rank, 1e9)::float8`
               : score;
 
-    if (f.cursor) {
-      conditions.push(sql`(sv.sort_value, p.id) < (${f.cursor.v}::float8, ${f.cursor.id}::uuid)`);
-    }
+    const eligibility = sql.join(conditions, sql` and `);
+    const cursor = f.cursor
+      ? sql`and (sv.sort_value, p.id) < (${f.cursor.v}::float8, ${f.cursor.id}::uuid)`
+      : sql``;
+    const latestPrice = sql`left join lateral (
+      select pp.price_min, pp.price_max, pp.currency, pp.confidence from place_prices pp
+      where pp.place_id = p.id and pp.unit = 'per_person'
+      order by pp.verified_at desc nulls last, pp.created_at desc, pp.id desc limit 1
+    ) lp on true`;
+    const eligible = sql`select p.id from places p ${latestPrice} where ${eligibility}`;
 
-    const where = sql.join(conditions, sql` and `);
-
-    const rows = await this.db.execute(sql`
+    const pageQuery = sql`
       select
         p.id, p.name, p.address_text, p.area_key,
+        ${publicVerificationSql()} as verification,
         ST_Y(p.geom) as lat, ST_X(p.geom) as lng,
         p.rating, p.rating_count, p.avg_visit_minutes, p.suitability,
         p.is_lodging, p.confidence, p.freshness_checked_at, p.curated_rank,
@@ -317,7 +371,7 @@ export class SearchRepository {
         select pp.price_min, pp.price_max, pp.currency, pp.confidence
         from place_prices pp
         where pp.place_id = p.id and pp.unit = 'per_person'
-        order by pp.verified_at desc nulls last, pp.created_at desc
+        order by pp.verified_at desc nulls last, pp.created_at desc, pp.id desc
         limit 1
       ) lp on true
       left join lateral (
@@ -330,11 +384,76 @@ export class SearchRepository {
         limit 1
       ) pm on true
       cross join lateral (select ${sortValue} as sort_value) sv
-      where ${where}
+      where ${f.includeTotal ? sql`p.id in (select id from eligible)` : eligibility} ${cursor}
       order by sv.sort_value desc, p.id desc
       limit ${f.limit + 1}
+    `;
+    const execute = async (exec: Pick<Db, 'execute'>): Promise<SearchRows> => {
+      const rows = await exec.execute(
+        f.includeTotal
+          ? sql`with eligible as materialized (${eligible}), page as (${pageQuery})
+        select (select count(*)::int from eligible) as total_count, coalesce(json_agg(page order by page.sort_value desc, page.id desc), '[]'::json) as results from page`
+          : pageQuery,
+      );
+      if (!f.includeTotal) return rows.rows as unknown as SearchRows;
+      const row = rows.rows[0] as { total_count: number; results: SearchRow[] };
+      return Object.assign(row.results, { totalCount: row.total_count });
+    };
+    if (!f.includeTotal) return execute(this.db);
+    if (this.countedInFlight >= (this.config?.SEARCH_COUNT_MAX_CONCURRENT ?? 4)) {
+      throw AppError.serviceUnavailable(
+        'SEARCH_COUNT_UNAVAILABLE',
+        'Search total temporarily unavailable',
+        true,
+      );
+    }
+    this.countedInFlight++;
+    const started = Date.now();
+    try {
+      return await this.db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select set_config('statement_timeout', ${String(this.config?.SEARCH_COUNT_TIMEOUT_MS ?? 500)}, true)`,
+        );
+        return execute(tx);
+      });
+    } catch (err) {
+      if (
+        (err as { code?: string }).code === '57014' ||
+        (err as { cause?: { code?: string } }).cause?.code === '57014'
+      ) {
+        throw AppError.serviceUnavailable(
+          'SEARCH_COUNT_UNAVAILABLE',
+          'Search total timed out; retry without includeTotal',
+          true,
+        );
+      }
+      throw err;
+    } finally {
+      this.countedInFlight--;
+      this.metrics.observe('search_count_duration_ms', Date.now() - started);
+    }
+  }
+
+  async factsFor(placeIds: string[], locale: 'vi' | 'en') {
+    if (!placeIds.length) return [];
+    const result = await this.db.execute(sql`
+      select p.id,
+        coalesce((select json_agg(json_build_object('kind', t.kind, 'key', t.key) order by t.kind, t.key)
+          from place_taxonomies pt join taxonomies t on t.id = pt.taxonomy_id
+          where pt.place_id = p.id and t.is_active and t.kind in ('category','mood','setting','amenity')), '[]'::json) as taxonomies,
+        (select json_build_object('datasetVersion', p.administrative_dataset_version, 'provinceCode', p.province_code,
+          'communeCode', case when u.level = 'COMMUNE' then u.code else null end, 'label', case when ${locale} = 'en' then coalesce(u.name_en, u.name) else u.name end,
+          'locale', case when ${locale} = 'en' and u.name_en is not null then 'en' else 'vi' end)
+          from administrative_units u join administrative_dataset_versions d on d.id = u.dataset_version_id
+          where p.administrative_mapping_status = 'VERIFIED' and d.status = 'PUBLISHED'
+            and d.combined_dataset_version = p.administrative_dataset_version
+            and (u.code = p.commune_code or (u.code = p.province_code and u.level = 'PROVINCE')) and u.status = 'ACTIVE'
+            and u.effective_from <= current_date
+            and (u.effective_to is null or u.effective_to >= current_date)
+          order by case when u.level = 'COMMUNE' then 0 else 1 end, u.effective_from desc limit 1) as area_summary
+      from places p where p.id = any(${pgArray(placeIds)}::uuid[])
     `);
-    return rows.rows as unknown as SearchRow[];
+    return result.rows as unknown as Pick<SearchRow, 'id' | 'taxonomies' | 'area_summary'>[];
   }
 
   async hoursFor(placeIds: string[]): Promise<HoursRow[]> {
@@ -359,6 +478,7 @@ export class SearchRepository {
     return sql`
       select
         p.id, p.name, p.description, p.status, p.address_text, p.area_key,
+        ${publicVerificationSql()} as verification,
         ST_Y(p.geom) as lat, ST_X(p.geom) as lng,
         p.phone, p.website, p.rating, p.rating_count, p.price_level,
         p.avg_visit_minutes, p.suitability, p.is_lodging, p.confidence,
@@ -451,4 +571,11 @@ export class SearchRepository {
     if (!row) return { weights: DEFAULT_WEIGHTS, version: 'default' };
     return { weights: { ...DEFAULT_WEIGHTS, ...row.weights }, version: String(row.version) };
   }
+}
+
+/** Evidence/actor never cross the public boundary. Revision match also fails closed. */
+export function publicVerificationSql(): SQL {
+  return sql`coalesce((select json_build_object('status', 'verified', 'verifiedAt', v.verified_at)
+    from place_verifications v where v.place_id = p.id and v.status = 'verified' and v.identity_revision = p.identity_revision),
+    json_build_object('status', 'unverified'))`;
 }

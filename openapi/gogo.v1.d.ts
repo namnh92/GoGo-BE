@@ -297,7 +297,7 @@ export interface paths {
         };
         /**
          * Rooms the caller belongs to, most recently active first
-         * @description A room used to be reachable only by id, so a client that lost the id lost the room — closing the app mid-flow was enough. Keyset paging on `(updatedAt, id)` because a room's timestamp moves while the list is being read: one vote is enough. Each row carries the progress needed to draw it, so a "your rooms" screen makes one call, not one per room. The invite code is deliberately absent — a list screen has no reason to hand one out.
+         * @description A room used to be reachable only by id, so a client that lost the id lost the room — closing the app mid-flow was enough. Keyset paging on `(updatedAt, id)` because a room's timestamp moves while the list is being read: one vote is enough. Each row carries the progress needed to draw it, so a "your rooms" screen makes one call, not one per room. The invite code is deliberately absent — a list screen has no reason to hand one out. view=home selects at most one room across all eligible memberships; nextCursor is always null and cursor/status overrides are rejected (400). Active rooms with no past explicit end come first, ordered by absolute proximity of effective start to now (future active starts allowed; unknown start last). Then collecting/matching/ready with future start, earliest first. UUID descending breaks ties. Terminal/draft and unscheduled non-active rooms are excluded; no persisted status changes on read.
          */
         get: operations["listRooms"];
         put?: never;
@@ -1646,7 +1646,7 @@ export interface paths {
         };
         /**
          * Place search — Vietnamese-normalized text, filters, ranking, cursor
-         * @description FR-SEARCH-001..004/009 + SE-010. Accent-insensitive FTS + trigram typo tolerance + synonym expansion; hard filters in SQL; weighted versioned ranking (meta.weightsVersion); stable keyset cursor. Lodging excluded unless requested. Zero-results emit telemetry without raw PII. ADM-021: scope by a position (lat/lng, radiusM defaults to 10 km) or by a canonical area (datasetVersion + provinceCode, optional communeCode for a single commune). A position wins when both are sent; the two are never intersected, and meta.location says which one scoped the results. An area matches only places with a VERIFIED mapping from the same dataset. A code that is not current or not under its province is 400; a dataset that is not the published one is 409 ADMINISTRATIVE_VERSION_CHANGED.
+         * @description FR-SEARCH-001..004/009 + SE-010. Accent-insensitive FTS + trigram typo tolerance + synonym expansion; hard filters in SQL; weighted versioned ranking (meta.weightsVersion); stable keyset cursor. Lodging excluded unless requested. Zero-results emit telemetry without raw PII. ADM-021: scope by a position (lat/lng, radiusM defaults to 10 km) or by a canonical area (datasetVersion + provinceCode, optional communeCode for a single commune). A position wins when both are sent; the two are never intersected, and meta.location says which one scoped the results. An area matches only places with a VERIFIED mapping from the same dataset. A code that is not current or not under its province is 400; a dataset that is not the published one is 409 ADMINISTRATIVE_VERSION_CHANGED. Filter dimensions intersect (AND); categories/moods/settings/suitability match any selected value (OR); dietary/accessibility/amenities require ALL. Lists are deduplicated; more than ten distinct values and unknown/inactive or wrong-kind keys are 400. Incomplete lat/lng and inverted prices are 400. includeTotal=true returns exact meta.totalCount under the same statement snapshot as the page, including empty pages. Omitted otherwise. Counts can change between requests. Configurable counted-request rate/concurrency and whole-statement timeout apply; retryable 503 SEARCH_COUNT_UNAVAILABLE means retry without totals. Defaults are 20/min/IP, 4 concurrent/process, 500ms.
          */
         get: operations["searchPlaces"];
         put?: never;
@@ -3707,6 +3707,26 @@ export interface paths {
         head?: never;
         /** Editor: place workflow transition (draft→review→published→suspended) */
         patch: operations["cmsTransitionPlace"];
+        trace?: never;
+    };
+    "/cms/places/{id}/verification": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Verify or revoke independently checked venue identity and location
+         * @description Moderator or super_admin. Evidence type and reference required for verified. If-Match binds both identity and verification revisions from CMS detail. Equivalent repeat decisions preserve verifiedAt; audit and ETag advance atomically. Quality and safety are never certified.
+         */
+        put: operations["setVenueVerification"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/cms/places/{id}/hours": {
@@ -6497,7 +6517,47 @@ export interface components {
                 name?: string;
             }[];
         };
+        /** @description Venue identity and location independently checked by a CMS admin; never certifies quality or safety. Revoked on material name/address/location change; requires re-verification. No evidence or actor exposed publicly. */
+        VenueVerification: {
+            /** @enum {string} */
+            status: "unverified" | "verified";
+            /** Format: date-time */
+            verifiedAt?: string;
+        };
+        CmsVenueVerification: components["schemas"]["VenueVerification"] & {
+            identityRevision: number;
+            version: number;
+            /** @example "1:0" */
+            etag: string;
+        };
+        SetVenueVerification: {
+            /** @enum {string} */
+            status: "unverified" | "verified";
+            /**
+             * @description Independently approved evidence establishing BOTH venue identity and location; required for verified.
+             * @enum {string}
+             */
+            evidenceType?: "site_visit" | "official_registry" | "venue_document";
+            /** @description Required for verified; CMS-only evidence reference. */
+            evidenceReference?: string;
+            reason: string;
+        };
         PlaceSearchResult: {
+            taxonomies: {
+                /** @enum {string} */
+                kind: "category" | "mood" | "setting" | "amenity";
+                key: string;
+            }[];
+            /** @description Current VERIFIED administrative mapping only; commune preferred, province fallback; actual label locale reported. */
+            areaSummary?: {
+                datasetVersion: string;
+                provinceCode: string;
+                communeCode: string | null;
+                label: string;
+                /** @enum {string} */
+                locale: "vi" | "en";
+            };
+            verification: components["schemas"]["VenueVerification"];
             /** Format: uuid */
             id: string;
             name: string;
@@ -7960,6 +8020,7 @@ export interface components {
             photoUri: string | null;
         };
         PlaceDetail: {
+            verification?: components["schemas"]["VenueVerification"];
             /** Format: uuid */
             id?: string;
             name?: string;
@@ -8901,6 +8962,10 @@ export interface components {
             participantCount: number;
             title?: string;
             /** Format: date-time */
+            startAt?: string | null;
+            /** Format: date-time */
+            endAt?: string | null;
+            /** Format: date-time */
             scheduledDate?: string;
             /** Format: date-time */
             updatedAt: string;
@@ -8991,6 +9056,7 @@ export interface components {
             } | null;
         };
         CmsPlaceDetail: {
+            verification?: components["schemas"]["CmsVenueVerification"];
             /** Format: uuid */
             id: string;
             name: string;
@@ -9113,7 +9179,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             /** @enum {string} */
-            kind: "mood" | "category" | "setting" | "dietary" | "accessibility" | "spending_style" | "suitability" | "checkin_tag";
+            kind: "mood" | "category" | "setting" | "dietary" | "accessibility" | "spending_style" | "suitability" | "checkin_tag" | "amenity";
             key: string;
             /** @description Locale to label. Business data stores the key; the label is presentation. */
             labels: {
@@ -9982,7 +10048,9 @@ export interface components {
             }[];
         };
         AssistantStatus: {
-            /** @description `enabled` — sending works. `disabled` — kill switch off (`assistant.enabled`), or the environment cannot take new replies (for example its spending limit is reached). `limit_reached` — this account's daily messages are spent until `resetsAt`. Unknown values mean "cannot send now". */
+            /** @description No-expiry contributor credits. Prospective registered-user submission approval grants +50 once. Daily allowance first, then one credit per accepted user send (202), including later provider failure. Replay/rejection costs zero; credits never bypass burst/readiness/budget gates. */
+            creditBalance: number;
+            /** @description `enabled` — sending works. `disabled` — kill switch off (`assistant.enabled`), or the environment cannot take new replies (for example its spending limit is reached). `limit_reached` — this account's daily messages and contributor credits are both spent until `resetsAt`. Unknown values mean "cannot send now". */
             state: string;
             /** @description Accepted messages this account may send per day (default **30**; provisional and configurable — read it from here, never hardcode it). Only an accepted send (`202`) counts; an idempotent replay (`x-idempotent-replay: true`) consumes nothing. A limit that is not configured refuses (`503 ASSISTANT_DISABLED`), it never means unlimited. */
             dailyMessageLimit: number;
@@ -10416,6 +10484,7 @@ export interface components {
         };
         /** @description The allowlisted export document served by `GET /me/export` and by a redeemed secure export (`POST /me/exports/{id}/download`) — one shared collector, so both carry the same sections. Only the sections whose shape this contract pins are listed here; the rest of the allowlist (profile, memberships, preferences, votes, saved, reviews, reviewReactions, notificationSettings) is described on `exportMyData`. Unknown sections may appear; ignore them. */
         UserExportDocument: {
+            assistantCreditBalance?: number;
             /** Format: date-time */
             exportedAt?: string;
             /**
@@ -11412,6 +11481,7 @@ export interface operations {
     listRooms: {
         parameters: {
             query?: {
+                view?: "home";
                 /** @description Repeatable or comma-separated; unknown values are ignored. */
                 status?: string;
                 limit?: number;
@@ -13819,7 +13889,7 @@ export interface operations {
     listTaxonomies: {
         parameters: {
             query?: {
-                /** @description Comma-separated kind filter (mood,category,setting,dietary,accessibility,spending_style,suitability,checkin_tag) */
+                /** @description Comma-separated kind filter (mood,category,setting,dietary,accessibility,spending_style,suitability,checkin_tag,amenity) */
                 kinds?: string;
             };
             header?: never;
@@ -13850,7 +13920,17 @@ export interface operations {
                 openAt?: string;
                 /** @description CSV */
                 categories?: string;
-                suitedFor?: "couple" | "group" | "family";
+                /** @description CSV suitability keys (couple, group, family, work_reading); OR, score >=0.5 */
+                suitedFor?: string;
+                /** @description CSV; ALL required. cashless_payment expands to card_payment OR qr_payment; wifi,power_outlets requires both. */
+                amenities?: string;
+                /** @description CSV active mood keys; OR */
+                moods?: string;
+                /** @description CSV active setting keys; OR */
+                settings?: string;
+                locale?: "vi" | "en";
+                /** @description Exact matching count before cursor/limit; full count cost even with limit=1. */
+                includeTotal?: boolean;
                 priceMinPerPerson?: number;
                 priceMaxPerPerson?: number;
                 minRating?: number;
@@ -13889,6 +13969,9 @@ export interface operations {
                             weightsVersion?: string;
                             sort?: string;
                             location?: components["schemas"]["SearchLocation"];
+                            totalCount?: number;
+                            /** @enum {string} */
+                            totalCountAccuracy?: "exact";
                         };
                     };
                 };
@@ -13896,6 +13979,13 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             409: components["responses"]["Conflict"];
             429: components["responses"]["RateLimited"];
+            /** @description Retryable SEARCH_COUNT_UNAVAILABLE; retry without includeTotal. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     getPlaceDetail: {
@@ -17862,6 +17952,56 @@ export interface operations {
             409: components["responses"]["Conflict"];
         };
     };
+    setVenueVerification: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description CMS detail verification.etag */
+                "If-Match": string;
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetVenueVerification"];
+            };
+        };
+        responses: {
+            /** @description Verification decision; same ETag in body and header */
+            200: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsVenueVerification"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description PRECONDITION_FAILED; reload identity and verification */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description PRECONDITION_REQUIRED; If-Match missing */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: components["responses"]["RateLimited"];
+        };
+    };
     cmsSetPlaceHours: {
         parameters: {
             query?: never;
@@ -18174,7 +18314,7 @@ export interface operations {
     cmsListTaxonomies: {
         parameters: {
             query?: {
-                kind?: "mood" | "category" | "setting" | "dietary" | "accessibility" | "spending_style" | "suitability" | "checkin_tag";
+                kind?: "mood" | "category" | "setting" | "dietary" | "accessibility" | "spending_style" | "suitability" | "checkin_tag" | "amenity";
                 isActive?: boolean;
             };
             header?: never;
@@ -18205,7 +18345,7 @@ export interface operations {
             content: {
                 "application/json": {
                     /** @enum {string} */
-                    kind: "mood" | "category" | "setting" | "dietary" | "accessibility" | "spending_style" | "suitability" | "checkin_tag";
+                    kind: "mood" | "category" | "setting" | "dietary" | "accessibility" | "spending_style" | "suitability" | "checkin_tag" | "amenity";
                     key: string;
                     /** @description Locale → label. Each label is one line of plain text (GoGo-BE#737). The pattern states the characters a label may contain as sent: letters, combining marks, digits, space separators and ' " ‘ ’ “ ” ( ) & + , . / - – —. The server then normalises it (NFC, every space separator to one ASCII space, runs collapsed, leading and trailing spaces removed) and requires 1–80 code points after normalisation. A label outside the rule is refused (400), never stripped or truncated. */
                     labels: {

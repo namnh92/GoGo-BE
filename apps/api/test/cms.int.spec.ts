@@ -7242,6 +7242,37 @@ describe('CMS read endpoints', () => {
     expect(res.statusCode).toBe(404);
   });
 
+  it.each(['amenity', 'checkin_tag'])(
+    'creates and persists %s labels through HTTP',
+    async (kind) => {
+      const admin = await createAdmin(`group02-${kind}@gogo.local`, 'editor');
+      const payload = { kind, key: `group02_${kind}`, labels: { vi: 'Tiện ích', en: 'Feature' } };
+      const created = await api().inject({
+        method: 'POST',
+        url: '/v1/cms/taxonomies',
+        remoteAddress: ip(),
+        headers: auth(admin.token),
+        payload,
+      });
+      expect(created.statusCode).toBe(201);
+      const listed = await api().inject({
+        method: 'GET',
+        url: `/v1/cms/taxonomies?kind=${kind}`,
+        remoteAddress: ip(),
+        headers: auth(admin.token),
+      });
+      expect(listed.statusCode).toBe(200);
+      expect(listed.json()).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: created.json().id, ...payload })]),
+      );
+      const stored = await db
+        .select()
+        .from(schema.taxonomyLabels)
+        .where(eq(schema.taxonomyLabels.taxonomyId, created.json().id));
+      expect(Object.fromEntries(stored.map((r) => [r.locale, r.label]))).toEqual(payload.labels);
+    },
+  );
+
   it('lists inactive taxonomy keys too — the CMS is where one is reactivated', async () => {
     const admin = await createAdmin('read-taxonomy@gogo.local', 'editor');
     await db.insert(schema.taxonomies).values([

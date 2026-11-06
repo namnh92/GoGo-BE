@@ -322,6 +322,21 @@ export class PlaceRefreshService {
     if (next.state === 'deferred') return;
 
     await this.db.transaction(async (tx) => {
+      // Match identity writers and merge: place before source. A liveness
+      // answer prepared for the old owner must not refresh an archived loser.
+      const current = await tx.execute(sql`
+        select id from places where id = ${row.placeId} and status <> 'archived'
+        for update
+      `);
+      if (!current.rows.length) return;
+      await tx.execute(sql`
+        select pg_advisory_xact_lock(hashtextextended(${`venue:google:${row.externalId}`}, 0))
+      `);
+      const source = await tx.execute(sql`
+        select id from place_provider_sources where id = ${row.id} and place_id = ${row.placeId}
+      `);
+      if (!source.rows.length) return;
+
       if (next.state === 'alive') {
         await tx.execute(sql`
           update place_provider_sources

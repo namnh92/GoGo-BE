@@ -198,6 +198,7 @@ export const assistantUsageLedger = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
     messageId: uuid('message_id'),
+    allowanceSource: text('allowance_source').notNull().default('daily'),
     acceptedAt: timestamp('accepted_at', { withTimezone: true }).notNull().defaultNow(),
     completedAt: timestamp('completed_at', { withTimezone: true }),
     status: text('status').notNull().default('accepted'),
@@ -291,3 +292,49 @@ export const assistantBufferPurges = pgTable('assistant_buffer_purges', {
   messageId: uuid('message_id').primaryKey(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+/** #774: no expiry. Source ids intentionally survive source deletion and usage retention. */
+export const assistantCreditAccounts = pgTable(
+  'assistant_credit_accounts',
+  {
+    userId: uuid('user_id')
+      .primaryKey()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    balance: integer('balance').notNull().default(0),
+  },
+  (t) => [check('assistant_credit_accounts_balance_check', sql`${t.balance} >= 0`)],
+);
+
+export const assistantCreditLedger = pgTable(
+  'assistant_credit_ledger',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+    delta: integer('delta').notNull(),
+    reason: text('reason').notNull(),
+    submissionId: uuid('submission_id'),
+    venueIdentity: text('venue_identity'),
+    usageLedgerId: uuid('usage_ledger_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('assistant_credit_submission_unique')
+      .on(t.submissionId)
+      .where(sql`${t.reason} = 'submission_approved'`),
+    uniqueIndex('assistant_credit_venue_unique')
+      .on(t.venueIdentity)
+      .where(sql`${t.reason} = 'submission_approved'`),
+    uniqueIndex('assistant_credit_spend_unique')
+      .on(t.usageLedgerId)
+      .where(sql`${t.reason} = 'message_spent'`),
+    index('assistant_credit_user_history').on(t.userId, t.createdAt, t.id),
+    check(
+      'assistant_credit_ledger_reason_check',
+      sql`${t.reason} in ('submission_approved','message_spent')`,
+    ),
+    check(
+      'assistant_credit_ledger_check',
+      sql`(${t.reason}='submission_approved' and ${t.delta}=50 and ${t.submissionId} is not null and ${t.venueIdentity} is not null and ${t.usageLedgerId} is null) or (${t.reason}='message_spent' and ${t.delta}=-1 and ${t.usageLedgerId} is not null and ${t.submissionId} is null and ${t.venueIdentity} is null)`,
+    ),
+  ],
+);

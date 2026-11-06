@@ -29,6 +29,7 @@ import { administrativeMappingSource, administrativeMappingStatus } from './admi
  */
 
 export const taxonomyKind = pgEnum('taxonomy_kind', [
+  'amenity',
   'mood',
   'category',
   'setting',
@@ -138,6 +139,7 @@ export const places = pgTable(
     avgVisitMinutes: integer('avg_visit_minutes'),
     // Suitability facts for couple/group audiences, sourced from taxonomy +
     // editorial curation (SE-010). Stored as stable keys with 0..1 scores.
+    identityRevision: integer('identity_revision').notNull().default(1),
     suitability: jsonb('suitability').$type<Record<string, number>>(),
     isLodging: boolean('is_lodging').notNull().default(false),
     confidence: numeric('confidence', { precision: 3, scale: 2 }).notNull().default('0.50'),
@@ -563,3 +565,28 @@ export const serviceAreas = pgTable('service_areas', {
   isActive: boolean('is_active').notNull().default(true),
   sortOrder: integer('sort_order').notNull().default(0),
 });
+
+/** #774: evidence is bound to identity/location revision; public badges expose no evidence. */
+export const placeVerifications = pgTable(
+  'place_verifications',
+  {
+    placeId: uuid('place_id')
+      .primaryKey()
+      .references(() => places.id, { onDelete: 'cascade' }),
+    status: text('status').notNull(),
+    identityRevision: integer('identity_revision').notNull(),
+    evidenceType: text('evidence_type'),
+    evidenceReference: text('evidence_reference'),
+    verifiedAt: timestamp('verified_at', { withTimezone: true }),
+    decidedByAdminId: uuid('decided_by_admin_id'),
+    version: integer('version').notNull().default(1),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('place_verifications_status_check', sql`${t.status} in ('verified','unverified')`),
+    check(
+      'place_verifications_check',
+      sql`${t.status} <> 'verified' or (${t.evidenceType} is not null and ${t.evidenceReference} is not null and ${t.evidenceType} in ('site_visit','official_registry','venue_document') and length(trim(${t.evidenceReference})) > 0 and ${t.verifiedAt} is not null)`,
+    ),
+  ],
+);

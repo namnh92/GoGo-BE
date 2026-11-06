@@ -111,7 +111,7 @@ beforeAll(async () => {
     await db.insert(schema.taxonomies).values({ kind: 'mood', key });
   }
   for (const key of ['couple', 'group']) {
-    await db.insert(schema.taxonomies).values({ kind: 'suitability', key });
+    await db.insert(schema.taxonomies).values({ kind: 'suitability', key }).onConflictDoNothing();
   }
 
   const { createApp } = await import('../src/main.js');
@@ -1851,6 +1851,26 @@ describe('PI-QA-002 — bulk import at 0 / 1 / 100 / 5.000 rows', () => {
       .where(sql`${schema.places.name} like 'Quán C %'`);
     const placesAfter = afterPublish[0]?.n ?? 0;
     expect(placesAfter).toBe(readyRows.items.length);
+
+    const importedRows = await imports.listRows(job.id, {
+      status: 'imported',
+      limit: 100,
+      offset: 0,
+    });
+    const duplicateRows = await imports.listRows(job.id, {
+      status: 'duplicate',
+      limit: 100,
+      offset: 0,
+    });
+    expect(importedRows.items).toHaveLength(25);
+    expect(duplicateRows.items).toHaveLength(65);
+    for (const row of duplicateRows.items) {
+      const sibling = importedRows.items.find(
+        (candidate) => candidate.resolvedGooglePlaceId === row.resolvedGooglePlaceId,
+      );
+      expect(sibling?.matchedPlaceId).toBeTruthy();
+      expect(row.matchedPlaceId).toBe(sibling!.matchedPlaceId);
+    }
 
     // Retry re-queues nothing resolvable and creates no second place.
     await api().inject({
