@@ -545,6 +545,9 @@ const envSchema = z
      * **Unset means refuse** (`503 ASSISTANT_DISABLED`), never unlimited.
      * Owner default: 30/day.
      */
+    SEARCH_COUNT_TIMEOUT_MS: z.coerce.number().int().min(1).max(10000).default(500),
+    SEARCH_COUNT_MAX_CONCURRENT: z.coerce.number().int().min(1).max(100).default(4),
+    SEARCH_COUNT_PER_MINUTE: z.coerce.number().int().min(1).max(60).default(20),
     ASSISTANT_USER_DAILY_MAX_MESSAGES: z.coerce.number().int().min(0).max(10_000).optional(),
     /**
      * Per-account burst limit. A rate guard, not a spend line (the daily limit

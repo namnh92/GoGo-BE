@@ -1,3 +1,4 @@
+import { spendAssistantCredit } from '../../shared/assistant-credits';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { Db } from '@gogo/database';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
@@ -250,11 +251,17 @@ export class AssistantConversationsService {
       const locale = input.locale ?? 'vi';
       const turn = await this.db.transaction(async (tx) => {
         await this.repo.lockAccount(tx, userId);
-        await this.availability.requireAllowance(tx, userId, limits);
         // A-R-01: the budget is re-read under one lock shared by every account
         // and reserved (the ledger row) before that lock is released.
         await this.repo.lockBudget(tx);
-        await this.availability.requireReady(tx);
+        const acceptedAt = new Date();
+        await this.availability.requireReady(tx, acceptedAt);
+        const allowanceSource = await this.availability.requireAllowance(
+          tx,
+          userId,
+          limits,
+          acceptedAt,
+        );
         let inserted;
         try {
           inserted = await this.repo.insertTurn(tx, {
@@ -265,6 +272,8 @@ export class AssistantConversationsService {
             context: context ? { kind: context.kind, id: context.id } : null,
             leaseOwner: this.instanceId,
             leaseMs: LEASE_MS,
+            acceptedAt,
+            allowanceSource,
           });
         } catch (err) {
           if (isUniqueViolation(err)) {
@@ -275,6 +284,7 @@ export class AssistantConversationsService {
           }
           throw err;
         }
+        if (allowanceSource === 'credit') await spendAssistantCredit(tx, userId, inserted.ledgerId);
         const body = {
           userMessage: messageView(inserted.user, {
             context: context?.label ? context : null,

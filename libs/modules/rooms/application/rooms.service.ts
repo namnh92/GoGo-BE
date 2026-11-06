@@ -161,18 +161,30 @@ export class RoomsService {
    */
   async listRooms(
     actor: Actor,
-    query: { statuses?: string[] | undefined; limit: number; cursor?: string | undefined },
+    query: {
+      view?: 'home' | undefined;
+      statuses?: string[] | undefined;
+      limit: number;
+      cursor?: string | undefined;
+    },
   ) {
+    if (query.view === 'home' && (query.cursor !== undefined || query.statuses !== undefined))
+      throw AppError.badRequest(
+        'VALIDATION_FAILED',
+        'Home does not accept cursor/status overrides',
+      );
+    const limit = query.view === 'home' ? 1 : query.limit;
     const cursor = query.cursor ? decodeRoomCursor(query.cursor) : undefined;
     const rows = await this.repo.listRoomsForActor({
       actorType: actor.type === 'guest' ? 'guest' : 'user',
       actorId: actor.id,
       ...(query.statuses ? { statuses: query.statuses } : {}),
-      limit: query.limit,
+      limit,
+      ...(query.view ? { homeAt: new Date() } : {}),
       ...(cursor ? { cursor } : {}),
     });
 
-    const items = rows.slice(0, query.limit);
+    const items = rows.slice(0, limit);
     const last = items[items.length - 1];
     return {
       items: items.map((row) => ({
@@ -182,6 +194,8 @@ export class RoomsService {
         decisionMode: row.decision_mode,
         participantCount: row.participant_count,
         title: row.title ?? undefined,
+        startAt: row.scheduled_date ? isoDate(row.scheduled_date) : null,
+        endAt: row.end_at ? isoDate(row.end_at) : null,
         scheduledDate: row.scheduled_date ? isoDate(row.scheduled_date) : undefined,
         updatedAt: isoDate(row.updated_at)!,
         myRole: row.my_role,
@@ -204,7 +218,9 @@ export class RoomsService {
             : undefined,
       })),
       nextCursor:
-        rows.length > query.limit && last ? encodeRoomCursor(last.updated_at, last.id) : null,
+        query.view !== 'home' && rows.length > limit && last
+          ? encodeRoomCursor(last.updated_at, last.id)
+          : null,
     };
   }
 

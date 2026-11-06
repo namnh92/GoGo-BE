@@ -1,3 +1,4 @@
+import { creditBalance } from '../../shared/assistant-credits';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { Db } from '@gogo/database';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
@@ -106,8 +107,8 @@ export class AssistantAvailabilityService {
    * calls it again inside its transaction under the budget lock (A-R-01), so
    * the check and the reservation cannot be split by another send.
    */
-  async requireReady(exec: Exec = this.db): Promise<AssistantLimits> {
-    const r = await this.readiness(exec);
+  async requireReady(exec: Exec = this.db, now = new Date()): Promise<AssistantLimits> {
+    const r = await this.readiness(exec, now);
     if (!r.ok) {
       this.metrics.increment('assistant_admission_total', { outcome: r.reason });
       throw AppError.serviceUnavailable('ASSISTANT_DISABLED', 'Assistant is disabled', false);
@@ -121,7 +122,7 @@ export class AssistantAvailabilityService {
     userId: string,
     limits: AssistantLimits,
     now = new Date(),
-  ): Promise<void> {
+  ): Promise<'daily' | 'credit'> {
     const usage = await this.repo.allowanceUsage(
       tx,
       userId,
@@ -133,8 +134,9 @@ export class AssistantAvailabilityService {
       { acceptedToday: usage.acceptedToday, burstAcceptedAt: usage.burst },
       now,
     );
-    if (decision.ok) return;
+    if (decision.ok) return 'daily';
     if (decision.code === 'ASSISTANT_DAILY_LIMIT') {
+      if ((await creditBalance(tx, userId)) > 0) return 'credit';
       this.metrics.increment('assistant_admission_total', { outcome: 'daily_limit' });
       throw new AppError('ASSISTANT_DAILY_LIMIT', 'Daily assistant message limit reached', 429, {
         retryable: false,
@@ -150,11 +152,13 @@ export class AssistantAvailabilityService {
 
   async status(userId: string, now = new Date()) {
     const resetsAt = vnNextReset(now).toISOString();
+    const balance = await creditBalance(this.db, userId);
     const limits = this.limits();
     const readiness = await this.readiness(this.db, now);
     if (!limits) {
       return {
         state: 'disabled',
+        creditBalance: balance,
         dailyMessageLimit: 0,
         remainingToday: 0,
         resetsAt,
@@ -169,7 +173,12 @@ export class AssistantAvailabilityService {
     );
     const remainingToday = Math.max(0, limits.dailyMessageLimit - usage.acceptedToday);
     return {
-      state: !readiness.ok ? 'disabled' : remainingToday === 0 ? 'limit_reached' : 'enabled',
+      state: !readiness.ok
+        ? 'disabled'
+        : remainingToday === 0 && balance === 0
+          ? 'limit_reached'
+          : 'enabled',
+      creditBalance: balance,
       dailyMessageLimit: limits.dailyMessageLimit,
       remainingToday,
       resetsAt,

@@ -111,7 +111,7 @@ beforeAll(async () => {
     await db.insert(schema.taxonomies).values({ kind: 'mood', key });
   }
   for (const key of ['couple', 'group']) {
-    await db.insert(schema.taxonomies).values({ kind: 'suitability', key });
+    await db.insert(schema.taxonomies).values({ kind: 'suitability', key }).onConflictDoNothing();
   }
 
   const { createApp } = await import('../src/main.js');

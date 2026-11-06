@@ -11,6 +11,26 @@ import { isProductionAppEnv } from './app-env';
  */
 
 const TAXONOMY: Record<string, { keys: string[]; labelsVi: Record<string, string> }> = {
+  amenity: {
+    keys: [
+      'car_parking',
+      'motorbike_parking',
+      'wifi',
+      'power_outlets',
+      'card_payment',
+      'qr_payment',
+      'pets_allowed',
+    ],
+    labelsVi: {
+      car_parking: 'Đỗ ô tô',
+      motorbike_parking: 'Đỗ xe máy',
+      wifi: 'Wi-Fi',
+      power_outlets: 'Ổ cắm điện',
+      card_payment: 'Thanh toán thẻ',
+      qr_payment: 'Thanh toán QR',
+      pets_allowed: 'Cho phép thú cưng',
+    },
+  },
   mood: {
     keys: ['chill', 'romantic', 'adventurous', 'festive', 'cozy'],
     labelsVi: {
@@ -61,8 +81,13 @@ const TAXONOMY: Record<string, { keys: string[]; labelsVi: Record<string, string
     labelsVi: { saver: 'Tiết kiệm', balanced: 'Cân bằng', treat: 'Chịu chi' },
   },
   suitability: {
-    keys: ['couple', 'group', 'family'],
-    labelsVi: { couple: 'Cặp đôi', group: 'Nhóm bạn', family: 'Gia đình' },
+    keys: ['couple', 'group', 'family', 'work_reading'],
+    labelsVi: {
+      couple: 'Cặp đôi',
+      group: 'Nhóm bạn',
+      family: 'Gia đình',
+      work_reading: 'Làm việc / đọc sách',
+    },
   },
 };
 

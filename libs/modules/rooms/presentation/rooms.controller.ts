@@ -40,20 +40,25 @@ const ROOM_STATUSES = [
 ] as const;
 
 /** Repeatable or CSV, so "active rooms" does not have to pull all history. */
-const roomListQuery = z.object({
-  status: z
-    .union([z.string(), z.array(z.string())])
-    .transform((value) =>
-      (Array.isArray(value) ? value : value.split(','))
-        .map((item) => item.trim())
-        .filter((item): item is (typeof ROOM_STATUSES)[number] =>
-          (ROOM_STATUSES as readonly string[]).includes(item),
-        ),
-    )
-    .optional(),
-  limit: z.coerce.number().int().min(1).max(50).default(20),
-  cursor: z.string().max(512).optional(),
-});
+export const roomListQuery = z
+  .object({
+    view: z.enum(['home']).optional(),
+    status: z
+      .union([z.string(), z.array(z.string())])
+      .transform((value) =>
+        (Array.isArray(value) ? value : value.split(','))
+          .map((item) => item.trim())
+          .filter((item): item is (typeof ROOM_STATUSES)[number] =>
+            (ROOM_STATUSES as readonly string[]).includes(item),
+          ),
+      )
+      .optional(),
+    limit: z.coerce.number().int().min(1).max(50).default(20),
+    cursor: z.string().max(512).optional(),
+  })
+  .refine((v) => v.view !== 'home' || (v.cursor === undefined && v.status === undefined), {
+    message: 'Home does not accept cursor/status overrides',
+  });
 
 const UuidPipe = new ZodValidationPipe(uuidSchema);
 
@@ -88,6 +93,7 @@ export class RoomsController {
     @Query(new ZodValidationPipe(roomListQuery)) query: z.infer<typeof roomListQuery>,
   ) {
     return this.rooms.listRooms(actor, {
+      ...(query.view ? { view: query.view } : {}),
       ...(query.status ? { statuses: query.status } : {}),
       limit: query.limit,
       ...(query.cursor ? { cursor: query.cursor } : {}),

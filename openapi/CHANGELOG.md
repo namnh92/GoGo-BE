@@ -304,3 +304,12 @@ they are absent on a `resync` frame.
 
 Earlier versions (`1.0.0-alpha.1` … `1.0.0-alpha.73`) predate this file. Their
 history is in `git log -- openapi/gogo.v1.yaml` and in the ADRs they reference.
+
+## 5.2.0-alpha.1 (2026-11-06)
+
+- Discovery: opt-in exact `includeTotal` with cursor-independent `meta.totalCount`/`totalCountAccuracy`; same SQL snapshot and eligibility, retryable `SEARCH_COUNT_UNAVAILABLE` permits retry without totals. Configurable count timeout/concurrency/rate guard.
+- Search cards: explicit evidence-free `verification`, active `taxonomies`, localized current verified `areaSummary`; `locale=vi|en`. Publication/confidence/administrative mapping never imply a venue badge.
+- Filters: CSV `amenities`, `moods`, `settings`, multi `suitedFor` including `work_reading`. OR within category/mood/setting/suitability, AND between dimensions; ALL dietary/accessibility/amenities. Deduplicate; `cashless_payment` means card OR QR, Wi-Fi+power means both. **Stricter validation:** unknown/inactive/wrong-kind keys, >10 distinct values, partial coordinates and inverted price bounds now return 400.
+- CMS moderator verification: `PUT /cms/places/{id}/verification`, required Idempotency-Key/If-Match, evidence type + reference; identity/location revision-bound, revoked on name/address/geometry change. Means independently checked identity/location only, never quality or safety.
+- Contributor credits: prospective original registered submission approval grants +50 once; no expiry or merged/guest/historical awards. `GET /assistant/status.creditBalance`; daily-first, then one credit per accepted user send, including subsequent provider failure. Replay/rejection consumes none. Readiness, burst, budget and BYOK checks still apply; `limit_reached` means daily allowance AND credits exhausted.
+- `GET /rooms?view=home`: top one nearest temporal room across memberships; active first unless explicit end passed, start proximity (unknown last), then future collecting/matching/ready earliest start, UUID descending tie-break. `nextCursor=null`; rejects status/cursor overrides. Room list adds nullable `startAt`/`endAt`.

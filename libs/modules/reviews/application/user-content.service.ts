@@ -1,3 +1,4 @@
+import { lockAssistantAccount } from '../../shared/assistant-credits';
 import { Inject, Injectable } from '@nestjs/common';
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
@@ -613,6 +614,7 @@ export class UserContentService {
     by: { actorType: 'user' | 'admin'; actorId: string; reason?: string },
   ) {
     const enqueued = await this.db.transaction(async (tx) => {
+      await lockAssistantAccount(tx, userId);
       // ADR-0022: the picture leaves with the person. Read under the row lock
       // so a concurrent avatar change cannot slip a new key past the null below.
       const [before] = await tx

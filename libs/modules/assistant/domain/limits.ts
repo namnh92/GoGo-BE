@@ -41,25 +41,25 @@ export type AllowanceDecision =
   | { ok: false; code: 'ASSISTANT_DAILY_LIMIT'; retryAfterSeconds: number }
   | { ok: false; code: 'RATE_LIMITED'; retryAfterSeconds: number };
 
-/** Daily first: a spent day is not fixed by waiting a minute. */
+/** Burst applies to every send, including credit-funded sends. */
 export function decideAllowance(
   limits: AssistantLimits,
   usage: AllowanceUsage,
   now: Date,
 ): AllowanceDecision {
-  if (usage.acceptedToday >= limits.dailyMessageLimit) {
-    return {
-      ok: false,
-      code: 'ASSISTANT_DAILY_LIMIT',
-      retryAfterSeconds: secondsUntil(vnNextReset(now), now),
-    };
-  }
   if (usage.burstAcceptedAt.length >= limits.messagesPerMinuteLimit) {
     // The window frees a slot when its oldest counted send ages out.
     const oldest =
       usage.burstAcceptedAt[usage.burstAcceptedAt.length - limits.messagesPerMinuteLimit];
     const freesAt = new Date((oldest ?? now).getTime() + BURST_WINDOW_MS);
     return { ok: false, code: 'RATE_LIMITED', retryAfterSeconds: secondsUntil(freesAt, now) };
+  }
+  if (usage.acceptedToday >= limits.dailyMessageLimit) {
+    return {
+      ok: false,
+      code: 'ASSISTANT_DAILY_LIMIT',
+      retryAfterSeconds: secondsUntil(vnNextReset(now), now),
+    };
   }
   return { ok: true, remainingToday: limits.dailyMessageLimit - usage.acceptedToday };
 }

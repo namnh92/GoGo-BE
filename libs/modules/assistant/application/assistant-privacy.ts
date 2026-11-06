@@ -1,3 +1,4 @@
+import { lockAssistantAccount } from '../../shared/assistant-credits';
 import { sql } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
 import { RETENTION_DAYS } from '../infrastructure/assistant.repository';
@@ -16,6 +17,14 @@ export const LEDGER_RETENTION_DAYS = 400;
  * erasure transaction. The ledger keeps its cost rows without the person.
  */
 export async function eraseAssistantDataForUser(tx: Exec, userId: string): Promise<void> {
+  await lockAssistantAccount(tx, userId);
+  await tx.execute(
+    sql`update place_submissions set submitted_by_user_id = null where submitted_by_user_id = ${userId}`,
+  );
+  await tx.execute(sql`delete from assistant_credit_accounts where user_id = ${userId}`);
+  await tx.execute(
+    sql`update assistant_credit_ledger set user_id = null where user_id = ${userId}`,
+  );
   // A-R-08: replies of the last hour may still sit in a live frame buffer;
   // the reaper on every instance drops them. A reply still streaming loses
   // its row here, so its runner stops at its next lease renewal.

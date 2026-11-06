@@ -27,6 +27,9 @@
  * spreadsheet id, or anything else a user or an operator typed.
  */
 export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
+  // #774: whole counted-query duration; no query, place or location labels.
+  search_count_duration_ms: [],
+
   // Consumer recovery: action is request | complete (failed also permits send).
   // adapter is sink. No identity, proof, digest or free-text values.
   password_recovery_requested: [],

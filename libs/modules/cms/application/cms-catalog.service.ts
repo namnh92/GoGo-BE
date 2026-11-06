@@ -1,3 +1,8 @@
+import {
+  readVenueVerification,
+  setVenueVerification,
+  verificationSchema,
+} from '../../shared/venue-verification';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
@@ -857,6 +862,16 @@ function contactAudit(plan: ContactWritePlan) {
 /** CMS-002/003/004 — canonical place editing, sources/hours/prices, dedup. */
 @Injectable()
 export class CmsCatalogService {
+  setVerification(
+    adminId: string,
+    placeId: string,
+    ifMatch: string | undefined,
+    input: typeof verificationSchema._output,
+    scope: IdempotencyScope,
+  ) {
+    return setVenueVerification(this.db, adminId, placeId, ifMatch, input, scope);
+  }
+
   constructor(
     @Inject(DB) private readonly db: Db,
     /**
@@ -1388,6 +1403,7 @@ export class CmsCatalogService {
      * timeout once already (#425). This is two indexed queries and no resolver
      * work, so it costs less in series than it would in parallel.
      */
+    const verification = await readVenueVerification(this.db, placeId);
     const administrative = await placeAdministrativeSummary(this.db, {
       administrativeMappingStatus: row.administrative_mapping_status,
       provinceCode: row.province_code,
@@ -1398,6 +1414,7 @@ export class CmsCatalogService {
     });
 
     return {
+      verification,
       id: row.id,
       name: row.name,
       description: row.description,

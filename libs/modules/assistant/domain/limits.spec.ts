@@ -36,11 +36,11 @@ describe('assistant allowance (Q1)', () => {
     expect(d).toEqual({ ok: true, remainingToday: 27 });
   });
 
-  it('a spent day is ASSISTANT_DAILY_LIMIT with Retry-After to the reset, checked before the burst', () => {
+  it('a full burst still refuses when the daily allowance is spent', () => {
     const now = new Date('2026-10-27T16:30:00Z');
     const burst = Array.from({ length: 5 }, () => new Date(now.getTime() - 1_000));
     const d = decideAllowance(limits, { acceptedToday: 30, burstAcceptedAt: burst }, now);
-    expect(d).toEqual({ ok: false, code: 'ASSISTANT_DAILY_LIMIT', retryAfterSeconds: 1800 });
+    expect(d).toEqual({ ok: false, code: 'RATE_LIMITED', retryAfterSeconds: 59 });
   });
 
   it('a full rolling minute is RATE_LIMITED until the oldest counted send ages out', () => {

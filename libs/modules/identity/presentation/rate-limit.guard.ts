@@ -1,6 +1,13 @@
-import { Inject, Injectable, type CanActivate, type ExecutionContext } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Optional,
+  type CanActivate,
+  type ExecutionContext,
+} from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { FastifyRequest } from 'fastify';
+import { APP_CONFIG } from '../../shared/config';
 import { AppError } from '../../shared/app-error';
 import type { Actor } from '../domain/actor';
 import { RATE_LIMIT_KEY, type RateLimitSpec } from './decorators';
@@ -48,6 +55,7 @@ export class RateLimitGuard implements CanActivate {
     private readonly reflector: Reflector,
     @Inject(RATE_LIMIT_STORE) private readonly store: RateLimitStore,
     @Inject(BASELINE_RATE_LIMIT_STORE) private readonly baselineStore: RateLimitStore,
+    @Optional() @Inject(APP_CONFIG) private readonly config?: { SEARCH_COUNT_PER_MINUTE?: number },
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -62,6 +70,14 @@ export class RateLimitGuard implements CanActivate {
     ]);
     if (!spec) return true;
 
+    if (
+      spec.action === 'places.search' &&
+      (req.query as { includeTotal?: string })?.includeTotal === 'true'
+    ) {
+      const counted = await this.store.hit(`places.search.count|${req.ip ?? 'noip'}`, 60);
+      if (counted > (this.config?.SEARCH_COUNT_PER_MINUTE ?? 20))
+        throw AppError.tooManyRequests('Too many counted searches', 60);
+    }
     const parts: string[] = [spec.action];
     if (spec.keyBy.includes('ip')) {
       // SEC-004: `edgeClientIp` is set only for a request whose edge hop
