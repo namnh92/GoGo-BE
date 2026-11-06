@@ -24,6 +24,18 @@ export const loginSchema = z.object({
 });
 export type LoginDto = z.infer<typeof loginSchema>;
 
+export const recoveryRequestSchema = z.object({
+  email: registerSchema.shape.email,
+});
+export type RecoveryRequestDto = z.infer<typeof recoveryRequestSchema>;
+
+export const recoveryCompleteSchema = recoveryRequestSchema.extend({
+  challengeId: z.string().uuid(),
+  code: z.string().regex(/^[0-9]{6}$/),
+  password: passwordSchema,
+});
+export type RecoveryCompleteDto = z.infer<typeof recoveryCompleteSchema>;
+
 export const refreshSchema = z.object({
   refreshToken: z.string().min(20).max(128).optional(),
   guestToken: z.string().min(20).max(128).optional(),

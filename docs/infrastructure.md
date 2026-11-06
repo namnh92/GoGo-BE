@@ -164,6 +164,12 @@ Metric đang phát — danh sách đầy đủ, đối chiếu với `METRIC_LAB
 
 | Metric                                               | Label                                        | Phát ở                                                                                                                                                                                                                                                        |
 | ---------------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `password_recovery_requested` | none | Recovery requests, before configuration/quota checks. |
+| `password_recovery_sent` | `adapter=sink` | Eligible sink delivery accepted. |
+| `password_recovery_completed` | none | Successful reset, excluding completion replays. |
+| `password_recovery_throttled` | `action=request,complete` | Quota or cooldown refusal. |
+| `password_recovery_failed` | `action=request,complete,send` | Request/completion failure or masked delivery error. |
+| `password_recovery_duration_seconds` | `action=request,complete` | Duration observation in seconds; never a label. |
 | `place_import_jobs_total`                            | `status`, `source_type`                      | tạo job, pause quota, kết thúc job                                                                                                                                                                                                                            |
 | `place_import_rows_total`                            | `status`, `error_code`                       | mỗi dòng khi resolve xong                                                                                                                                                                                                                                     |
 | `place_resolve_duration_seconds`                     | `source`, `outcome`                          | mỗi lần resolve                                                                                                                                                                                                                                               |

@@ -83,7 +83,12 @@ export class AuthService {
       }
     }
 
-    const tokens = await this.issueSession(user.id, input.meta);
+    const tokens = await this.repo.withAuthTransaction(input.email, user.id, async (repo, current) => {
+      if (!current || current.status !== 'active' || current.passwordHash !== passwordHash) {
+        throw AppError.unauthorized('INVALID_CREDENTIALS', 'Email or password is incorrect');
+      }
+      return this.issueSession(user.id, input.meta, repo);
+    });
     return { userId: user.id, tokens, ...(claimedRoomId ? { claimedRoomId } : {}) };
   }
 
@@ -95,25 +100,21 @@ export class AuthService {
     const identifierHash = sha256(input.email.trim().toLowerCase());
     const ipHash = sha256(input.meta?.ip ?? 'unknown');
 
-    const failures = await this.repo.countRecentFailures(
-      identifierHash,
-      this.options.lockoutWindowSeconds,
-    );
-    if (failures >= this.options.lockoutThreshold) {
-      // Lockout responses are indistinguishable from bad credentials except
-      // for retryable=true, and never confirm the account exists.
-      throw AppError.tooManyRequests('Too many attempts, try again later');
-    }
-
-    const user = await this.repo.findUserByEmail(input.email);
-    const valid = await this.passwords.verifyOrBurn(user?.passwordHash, input.password);
-    await this.repo.recordLoginAttempt({ identifierHash, ipHash, succeeded: valid });
-    if (!valid || !user || user.status !== 'active') {
+    const result = await this.repo.withAuthTransaction(input.email.trim().toLowerCase(), null, async (repo, user) => {
+      const failures = await repo.countRecentFailures(identifierHash, this.options.lockoutWindowSeconds);
+      if (failures >= this.options.lockoutThreshold) {
+        throw AppError.tooManyRequests('Too many attempts, try again later');
+      }
+      const valid = await this.passwords.verifyOrBurn(user?.passwordHash, input.password);
+      await repo.recordLoginAttempt({ identifierHash, ipHash, succeeded: valid });
+      if (!valid || !user || user.status !== 'active') return null;
+      return { userId: user.id, tokens: await this.issueSession(user.id, input.meta, repo) };
+    });
+    // Failed attempts commit before the public rejection.
+    if (!result) {
       throw AppError.unauthorized('INVALID_CREDENTIALS', 'Email or password is incorrect');
     }
-
-    const tokens = await this.issueSession(user.id, input.meta);
-    return { userId: user.id, tokens };
+    return result;
   }
 
   /**
@@ -125,38 +126,50 @@ export class AuthService {
     const session = await this.repo.findAuthSessionByTokenHash(hash);
     if (!session) throw AppError.unauthorized('INVALID_REFRESH_TOKEN', 'Session is not valid');
 
-    if (session.revokedAt) {
-      throw AppError.unauthorized('SESSION_REVOKED', 'Session is not valid');
-    }
-    if (session.supersededAt) {
-      await this.repo.revokeFamily(session.familyId, 'refresh_token_reuse');
-      await this.revocations.revokeMany(await this.repo.listFamilySessionIds(session.familyId));
-      throw AppError.unauthorized('SESSION_REVOKED', 'Session is not valid');
-    }
-    if (session.expiresAt.getTime() <= Date.now()) {
-      throw AppError.unauthorized('SESSION_EXPIRED', 'Session is not valid');
-    }
-
-    await this.repo.markSessionSuperseded(session.id);
-    const newRefresh = this.tokens.generateOpaqueToken();
-    const next = await this.repo.createAuthSession({
-      userId: session.userId,
-      refreshTokenHash: this.tokens.hashOpaqueToken(newRefresh),
-      familyId: session.familyId,
-      rotatedFromId: session.id,
-      expiresAt: new Date(Date.now() + this.options.refreshTtlSeconds * 1000),
-      ...(meta?.ip ? { ipHash: sha256(meta.ip) } : {}),
-      ...(meta?.userAgent ? { userAgent: meta.userAgent } : {}),
+    const result = await this.repo.withAuthTransaction(null, session.userId, async (repo, user) => {
+      // Reread under the same user lock used by recovery: the first lookup
+      // only found which identity to lock, it did not authorize a refresh.
+      const current = await repo.findAuthSessionByTokenHash(hash);
+      if (!user || user.status !== 'active' || !current || current.revokedAt) {
+        return { error: AppError.unauthorized('SESSION_REVOKED', 'Session is not valid'), ids: [] };
+      }
+      if (current.supersededAt) {
+        await repo.revokeFamily(current.familyId, 'refresh_token_reuse');
+        return {
+          error: AppError.unauthorized('SESSION_REVOKED', 'Session is not valid'),
+          ids: await repo.listFamilySessionIds(current.familyId),
+        };
+      }
+      if (current.expiresAt.getTime() <= Date.now()) {
+        return { error: AppError.unauthorized('SESSION_EXPIRED', 'Session is not valid'), ids: [] };
+      }
+      await repo.markSessionSuperseded(current.id);
+      const newRefresh = this.tokens.generateOpaqueToken();
+      const next = await repo.createAuthSession({
+        userId: current.userId,
+        refreshTokenHash: this.tokens.hashOpaqueToken(newRefresh),
+        familyId: current.familyId,
+        rotatedFromId: current.id,
+        expiresAt: new Date(Date.now() + this.options.refreshTtlSeconds * 1000),
+        ...(meta?.ip ? { ipHash: sha256(meta.ip) } : {}),
+        ...(meta?.userAgent ? { userAgent: meta.userAgent } : {}),
+      });
+      return {
+        tokens: {
+          accessToken: this.tokens.issueAccessToken({
+            actorId: current.userId,
+            actorType: 'user',
+            sessionId: next.id,
+          }),
+          refreshToken: newRefresh,
+          accessExpiresInSeconds: this.accessTtl(),
+        },
+        ids: [],
+      };
     });
-    return {
-      accessToken: this.tokens.issueAccessToken({
-        actorId: session.userId,
-        actorType: 'user',
-        sessionId: next.id,
-      }),
-      refreshToken: newRefresh,
-      accessExpiresInSeconds: this.accessTtl(),
-    };
+    await this.revocations.revokeMany(result.ids);
+    if (result.error) throw result.error;
+    return result.tokens!;
   }
 
   async logout(sessionId: string, allDevices: boolean): Promise<void> {
@@ -289,9 +302,9 @@ export class AuthService {
     };
   }
 
-  private async issueSession(userId: string, meta?: ClientMeta): Promise<TokenPair> {
+  private async issueSession(userId: string, meta?: ClientMeta, repo = this.repo): Promise<TokenPair> {
     const refreshToken = this.tokens.generateOpaqueToken();
-    const session = await this.repo.createAuthSession({
+    const session = await repo.createAuthSession({
       userId,
       refreshTokenHash: this.tokens.hashOpaqueToken(refreshToken),
       familyId: randomUUID(),

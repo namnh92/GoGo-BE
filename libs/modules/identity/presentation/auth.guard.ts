@@ -5,6 +5,7 @@ import { AppError } from '../../shared/app-error';
 import type { Actor } from '../domain/actor';
 import { SessionRevocationService } from '../application/session-revocation.service';
 import { TokenService } from '../application/token.service';
+import { IdentityRepository } from '../infrastructure/identity.repository';
 import { IS_PUBLIC_KEY } from './decorators';
 
 export const ACCESS_COOKIE = 'gogo_at';
@@ -31,6 +32,7 @@ export class AuthGuard implements CanActivate {
     private readonly reflector: Reflector,
     private readonly tokens: TokenService,
     private readonly revocations: SessionRevocationService,
+    private readonly repo: IdentityRepository,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -66,6 +68,15 @@ export class AuthGuard implements CanActivate {
       if (!csrfCookie || typeof csrfHeader !== 'string' || csrfHeader !== csrfCookie) {
         throw AppError.forbidden('CSRF_FAILED', 'Missing or invalid CSRF token');
       }
+    }
+
+    if (claims.act === 'user') {
+      // Authoritative, fail-closed check: negative denylist caches can be stale.
+      const session = await this.repo.findAuthSessionById(claims.sid);
+      if (!session || session.userId !== claims.sub || session.revokedAt) {
+        throw AppError.unauthorized('SESSION_REVOKED', 'Session is no longer valid');
+      }
+      // supersededAt only rotates refresh credentials, not access credentials.
     }
 
     // Logout/removal revokes the session id; the outstanding access token must

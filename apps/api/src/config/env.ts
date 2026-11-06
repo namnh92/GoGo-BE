@@ -71,6 +71,9 @@ const envSchema = z
     DB_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
     REDIS_URL: z.string().startsWith('redis://').or(z.string().startsWith('rediss://')),
     AUTH_JWT_SECRET: z.string().default(''),
+    // Sink is explicit and restricted to dev/test by IdentityModule.
+    AUTH_RECOVERY_MAIL_ADAPTER: z.enum(['disabled', 'sink']).default('disabled'),
+    AUTH_RECOVERY_KEY: z.string().refine((key) => key === '' || key.length >= 32, 'Recovery key must be at least 32 characters').default(''),
     AUTH_ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().max(3600).default(900),
     AUTH_REFRESH_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(2_592_000),
     AUTH_GUEST_SESSION_TTL_SECONDS: z.coerce.number().int().positive().default(604_800),

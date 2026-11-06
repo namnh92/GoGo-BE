@@ -53,6 +53,8 @@ export type IdentityConfig = {
   /** The deployment, not the build mode. See apps/api/src/config/env.ts. */
   APP_ENV: 'dev' | 'staging' | 'prod' | 'production';
   AUTH_JWT_SECRET: string;
+  AUTH_RECOVERY_MAIL_ADAPTER?: 'disabled' | 'sink';
+  AUTH_RECOVERY_KEY?: string;
   AUTH_ACCESS_TOKEN_TTL_SECONDS: number;
   AUTH_REFRESH_TOKEN_TTL_SECONDS: number;
   AUTH_GUEST_SESSION_TTL_SECONDS: number;

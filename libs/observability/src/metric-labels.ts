@@ -27,6 +27,15 @@
  * spreadsheet id, or anything else a user or an operator typed.
  */
 export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
+  // Consumer recovery: action is request | complete (failed also permits send).
+  // adapter is sink. No identity, proof, digest or free-text values.
+  password_recovery_requested: [],
+  password_recovery_sent: ['adapter'],
+  password_recovery_completed: [],
+  password_recovery_throttled: ['action'],
+  password_recovery_failed: ['action'],
+  password_recovery_duration_seconds: ['action'],
+
   // --- providers -----------------------------------------------------------
   // `method` is the adapter's own operation name, `status` an HTTP code.
   places_provider_requests_total: ['method', 'status'],

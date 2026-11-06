@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 5.0.0-alpha.1
+  version: 5.1.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -307,6 +307,116 @@ paths:
               schema: { $ref: '#/components/schemas/TokenGrant' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '429': { $ref: '#/components/responses/RateLimited' }
+
+  /auth/password-recovery/request:
+    post:
+      operationId: requestPasswordRecovery
+      tags: [sessions]
+      summary: Request an in-app password recovery code
+      security: []
+      description: |
+        Always returns the same 202 shape for eligible, missing, guest,
+        passwordless, disabled and deleted accounts. No code is returned.
+        Active password accounts may recover even if email was unverified.
+        Six-digit code expires after 300 seconds; resend replaces the proof.
+        Limits count all requests, including replays: 1/minute + 3/hour/email,
+        10/minute + 50/hour/IP. Cooldown is 60 seconds, also on replay.
+        Idempotency is scoped to IP + operation + key for 24 hours; same key
+        and normalized body replays the original result even after resend.
+        A changed body returns 422. Account-specific delivery failure still
+        returns 202 and invalidates the affected challenge internally.
+        Production is disabled until mail and shared fail-closed quotas exist.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+      responses:
+        '202':
+          description: Accepted without confirming account eligibility or delivery
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [challengeId, expiresAt, resendAvailableAt]
+                properties:
+                  challengeId: { type: string, format: uuid }
+                  expiresAt: { type: string, format: date-time }
+                  resendAvailableAt: { type: string, format: date-time }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '422':
+          description: IDEMPOTENCY_KEY_REUSED — key was used with a different normalized body
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503':
+          description: RECOVERY_MAIL_NOT_CONFIGURED (retryable false), or global RECOVERY_UNAVAILABLE (retryable true)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /auth/password-recovery/complete:
+    post:
+      operationId: completePasswordRecovery
+      tags: [sessions]
+      summary: Consume a recovery code and replace the password
+      security: []
+      description: |
+        Single-use proof, at most five failed attempts. Invalid, expired,
+        exhausted, superseded, consumed or ineligible proofs return the same
+        400 RECOVERY_INVALID. Limits: 10/15 minutes/email, 30/15 minutes/IP.
+        Success verifies the account email if needed, revokes every consumer
+        session and refresh token, and clears login lockout. No new session is
+        issued; sign in again. No history is moved or merged.
+        Idempotency is scoped to IP + operation + key for 24 hours. Completion
+        replay commits with the reset; a matching retry returns 204 without
+        resetting again. A changed body returns 422. Limits apply to retries.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, challengeId, code, password]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+                challengeId: { type: string, format: uuid }
+                code: { type: string, pattern: '^[0-9]{6}$' }
+                password:
+                  type: string
+                  minLength: 8
+                  maxLength: 128
+                  description: >
+                    Same registration policy: Unicode uppercase and lowercase,
+                    ASCII digit, and a character outside Unicode L/N/M.
+                    Failures use VALIDATION_FAILED with field_errors[].field=password.
+      responses:
+        '204': { description: Password replaced; sign in again }
+        '400':
+          description: RECOVERY_INVALID, VALIDATION_FAILED, or INVALID_IDEMPOTENCY_KEY
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          description: IDEMPOTENCY_KEY_REUSED
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503':
+          description: RECOVERY_MAIL_NOT_CONFIGURED (retryable false), or RECOVERY_UNAVAILABLE (retryable true)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /auth/refresh:
     post:

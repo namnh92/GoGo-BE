@@ -8,6 +8,44 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 5.1.0-alpha.1 — consumer password recovery (GoGo-BE#772 / GoGo-MobileApp#482)
+
+**Additive recovery endpoints:** public `POST /auth/password-recovery/request`
+returns a generic 202 with challenge UUID, expiry and resend time, without
+confirming eligibility or delivery. Active password accounts may recover even
+with unverified email; missing, guest, passwordless, suspended, banned and deleted
+accounts receive the same response shape. Account-specific delivery errors stay
+202 and invalidate that challenge. Six-digit proofs expire after 300 seconds,
+allow five failed attempts and are replaced on resend after a 60-second cooldown.
+
+`POST /auth/password-recovery/complete` applies the registration password policy
+from 5.0.0-alpha.1 and returns an empty 204; sign in again. Success verifies email
+if needed, revokes all consumer sessions across families and their refresh tokens,
+and clears login lockout. It issues no session and moves no account history.
+Invalid, expired, exhausted, superseded, consumed and ineligible proofs share
+400 `RECOVERY_INVALID`; password errors retain `VALIDATION_FAILED` field errors.
+
+Both operations support durable 24-hour idempotency scoped to operation, IP and
+key; changed normalized bodies return 422 `IDEMPOTENCY_KEY_REUSED`. Limits count
+replays and ineligible identities: request 1/minute + 3/hour/email and
+10/minute + 50/hour/IP; complete 10/15 minutes/email and 30/15 minutes/IP.
+Request cooldown also precedes replay. Refusals use 429 `RATE_LIMITED` and the
+refusing window's `Retry-After`.
+
+**Existing-route authentication behavior changes even with recovery mail
+disabled.** Consumer AuthGuard now checks session presence, ownership and
+revocation in the authoritative database on existing protected routes, and fails
+closed when that database cannot answer. Deployments therefore need database
+read availability for these consumer requests independently of recovery enablement.
+Superseded access sessions remain accepted; guest and CMS guard behavior is unchanged.
+This existing-route change requires a release entry under the published-guarantee
+rule above; the release is not limited to new paths.
+
+Recovery mail itself is sink-only in explicitly configured dev/test deployments;
+production and staging recovery remain disabled with typed 503 configuration
+errors until real mail and shared fail-closed quotas are configured. The sink
+provides no real delivery or public code retrieval.
+
 ## 5.0.0-alpha.1 — consumer registration password policy (GoGo-MobileApp#482)
 
 **Breaking**, authorized by the owner on 2026-11-06 for re-design group 01,

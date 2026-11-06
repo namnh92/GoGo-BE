@@ -114,6 +114,64 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/password-recovery/request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request an in-app password recovery code
+         * @description Always returns the same 202 shape for eligible, missing, guest,
+         *     passwordless, disabled and deleted accounts. No code is returned.
+         *     Active password accounts may recover even if email was unverified.
+         *     Six-digit code expires after 300 seconds; resend replaces the proof.
+         *     Limits count all requests, including replays: 1/minute + 3/hour/email,
+         *     10/minute + 50/hour/IP. Cooldown is 60 seconds, also on replay.
+         *     Idempotency is scoped to IP + operation + key for 24 hours; same key
+         *     and normalized body replays the original result even after resend.
+         *     A changed body returns 422. Account-specific delivery failure still
+         *     returns 202 and invalidates the affected challenge internally.
+         *     Production is disabled until mail and shared fail-closed quotas exist.
+         */
+        post: operations["requestPasswordRecovery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/password-recovery/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Consume a recovery code and replace the password
+         * @description Single-use proof, at most five failed attempts. Invalid, expired,
+         *     exhausted, superseded, consumed or ineligible proofs return the same
+         *     400 RECOVERY_INVALID. Limits: 10/15 minutes/email, 30/15 minutes/IP.
+         *     Success verifies the account email if needed, revokes every consumer
+         *     session and refresh token, and clears login lockout. No new session is
+         *     issued; sign in again. No history is moved or merged.
+         *     Idempotency is scoped to IP + operation + key for 24 hours. Completion
+         *     replay commits with the reset; a matching retry returns 204 without
+         *     resetting again. A changed body returns 422. Limits apply to retries.
+         */
+        post: operations["completePasswordRecovery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/refresh": {
         parameters: {
             query?: never;
@@ -10972,6 +11030,124 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             429: components["responses"]["RateLimited"];
+        };
+    };
+    requestPasswordRecovery: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: email */
+                    email: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Accepted without confirming account eligibility or delivery */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        challengeId: string;
+                        /** Format: date-time */
+                        expiresAt: string;
+                        /** Format: date-time */
+                        resendAvailableAt: string;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description IDEMPOTENCY_KEY_REUSED — key was used with a different normalized body */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            /** @description RECOVERY_MAIL_NOT_CONFIGURED (retryable false), or global RECOVERY_UNAVAILABLE (retryable true) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    completePasswordRecovery: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: email */
+                    email: string;
+                    /** Format: uuid */
+                    challengeId: string;
+                    code: string;
+                    /** @description Same registration policy: Unicode uppercase and lowercase, ASCII digit, and a character outside Unicode L/N/M. Failures use VALIDATION_FAILED with field_errors[].field=password. */
+                    password: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Password replaced; sign in again */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description RECOVERY_INVALID, VALIDATION_FAILED, or INVALID_IDEMPOTENCY_KEY */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description IDEMPOTENCY_KEY_REUSED */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            /** @description RECOVERY_MAIL_NOT_CONFIGURED (retryable false), or RECOVERY_UNAVAILABLE (retryable true) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     refreshSession: {
