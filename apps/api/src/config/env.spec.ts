@@ -52,6 +52,33 @@ describe('SES recovery configuration (#777)', () => {
   ] as const)('refuses malformed %s', (name, value) => {
     expect(() => loadEnv({ ...ses, [name]: value })).toThrow(name);
   });
+
+  it.each([
+    'AWS_PROFILE',
+    'AWS_SESSION_TOKEN',
+    'AWS_CREDENTIAL_EXPIRATION',
+    'AWS_CONFIG_FILE',
+    'AWS_SHARED_CREDENTIALS_FILE',
+    'AWS_WEB_IDENTITY_TOKEN_FILE',
+    'AWS_ROLE_ARN',
+    'AWS_ROLE_SESSION_NAME',
+    'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+    'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+    'AWS_CONTAINER_AUTHORIZATION_TOKEN',
+    'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
+  ])('refuses %s alongside static SES keys without exposing its value', (name) => {
+    const value = 'private-alternate-credential-source';
+    for (const nonempty of [value, ' ']) {
+      expect(() => loadEnv({ ...ses, [name]: nonempty })).toThrow(name);
+      expect(() => loadEnv({ ...ses, [name]: nonempty })).not.toThrow(value);
+    }
+    expect(() => loadEnv({ ...ses, [name]: '' })).not.toThrow();
+    for (const adapter of ['disabled', 'sink']) {
+      expect(() =>
+        loadEnv({ ...base, AUTH_RECOVERY_MAIL_ADAPTER: adapter, [name]: value }),
+      ).not.toThrow();
+    }
+  });
 });
 
 describe('loadEnv (FND-006 fail-fast config)', () => {

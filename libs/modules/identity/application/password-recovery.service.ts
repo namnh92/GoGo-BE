@@ -9,7 +9,7 @@ import {
 } from '@gogo/observability';
 import { AppError } from '../../shared/app-error';
 import { RecoveryRepository } from '../infrastructure/recovery.repository';
-import { RecoveryMailSender } from '../infrastructure/recovery-mail';
+import { RecoveryMailSender, type RecoveryMail } from '../infrastructure/recovery-mail';
 import { RATE_LIMIT_STORE, type RateLimitStore } from '../presentation/rate-limit.service';
 import type { RecoveryCompleteDto, RecoveryRequestDto } from '../presentation/dtos';
 import { PasswordService } from './password.service';
@@ -129,28 +129,21 @@ export class PasswordRecoveryService {
         },
       );
       if (result.deliver) {
-        try {
-          await this.mail.send(
-            result.user
-              ? {
-                  email,
-                  code,
-                  challengeId: id,
-                  expiresAt: new Date(result.body.expiresAt),
-                  locale: result.user.locale === 'en' ? 'en' : 'vi',
-                }
-              : null,
-          );
-          if (result.user) {
-            this.metrics.increment('password_recovery_sent', { adapter: this.mail.adapter });
-          }
-        } catch {
-          // Never turn an account-specific send failure into an enumeration oracle.
-          await this.repo.invalidate(digest, id).catch(() => undefined);
-          this.metrics.increment('password_recovery_failed', { action: 'send' });
-          // Never pass the provider error, recipient, proof, or challenge to reporting.
-          reportRecoveryMailFailure();
-        }
+        // Provider latency and failure invalidation must not reveal account eligibility.
+        // The adapter bounds delivery; contain even reporting failures in this detached task.
+        void this.deliver(
+          digest,
+          id,
+          result.user
+            ? {
+                email,
+                code,
+                challengeId: id,
+                expiresAt: new Date(result.body.expiresAt),
+                locale: result.user.locale === 'en' ? 'en' : 'vi',
+              }
+            : null,
+        ).catch(() => undefined);
       }
       return result.body;
     } catch (error) {
@@ -244,6 +237,21 @@ export class PasswordRecoveryService {
         (performance.now() - started) / 1000,
         { action: 'complete' },
       );
+    }
+  }
+
+  private async deliver(digest: string, id: string, message: RecoveryMail | null): Promise<void> {
+    try {
+      await this.mail.send(message);
+      if (message) {
+        this.metrics.increment('password_recovery_sent', { adapter: this.mail.adapter });
+      }
+    } catch {
+      // ID matching protects a newer resend if this delivery fails after its response.
+      await this.repo.invalidate(digest, id).catch(() => undefined);
+      this.metrics.increment('password_recovery_failed', { action: 'send' });
+      // Never pass the provider error, recipient, proof, or challenge to reporting.
+      reportRecoveryMailFailure();
     }
   }
 

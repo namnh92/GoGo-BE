@@ -3,7 +3,11 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type * as TimersPromises from 'node:timers/promises';
 import type * as Observability from '@gogo/observability';
 import { NoopMetrics, reportRecoveryMailFailure, type MetricsPort } from '@gogo/observability';
-import { PasswordRecoveryService, RecoveryCrypto } from './password-recovery.service';
+import {
+  PasswordRecoveryService,
+  RecoveryCrypto,
+  type RecoveryResponse,
+} from './password-recovery.service';
 import { RecoveryMailSink, UnconfiguredRecoveryMailSender } from '../infrastructure/recovery-mail';
 import type { RecoveryRepository } from '../infrastructure/recovery.repository';
 import { InMemoryRateLimitStore } from '../presentation/rate-limit.service';
@@ -23,7 +27,10 @@ vi.mock('node:timers/promises', async (importOriginal) => ({
 }));
 
 describe('consumer password recovery', () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
   let now: number;
   let user: any;
   let challenge: any;
@@ -133,7 +140,7 @@ describe('consumer password recovery', () => {
 
   beforeEach(() => {
     setup();
-    vi.mocked(delay).mockClear();
+    vi.mocked(delay).mockReset().mockResolvedValue(undefined);
     vi.mocked(reportRecoveryMailFailure).mockClear();
   });
 
@@ -172,6 +179,8 @@ describe('consumer password recovery', () => {
     expect(response.challengeId).toBe(challenge.id);
     expect(sendEmail).toHaveBeenCalledTimes(1);
     if (fail) {
+      // Delivery failure handling continues independently of request completion.
+      await vi.waitFor(() => expect(reportRecoveryMailFailure).toHaveBeenCalledExactlyOnceWith());
       expect(challenge.consumedAt).toBeTruthy();
       expect(increment).toHaveBeenCalledWith('password_recovery_failed', { action: 'send' });
       expect(increment).not.toHaveBeenCalledWith('password_recovery_sent', { adapter: 'ses' });
@@ -181,6 +190,123 @@ describe('consumer password recovery', () => {
       expect(increment).toHaveBeenCalledWith('password_recovery_sent', { adapter: 'ses' });
       expect(reportRecoveryMailFailure).not.toHaveBeenCalled();
     }
+  });
+
+  it.each([
+    ['slow delivery', 750, false],
+    ['provider timeout', 3_000, true],
+  ] as const)(
+    'keeps %s outside the response timing for every identity',
+    async (_, latency, fail) => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+      vi.mocked(delay).mockImplementation(
+        (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      );
+      const active = { ...user };
+      for (const candidate of [
+        active,
+        undefined,
+        { ...active, status: 'suspended' },
+        { ...active, passwordHash: null },
+      ]) {
+        setup();
+        user = candidate;
+        const sendEmail = vi.fn(
+          () =>
+            new Promise<void>((resolve, reject) => {
+              setTimeout(() => (fail ? reject(new Error('provider timeout')) : resolve()), latency);
+            }),
+        );
+        const adapter = new SesRecoveryMailSender(
+          { sendEmail },
+          {
+            sender: 'recovery@example.com',
+            region: 'ap-southeast-1',
+            configurationSet: 'recovery-test',
+          },
+        );
+        service = new PasswordRecoveryService(
+          repo,
+          {} as any,
+          { revokeMany } as any,
+          store,
+          crypto,
+          adapter,
+          metrics,
+        );
+        const started = performance.now();
+        let response;
+        const request = service.request({ email }, ctx('request-1')).then((body) => {
+          response = body;
+          return body;
+        });
+        await vi.advanceTimersByTimeAsync(249);
+        expect(response).toBeUndefined();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(response).toMatchObject({ challengeId: challenge.id });
+        expect(performance.now() - started).toBe(250);
+        const eligible = candidate?.status === 'active' && !!candidate.passwordHash;
+        expect(sendEmail).toHaveBeenCalledTimes(eligible ? 1 : 0);
+        expect(repo.invalidate).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(latency - 250);
+        await request;
+        expect(repo.invalidate).toHaveBeenCalledTimes(eligible && fail ? 1 : 0);
+      }
+    },
+  );
+
+  it.each([false, true])('does not await slow invalidation, including failure=%s', async (fail) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    vi.mocked(delay).mockImplementation((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    vi.spyOn(sink, 'send').mockRejectedValue(new Error('provider timeout'));
+    repo.invalidate.mockImplementation(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          setTimeout(() => (fail ? reject(new Error('database timeout')) : resolve()), 2_000);
+        }),
+    );
+    let response;
+    const request = service.request({ email }, ctx('request-1')).then((body) => {
+      response = body;
+      return body;
+    });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(response).toMatchObject({ challengeId: challenge.id });
+    expect(repo.invalidate).toHaveBeenCalledExactlyOnceWith(
+      crypto.digest('email', email),
+      challenge.id,
+    );
+    await vi.advanceTimersByTimeAsync(1_750);
+    await request;
+    expect(reportRecoveryMailFailure).toHaveBeenCalledExactlyOnceWith();
+  });
+
+  it('does not invalidate a newer challenge when an earlier delivery fails after the response', async () => {
+    let rejectDelivery!: (error: Error) => void;
+    vi.spyOn(sink, 'send').mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectDelivery = reject;
+        }),
+    );
+    let first: RecoveryResponse | undefined;
+    void service.request({ email }, ctx('request-1')).then((response) => {
+      first = response;
+    });
+    // Flush request work without resolving delivery; the padding mock resolves immediately.
+    await vi.waitFor(() => expect(first).toHaveProperty('challengeId'));
+    const firstId = challenge.id;
+    now += 60_001;
+    const second = await service.request({ email }, ctx('request-2'));
+    rejectDelivery(new Error('late timeout'));
+    await vi.waitFor(() =>
+      expect(repo.invalidate).toHaveBeenCalledExactlyOnceWith(
+        crypto.digest('email', email),
+        firstId,
+      ),
+    );
+    expect(challenge.id).toBe(second.challengeId);
+    expect(challenge.consumedAt).toBeNull();
   });
 
   it('uses the same response and bounded sink work for eligible, unknown, disabled and passwordless identities', async () => {

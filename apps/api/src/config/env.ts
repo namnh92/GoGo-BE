@@ -79,6 +79,20 @@ const envSchema = z
     // Validated here; the SES SDK reads these directly via its default chain.
     AWS_ACCESS_KEY_ID: z.string().trim().default(''),
     AWS_SECRET_ACCESS_KEY: z.string().trim().default(''),
+    // SES uses static IAM-user keys only. Preserve whitespace: the SDK treats it
+    // as a configured source (notably AWS_PROFILE) in the raw process environment.
+    AWS_PROFILE: z.string().default(''),
+    AWS_SESSION_TOKEN: z.string().default(''),
+    AWS_CREDENTIAL_EXPIRATION: z.string().default(''),
+    AWS_CONFIG_FILE: z.string().default(''),
+    AWS_SHARED_CREDENTIALS_FILE: z.string().default(''),
+    AWS_WEB_IDENTITY_TOKEN_FILE: z.string().default(''),
+    AWS_ROLE_ARN: z.string().default(''),
+    AWS_ROLE_SESSION_NAME: z.string().default(''),
+    AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: z.string().default(''),
+    AWS_CONTAINER_CREDENTIALS_FULL_URI: z.string().default(''),
+    AWS_CONTAINER_AUTHORIZATION_TOKEN: z.string().default(''),
+    AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: z.string().default(''),
     AUTH_RECOVERY_KEY: z
       .string()
       .refine(
@@ -613,6 +627,29 @@ const envSchema = z
             code: z.ZodIssueCode.custom,
             path: [name],
             message: `${name} is required when AUTH_RECOVERY_MAIL_ADAPTER=ses`,
+          });
+        }
+      }
+      const unsupportedCredentialSources = [
+        'AWS_PROFILE',
+        'AWS_SESSION_TOKEN',
+        'AWS_CREDENTIAL_EXPIRATION',
+        'AWS_CONFIG_FILE',
+        'AWS_SHARED_CREDENTIALS_FILE',
+        'AWS_WEB_IDENTITY_TOKEN_FILE',
+        'AWS_ROLE_ARN',
+        'AWS_ROLE_SESSION_NAME',
+        'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+        'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+        'AWS_CONTAINER_AUTHORIZATION_TOKEN',
+        'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
+      ] as const;
+      for (const name of unsupportedCredentialSources) {
+        if (env[name]) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [name],
+            message: `${name} must be unset when AUTH_RECOVERY_MAIL_ADAPTER=ses; use the injected static IAM-user key pair`,
           });
         }
       }

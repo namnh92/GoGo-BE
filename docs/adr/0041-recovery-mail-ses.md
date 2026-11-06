@@ -25,6 +25,14 @@ client. Nội dung chỉ có mã sáu chữ số, expiry UTC và hướng dẫn 
 có URL/token/challenge ID, provider tags, account ID hoặc lưu provider response.
 Decoy `null` đi cùng adapter path nhưng không gọi SES.
 
+Delivery chạy tách khỏi promise trả HTTP sau khi transaction đã commit; cả
+eligible và decoy giữ cùng padding tối thiểu 250 ms, không chờ SES hoặc DB
+invalidation. Provider chậm/timeout không kéo dài riêng response tài khoản thật.
+Task xử lý lỗi gửi, invalidation và reporting nội bộ, không để rejected promise
+thoát ra. Đây là task trong process, không phải durable queue: restart trong
+lúc gửi có thể mất delivery/invalidation; client vẫn có thể resend sau cooldown.
+Không thêm retry hoặc lưu raw code vào queue/database trong bản sửa này.
+
 Mọi lỗi SendEmail (kể cả timeout/credential/provider outage) giữ response 202
 và invalidate challenge theo digest + challenge ID để không vô hiệu challenge
 mới do resend đồng thời. Không trả 503 riêng tài khoản thật. Invalidation là
@@ -67,7 +75,14 @@ SecureString như bảng, deploy inject vào API env giống các secret khác. 
 để SDK default credential chain đọc standard AWS env vars; không truyền
 `credentials`, không đọc SSM trực tiếp, không có nhánh instance-role/DEV riêng.
 API validation yêu cầu cả hai env credential khi chọn SES, kể cả workstation.
-Không dùng `AWS_PROFILE` hoặc `AWS_SESSION_TOKEN` để cấu hình IAM user này.
+API từ chối giá trị nonempty (kể cả whitespace) của `AWS_PROFILE`,
+`AWS_SESSION_TOKEN`, `AWS_CREDENTIAL_EXPIRATION`, `AWS_CONFIG_FILE`,
+`AWS_SHARED_CREDENTIALS_FILE`, `AWS_WEB_IDENTITY_TOKEN_FILE`, `AWS_ROLE_ARN`,
+`AWS_ROLE_SESSION_NAME`, `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`,
+`AWS_CONTAINER_CREDENTIALS_FULL_URI`, `AWS_CONTAINER_AUTHORIZATION_TOKEN` và
+`AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE` khi chọn SES. Chặn nguồn credential
+khác, nhất là SDK ưu tiên profile hơn env key pair; không thay default chain.
+Disabled/sink không áp giới hạn này. Tên SSM trong bảng giữ nguyên.
 
 Infra cần verified identity, configuration set trong cùng region, event
 configuration không ghi body/PII, sandbox recipient hợp lệ ở DEV (hoặc SES đã
@@ -81,8 +96,10 @@ credential source của SDK. Các SES field và credential chỉ required khi ch
 Đã bổ sung unit cases: SDK command/options, selection SES/disabled/sink,
 conditional env validation, template vi/en/default, decoy, sanitized provider
 error, locale pass-through, SES metric, 202 + invalidation khi lỗi gửi,
-shared quota fail-closed và report không mang ambient PII. Đây là test code,
-**chưa chạy** test/lint/typecheck/build hoặc network theo lệnh owner.
+shared quota fail-closed và report không mang ambient PII. Bản sửa Astra r1
+thêm regression delivery 750 ms, timeout 3 giây, invalidation chậm/lỗi,
+late failure không invalidate resend mới, và từ chối nguồn AWS credential khác.
+Sol chỉ chạy regression/unit liên quan; Claude vẫn chạy full gates và commits.
 
 Claude chạy mọi gate, gồm observability/Sentry boundary và regression HTTP
 anti-enumeration trên cùng revision. Infra#339 provision/inject mapping trên;
