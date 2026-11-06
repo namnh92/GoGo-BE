@@ -8,6 +8,24 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 6.1.0-alpha.1 — CMS AI credit inspection (GoGo-BE#778)
+
+**Additive MINOR** from 6.0.0-alpha.1. `GET /cms/users/{id}/assistant-credits`
+returns minimal user identity (`id`, `displayName`), current full credit balance,
+and a cursor-paginated ledger of signed deltas, reason codes and source references.
+Only `ops_admin` and `super_admin` may read it. Every successful read is audited
+without copying credit data into the audit. No email, message, usage ledger ID,
+submission note or provider content is returned.
+
+Balance and ledger page share one statement snapshot. Pages sort descending by
+exact microsecond timestamp and UUID; cursors are opaque and user-scoped. Balance
+may change between pages and is not a page subtotal. Unknown users return 404;
+users without an account row have zero credits and empty history. Erased user
+linkage is not reconstructed. Immutable submission/venue references survive source
+deletion; `placeId` is nullable and resolves only through the surviving submission.
+No credit mutation, historical award or schema migration is introduced. Consumers
+must regenerate from this version; Astra and mapped CODEOWNER review are required.
+
 ## 5.1.0-alpha.1 — consumer password recovery (GoGo-BE#772 / GoGo-MobileApp#482)
 
 **Additive recovery endpoints:** public `POST /auth/password-recovery/request`

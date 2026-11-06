@@ -23,6 +23,11 @@ import {
   SessionRevocationService,
 } from '@gogo/modules';
 import { cmsAccessHeaders, cmsAssertion } from './support/cms-access';
+import {
+  grantSubmissionCredits,
+  lockAssistantAccount,
+  spendAssistantCredit,
+} from '../../../libs/modules/shared/assistant-credits';
 
 /**
  * CMS-001..010 acceptance: RBAC enforced server-side, place workflow +
@@ -8235,5 +8240,281 @@ describe('campaigns cannot newly target a destination the app cannot open (#604)
       where kind = 'campaign' and payload->>'campaignId' = ${id}
     `);
     expect((rows[0] as { n: number }).n).toBe(0);
+  });
+});
+
+/** #778 — real HTTP guards + the #774 credit writers, on migrated PostGIS. */
+describe('CMS assistant credit balance and history (#778)', () => {
+  const url = (id: string) => `/v1/cms/users/${id}/assistant-credits`;
+  const get = (token: string, id: string, query = '') =>
+    api().inject({ method: 'GET', url: url(id) + query, headers: auth(token) });
+  const subject = async () => {
+    const [row] = await db
+      .insert(schema.users)
+      .values({
+        displayName: 'Người đóng góp',
+        email: `credit-${randomUUID()}@example.com`,
+      })
+      .returning();
+    return row!;
+  };
+  const grant = (
+    id: string,
+    submissionId: string = randomUUID(),
+    identity = `google:${randomUUID()}`,
+  ) => db.transaction((tx) => grantSubmissionCredits(tx, id, submissionId, identity));
+
+  it('allows ops/super only; rejects anonymous, consumer, guest and lower roles before reads', async () => {
+    const user = await subject();
+    const anonymous = await api().inject({ method: 'GET', url: url(user.id) });
+    expect(anonymous.statusCode).toBe(401);
+    for (const role of ['editor', 'moderator'] as const) {
+      const admin = await createAdmin(`credit-${role}@gogo.local`, role);
+      const denied = await get(admin.token, user.id);
+      expect(denied.statusCode).toBe(403);
+      expect(denied.json().code).toBe('ROLE_DENIED');
+    }
+    const registration = await api().inject({
+      method: 'POST',
+      url: '/v1/auth/register',
+      remoteAddress: ip(),
+      payload: {
+        email: 'credit-consumer@example.com',
+        password: 'Valid-password-123!',
+        displayName: 'User',
+      },
+    });
+    expect(registration.statusCode).toBe(201);
+    const [room] = await db
+      .insert(schema.rooms)
+      .values({
+        code: randomUUID().slice(0, 10),
+        type: 'group',
+        status: 'collecting',
+        decisionMode: 'vote',
+        hostUserId: user.id,
+        participantCount: 1,
+      })
+      .returning();
+    const guest = await api().inject({
+      method: 'POST',
+      url: '/v1/sessions/guest',
+      remoteAddress: ip(),
+      payload: { roomCode: room!.code, displayName: 'Guest' },
+    });
+    expect(guest.statusCode).toBe(201);
+    for (const token of [registration.json().accessToken, guest.json().accessToken]) {
+      const denied = await get(token, user.id);
+      expect(denied.statusCode).toBe(403);
+      expect(denied.json().code).toBe('ADMIN_ONLY');
+    }
+    const auditsBefore = await db.execute(sql`select id from audit_logs
+      where action='user.assistant_credits_viewed' and resource_id=${user.id}`);
+    expect(auditsBefore.rows).toHaveLength(0);
+    const ops = await createAdmin('credit-access-ops@gogo.local', 'ops_admin');
+    const boss = await superAdmin();
+    for (const admin of [ops, boss]) {
+      const response = await get(admin.token, user.id);
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['cache-control']).toBe('no-store');
+      expect(response.json()).toEqual({
+        user: { id: user.id, displayName: user.displayName },
+        balance: 0,
+        items: [],
+        nextCursor: null,
+      });
+    }
+    const audits = await db.execute(sql`select actor_id, diff, request_id, authorization_path
+      from audit_logs where action='user.assistant_credits_viewed' and resource_id=${user.id}`);
+    expect(audits.rows).toHaveLength(2);
+    expect(audits.rows.map((r) => (r as { actor_id: string }).actor_id).sort()).toEqual(
+      [ops.id, boss.id].sort(),
+    );
+    for (const row of audits.rows as {
+      diff: unknown;
+      request_id: string;
+      authorization_path: string;
+    }[]) {
+      expect(row.diff).toBeNull();
+      expect(row.request_id).toBeTruthy();
+      expect(row.authorization_path).toBe('exact_role');
+    }
+  });
+
+  it('rechecks live admin role and status for this read', async () => {
+    const user = await subject();
+    const ops = await createAdmin('credit-live-ops@gogo.local', 'ops_admin');
+    await db
+      .update(schema.adminUsers)
+      .set({ role: 'editor' })
+      .where(eq(schema.adminUsers.id, ops.id));
+    expect((await get(ops.token, user.id)).json().code).toBe('ROLE_DENIED');
+    await db
+      .update(schema.adminUsers)
+      .set({ role: 'ops_admin', status: 'suspended' })
+      .where(eq(schema.adminUsers.id, ops.id));
+    expect((await get(ops.token, user.id)).json().code).toBe('ADMIN_ONLY');
+  });
+
+  it('pages exact timestamp/UUID ties, preserves source refs and reconciles grants minus spends', async () => {
+    const user = await subject();
+    const other = await subject();
+    const ops = await createAdmin('credit-page-ops@gogo.local', 'ops_admin');
+    const [place] = await db
+      .insert(schema.places)
+      .values({
+        name: 'Credit reference',
+        nameNormalized: 'credit reference',
+        geom: { x: 106.7, y: 10.77 },
+        status: 'draft',
+      })
+      .returning();
+    const [submission] = await db
+      .insert(schema.placeSubmissions)
+      .values({
+        googlePlaceId: `credit-${randomUUID()}`,
+        submittedByUserId: user.id,
+        status: 'approved',
+        resultPlaceId: place!.id,
+        note: 'private submission note',
+      })
+      .returning();
+    await grant(user.id, submission!.id, `google:${submission!.googlePlaceId}`);
+    await grant(user.id, submission!.id, `google:${submission!.googlePlaceId}`); // replay earns zero
+    await grant(user.id);
+    await grant(other.id);
+    const usageId = randomUUID();
+    await db.transaction(async (tx) => {
+      await lockAssistantAccount(tx, user.id);
+      await spendAssistantCredit(tx, user.id, usageId);
+      await spendAssistantCredit(tx, user.id, usageId); // replay spends zero
+    });
+    await db.execute(sql`update assistant_credit_ledger set created_at =
+      case when submission_id=${submission!.id} then '2026-01-01T00:00:00.000001Z'::timestamptz
+      else '2026-01-01T00:00:00.000002Z'::timestamptz end where user_id=${user.id}`);
+    const expected = await db.execute(sql`select id, delta from assistant_credit_ledger
+      where user_id=${user.id} order by created_at desc, id desc`);
+    const sum = expected.rows.reduce((n, r) => n + Number((r as { delta: number }).delta), 0);
+    expect(sum).toBe(99);
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 3; page++) {
+      const response = await get(
+        ops.token,
+        user.id,
+        `?limit=1${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
+      );
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['cache-control']).toBe('no-store');
+      const body = response.json();
+      expect(body.balance).toBe(sum);
+      expect(body.user).toEqual({ id: user.id, displayName: user.displayName });
+      expect(body.items).toHaveLength(1);
+      const item = body.items[0];
+      expect(Object.keys(item).sort()).toEqual(
+        ['id', 'createdAt', 'delta', 'reason', 'submissionId', 'venueIdentity', 'placeId'].sort(),
+      );
+      expect(item.createdAt).toMatch(/^2026-01-01T00:00:00\.00000[12]Z$/);
+      if (item.submissionId === submission!.id) {
+        expect(item).toMatchObject({
+          delta: 50,
+          reason: 'submission_approved',
+          placeId: place!.id,
+          venueIdentity: `google:${submission!.googlePlaceId}`,
+        });
+      } else if (item.reason === 'message_spent') {
+        expect(item).toMatchObject({
+          delta: -1,
+          submissionId: null,
+          venueIdentity: null,
+          placeId: null,
+        });
+      }
+      expect(response.body).not.toContain(user.email);
+      expect(response.body).not.toContain('private submission note');
+      expect(response.body).not.toContain(usageId);
+      seen.push(item.id);
+      cursor = body.nextCursor;
+      expect(cursor === null).toBe(page === 2);
+    }
+    expect(seen).toEqual(expected.rows.map((r) => (r as { id: string }).id));
+
+    // Source deletion does not hide the immutable grant; only its current place link disappears.
+    await db.delete(schema.placeSubmissions).where(eq(schema.placeSubmissions.id, submission!.id));
+    const after = await get(ops.token, user.id);
+    expect(
+      after.json().items.find((r: { submissionId: string }) => r.submissionId === submission!.id),
+    ).toMatchObject({ placeId: null, venueIdentity: `google:${submission!.googlePlaceId}` });
+    expect(after.json().balance).toBe(sum);
+  });
+
+  it('validates pagination and subject, and keeps a cursor stable across a later grant', async () => {
+    const user = await subject();
+    const other = await subject();
+    const ops = await createAdmin('credit-cursor-ops@gogo.local', 'ops_admin');
+    await grant(user.id);
+    await grant(user.id);
+    await db.execute(sql`update assistant_credit_ledger
+      set created_at='2026-01-01T00:00:00.000001Z' where user_id=${user.id}`);
+    const first = await get(ops.token, user.id, '?limit=1');
+    const cursor = first.json().nextCursor as string;
+    expect(cursor).toBeTruthy();
+    await grant(user.id);
+    const next = await get(ops.token, user.id, `?limit=1&cursor=${encodeURIComponent(cursor)}`);
+    expect(next.statusCode).toBe(200);
+    expect(next.json().balance).toBe(150); // balance is current for each page
+    expect(next.json().items).toHaveLength(1);
+    expect(next.json().items[0].id).not.toBe(first.json().items[0].id);
+    expect(next.json().nextCursor).toBeNull();
+    const emptyCursor = Buffer.from(
+      JSON.stringify([user.id, '2000-01-01T00:00:00.000000Z', randomUUID()]),
+    ).toString('base64url');
+    const empty = await get(ops.token, user.id, `?cursor=${emptyCursor}`);
+    expect(empty.json()).toMatchObject({ balance: 150, items: [], nextCursor: null });
+    for (const query of ['?limit=0', '?limit=101', '?limit=1.5', '?cursor=', '?cursor=broken']) {
+      expect((await get(ops.token, user.id, query)).statusCode).toBe(400);
+    }
+    for (const payload of [
+      [user.id, '0000-01-01T00:00:00.000000Z', randomUUID()],
+      [user.id, '2026-01-01T00:00:00.000000Z', '-'.repeat(36)],
+      [],
+    ]) {
+      const malformed = Buffer.from(JSON.stringify(payload)).toString('base64url');
+      const denied = await get(ops.token, user.id, `?cursor=${malformed}`);
+      expect(denied.statusCode).toBe(400);
+      expect(denied.json().code).toBe('INVALID_CURSOR');
+    }
+    const wrongSubject = await get(ops.token, other.id, `?cursor=${cursor}`);
+    expect(wrongSubject.statusCode).toBe(400);
+    expect(wrongSubject.json().code).toBe('INVALID_CURSOR');
+    expect((await get(ops.token, 'not-a-uuid')).statusCode).toBe(400);
+    const missing = await get(ops.token, randomUUID());
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json().code).toBe('USER_NOT_FOUND');
+  });
+
+  it('does not reconstruct erased user linkage from retained source identifiers', async () => {
+    const user = await subject();
+    const boss = await superAdmin();
+    const submissionId = randomUUID();
+    await grant(user.id, submissionId);
+    const before = await get(boss.token, user.id);
+    expect(before.json().balance).toBe(50);
+    const erased = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/users/${user.id}/delete`,
+      remoteAddress: ip(),
+      headers: auth(boss.token),
+      payload: { reason: 'Subject requested erasure CREDIT-778' },
+    });
+    expect(erased.statusCode).toBe(201);
+    const after = await get(boss.token, user.id);
+    expect(after.statusCode).toBe(200);
+    expect(after.json()).toMatchObject({ balance: 0, items: [], nextCursor: null });
+    expect(after.body).not.toContain(user.displayName);
+    expect(after.body).not.toContain(user.email);
+    const retained = await db.execute(sql`select user_id, submission_id
+      from assistant_credit_ledger where submission_id=${submissionId}`);
+    expect(retained.rows).toEqual([{ user_id: null, submission_id: submissionId }]);
   });
 });
