@@ -139,9 +139,13 @@ describe('I-3 authoritative consumer session lookup', () => {
     const cms = await post(c, '/v1/cms/auth/login', { email, password: 'Cms-Recovery-8!' });
     expect(cms.statusCode, cms.body).toBe(201);
     const cmsToken = cms.json<Grant>().accessToken;
-    const cmsRead = () =>
-      api(c).inject({ method: 'GET', url: '/v1/cms/users', headers: auth(cmsToken) });
+    // /cms/users reads auth_sessions for last_active_at, so it is also
+    // blocked by the outage lock. Use an independent, protected CMS read
+    // during the outage and keep the users read as a post-rollback control.
+    const cmsRead = (url = '/v1/cms/rooms') =>
+      api(c).inject({ method: 'GET', url, headers: auth(cmsToken) });
     expect((await cmsRead()).statusCode).toBe(200);
+    expect((await cmsRead('/v1/cms/users')).statusCode).toBe(200);
     // Prime a negative cache before failure: it must never authorize a user
     // when the authoritative read cannot finish.
     expect((await me(c, user.accessToken)).statusCode).toBe(200);
@@ -176,7 +180,10 @@ describe('I-3 authoritative consumer session lookup', () => {
       coordinator.release();
       if (pending) await pending;
     }
-    expect((await me(c, user.accessToken)).statusCode).toBe(200);
+    const recovered = await me(c, user.accessToken);
+    expect(recovered.statusCode, recovered.body).toBe(200);
+    const recoveredCms = await cmsRead('/v1/cms/users');
+    expect(recoveredCms.statusCode, recoveredCms.body).toBe(200);
     const proof = await f.request(user.email, c);
     expect(
       (

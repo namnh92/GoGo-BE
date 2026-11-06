@@ -308,11 +308,17 @@ describe('I-2 real app enumeration, quota and replay contracts', () => {
     },
   );
 
-  it('request replay checks quotas and cooldown before replay lookup, then returns the exact original body after cooldown and after resend', async () => {
+  it('request replay checks quotas and cooldown before replay lookup, then returns the exact original JSON fields and values after cooldown and after resend', async () => {
     const user = await f.register();
     const context = { ip: freshIp(), key: 'request-replay-original' };
     const first = await post(f.a, REQUEST, { email: user.email }, context);
     expect(first.statusCode).toBe(202);
+    const originalBody = first.json<RecoveryResponse>();
+    expect(Object.keys(originalBody).sort()).toEqual([
+      'challengeId',
+      'expiresAt',
+      'resendAvailableAt',
+    ]);
     const repo = f.b.get(RecoveryRepository);
     const original = repo.transaction.bind(repo);
     const getReplay = vi.fn();
@@ -349,7 +355,9 @@ describe('I-2 real app enumeration, quota and replay contracts', () => {
       await f.allowResend(user.email);
       const replay = await post(f.b, REQUEST, { email: user.email }, context);
       expect(replay.statusCode).toBe(202);
-      expect(replay.body).toBe(first.body);
+      // Match the shared idempotency contract: jsonb preserves JSON values,
+      // not object key order. Strict equality also rejects extra fields.
+      expect(replay.json()).toStrictEqual(originalBody);
       expect(send).not.toHaveBeenCalled();
       await f.clearLimits();
       const resend = await post(
@@ -366,7 +374,7 @@ describe('I-2 real app enumeration, quota and replay contracts', () => {
       await f.clearLimits();
       const replayAfterResend = await post(f.b, REQUEST, { email: user.email }, context);
       expect(replayAfterResend.statusCode).toBe(202);
-      expect(replayAfterResend.body).toBe(first.body);
+      expect(replayAfterResend.json()).toStrictEqual(originalBody);
       expect(send).toHaveBeenCalledTimes(1);
       const changed = await post(
         f.b,

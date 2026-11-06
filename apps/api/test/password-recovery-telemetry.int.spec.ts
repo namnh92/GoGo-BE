@@ -8,6 +8,7 @@ import {
   type RecoveryMailSink,
 } from '../../../libs/modules/identity/infrastructure/recovery-mail';
 import { RATE_LIMIT_STORE } from '../../../libs/modules/identity/presentation/rate-limit.service';
+import type { RecoveryResponse } from '../../../libs/modules/identity/application/password-recovery.service';
 import {
   COMPLETE,
   REQUEST,
@@ -127,7 +128,12 @@ describe('I-5 recovery telemetry on real HTTP requests', () => {
       'telemetry-request',
     );
     expect(accepted.status).toBe(202);
-    const originalBody = await accepted.text();
+    const originalBody = (await accepted.json()) as RecoveryResponse;
+    expect(Object.keys(originalBody).sort()).toEqual([
+      'challengeId',
+      'expiresAt',
+      'resendAvailableAt',
+    ]);
     const proof = (telemetry.get(RecoveryMailSender) as RecoveryMailSink).sent.find(
       (m) => m.email === email,
     )!;
@@ -164,7 +170,8 @@ describe('I-5 recovery telemetry on real HTTP requests', () => {
       'telemetry-request',
     );
     expect(requestReplay.status).toBe(202);
-    expect(await requestReplay.text()).toBe(originalBody);
+    // Durable JSON replay preserves every field/value, not jsonb key order.
+    expect(await requestReplay.json()).toStrictEqual(originalBody);
     const success = await call(
       COMPLETE,
       input,

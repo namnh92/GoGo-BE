@@ -2,22 +2,22 @@ import { Module } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AppExceptionFilter } from '../../../../apps/api/src/common/filters/app-exception.filter';
+import { AppExceptionFilter } from '../src/common/filters/app-exception.filter';
 import {
   PasswordRecoveryService,
   RecoveryCrypto,
   type RecoveryChallenge,
   type RecoveryReplay,
-} from '../application/password-recovery.service';
-import type { PasswordService } from '../application/password.service';
-import type { SessionRevocationService } from '../application/session-revocation.service';
+} from '../../../libs/modules/identity/application/password-recovery.service';
+import type { PasswordService } from '../../../libs/modules/identity/application/password.service';
+import type { SessionRevocationService } from '../../../libs/modules/identity/application/session-revocation.service';
 import type {
   RecoveryRepository,
   RecoveryTransaction,
-} from '../infrastructure/recovery.repository';
-import { RecoveryMailSink } from '../infrastructure/recovery-mail';
-import { PasswordRecoveryController } from './password-recovery.controller';
-import { InMemoryRateLimitStore } from './rate-limit.service';
+} from '../../../libs/modules/identity/infrastructure/recovery.repository';
+import { RecoveryMailSink } from '../../../libs/modules/identity/infrastructure/recovery-mail';
+import { PasswordRecoveryController } from '../../../libs/modules/identity/presentation/password-recovery.controller';
+import { InMemoryRateLimitStore } from '../../../libs/modules/identity/presentation/rate-limit.service';
 
 // Real controller, validation pipe, service and exception filter; no listening socket or database.
 describe('password recovery HTTP privacy contract', () => {
