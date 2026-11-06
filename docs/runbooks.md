@@ -22,6 +22,33 @@ acceptance for this doc.
 - **Feature regression:** kill switches via `PUT /v1/cms/feature-flags/{key}` (e.g. `FLAG_AI_REFINEMENT`, `place_import.autopublish`).
 - Decision rule: user-facing correctness bug → roll back first, diagnose after. Data-corruption suspicion → stop writes (maintenance mode **[infra]**) before anything.
 
+## Checked-in room count — GoGo-BE#785
+
+Migration `0082_place-checkin-counts` is required before the API rollout:
+the reader looks up `place_checkin_counts`. The migration creates and backfills
+that table plus `place_checkin_visits` and `place_checkin_rooms`, then installs
+triggers that maintain them in the same transaction as source writes. DDL,
+backfill and trigger installation are atomic. Writers are blocked during the
+migration; reads remain available. Rehearse on a production-like snapshot and
+choose a maintenance window within the 5s lock timeout and 120s statement
+timeout. A failed migration rolls back; do not roll out the reader until it
+succeeds. See [ADR-0043](adr/0043-place-checked-in-group-count.md#migration-và-vận-hành).
+
+For application rollback, deploy the uncached query from `d097b37` to every
+reader, retaining the derived tables and triggers. Never restore the TTL-cached
+reader, which can expose a stale count after deletion. If derived-schema removal
+is necessary, only after all readers have switched back, run:
+
+```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/rollback-0082-place-checkin-counts.sql
+```
+
+The script removes derived tables, functions and triggers transactionally;
+source check-ins, stops, plans and rooms are preserved. It leaves the Drizzle
+journal intact. To roll forward afterwards, explicitly reapply migration 0082
+SQL in a transaction before rolling out the new reader; the migrator will not
+rerun an entry already recorded in the journal.
+
 ## 3. Incident response
 
 1. **Detect:** SLO alerts (BFF p95 ≤500ms, search ≤700ms, suggestion ≤3s, availability 99.9%) **[infra]**. Those four numbers are also thresholds in `load/` (QP-005), so a load run fails and names the SLO it broke rather than producing a chart to interpret; `/v1/cms/ops/kpis` for domain health (zero-result spike, provider errors, over-budget plans, moderation backlog).

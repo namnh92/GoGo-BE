@@ -25,14 +25,22 @@ including 5→4 suppression. A concurrent read uses its own statement snapshot
 and cannot supply a later request. The HTTP response remains `no-store`.
 Database errors fail the request; no false zero or stale count is returned.
 
-Migration `0082_place-checkin-counts` backfills derived visit, room and count
-tables and maintains them with triggers in the source write transaction. Each
-request reads the precomputed count by place primary key. Deploy the migration
-before the reader. Roll back to the uncached source query before running
-`scripts/rollback-0082-place-checkin-counts.sql`; avoid the older TTL cache that
-breaks committed-read suppression. Regenerate clients and tolerate the field
-being absent with the older API. See ADR-0043 for migration operations, read
-consistency, privacy assumptions and verification.
+Migration `0082_place-checkin-counts` is required: it creates and backfills
+`place_checkin_visits`, `place_checkin_rooms` and `place_checkin_counts`, with
+triggers maintaining them in the source-write transaction. Apply the migration
+successfully **before rolling out the API**: the new reader requires
+`place_checkin_counts`. Each request reads the precomputed count by place
+primary key.
+
+Rollback the API to the uncached query at `d097b37` first, retaining the tables
+and triggers; never restore the TTL-cached reader. Only after every reader has
+switched back may `scripts/rollback-0082-place-checkin-counts.sql` remove the
+derived schema. It preserves source records and the Drizzle journal, so a later
+roll-forward must explicitly reapply migration 0082 in a transaction before
+rolling out the new reader. Consumers regenerate clients as needed and tolerate
+the field being absent with an older API. See [the runbook](../docs/runbooks.md#checked-in-room-count--gogo-be785)
+and [ADR-0043](../docs/adr/0043-place-checked-in-group-count.md) for migration
+limits, read consistency, privacy assumptions and verification.
 
 ## 6.3.0-alpha.1 — Place Detail areaSummary (GoGo-BE#784)
 
