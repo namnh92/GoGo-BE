@@ -349,6 +349,10 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // rating. `outcome` is a closed set: available | insufficient | error. Never
   // the place, the reader or the score.
   place_gogo_rating_total: ['outcome'],
+  // GoGo-BE#785 — cache outcome: hit | miss | error; aggregate outcome:
+  // available | suppressed. Never label with place, room, member or count.
+  place_checkin_group_cache_total: ['outcome'],
+  place_checkin_group_count_total: ['outcome'],
 
   // --- profile / avatars (ADR-0022) ---------------------------------------
   // `outcome` is a closed set: ok | rejected (4xx) | unavailable (5xx) | error.

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 6.3.0-alpha.1
+  version: 6.4.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -3704,6 +3704,7 @@ paths:
                     rating: 4.6
                     ratingCount: 980
                     gogoRatingCount: 0
+                    checkedInGroupCount: null
                     isLodging: false
                     taxonomies: []
                     hours: []
@@ -3722,6 +3723,7 @@ paths:
                     rating: 4.6
                     ratingCount: 980
                     gogoRatingCount: 4
+                    checkedInGroupCount: null
                     isLodging: false
                     taxonomies: []
                     hours: []
@@ -3741,6 +3743,7 @@ paths:
                     ratingCount: 980
                     gogoRating: 4.2
                     gogoRatingCount: 5
+                    checkedInGroupCount: 5
                     isLodging: false
                     taxonomies: []
                     hours: []
@@ -16005,7 +16008,7 @@ components:
 
     PlaceDetail:
       type: object
-      required: [gogoRatingCount]
+      required: [gogoRatingCount, checkedInGroupCount]
       properties:
         verification: { $ref: '#/components/schemas/VenueVerification' }
         id: { type: string, format: uuid }
@@ -16066,6 +16069,18 @@ components:
             reviews, check-ins and provider reviews are never counted. Below 5
             the client says in words that there are not enough GoGo reviews
             yet, beside this count, and renders no score.
+        checkedInGroupCount:
+          type: [integer, 'null']
+          minimum: 5
+          description: >
+            GoGo-BE#785 — all-time distinct rooms with at least one stored
+            stop check-in at this place, across members, stops and plan versions.
+            Always null below 5 rooms (including zero); otherwise an integer.
+            Completed stops, plans, votes, saves and reviews alone do not count.
+            Check-in content moderation does not change visit participation.
+            No room or member identities are returned. Cached internally for up
+            to 60 seconds per API process, including null; writes, deletion and
+            place merges may take that long to appear. Hide this fact when null.
         priceLevel: { type: integer }
         avgVisitMinutes: { type: integer }
         suitability:

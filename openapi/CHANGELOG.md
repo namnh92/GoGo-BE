@@ -8,6 +8,27 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 6.4.0-alpha.1 — Checked-in room count (GoGo-BE#785)
+
+Additive MINOR from 6.3.0-alpha.1. `PlaceDetail.checkedInGroupCount` counts
+all-time distinct rooms with a stored check-in at the place. Multiple members,
+stops and plan versions in one room count once. Plans, completed stops without
+a check-in, votes, saves and reviews do not count. Check-in content moderation
+is independent of the existence of the visit record.
+
+The field is always present: `null` below five rooms (including zero), otherwise
+an integer at least five. Clients hide the fact for null; no room or member
+identity is exposed. An internal per-process cache retains only the suppressed
+or public aggregate for at most 60 seconds, including null. Changes, deletions
+and merges can take that long to appear. The HTTP response remains `no-store`
+so the separate community rating still follows moderation on the next read.
+Database errors on a cache miss fail the request; no false zero is returned.
+
+No migration: existing `plan_stops_place_idx`, `plans_pkey` and
+`stop_checkins_stop_member_unique` support the cache-fill query. Rollback the
+API and regenerate clients; tolerate the field being absent with the older API.
+See ADR-0043 for cache bounds, privacy assumptions and verification.
+
 ## 6.3.0-alpha.1 — Place Detail areaSummary (GoGo-BE#784)
 
 **Additive MINOR** from 6.2.0-alpha.1. `GET /places/{id}` returns optional

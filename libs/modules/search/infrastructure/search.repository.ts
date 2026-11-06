@@ -9,6 +9,7 @@ import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { DB } from '../../shared/tokens';
 import { PUBLIC_REVIEW_STATUS } from '../../reviews/domain/public-review';
 import { toSearchQuery } from '../domain/normalize';
+import { CheckedInGroupCounts } from './checked-in-group-counts';
 
 export type SearchWeights = {
   text: number;
@@ -162,6 +163,7 @@ function notProviderClosed(): SQL {
 @Injectable()
 export class SearchRepository {
   private countedInFlight = 0;
+  private readonly checkedInGroups: CheckedInGroupCounts;
   constructor(
     @Inject(DB) private readonly db: Db,
     @Optional()
@@ -171,7 +173,9 @@ export class SearchRepository {
       SEARCH_COUNT_MAX_CONCURRENT?: number;
     },
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
-  ) {}
+  ) {
+    this.checkedInGroups = new CheckedInGroupCounts(db, metrics);
+  }
 
   /** Default on: off is the state that serves ingestion places unattributed. */
   private get unifiedProvenance(): boolean {
@@ -458,7 +462,9 @@ export class SearchRepository {
 
   async placeDetail(placeId: string) {
     const rows = await this.db.execute(this.placeDetailQuery(placeId));
-    return (rows.rows[0] as Record<string, unknown> | undefined) ?? undefined;
+    const row = rows.rows[0] as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    return { ...row, checked_in_group_count: await this.checkedInGroups.get(placeId) };
   }
 
   /**

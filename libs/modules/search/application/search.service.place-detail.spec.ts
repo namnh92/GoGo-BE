@@ -40,6 +40,19 @@ const ratingCalls = (m: RecordingMetrics) =>
   m.calls.filter((c) => c.name === 'place_gogo_rating_total').map((c) => c.labels);
 
 describe('Place Detail GoGo rating mapping (#217)', () => {
+  it.each([null, 5, 9])('maps the private aggregate to checkedInGroupCount: %s', async (count) => {
+    const { svc } = service(async () => ({
+      ...baseRow,
+      gogo_rating_count: 0,
+      gogo_rating_mean: null,
+      checked_in_group_count: count,
+    }));
+    const detail = await svc.placeDetail(baseRow.id);
+    expect(detail.checkedInGroupCount).toBe(count);
+    expect(detail).not.toHaveProperty('checked_in_group_count');
+    expect(detail).not.toHaveProperty('roomIds');
+  });
+
   it('omits the score below the threshold and reports insufficient', async () => {
     const { svc, metrics } = service(async () => ({
       ...baseRow,
