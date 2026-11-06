@@ -83,12 +83,16 @@ export class AuthService {
       }
     }
 
-    const tokens = await this.repo.withAuthTransaction(input.email, user.id, async (repo, current) => {
-      if (!current || current.status !== 'active' || current.passwordHash !== passwordHash) {
-        throw AppError.unauthorized('INVALID_CREDENTIALS', 'Email or password is incorrect');
-      }
-      return this.issueSession(user.id, input.meta, repo);
-    });
+    const tokens = await this.repo.withAuthTransaction(
+      input.email,
+      user.id,
+      async (repo, current) => {
+        if (!current || current.status !== 'active' || current.passwordHash !== passwordHash) {
+          throw AppError.unauthorized('INVALID_CREDENTIALS', 'Email or password is incorrect');
+        }
+        return this.issueSession(user.id, input.meta, repo);
+      },
+    );
     return { userId: user.id, tokens, ...(claimedRoomId ? { claimedRoomId } : {}) };
   }
 
@@ -100,16 +104,23 @@ export class AuthService {
     const identifierHash = sha256(input.email.trim().toLowerCase());
     const ipHash = sha256(input.meta?.ip ?? 'unknown');
 
-    const result = await this.repo.withAuthTransaction(input.email.trim().toLowerCase(), null, async (repo, user) => {
-      const failures = await repo.countRecentFailures(identifierHash, this.options.lockoutWindowSeconds);
-      if (failures >= this.options.lockoutThreshold) {
-        throw AppError.tooManyRequests('Too many attempts, try again later');
-      }
-      const valid = await this.passwords.verifyOrBurn(user?.passwordHash, input.password);
-      await repo.recordLoginAttempt({ identifierHash, ipHash, succeeded: valid });
-      if (!valid || !user || user.status !== 'active') return null;
-      return { userId: user.id, tokens: await this.issueSession(user.id, input.meta, repo) };
-    });
+    const result = await this.repo.withAuthTransaction(
+      input.email.trim().toLowerCase(),
+      null,
+      async (repo, user) => {
+        const failures = await repo.countRecentFailures(
+          identifierHash,
+          this.options.lockoutWindowSeconds,
+        );
+        if (failures >= this.options.lockoutThreshold) {
+          throw AppError.tooManyRequests('Too many attempts, try again later');
+        }
+        const valid = await this.passwords.verifyOrBurn(user?.passwordHash, input.password);
+        await repo.recordLoginAttempt({ identifierHash, ipHash, succeeded: valid });
+        if (!valid || !user || user.status !== 'active') return null;
+        return { userId: user.id, tokens: await this.issueSession(user.id, input.meta, repo) };
+      },
+    );
     // Failed attempts commit before the public rejection.
     if (!result) {
       throw AppError.unauthorized('INVALID_CREDENTIALS', 'Email or password is incorrect');
@@ -302,7 +313,11 @@ export class AuthService {
     };
   }
 
-  private async issueSession(userId: string, meta?: ClientMeta, repo = this.repo): Promise<TokenPair> {
+  private async issueSession(
+    userId: string,
+    meta?: ClientMeta,
+    repo = this.repo,
+  ): Promise<TokenPair> {
     const refreshToken = this.tokens.generateOpaqueToken();
     const session = await repo.createAuthSession({
       userId,

@@ -396,7 +396,11 @@ describe('session revocation closes the access-token window', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: freshIp(),
-      payload: { email: 'revoke1@gogo.id.vn', password: 'Sufficiently-long-pw1!', displayName: 'R' },
+      payload: {
+        email: 'revoke1@gogo.id.vn',
+        password: 'Sufficiently-long-pw1!',
+        displayName: 'R',
+      },
     });
     const token = reg.json().accessToken as string;
     expect(
@@ -435,7 +439,11 @@ describe('session revocation closes the access-token window', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: freshIp(),
-      payload: { email: 'revoke2@gogo.id.vn', password: 'Sufficiently-long-pw1!', displayName: 'R' },
+      payload: {
+        email: 'revoke2@gogo.id.vn',
+        password: 'Sufficiently-long-pw1!',
+        displayName: 'R',
+      },
     });
     const first = reg.json();
     const rotated = await api().inject({

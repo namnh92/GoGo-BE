@@ -37,6 +37,12 @@ disabled.** Consumer AuthGuard now checks session presence, ownership and
 revocation in the authoritative database on existing protected routes, and fails
 closed when that database cannot answer. Deployments therefore need database
 read availability for these consumer requests independently of recovery enablement.
+Operational connection failures, PostgreSQL restart/unavailability, connection
+exhaustion and known pool/query timeouts (including wrapped driver causes) return
+503 `SERVICE_UNAVAILABLE`, `retryable: true`. SQL/schema, permission/configuration
+and unexpected programming errors retain existing handling. No cached negative
+result authorizes during an outage; driver diagnostics are not emitted in this
+mapped response.
 Superseded access sessions remain accepted; guest and CMS guard behavior is unchanged.
 This existing-route change requires a release entry under the published-guarantee
 rule above; the release is not limited to new paths.

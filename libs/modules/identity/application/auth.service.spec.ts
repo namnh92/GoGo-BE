@@ -11,7 +11,9 @@ describe('AuthService legacy password login', () => {
     const passwords = new PasswordService();
     const passwordHash = await passwords.hash('old');
     const repo = {
-      withAuthTransaction: vi.fn(async (_email, _id, work) => work(repo, { id: 'user-1', status: 'active', passwordHash })),
+      withAuthTransaction: vi.fn(async (_email, _id, work) =>
+        work(repo, { id: 'user-1', status: 'active', passwordHash }),
+      ),
       countRecentFailures: vi.fn().mockResolvedValue(0),
       findUserByEmail: vi.fn().mockResolvedValue({ id: 'user-1', status: 'active', passwordHash }),
       recordLoginAttempt: vi.fn().mockResolvedValue(undefined),
@@ -28,7 +30,12 @@ describe('AuthService legacy password login', () => {
       passwords,
       tokens as unknown as TokenService,
       {} as SessionRevocationService,
-      { refreshTtlSeconds: 3600, guestTtlSeconds: 3600, lockoutThreshold: 5, lockoutWindowSeconds: 60 },
+      {
+        refreshTtlSeconds: 3600,
+        guestTtlSeconds: 3600,
+        lockoutThreshold: 5,
+        lockoutWindowSeconds: 60,
+      },
       {} as RoomEventBus,
     );
 
@@ -36,17 +43,27 @@ describe('AuthService legacy password login', () => {
       userId: 'user-1',
       tokens: { accessToken: 'access-token' },
     });
-    expect(repo.recordLoginAttempt).toHaveBeenCalledWith(expect.objectContaining({ succeeded: true }));
+    expect(repo.recordLoginAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({ succeeded: true }),
+    );
   });
 });
 
 describe('authentication serialization against recovery', () => {
   function setup(valid = true) {
     const order: string[] = [];
-    const session = { id: 'old-session', userId: 'user-1', familyId: 'family', expiresAt: new Date(Date.now() + 60_000), revokedAt: null };
+    const session = {
+      id: 'old-session',
+      userId: 'user-1',
+      familyId: 'family',
+      expiresAt: new Date(Date.now() + 60_000),
+      revokedAt: null,
+    };
     const scoped = {
       countRecentFailures: vi.fn(async () => 0),
-      recordLoginAttempt: vi.fn(async () => { order.push('attempt'); }),
+      recordLoginAttempt: vi.fn(async () => {
+        order.push('attempt');
+      }),
       createAuthSession: vi.fn(async () => ({ id: 'new-session' })),
       findAuthSessionByTokenHash: vi.fn(async () => ({ ...session, revokedAt: new Date() })),
       markSessionSuperseded: vi.fn(),
@@ -55,22 +72,47 @@ describe('authentication serialization against recovery', () => {
       findAuthSessionByTokenHash: vi.fn(async () => session),
       withAuthTransaction: vi.fn(async (_email, _id, work) => {
         order.push('locked');
-        const result = await work(scoped, { id: 'user-1', status: 'active', passwordHash: 'current-hash' });
+        const result = await work(scoped, {
+          id: 'user-1',
+          status: 'active',
+          passwordHash: 'current-hash',
+        });
         order.push('committed');
         return result;
       }),
     };
-    const passwords = { verifyOrBurn: vi.fn(async (hash) => { order.push(`verify:${hash}`); return valid; }) };
-    const auth = new AuthService(repo as unknown as IdentityRepository, passwords as unknown as PasswordService,
-      { hashOpaqueToken: () => 'hash', generateOpaqueToken: () => 'refresh', issueAccessToken: () => 'access', accessTtlSeconds: 900 } as unknown as TokenService,
+    const passwords = {
+      verifyOrBurn: vi.fn(async (hash) => {
+        order.push(`verify:${hash}`);
+        return valid;
+      }),
+    };
+    const auth = new AuthService(
+      repo as unknown as IdentityRepository,
+      passwords as unknown as PasswordService,
+      {
+        hashOpaqueToken: () => 'hash',
+        generateOpaqueToken: () => 'refresh',
+        issueAccessToken: () => 'access',
+        accessTtlSeconds: 900,
+      } as unknown as TokenService,
       { revokeMany: vi.fn(async () => undefined) } as unknown as SessionRevocationService,
-      { refreshTtlSeconds: 3600, guestTtlSeconds: 3600, lockoutThreshold: 5, lockoutWindowSeconds: 60 }, {} as RoomEventBus);
+      {
+        refreshTtlSeconds: 3600,
+        guestTtlSeconds: 3600,
+        lockoutThreshold: 5,
+        lockoutWindowSeconds: 60,
+      },
+      {} as RoomEventBus,
+    );
     return { auth, repo, scoped, order };
   }
 
   it('verifies current locked password and records failed attempts before commit, then rejects', async () => {
     const { auth, order, scoped } = setup(false);
-    await expect(auth.login({ email: 'person@example.com', password: 'old' })).rejects.toMatchObject({ code: 'INVALID_CREDENTIALS' });
+    await expect(
+      auth.login({ email: 'person@example.com', password: 'old' }),
+    ).rejects.toMatchObject({ code: 'INVALID_CREDENTIALS' });
     expect(order).toEqual(['locked', 'verify:current-hash', 'attempt', 'committed']);
     expect(scoped.createAuthSession).not.toHaveBeenCalled();
   });

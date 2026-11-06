@@ -4,7 +4,12 @@ import { ManualIdempotency } from '../../shared/idempotency.interceptor';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { PasswordRecoveryService } from '../application/password-recovery.service';
 import { Public } from './decorators';
-import { recoveryCompleteSchema, recoveryRequestSchema, type RecoveryCompleteDto, type RecoveryRequestDto } from './dtos';
+import {
+  recoveryCompleteSchema,
+  recoveryRequestSchema,
+  type RecoveryCompleteDto,
+  type RecoveryRequestDto,
+} from './dtos';
 
 @Controller('auth/password-recovery')
 export class PasswordRecoveryController {
@@ -14,7 +19,10 @@ export class PasswordRecoveryController {
   @ManualIdempotency()
   @Post('request')
   @HttpCode(202)
-  request(@Body(new ZodValidationPipe(recoveryRequestSchema)) body: RecoveryRequestDto, @Req() req: FastifyRequest) {
+  request(
+    @Body(new ZodValidationPipe(recoveryRequestSchema)) body: RecoveryRequestDto,
+    @Req() req: FastifyRequest,
+  ) {
     return this.recovery.request(body, this.context(req));
   }
 
@@ -22,7 +30,10 @@ export class PasswordRecoveryController {
   @ManualIdempotency()
   @Post('complete')
   @HttpCode(204)
-  complete(@Body(new ZodValidationPipe(recoveryCompleteSchema)) body: RecoveryCompleteDto, @Req() req: FastifyRequest) {
+  complete(
+    @Body(new ZodValidationPipe(recoveryCompleteSchema)) body: RecoveryCompleteDto,
+    @Req() req: FastifyRequest,
+  ) {
     return this.recovery.complete(body, this.context(req));
   }
 

@@ -31,6 +31,13 @@ info:
        behind one mutex; parallel refreshes will log the user out.
     5. `DELETE /sessions/current` with `{ "allDevices": true|false }` to log out.
 
+    Every protected consumer route performs an authoritative session lookup.
+    Operational database connection/pool/query failures return `503
+    SERVICE_UNAVAILABLE` with `retryable: true`; retry with backoff. A cached
+    negative revocation result never authorizes during an outage. Missing,
+    wrong-owner or revoked sessions return `401 SESSION_REVOKED`. Superseded
+    access sessions remain valid. Guest and CMS session handling is unchanged.
+
     ### Guest sessions (no account)
 
     `POST /sessions/guest` (room code) or `POST /rooms/join/guest` (invite code)
@@ -497,6 +504,7 @@ paths:
               properties:
                 allDevices: { type: boolean, default: false }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Session revoked; cookies cleared.
           content:
@@ -520,6 +528,7 @@ paths:
         this environment can take an avatar at all. A guest receives its
         session facts: `roomId`, `displayName`, `expiresAt`.
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Actor profile (shape depends on actorType)
           content:
@@ -548,6 +557,7 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/ProfilePatch' }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: The updated profile
           content:
@@ -582,6 +592,7 @@ paths:
         Irreversible from the application. Idempotent on an account already
         deleted.
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200': { description: '{ deleted: true }' }
 
   /me/avatar:
@@ -650,6 +661,7 @@ paths:
         device already holds; what is guaranteed is that no new fetch of the
         old URL succeeds once the edge cache lifetime (one day) has passed.
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: 'The profile with `avatarUrl: null`'
           content:
@@ -686,6 +698,7 @@ paths:
           }
         - { name: cursor, in: query, schema: { type: string, maxLength: 512 } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: One page of room summaries
           content:
@@ -728,6 +741,7 @@ paths:
                   maxItems: 10
                   items: { type: string, format: uuid }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '201':
           description: Room created (creator becomes host)
           content:
@@ -744,6 +758,7 @@ paths:
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Room summary
           content:
@@ -780,6 +795,7 @@ paths:
                     expectedConstraintVersion: { type: integer, minimum: 1 }
                     participantCount: { type: integer, minimum: 2, maximum: 20 }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Updated summary with bumped constraintVersion
           content:
@@ -824,6 +840,7 @@ paths:
                   type: string
                   enum: [draft, collecting, matching, ready, active, completed, cancelled, expired]
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Transitioned
           content:
@@ -858,6 +875,7 @@ paths:
               properties:
                 title: { type: string, nullable: true, maxLength: 80 }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Renamed; the updated summary
           content:
@@ -1001,6 +1019,7 @@ paths:
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Members
           content:
@@ -1018,6 +1037,7 @@ paths:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
         - { name: memberId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200': { description: Removed }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1079,6 +1099,7 @@ paths:
               properties:
                 maxUses: { type: integer, minimum: 1, maximum: 100 }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '201':
           description: Invite created — plaintext code returned exactly once, only hash stored.
           content:
@@ -1098,6 +1119,7 @@ paths:
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200': { description: Invites }
 
   /rooms/{id}/invites/{inviteId}:
@@ -1109,6 +1131,7 @@ paths:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
         - { name: inviteId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200': { description: Revoked }
 
   /rooms/join:
@@ -1126,6 +1149,7 @@ paths:
               properties:
                 inviteCode: { type: string }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '201':
           description: |
             Joined (idempotent — re-joining returns the existing membership).
@@ -1213,6 +1237,7 @@ paths:
                   maxItems: 10
                   items: { type: string, format: uuid }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200': { description: Updated seed list }
         '400': { $ref: '#/components/responses/BadRequest' }
 
@@ -1225,6 +1250,7 @@ paths:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
         - { name: placeId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200': { description: Updated seed list }
 
   /rooms/{roomId}/preferences/me:
@@ -1235,6 +1261,7 @@ paths:
       parameters:
         - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Own preferences with version
           content:
@@ -1280,6 +1307,7 @@ paths:
                   additionalProperties: { type: number }
                 expectedVersion: { type: integer, minimum: 0 }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Autosaved
           content:
@@ -1300,6 +1328,7 @@ paths:
       parameters:
         - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Completed; room flips to `matching` when everyone is done
           content:
@@ -1437,6 +1466,7 @@ paths:
         shows the entry and asks the guest to sign in (owner decision on
         GoGo-MobileApp#377, 2026-10-26).
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Current availability for the caller
           content:
@@ -1486,6 +1516,7 @@ paths:
           }
         - { name: cursor, in: query, schema: { type: string, maxLength: 512 } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: One page of conversations
           content:
@@ -1554,6 +1585,7 @@ paths:
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: The conversation
           content:
@@ -1586,6 +1618,7 @@ paths:
                   maxLength: 80
                   description: Trimmed server-side; blank after trimming is a 400.
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Renamed
           content:
@@ -1609,6 +1642,7 @@ paths:
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '204': { description: Deleted (or already absent) }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/AssistantUserOnly' }
@@ -1643,6 +1677,7 @@ paths:
           }
         - { name: cursor, in: query, schema: { type: string, maxLength: 512 } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: One page of messages
           content:
@@ -1959,6 +1994,7 @@ paths:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
         - { name: messageId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: The assistant message after stopping
           content:
@@ -1986,6 +2022,7 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/AssistantFeedbackInput' }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Recorded
           content:
@@ -2003,6 +2040,7 @@ paths:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
         - { name: messageId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '204': { description: Cleared (or there was none) }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/AssistantUserOnly' }
@@ -2020,6 +2058,7 @@ paths:
       parameters:
         - { name: proposalId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: The proposal
           content:
@@ -2127,6 +2166,7 @@ paths:
       parameters:
         - { name: proposalId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: The proposal after dismissal
           content:
@@ -3779,6 +3819,7 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/PlaceReportRequest' }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: This actor's open report of the same reason, unchanged
           content:
@@ -3804,6 +3845,7 @@ paths:
       parameters:
         - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '201':
           description: Ranked candidates with explainable components + reason codes
           content:
@@ -3820,6 +3862,7 @@ paths:
       parameters:
         - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Current run, candidates and vote progress
           content:
@@ -3845,6 +3888,7 @@ paths:
               properties:
                 value: { type: string, enum: [yes, no, star] }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Vote recorded (idempotent). Couple `match` mode may auto-create the plan.
           content:
@@ -3876,6 +3920,7 @@ paths:
                   format: uuid
                   description: Optional explicit winner (host mode / tie-break) — must be a current candidate.
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '201':
           description: Decision applied and the first plan version created
           content:
@@ -3900,6 +3945,7 @@ paths:
       parameters:
         - { name: roomId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Current plan version with stops and totals
           content:
@@ -3915,6 +3961,7 @@ paths:
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Plan with stops
           content:
@@ -3973,6 +4020,7 @@ paths:
                           Omitted keeps the retained place's value; a new place
                           starts required; `false` clears it (ADR-0029).
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: New plan version (times, travel and totals recalculated server-side)
           content:
@@ -4031,6 +4079,7 @@ paths:
                   maxLength: 500
                   description: Free text, e.g. "rẻ hơn và gần hơn".
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '201':
           description: New plan version — every locked stop is preserved verbatim
           content:
@@ -4064,6 +4113,7 @@ paths:
               properties:
                 locked: { type: boolean }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Updated plan
           content:
@@ -4080,6 +4130,7 @@ paths:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
         - { name: stopId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '201': { description: '{ completed: true }' }
         '409': { $ref: '#/components/responses/Conflict' }
 
@@ -4154,6 +4205,7 @@ paths:
                 url: { type: string, format: uri, maxLength: 2000 }
                 roomId: { type: string, format: uuid }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '201':
           description: >
             Import result: pending → verified | rejected. Rejections carry a
@@ -4173,6 +4225,7 @@ paths:
       parameters:
         - { name: importId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200': { description: '{ id, status, reasonCode?, placeId? }' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
@@ -4230,6 +4283,7 @@ paths:
         SavedItemArea). Grouping and ordering are the client's, over the full
         list rather than a page.
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Saved items
           content:
@@ -4247,6 +4301,7 @@ paths:
         - { name: type, in: path, required: true, schema: { type: string, enum: [place, plan] } }
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200': { description: Saved }
     delete:
       operationId: unsaveItem
@@ -4256,6 +4311,7 @@ paths:
         - { name: type, in: path, required: true, schema: { type: string, enum: [place, plan] } }
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200': { description: Removed }
 
   /reviews:
@@ -4276,6 +4332,7 @@ paths:
                 rating: { type: integer, minimum: 1, maximum: 5 }
                 text: { type: string, maxLength: 2000 }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '201':
           description: Review created with its stored rating; awaits moderation
           content:
@@ -4302,6 +4359,7 @@ paths:
         Kept for compatibility (GoGo-BE#256). New clients use the secure,
         asynchronous flow under `/me/exports`.
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: JSON export; audit-logged
           content:
@@ -4387,6 +4445,7 @@ paths:
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Current status
           content:
@@ -4482,6 +4541,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/Cursor'
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Notification inbox page
           content:
@@ -4657,6 +4717,7 @@ paths:
                     without it the server verifies the place with the provider
                     again, which is the behaviour before this field existed.
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '201':
           description: Proposal accepted (or the place already exists)
           content:
@@ -4686,6 +4747,7 @@ paths:
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Submission status
           content:
@@ -5477,6 +5539,7 @@ paths:
       tags: [me]
       summary: Reviews written by the caller, with moderation status
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Own reviews
           content:
@@ -5502,6 +5565,7 @@ paths:
                 rating: { type: integer, minimum: 1, maximum: 5 }
                 text: { type: string, maxLength: 2000 }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Updated with its current stored rating; status returns to `pending`
           content:
@@ -5524,6 +5588,7 @@ paths:
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: The state this request produced
           content:
@@ -5543,6 +5608,7 @@ paths:
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: The state this request produced
           content:
@@ -5565,6 +5631,7 @@ paths:
       parameters:
         - { name: placeId, in: query, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Review ids, most recent mark first
           content:
@@ -5581,6 +5648,7 @@ paths:
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '201':
           description: '{ read: true }'
 
@@ -5920,6 +5988,7 @@ paths:
             schema: { type: string, pattern: '^[A-Za-z0-9_-]{6,64}$' },
           }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: '{ revoked: true }'
           content:
@@ -5945,6 +6014,7 @@ paths:
         push kind here reports that switch's value; email rows are returned as
         stored. New clients read the settings resource instead.
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Every push kind carrying the switch's value, then stored email rows
           content:
@@ -5979,6 +6049,7 @@ paths:
                 kind: { $ref: '#/components/schemas/NotificationPreferenceKind' }
                 enabled: { type: boolean }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: '{ updated: true }'
 
@@ -5994,6 +6065,7 @@ paths:
         evidence that anything was delivered. The in-app inbox is written
         whatever it says.
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: The switch as the server applies it
           content:
@@ -6022,6 +6094,7 @@ paths:
               properties:
                 pushEnabled: { type: boolean }
       responses:
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: The switch as stored
           content:
@@ -19991,6 +20064,16 @@ components:
       schema: { type: integer, minimum: 1 }
 
   responses:
+    SessionLookupUnavailable:
+      description: >
+        SERVICE_UNAVAILABLE (retryable true) — the authoritative consumer
+        session lookup encountered an operational database connection, pool or
+        query timeout/unavailability. Retry with backoff; cached state cannot
+        authorize access. SQL/schema/permission/configuration errors retain
+        existing error handling.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
     NotModified:
       description: >
         The client's ETag still matches. No body, by definition — this is the

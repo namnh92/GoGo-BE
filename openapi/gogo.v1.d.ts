@@ -10712,6 +10712,15 @@ export interface components {
         };
     };
     responses: {
+        /** @description SERVICE_UNAVAILABLE (retryable true) — the authoritative consumer session lookup encountered an operational database connection, pool or query timeout/unavailability. Retry with backoff; cached state cannot authorize access. SQL/schema/permission/configuration errors retain existing error handling. */
+        SessionLookupUnavailable: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
         /** @description The client's ETag still matches. No body, by definition — this is the whole saving the tag exists for. */
         NotModified: {
             headers: {
@@ -11253,6 +11262,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getMe: {
@@ -11274,6 +11284,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     deleteAccount: {
@@ -11292,6 +11303,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     updateProfile: {
@@ -11320,6 +11332,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             429: components["responses"]["RateLimited"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     setAvatar: {
@@ -11393,6 +11406,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             429: components["responses"]["RateLimited"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     listRooms: {
@@ -11423,6 +11437,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     createRoom: {
@@ -11466,6 +11481,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             403: components["responses"]["Forbidden"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getRoom: {
@@ -11490,6 +11506,7 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     updateRoomConstraints: {
@@ -11530,6 +11547,7 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     transitionRoom: {
@@ -11563,6 +11581,7 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     renameRoom: {
@@ -11595,6 +11614,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     streamRoomEvents: {
@@ -11661,6 +11681,7 @@ export interface operations {
                     "application/json": components["schemas"]["RoomMember"][];
                 };
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     removeRoomMember: {
@@ -11684,6 +11705,7 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     previewRoomInvite: {
@@ -11742,6 +11764,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     createRoomInvite: {
@@ -11777,6 +11800,7 @@ export interface operations {
                     };
                 };
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     revokeRoomInvite: {
@@ -11798,6 +11822,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     joinRoom: {
@@ -11857,6 +11882,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     joinRoomAsGuest: {
@@ -11927,6 +11953,7 @@ export interface operations {
                 content?: never;
             };
             400: components["responses"]["BadRequest"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     removeRoomSeedPlace: {
@@ -11948,6 +11975,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getMyPreferences: {
@@ -11982,6 +12010,7 @@ export interface operations {
                     };
                 };
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     saveMyPreferences: {
@@ -12022,6 +12051,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             409: components["responses"]["Conflict"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     completeMyPreferences: {
@@ -12053,6 +12083,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     createUpload: {
@@ -12128,6 +12159,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AssistantUserOnly"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     listAssistantConversations: {
@@ -12156,6 +12188,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AssistantUserOnly"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     createAssistantConversation: {
@@ -12231,6 +12264,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AssistantUserOnly"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     deleteAssistantConversation: {
@@ -12253,6 +12287,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AssistantUserOnly"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     renameAssistantConversation: {
@@ -12286,6 +12321,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AssistantUserOnly"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     listAssistantMessages: {
@@ -12314,6 +12350,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AssistantUserOnly"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     sendAssistantMessage: {
@@ -12450,6 +12487,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AssistantUserOnly"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     setAssistantMessageFeedback: {
@@ -12481,6 +12519,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AssistantUserOnly"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     clearAssistantMessageFeedback: {
@@ -12505,6 +12544,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AssistantUserOnly"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getAssistantProposal: {
@@ -12530,6 +12570,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AssistantUserOnly"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     confirmAssistantProposal: {
@@ -12623,6 +12664,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AssistantUserOnly"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getAdministrativeVersion: {
@@ -13978,6 +14020,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["RateLimited"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     generateSuggestions: {
@@ -14002,6 +14045,7 @@ export interface operations {
             };
             409: components["responses"]["Conflict"];
             429: components["responses"]["RateLimited"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getCurrentSuggestions: {
@@ -14024,6 +14068,7 @@ export interface operations {
                     "application/json": components["schemas"]["SuggestionsCurrent"];
                 };
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     castVote: {
@@ -14061,6 +14106,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             409: components["responses"]["Conflict"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     finalizeVotes: {
@@ -14103,6 +14149,7 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getCurrentPlan: {
@@ -14126,6 +14173,7 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getPlan: {
@@ -14148,6 +14196,7 @@ export interface operations {
                     "application/json": components["schemas"]["Plan"];
                 };
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     editPlanStops: {
@@ -14186,6 +14235,7 @@ export interface operations {
                 };
             };
             409: components["responses"]["Conflict"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     regeneratePlan: {
@@ -14219,6 +14269,7 @@ export interface operations {
                 };
             };
             409: components["responses"]["Conflict"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     lockPlanStop: {
@@ -14249,6 +14300,7 @@ export interface operations {
                 };
             };
             409: components["responses"]["Conflict"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     completePlanStop: {
@@ -14271,6 +14323,7 @@ export interface operations {
                 content?: never;
             };
             409: components["responses"]["Conflict"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     checkinPlanStop: {
@@ -14355,6 +14408,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             429: components["responses"]["RateLimited"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getPlaceImport: {
@@ -14376,6 +14430,7 @@ export interface operations {
                 content?: never;
             };
             403: components["responses"]["Forbidden"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     listServiceAreas: {
@@ -14444,6 +14499,7 @@ export interface operations {
                     "application/json": components["schemas"]["SavedItem"][];
                 };
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     saveItem: {
@@ -14465,6 +14521,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     unsaveItem: {
@@ -14486,6 +14543,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     createReview: {
@@ -14517,6 +14575,7 @@ export interface operations {
                     "application/json": components["schemas"]["Review"];
                 };
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     exportMyData: {
@@ -14538,6 +14597,7 @@ export interface operations {
                 };
             };
             429: components["responses"]["RateLimited"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     requestSecureExport: {
@@ -14640,6 +14700,7 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     downloadSecureExport: {
@@ -14748,6 +14809,7 @@ export interface operations {
                     };
                 };
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     registerPushSubscription: {
@@ -14903,6 +14965,7 @@ export interface operations {
                 };
             };
             429: components["responses"]["RateLimited"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getPlaceSubmission: {
@@ -14939,6 +15002,7 @@ export interface operations {
                 };
             };
             403: components["responses"]["Forbidden"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     cmsListPlaceSubmissions: {
@@ -15574,6 +15638,7 @@ export interface operations {
                     "application/json": components["schemas"]["MyReview"][];
                 };
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     updateReview: {
@@ -15605,6 +15670,7 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     markReviewHelpful: {
@@ -15631,6 +15697,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["RateLimited"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     unmarkReviewHelpful: {
@@ -15657,6 +15724,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["RateLimited"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     listMyReviewReactions: {
@@ -15681,6 +15749,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     markNotificationRead: {
@@ -15701,6 +15770,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getPushIdentityToken: {
@@ -16086,6 +16156,7 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["RateLimited"];
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getNotificationPreferences: {
@@ -16111,6 +16182,7 @@ export interface operations {
                     }[];
                 };
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     setNotificationPreference: {
@@ -16138,6 +16210,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getNotificationSettings: {
@@ -16165,6 +16238,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     setNotificationSettings: {
@@ -16199,6 +16273,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     getDocsPage: {

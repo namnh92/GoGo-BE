@@ -15,6 +15,58 @@ export const CSRF_HEADER = 'x-gogo-csrf';
 
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
+// Driver failures may be wrapped by Drizzle. Keep this allowlist local to the
+// authoritative lookup: schema, SQL, permissions and application errors must
+// retain their existing handling. Never copy driver messages/causes into the
+// public error or telemetry for the mapped operational failure.
+function operationalLookupFailure(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let operational = false;
+  while (error instanceof Error && !seen.has(error)) {
+    seen.add(error);
+    if (error instanceof AppError) return false;
+    const code = (error as Error & { code?: string }).code;
+    if (code !== undefined) {
+      if (
+        [
+          'ECONNREFUSED',
+          'ECONNRESET',
+          'EPIPE',
+          'ETIMEDOUT',
+          'EHOSTUNREACH',
+          'ENETUNREACH',
+          '08000',
+          '08001',
+          '08003',
+          '08006',
+          '08007',
+          '53300',
+          '57P01',
+          '57P02',
+          '57P03',
+        ].includes(code)
+      ) {
+        operational = true;
+      } else if (
+        (code === '57014' && /statement timeout/i.test(error.message)) ||
+        (code === '55P03' && /lock timeout/i.test(error.message))
+      ) {
+        operational = true;
+      } else {
+        return false;
+      }
+    } else if (
+      /^(timeout exceeded when trying to connect|connection terminated due to connection timeout|connection terminated unexpectedly|query read timeout)$/i.test(
+        error.message,
+      )
+    ) {
+      operational = true;
+    }
+    error = error.cause;
+  }
+  return operational;
+}
+
 type AuthedRequest = FastifyRequest & {
   actor?: Actor;
   cookies?: Record<string, string | undefined>;
@@ -72,7 +124,16 @@ export class AuthGuard implements CanActivate {
 
     if (claims.act === 'user') {
       // Authoritative, fail-closed check: negative denylist caches can be stale.
-      const session = await this.repo.findAuthSessionById(claims.sid);
+      let session;
+      try {
+        session = await this.repo.findAuthSessionById(claims.sid);
+      } catch (error) {
+        if (!operationalLookupFailure(error)) throw error;
+        throw AppError.serviceUnavailable(
+          'SERVICE_UNAVAILABLE',
+          'Session verification is temporarily unavailable',
+        );
+      }
       if (!session || session.userId !== claims.sub || session.revokedAt) {
         throw AppError.unauthorized('SESSION_REVOKED', 'Session is no longer valid');
       }

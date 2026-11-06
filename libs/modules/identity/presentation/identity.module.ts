@@ -35,7 +35,11 @@ import { SessionsController } from './sessions.controller';
 import { PasswordRecoveryController } from './password-recovery.controller';
 import { PasswordRecoveryService, RecoveryCrypto } from '../application/password-recovery.service';
 import { RecoveryRepository } from '../infrastructure/recovery.repository';
-import { RecoveryMailSender, RecoveryMailSink, UnconfiguredRecoveryMailSender } from '../infrastructure/recovery-mail';
+import {
+  RecoveryMailSender,
+  RecoveryMailSink,
+  UnconfiguredRecoveryMailSender,
+} from '../infrastructure/recovery-mail';
 
 /**
  * BE-BFF-002. AuthGuard + RateLimitGuard are registered globally here:
@@ -50,16 +54,20 @@ import { RecoveryMailSender, RecoveryMailSink, UnconfiguredRecoveryMailSender } 
     PasswordRecoveryService,
     {
       provide: RecoveryCrypto,
-      useFactory: (config: IdentityConfig) => new RecoveryCrypto(
-        config.AUTH_RECOVERY_KEY || (config.APP_ENV === 'dev' && config.NODE_ENV !== 'production'
-          ? randomBytes(48).toString('base64url') : ''),
-      ),
+      useFactory: (config: IdentityConfig) =>
+        new RecoveryCrypto(
+          config.AUTH_RECOVERY_KEY ||
+            (config.APP_ENV === 'dev' && config.NODE_ENV !== 'production'
+              ? randomBytes(48).toString('base64url')
+              : ''),
+        ),
       inject: [APP_CONFIG],
     },
     {
       provide: RecoveryMailSender,
       useFactory: (config: IdentityConfig) =>
-        config.AUTH_RECOVERY_MAIL_ADAPTER === 'sink' && config.APP_ENV === 'dev' &&
+        config.AUTH_RECOVERY_MAIL_ADAPTER === 'sink' &&
+        config.APP_ENV === 'dev' &&
         (config.NODE_ENV !== 'production' || (config.AUTH_RECOVERY_KEY?.length ?? 0) >= 32)
           ? new RecoveryMailSink()
           : new UnconfiguredRecoveryMailSender(),

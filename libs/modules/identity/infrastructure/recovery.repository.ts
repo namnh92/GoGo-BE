@@ -20,7 +20,9 @@ export type RecoveryTransaction = {
 
 /** Shared by login and recovery; never persists the email in a lock table. */
 export async function lockAuthEmail(tx: Tx, email: string): Promise<void> {
-  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`auth-email:${email.trim().toLowerCase()}`}, 0))`);
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${`auth-email:${email.trim().toLowerCase()}`}, 0))`,
+  );
 }
 
 @Injectable()
@@ -36,18 +38,32 @@ export class RecoveryRepository {
   ): Promise<T> {
     return this.db.transaction(async (tx) => {
       // Replay first, email second, original user third, challenge last.
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`recovery-replay:${replayKey}`}, 0))`);
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`recovery-replay:${replayKey}`}, 0))`,
+      );
       await lockAuthEmail(tx, email);
       const challengeWhere = eq(schema.passwordRecoveryChallenges.emailDigest, digest);
-      const [initial] = await tx.select().from(schema.passwordRecoveryChallenges)
+      const [initial] = await tx
+        .select()
+        .from(schema.passwordRecoveryChallenges)
         .where(challengeWhere);
-      const [user] = await tx.select().from(schema.users)
-        .where(mode === 'complete'
-          ? sql`${schema.users.id} = ${initial?.userId ?? null}::uuid`
-          : and(sql`lower(${schema.users.email}) = ${email}`, sql`${schema.users.status} <> 'deleted'`))
+      const [user] = await tx
+        .select()
+        .from(schema.users)
+        .where(
+          mode === 'complete'
+            ? sql`${schema.users.id} = ${initial?.userId ?? null}::uuid`
+            : and(
+                sql`lower(${schema.users.email}) = ${email}`,
+                sql`${schema.users.status} <> 'deleted'`,
+              ),
+        )
         .for('update');
-      const [challenge] = await tx.select().from(schema.passwordRecoveryChallenges)
-        .where(challengeWhere).for('update');
+      const [challenge] = await tx
+        .select()
+        .from(schema.passwordRecoveryChallenges)
+        .where(challengeWhere)
+        .for('update');
       const result = await work({
         user,
         getChallenge: async () => challenge,
@@ -58,40 +74,61 @@ export class RecoveryRepository {
           });
         },
         getReplay: async (key) => {
-          const [row] = await tx.select().from(schema.passwordRecoveryReplays).where(and(
-            eq(schema.passwordRecoveryReplays.key, key),
-            gt(schema.passwordRecoveryReplays.expiresAt, sql`now()`),
-          ));
+          const [row] = await tx
+            .select()
+            .from(schema.passwordRecoveryReplays)
+            .where(
+              and(
+                eq(schema.passwordRecoveryReplays.key, key),
+                gt(schema.passwordRecoveryReplays.expiresAt, sql`now()`),
+              ),
+            );
           return row;
         },
         saveReplay: async (key, value) => {
-          await tx.insert(schema.passwordRecoveryReplays).values({ key, ...value }).onConflictDoUpdate({
-            target: schema.passwordRecoveryReplays.key,
-            set: value,
-          });
+          await tx
+            .insert(schema.passwordRecoveryReplays)
+            .values({ key, ...value })
+            .onConflictDoUpdate({
+              target: schema.passwordRecoveryReplays.key,
+              set: value,
+            });
         },
         failAttempt: async () => {
-          await tx.update(schema.passwordRecoveryChallenges)
-            .set({ attempts: sql`least(5, attempts + 1)` }).where(challengeWhere);
+          await tx
+            .update(schema.passwordRecoveryChallenges)
+            .set({ attempts: sql`least(5, attempts + 1)` })
+            .where(challengeWhere);
         },
         reset: async (passwordHash) => {
           if (!user || !challenge) throw new Error('Recovery transaction has no bound identity');
-          await tx.update(schema.passwordRecoveryChallenges)
-            .set({ consumedAt: sql`now()` }).where(challengeWhere);
-          await tx.update(schema.users).set({
-            passwordHash,
-            emailVerifiedAt: sql`coalesce(email_verified_at, now())`,
-            updatedAt: sql`now()`,
-          }).where(eq(schema.users.id, user.id));
-          const revoked = await tx.update(schema.authSessions)
+          await tx
+            .update(schema.passwordRecoveryChallenges)
+            .set({ consumedAt: sql`now()` })
+            .where(challengeWhere);
+          await tx
+            .update(schema.users)
+            .set({
+              passwordHash,
+              emailVerifiedAt: sql`coalesce(email_verified_at, now())`,
+              updatedAt: sql`now()`,
+            })
+            .where(eq(schema.users.id, user.id));
+          const revoked = await tx
+            .update(schema.authSessions)
             .set({ revokedAt: sql`now()`, revokeReason: 'password_recovery' })
             .where(eq(schema.authSessions.userId, user.id))
             .returning({ id: schema.authSessions.id });
           const identifierHash = createHash('sha256').update(email).digest('hex');
-          await tx.delete(schema.loginAttempts).where(eq(schema.loginAttempts.identifierHash, identifierHash));
+          await tx
+            .delete(schema.loginAttempts)
+            .where(eq(schema.loginAttempts.identifierHash, identifierHash));
           await writeAudit(tx, {
-            actorType: 'user', actorId: user.id, action: 'password.recovered',
-            resourceType: 'user', resourceId: user.id,
+            actorType: 'user',
+            actorId: user.id,
+            action: 'password.recovered',
+            resourceType: 'user',
+            resourceId: user.id,
           });
           return revoked.map((row) => row.id);
         },
@@ -106,9 +143,14 @@ export class RecoveryRepository {
   }
 
   async invalidate(digest: string, id: string): Promise<void> {
-    await this.db.update(schema.passwordRecoveryChallenges).set({ consumedAt: sql`now()` }).where(and(
-      eq(schema.passwordRecoveryChallenges.emailDigest, digest),
-      eq(schema.passwordRecoveryChallenges.id, id),
-    ));
+    await this.db
+      .update(schema.passwordRecoveryChallenges)
+      .set({ consumedAt: sql`now()` })
+      .where(
+        and(
+          eq(schema.passwordRecoveryChallenges.emailDigest, digest),
+          eq(schema.passwordRecoveryChallenges.id, id),
+        ),
+      );
   }
 }

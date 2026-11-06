@@ -3184,7 +3184,11 @@ describe('moderation queue (CMS-007, FR-CMS-005)', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: ip(),
-      payload: { email: 'reviewer@gogo.id.vn', password: 'Sufficiently-long-pw1!', displayName: 'R' },
+      payload: {
+        email: 'reviewer@gogo.id.vn',
+        password: 'Sufficiently-long-pw1!',
+        displayName: 'R',
+      },
     });
     const [place] = await db
       .insert(schema.places)
