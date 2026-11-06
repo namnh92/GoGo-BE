@@ -471,8 +471,12 @@ with ledger flushing before DB shutdown, including on failure. Usage is recorded
 under `google.details.address` / `places.details.essentials`, even if the normal
 API ledger toggle is off. The local registry has no verified Essentials price:
 the added rule explicitly reports unknown, not free. Verify price/allowance
-before using a cost estimate; counts remain available. Abrupt process termination can lose buffered
-usage; normal completion and caught failures drain the ledger (ADR-0012). Dry-run emits no usage and writes no ledger rows.
+before using a cost estimate; counts remain available. An interval flush failure
+stops new candidates, retains buffered counts for the final drain, and exits 1
+after cleanup with a sanitized error. SIGINT/SIGTERM also stop new candidates,
+await the current provider call and conditional write, drain the ledger, and
+close the pool before exiting 130/143. A drain failure exits 1. SIGKILL can still
+lose buffered usage (ADR-0012). Dry-run emits no usage and writes no ledger rows.
 
 There is no automatic rollback: this command never erases addresses or restores
 old provenance. Retain the system audit when investigating a repair. No migration

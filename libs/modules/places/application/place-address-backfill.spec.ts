@@ -85,6 +85,32 @@ describe('place address backfill', () => {
     });
   });
 
+  it('does not scan when stopped before starting', async () => {
+    const f = fixture();
+    const stop = new AbortController();
+    stop.abort();
+    expect(
+      await backfillPlaceAddresses(f.store, f.provider, { ...execute, signal: stop.signal }),
+    ).toMatchObject({ scanned: 0, callSlots: 0 });
+    expect(f.store.scan).not.toHaveBeenCalled();
+    expect(f.provider.address).not.toHaveBeenCalled();
+  });
+
+  it('does not schedule a candidate when stopped during a scan', async () => {
+    const f = fixture();
+    const stop = new AbortController();
+    vi.mocked(f.store.scan).mockImplementationOnce(async () => {
+      stop.abort();
+      return f.rows;
+    });
+    expect(
+      await backfillPlaceAddresses(f.store, f.provider, { ...execute, signal: stop.signal }),
+    ).toMatchObject({ scanned: 0, callSlots: 0 });
+    expect(f.store.scan).toHaveBeenCalledTimes(1);
+    expect(f.provider.address).not.toHaveBeenCalled();
+    expect(f.store.writeIfEmpty).not.toHaveBeenCalled();
+  });
+
   it.each([0, -1, NaN, Infinity, 1.5])('rejects invalid cap %s before scanning', async (cap) => {
     const f = fixture();
     await expect(

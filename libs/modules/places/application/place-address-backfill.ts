@@ -8,7 +8,12 @@ export interface AddressBackfillStore {
   scan(after: string | null, limit: number): Promise<AddressCandidate[]>;
   writeIfEmpty(place: AddressCandidate, address: string): Promise<boolean>;
 }
-export type AddressBackfillOptions = { dryRun: boolean; maxGoogleCalls: number };
+export type AddressBackfillOptions = {
+  dryRun: boolean;
+  maxGoogleCalls: number;
+  /** Stop between candidates; a started provider/write operation finishes normally. */
+  signal?: AbortSignal;
+};
 export type AddressBackfillCounts = {
   scanned: number;
   written: number;
@@ -35,7 +40,7 @@ export async function backfillPlaceAddresses(
   };
   let after: string | null = null;
   // Dry-run previews the same bounded number of eligible rows, with no calls/writes.
-  while (counts.scanned < options.maxGoogleCalls) {
+  while (!options.signal?.aborted && counts.scanned < options.maxGoogleCalls) {
     let batch: AddressCandidate[];
     try {
       batch = await store.scan(after, Math.min(100, options.maxGoogleCalls - counts.scanned));
@@ -45,7 +50,7 @@ export async function backfillPlaceAddresses(
     }
     if (batch.length === 0) break;
     for (const place of batch) {
-      if (counts.scanned >= options.maxGoogleCalls) break;
+      if (options.signal?.aborted || counts.scanned >= options.maxGoogleCalls) break;
       after = place.id;
       counts.scanned++;
       if (options.dryRun) {
