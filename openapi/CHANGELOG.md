@@ -8,6 +8,35 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 7.0.0-alpha.1 — Required submission rejection keys (GoGo-BE#787 / PR #790)
+
+**Breaking MAJOR** from 6.5.0-alpha.1 per BE-BFF-012, owner/CODEOWNER decision
+2026-11-07 (MobileApp#482, screen 3.4). [ADR-0044](../docs/adr/0044-required-submission-rejection-reason.md) records the decision to keep
+`rejectionReason` required when rejecting a submission. The single oasdiff
+`request-body-wrapped-in-one-of` finding is recorded against the exact
+base/revision contract bytes in `.github/oasdiff-exceptions.json`.
+
+Optional public `rejectionReason` is added on submission polling and on CMS
+queue/detail. Six fixed keys are published as
+`SubmissionRejectionReason`; labels belong to client i18n. Historical rejected
+submissions without a key omit it. Other statuses omit it. Public polling never
+returns the internal `reason`/`decisionReason`, review draft or decision history.
+
+CMS `POST /cms/place-submissions/{id}/decide` now requires a valid
+`rejectionReason` when `decision=rejected` (400 `VALIDATION_FAILED`,
+`field_errors.rejectionReason` otherwise). The internal `reason` note becomes
+optional for rejection; approval and merge keep requiring it. **Request
+validation intentionally tightens for rejection per the owner decision**.
+**GoGo-CMS must deploy together with GoGo-BE**: sync its vendored contract,
+regenerate its client and require a reason-key selection in its reject action.
+Old CMS rejection requests such as `{"decision":"rejected","reason":"duplicate"}`
+now return **400 `VALIDATION_FAILED`** because they lack `rejectionReason`.
+Send `{"decision":"rejected","rejectionReason":"duplicate_place"}` instead;
+the internal note may also be included. No compatibility fallback infers a
+public key from private text. Other consumers regenerate their clients and
+tolerate the optional response field being absent on historical rows. Migration
+0084 and rollback instructions: `docs/submission-rejection-reasons.md`.
+
 ## 6.5.0-alpha.1 — 2026-11-07
 
 Additive MINOR from 6.4.0-alpha.1.

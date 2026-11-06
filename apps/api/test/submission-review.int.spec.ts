@@ -98,7 +98,7 @@ async function contribute(
     note: string;
     vibes: string[];
   }> = {},
-): Promise<{ submissionId: string; googlePlaceId: string }> {
+): Promise<{ submissionId: string; googlePlaceId: string; token: string }> {
   seq += 1;
   const googlePlaceId = `fake-review-${seq}`;
   places.seed({
@@ -127,7 +127,7 @@ async function contribute(
     },
   });
   expect(submitted.statusCode, submitted.body).toBe(201);
-  return { submissionId: submitted.json().submissionId as string, googlePlaceId };
+  return { submissionId: submitted.json().submissionId as string, googlePlaceId, token };
 }
 
 const detail = (id: string, role: 'moderator' | 'editor' = 'moderator') =>
@@ -421,7 +421,11 @@ describe('supplementing before the decision (#528)', () => {
 
   it('refuses a review on a submission that is already decided', async () => {
     const { submissionId } = await contribute();
-    await decide(submissionId, { decision: 'rejected', reason: 'trùng địa điểm khác' });
+    await decide(submissionId, {
+      decision: 'rejected',
+      rejectionReason: 'duplicate_place',
+      reason: 'trùng địa điểm khác',
+    });
 
     const res = await saveReview(submissionId, { draft });
     expect(res.statusCode).toBe(409);
@@ -574,7 +578,11 @@ describe('the decision applies what the reviewer wrote (#528)', () => {
     const { submissionId } = await contribute();
     await saveReview(submissionId, { draft: { name: 'Sẽ không được dùng' } });
 
-    const res = await decide(submissionId, { decision: 'rejected', reason: 'ngoài phạm vi' });
+    const res = await decide(submissionId, {
+      decision: 'rejected',
+      rejectionReason: 'not_public_place',
+      reason: 'ngoài phạm vi',
+    });
     expect(res.statusCode, res.body).toBe(201);
     expect(res.json().placeId).toBeUndefined();
 
@@ -1063,7 +1071,13 @@ describe('#786 approved submission provider photo', () => {
     const fake = seedPhoto(googlePlaceId);
     const calls = fake.mediaCalls.length;
     expect(
-      (await decide(submissionId, { decision: 'rejected', reason: 'Not acceptable' })).statusCode,
+      (
+        await decide(submissionId, {
+          decision: 'rejected',
+          rejectionReason: 'other',
+          reason: 'Not acceptable',
+        })
+      ).statusCode,
     ).toBe(201);
     expect(fake.mediaCalls.length).toBe(calls);
     expect(await db.select().from(schema.placeMedia)).toEqual([]);
@@ -1090,5 +1104,123 @@ describe('#786 approved submission provider photo', () => {
     } finally {
       fake.failing = false;
     }
+  });
+});
+
+describe('public rejection keys (#787)', () => {
+  const keys = [
+    'duplicate_place',
+    'incorrect_location',
+    'permanently_closed',
+    'not_public_place',
+    'inappropriate_content',
+    'other',
+  ];
+  const poll = (id: string, token: string) =>
+    api().inject({
+      method: 'GET',
+      url: `/v1/place-submissions/${id}`,
+      remoteAddress: ip(),
+      headers: auth(token),
+    });
+
+  it.each(keys)('persists %s and returns only the key to its owner', async (key) => {
+    const { submissionId, token } = await contribute();
+    const pending = await poll(submissionId, token);
+    expect(pending.json().rejectionReason).toBeUndefined();
+    const rejected = await decide(submissionId, {
+      decision: 'rejected',
+      rejectionReason: key,
+      reason: 'PRIVATE reviewer note',
+    });
+    expect(rejected.statusCode, rejected.body).toBe(201);
+    const result = await poll(submissionId, token);
+    expect(result.statusCode, result.body).toBe(200);
+    expect(result.json()).toMatchObject({ status: 'rejected', rejectionReason: key });
+    expect(Object.keys(result.json()).sort()).toEqual(
+      [
+        'id',
+        'status',
+        'rejectionReason',
+        'googlePlaceId',
+        'submissionCount',
+        'createdAt',
+        'decidedAt',
+      ].sort(),
+    );
+    expect(result.body).not.toContain('PRIVATE');
+    const [stored] = await db
+      .select()
+      .from(schema.placeSubmissions)
+      .where(eq(schema.placeSubmissions.id, submissionId));
+    expect(stored).toMatchObject({ rejectionReason: key, decisionReason: 'PRIVATE reviewer note' });
+    expect((await detail(submissionId)).json().rejectionReason).toBe(key);
+    const queue = await api().inject({
+      method: 'GET',
+      url: '/v1/cms/place-submissions?status=rejected',
+      remoteAddress: ip(),
+      headers: auth(tokens.moderator),
+    });
+    expect(
+      queue.json().items.find((item: { id: string }) => item.id === submissionId).rejectionReason,
+    ).toBe(key);
+    const [audit] = await rows<{ diff: { rejectionReason: string } }>(sql`
+      select diff from audit_logs where resource_id = ${submissionId} and action = 'place_submission.decided'
+    `);
+    expect(audit!.diff.rejectionReason).toBe(key);
+    const outsider = await register(`outsider-${seq}@gogo.id.vn`);
+    expect((await poll(submissionId, outsider)).statusCode).toBe(403);
+  });
+
+  it.each([undefined, null, '', 'duplicate', 'PRIVATE note', 'DUPLICATE_PLACE', 12])(
+    'rejects missing/invalid key %s without recording a decision',
+    async (key) => {
+      const { submissionId, token } = await contribute();
+      const res = await decide(submissionId, {
+        decision: 'rejected',
+        reason: 'PRIVATE note',
+        ...(key === undefined ? {} : { rejectionReason: key }),
+      });
+      expect(res.statusCode, res.body).toBe(400);
+      expect(res.json()).toMatchObject({
+        code: 'VALIDATION_FAILED',
+        field_errors: [expect.objectContaining({ field: 'rejectionReason' })],
+      });
+      expect((await poll(submissionId, token)).json().status).toBe('pending');
+      const audit = await rows(
+        sql`select id from audit_logs where resource_id = ${submissionId} and action = 'place_submission.decided'`,
+      );
+      expect(audit).toHaveLength(0);
+    },
+  );
+
+  it('requires no internal note for rejection', async () => {
+    const { submissionId, token } = await contribute();
+    const res = await decide(submissionId, { decision: 'rejected', rejectionReason: 'other' });
+    expect(res.statusCode, res.body).toBe(201);
+    expect((await poll(submissionId, token)).json().rejectionReason).toBe('other');
+  });
+
+  it('omits the key and internal note for historical rejections', async () => {
+    const { submissionId, token } = await contribute();
+    await db
+      .update(schema.placeSubmissions)
+      .set({ status: 'rejected', decisionReason: 'PRIVATE legacy' })
+      .where(eq(schema.placeSubmissions.id, submissionId));
+    const res = await poll(submissionId, token);
+    expect(res.json().status).toBe('rejected');
+    expect(res.json().rejectionReason).toBeUndefined();
+    expect(res.body).not.toContain('PRIVATE');
+  });
+
+  it('approval keeps its note requirement and never exposes a rejection key', async () => {
+    const { submissionId, token } = await contribute();
+    expect((await decide(submissionId, { decision: 'approved' })).statusCode).toBe(400);
+    const res = await decide(submissionId, { decision: 'approved', reason: 'PRIVATE approved' });
+    expect(res.statusCode, res.body).toBe(201);
+    const result = await poll(submissionId, token);
+    expect(result.json().status).toBe('approved');
+    expect(result.json().rejectionReason).toBeUndefined();
+    expect(result.body).not.toContain('PRIVATE');
   });
 });

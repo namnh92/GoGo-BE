@@ -32,6 +32,7 @@ import {
   signResolutionAttestation,
   verifyResolutionAttestation,
 } from '../domain/resolution-attestation';
+import { isSubmissionRejectionReason } from '../domain/submission-rejection';
 import { deriveCategory } from '../domain/google-types';
 import { PlaceDedupService, type DedupVerdict } from './place-dedup.service';
 import { PlaceResolverService } from './place-resolver.service';
@@ -878,6 +879,7 @@ export class PlaceSubmissionService {
     return {
       id: row.id,
       status: row.status,
+      rejectionReason: row.status === 'rejected' ? (row.rejectionReason ?? undefined) : undefined,
       googlePlaceId: row.googlePlaceId,
       placeId: row.resultPlaceId ?? undefined,
       submissionCount: row.submissionCount,
@@ -925,7 +927,7 @@ export class PlaceSubmissionService {
       select s.id, s.google_place_id, s.status, s.submission_count, s.category_key,
              s.price_min, s.price_max, s.price_unit, s.vibe_keys, s.note,
              s.room_id, s.result_place_id, s.created_at, s.updated_at, s.decided_at,
-             s.decision_reason, s.review_draft, s.reviewed_at,
+             s.decision_reason, s.rejection_reason, s.review_draft, s.reviewed_at,
              (s.submitted_by_user_id is not null) as from_user,
              p.name as result_place_name,
              coalesce(pps.place_id, ps.place_id) as linked_place_id,
@@ -965,6 +967,7 @@ export class PlaceSubmissionService {
       updated_at: Date | string;
       decided_at: Date | string | null;
       decision_reason: string | null;
+      rejection_reason: string | null;
       review_draft: SubmissionReviewDraft | null;
       reviewed_at: Date | string | null;
       from_user: boolean;
@@ -1001,6 +1004,7 @@ export class PlaceSubmissionService {
         updatedAt: iso(r.updated_at)!,
         decidedAt: iso(r.decided_at),
         decisionReason: r.decision_reason ?? undefined,
+        rejectionReason: r.rejection_reason ?? undefined,
         /**
          * The best name GoGo can honestly give this row, and where it came
          * from — so a console can render "chưa có tên" rather than a Place ID
@@ -1067,6 +1071,7 @@ export class PlaceSubmissionService {
     return {
       id: row.id,
       status: row.status,
+      rejectionReason: row.status === 'rejected' ? (row.rejectionReason ?? undefined) : undefined,
       googlePlaceId: row.googlePlaceId,
       googleMapsUrl: `https://www.google.com/maps/place/?q=place_id:${row.googlePlaceId}`,
       submissionCount: row.submissionCount,
@@ -1279,9 +1284,22 @@ export class PlaceSubmissionService {
     adminId: string,
     id: string,
     decision: 'approved' | 'rejected' | 'merged',
-    reason: string,
+    reason: string | undefined,
     mergeIntoPlaceId?: string,
+    rejectionReason?: string,
   ) {
+    if (
+      (decision === 'rejected' || rejectionReason !== undefined) &&
+      !isSubmissionRejectionReason(rejectionReason)
+    ) {
+      throw AppError.badRequest('VALIDATION_FAILED', 'Request validation failed', [
+        {
+          field: 'rejectionReason',
+          code: 'invalid_value',
+          message: 'A valid rejection reason key is required',
+        },
+      ]);
+    }
     const [row] = await this.db
       .select()
       .from(schema.placeSubmissions)
@@ -1298,7 +1316,8 @@ export class PlaceSubmissionService {
         .set({
           status: decision,
           decidedByAdminId: adminId,
-          decisionReason: reason,
+          decisionReason: reason ?? null,
+          rejectionReason: decision === 'rejected' ? rejectionReason! : null,
           decidedAt: sql`clock_timestamp()`,
           updatedAt: sql`clock_timestamp()`,
           resultPlaceId,
@@ -1318,7 +1337,12 @@ export class PlaceSubmissionService {
         action: 'place_submission.decided',
         resourceType: 'place_submission',
         resourceId: id,
-        diff: { decision, reason, resultPlaceId },
+        diff: {
+          decision,
+          reason,
+          resultPlaceId,
+          ...(decision === 'rejected' ? { rejectionReason } : {}),
+        },
       });
       await writeOutbox(tx, {
         eventType: 'place.submission_decided',

@@ -465,3 +465,9 @@ is a recorded decision, not an oversight — see `docs/threat-model.md`.
   ceiling for a text-search link, and `RESOLVED` is reserved for links carrying
   `place_id` / `query_place_id`. This is spec behaviour, written down here so it
   is not re-reported as a bug (#311).
+
+## Lý do từ chối đóng góp (GoGo-BE#787)
+
+CMS reject phải gửi `rejectionReason` thuộc sáu key cố định. Poll của người gửi
+trả key, không trả ghi chú moderator. Xem [contract, rollout và rollback migration
+0084](submission-rejection-reasons.md).

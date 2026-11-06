@@ -7,6 +7,7 @@ import { CurrentActor, Public, RateLimit } from '../../identity/presentation/dec
 import { RequireRole } from '../../cms/presentation/admin.guard';
 import { PlaceSubmissionService } from '../application/place-submission.service';
 import { NoIdempotencyReplay } from '../../shared/idempotency.interceptor';
+import { SUBMISSION_REJECTION_REASONS } from '../domain/submission-rejection';
 
 const Uuid = new ZodValidationPipe(z.string().uuid());
 
@@ -80,11 +81,29 @@ export class IngestionController {
   }
 }
 
-const decisionSchema = z.object({
-  decision: z.enum(['approved', 'rejected', 'merged']),
-  reason: z.string().trim().min(3).max(500),
-  mergeIntoPlaceId: z.string().uuid().optional(),
-});
+const decisionSchema = z
+  .object({
+    decision: z.enum(['approved', 'rejected', 'merged']),
+    reason: z.string().trim().min(3).max(500).optional(),
+    rejectionReason: z.enum(SUBMISSION_REJECTION_REASONS).optional(),
+    mergeIntoPlaceId: z.string().uuid().optional(),
+  })
+  .superRefine((body, ctx) => {
+    if (body.decision === 'rejected' && body.rejectionReason === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['rejectionReason'],
+        message: 'Required when rejected',
+      });
+    }
+    if (body.decision !== 'rejected' && body.reason === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['reason'],
+        message: 'Required when approved or merged',
+      });
+    }
+  });
 
 /**
  * PI-BE-031 (#528) — the GoGo-owned fields a reviewer may supplement.
@@ -211,6 +230,13 @@ export class CmsSubmissionController {
     @Param('id', Uuid) id: string,
     @Body(new ZodValidationPipe(decisionSchema)) body: z.infer<typeof decisionSchema>,
   ) {
-    return this.submissions.decide(actor.id, id, body.decision, body.reason, body.mergeIntoPlaceId);
+    return this.submissions.decide(
+      actor.id,
+      id,
+      body.decision,
+      body.reason,
+      body.mergeIntoPlaceId,
+      body.rejectionReason,
+    );
   }
 }
