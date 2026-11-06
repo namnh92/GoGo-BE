@@ -1,5 +1,6 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
+import { AppError } from '../../shared/app-error';
 import { schema, type Db } from '@gogo/database';
 import {
   cidFromGoogleMapsUri,
@@ -14,7 +15,7 @@ import { writeOutbox } from '../../shared/outbox';
 
 export type DedupVerdict =
   | { kind: 'LINKED_EXISTING'; placeId: string }
-  | { kind: 'IDENTITY_CONFLICT'; placeIds: string[]; conflictId: string }
+  | { kind: 'IDENTITY_CONFLICT'; placeIds: string[]; conflictId: string | null }
   | { kind: 'MERGE_CANDIDATE'; placeId: string; similarity: number; distanceM: number }
   | { kind: 'NEW' };
 
@@ -30,7 +31,7 @@ export type DedupVerdict =
 export type GoogleIdentity =
   | { kind: 'NONE' }
   | { kind: 'RESOLVED'; placeId: string }
-  | { kind: 'CONFLICT'; placeIds: string[]; conflictId: string };
+  | { kind: 'CONFLICT'; placeIds: string[]; conflictId: string | null };
 
 /**
  * What the catalogue already knows about a Google Place ID, from rows GoGo
@@ -82,7 +83,7 @@ export type KnownProviderPlace = {
  */
 export type KnownProviderLookup =
   | { kind: 'MISS'; reason: 'absent' | 'stale' | 'legacy' | 'indeterminate' }
-  | { kind: 'CONFLICT'; placeIds: string[]; conflictId: string }
+  | { kind: 'CONFLICT'; placeIds: string[]; conflictId: string | null }
   | { kind: 'KNOWN'; place: KnownProviderPlace };
 
 const PROVIDER_STATUS_TO_BUSINESS_STATUS: Record<
@@ -144,7 +145,12 @@ export class PlaceDedupService {
       conflict_id: string | null;
     };
 
-    if (row.conflict_id) {
+    if (
+      row.conflict_id ||
+      (row.canonical_place_id &&
+        row.legacy_place_id &&
+        row.canonical_place_id !== row.legacy_place_id)
+    ) {
       // Both sides are named, so a moderator sees what has to be merged rather
       // than being told only that something is wrong.
       const placeIds = [row.canonical_place_id, row.legacy_place_id].filter(
@@ -155,6 +161,63 @@ export class PlaceDedupService {
     if (row.canonical_place_id) return { kind: 'RESOLVED', placeId: row.canonical_place_id };
     if (row.legacy_place_id) return { kind: 'RESOLVED', placeId: row.legacy_place_id };
     return { kind: 'NONE' };
+  }
+
+  /**
+   * Identity writers lock existing places (sorted UUIDs) BEFORE identity keys
+   * (sorted external IDs). Creators claim the key before inserting their new,
+   * invisible place. Never take an existing place lock while holding only an
+   * identity lock. Merge uses the same order and enumerates identities only
+   * after locking both places, closing attachment to its soon-archived loser.
+   */
+  async lockPlaces(runner: Pick<Db, 'select'>, placeIds: string[]): Promise<void> {
+    // PostgreSQL UUID equality ignores case; every caller must sort the same
+    // representation or mixed-case merge requests can acquire opposite orders.
+    for (const placeId of [...new Set(placeIds.map((id) => id.toLowerCase()))].sort()) {
+      const [place] = await runner
+        .select({ status: schema.places.status })
+        .from(schema.places)
+        .where(eq(schema.places.id, placeId))
+        .for('update')
+        .limit(1);
+      if (!place) throw AppError.notFound('PLACE_NOT_FOUND', 'Place not found');
+      if (place.status === 'archived')
+        throw AppError.conflict('PLACE_ARCHIVED', 'Cannot attach an identity to an archived place');
+    }
+  }
+
+  async lockGoogleIdentities(runner: Pick<Db, 'execute'>, googlePlaceIds: string[]): Promise<void> {
+    for (const id of [...new Set(googlePlaceIds)].sort()) {
+      await runner.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`venue:google:${id}`}, 0))`,
+      );
+    }
+  }
+
+  /** Must run under the identity lock, before any dependent writes. */
+  async assertGoogleIdentityOwner(
+    runner: Pick<Db, 'execute'>,
+    googlePlaceId: string,
+    placeId?: string,
+  ): Promise<void> {
+    const identity = await this.resolveGoogleIdentity(googlePlaceId, runner);
+    if (identity.kind === 'CONFLICT')
+      throw AppError.conflict('PLACE_IDENTITY_CONFLICT', 'Google identity has conflicting owners');
+    if (identity.kind === 'RESOLVED' && identity.placeId.toLowerCase() !== placeId?.toLowerCase())
+      throw AppError.conflict(
+        'DUPLICATE_VENUE',
+        'Google identity already belongs to another place',
+      );
+  }
+
+  async claimGoogleIdentity(
+    runner: Pick<Db, 'select' | 'execute'>,
+    googlePlaceId: string,
+    placeId: string,
+  ): Promise<void> {
+    await this.lockPlaces(runner, [placeId]);
+    await this.lockGoogleIdentities(runner, [googlePlaceId]);
+    await this.assertGoogleIdentityOwner(runner, googlePlaceId, placeId);
   }
 
   /**
@@ -328,8 +391,10 @@ export class PlaceDedupService {
       fetchTier: PlaceDescriptionTier;
       refreshAfterDays?: number;
     },
-    runner: Pick<Db, 'insert'> = this.db,
+    runner?: Pick<Db, 'insert' | 'select' | 'execute'>,
   ): Promise<void> {
+    if (!runner) return this.db.transaction((tx) => this.linkProviderIdentity(input, tx));
+    await this.claimGoogleIdentity(runner, input.googlePlaceId, input.placeId);
     const refreshAfter = new Date(Date.now() + (input.refreshAfterDays ?? 30) * 24 * 3600 * 1000);
     await runner.insert(schema.placeProviderSources).values({
       placeId: input.placeId,
@@ -416,8 +481,10 @@ export class PlaceDedupService {
      * GoGo-BE#280 (Sol F-02) — a transaction, when the caller's write must
      * commit or roll back together with this one. Defaults to the pool.
      */
-    runner: Pick<Db, 'insert'> = this.db,
+    runner?: Pick<Db, 'insert' | 'select' | 'execute'>,
   ): Promise<void> {
+    if (!runner) return this.db.transaction((tx) => this.upsertProviderSource(input, tx));
+    await this.claimGoogleIdentity(runner, input.details.providerPlaceId, input.placeId);
     const refreshAfter = new Date(Date.now() + (input.refreshAfterDays ?? 30) * 24 * 3600 * 1000);
     // `CLOSED_TEMPORARILY` used to land on 'unknown', which conflated "shut for
     // now" with "we have no idea" — and the two lead to different decisions.
@@ -458,7 +525,7 @@ export class PlaceDedupService {
           : input.details.businessStatus === 'FUTURE_OPENING'
             ? 'unknown'
             : 'active';
-    await runner
+    const written = await runner
       .insert(schema.placeProviderSources)
       .values({
         placeId: input.placeId,
@@ -481,7 +548,6 @@ export class PlaceDedupService {
       .onConflictDoUpdate({
         target: [schema.placeProviderSources.provider, schema.placeProviderSources.externalId],
         set: {
-          placeId: input.placeId,
           primaryType: input.details.primaryType,
           rating: input.details.rating !== null ? input.details.rating.toFixed(2) : null,
           ratingCount: input.details.ratingCount,
@@ -492,7 +558,14 @@ export class PlaceDedupService {
           providerUri: input.details.googleMapsUri,
           fetchTier: input.fetchTier,
         },
-      });
+        setWhere: eq(schema.placeProviderSources.placeId, input.placeId),
+      })
+      .returning({ placeId: schema.placeProviderSources.placeId });
+    if (!written.length)
+      throw AppError.conflict(
+        'DUPLICATE_VENUE',
+        'Google identity already belongs to another place',
+      );
   }
 
   /** PI-BE-010 — publish/merge must nudge search; consumers are idempotent. */

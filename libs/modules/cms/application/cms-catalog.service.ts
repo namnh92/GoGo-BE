@@ -1744,6 +1744,7 @@ export class CmsCatalogService {
         if (codesAsserted) await assertCurrentPair(tx, dataset!, codes);
 
         if (input.googlePlaceId !== undefined) {
+          await this.dedup.lockGoogleIdentities(tx, [input.googlePlaceId]);
           await this.assertGoogleIdentityFree(input.googlePlaceId, tx);
         }
 
@@ -2644,10 +2645,21 @@ export class CmsCatalogService {
    *   recompute on demand.
    */
   async mergePlaces(adminId: string, canonicalId: string, duplicateId: string) {
-    if (canonicalId === duplicateId) {
+    if (canonicalId.toLowerCase() === duplicateId.toLowerCase()) {
       throw AppError.badRequest('INVALID_MERGE', 'Cannot merge a place into itself');
     }
     await this.db.transaction(async (tx) => {
+      await this.dedup.lockPlaces(tx, [canonicalId, duplicateId]);
+      const identities = await tx.execute(sql`
+        select external_id from place_provider_sources
+          where provider = 'google_places' and place_id in (${canonicalId}::uuid, ${duplicateId}::uuid)
+        union select external_id from place_sources
+          where provider = 'google' and place_id in (${canonicalId}::uuid, ${duplicateId}::uuid)
+      `);
+      await this.dedup.lockGoogleIdentities(
+        tx,
+        (identities.rows as { external_id: string }[]).map((r) => r.external_id),
+      );
       for (const table of [
         schema.placeSources,
         schema.placeProviderSources,

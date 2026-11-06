@@ -116,13 +116,20 @@ describe('resolveGoogleIdentity', () => {
     });
   });
 
-  it('resolves again once the conflict is closed', async () => {
+  it('rejects an unrecorded disagreement instead of silently preferring canonical', async () => {
     const { db } = fakeDb({ canonical_place_id: 'p-ingestion', legacy_place_id: 'p-legacy' });
-    // A resolved conflict is not returned by the query at all, so the row
-    // reads exactly like an ordinary one.
+    expect(await new PlaceDedupService(db).resolveGoogleIdentity('ChIJx')).toEqual({
+      kind: 'CONFLICT',
+      placeIds: ['p-ingestion', 'p-legacy'],
+      conflictId: null,
+    });
+  });
+
+  it('resolves matching canonical and legacy owners after a merge', async () => {
+    const { db } = fakeDb({ canonical_place_id: 'p-merged', legacy_place_id: 'p-merged' });
     expect(await new PlaceDedupService(db).resolveGoogleIdentity('ChIJx')).toEqual({
       kind: 'RESOLVED',
-      placeId: 'p-ingestion',
+      placeId: 'p-merged',
     });
   });
 });

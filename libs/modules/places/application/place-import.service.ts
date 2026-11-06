@@ -349,7 +349,14 @@ export class PlaceImportService {
       return await this.createPlace(details, autoPublish);
     } catch (err) {
       const pg = err as { code?: string };
-      if (pg.code !== '23505') throw err;
+      if (
+        pg.code !== '23505' &&
+        !(
+          err instanceof AppError &&
+          ['DUPLICATE_VENUE', 'PLACE_IDENTITY_CONFLICT'].includes(err.code)
+        )
+      )
+        throw err;
       const raced = await this.dedup.resolveGoogleIdentity(details.providerPlaceId);
       if (raced.kind === 'CONFLICT') return 'CONFLICT';
       if (raced.kind === 'NONE') throw err;
@@ -369,6 +376,8 @@ export class PlaceImportService {
    */
   private async createPlace(details: ResolvedProviderPlace, autoPublish: boolean): Promise<string> {
     return this.db.transaction(async (tx) => {
+      await this.dedup.lockGoogleIdentities(tx, [details.providerPlaceId]);
+      await this.dedup.assertGoogleIdentityOwner(tx, details.providerPlaceId);
       const [place] = await tx
         .insert(schema.places)
         .values({

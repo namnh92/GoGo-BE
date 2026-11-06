@@ -1452,9 +1452,8 @@ export class PlaceSubmissionService {
         // Account first: erasure may clear submission ownership while holding it.
         if (row.submittedByUserId) await lockAssistantAccount(tx, row.submittedByUserId);
         await this.lockPendingSubmission(tx, row);
-        await tx.execute(
-          sql`select pg_advisory_xact_lock(hashtextextended(${`venue:google:${row.googlePlaceId}`}, 0))`,
-        );
+        await this.dedup.lockGoogleIdentities(tx, [row.googlePlaceId]);
+        await this.dedup.assertGoogleIdentityOwner(tx, row.googlePlaceId);
         const existing =
           await tx.execute(sql`select place_id from place_provider_sources where provider = 'google_places' and external_id = ${row.googlePlaceId}
           union all select place_id from place_sources where provider = 'google' and external_id = ${row.googlePlaceId}

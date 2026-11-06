@@ -1658,6 +1658,7 @@ export class PlaceImportJobService {
     const score = await this.resolver.scoreFor(details, null, normalized.categoryKey);
     const actorId = await this.jobActor(rowId);
     await this.db.transaction(async (tx) => {
+      await this.dedup.claimGoogleIdentity(tx, details.providerPlaceId, placeId);
       // SA-F-11 — this writer rewrites the evidence of every contact value it
       // changes, in this transaction; declare it to the database guard.
       await declareContactWriter(tx);
@@ -1879,42 +1880,43 @@ export class PlaceImportJobService {
     const alreadyLinked = (await this.dbFirst())
       ? await this.dedup.knownProviderPlace(row.resolvedGooglePlaceId, this.verificationWindow())
       : ({ kind: 'MISS', reason: 'absent' } as const);
-    if (alreadyLinked.kind === 'KNOWN' && alreadyLinked.place.placeId === placeId) {
-      this.metrics.increment('place_dbfirst_hit_total', { path: 'merge' });
-      await this.db
+    const fresh = alreadyLinked.kind === 'KNOWN' && alreadyLinked.place.placeId === placeId;
+    const outcome = fresh
+      ? null
+      : await this.resolver.resolveByProviderId(row.resolvedGooglePlaceId, 'quality');
+    if (outcome && outcome.status !== 'RESOLVED')
+      throw AppError.conflict('PROVIDER_UNAVAILABLE', 'Cannot verify provider place right now');
+    const details = outcome?.status === 'RESOLVED' ? outcome.details : null;
+    if (details && details.providerPlaceId !== row.resolvedGooglePlaceId)
+      throw AppError.conflict(
+        'PROVIDER_IDENTITY_CHANGED',
+        'Provider identity changed; review again',
+      );
+    const score = details
+      ? await this.resolver.scoreFor(details, null, normalizedOf(row).categoryKey ?? null)
+      : null;
+    await this.db.transaction(async (tx) => {
+      await this.dedup.claimGoogleIdentity(tx, row.resolvedGooglePlaceId!, placeId);
+      if (details)
+        await this.dedup.upsertProviderSource(
+          { placeId, details, derivedScore: score!, fetchTier: details.fetchTier },
+          tx,
+        );
+      await tx
         .update(schema.placeIngestRows)
         .set({ status: 'imported', matchedPlaceId: placeId, updatedAt: new Date() })
         .where(eq(schema.placeIngestRows.id, rowId));
-      await this.dedup.emitReindex(placeId, 'merged');
-      await this.audit(adminId, 'place_import.row_merged', jobId, { rowId, placeId });
-      await this.refreshCounters(jobId);
-      return this.rowView(rowId);
-    }
-
-    // `quality`: a merge that gets past the DB-first shortcut writes the
-    // provider row for the place it merges into, and `upsertProviderSource`
-    // stores `rating`, `ratingCount`, the score derived from them and
-    // `priceLevel` (#338).
-    const outcome = await this.resolver.resolveByProviderId(row.resolvedGooglePlaceId, 'quality');
-    if (outcome.status === 'RESOLVED') {
-      const score = await this.resolver.scoreFor(
-        outcome.details,
-        null,
-        normalizedOf(row).categoryKey ?? null,
-      );
-      await this.dedup.upsertProviderSource({
-        placeId,
-        details: outcome.details,
-        derivedScore: score,
-        fetchTier: outcome.details.fetchTier,
+      await this.dedup.emitReindex(placeId, 'merged', tx);
+      await writeAudit(tx, {
+        actorType: 'admin',
+        actorId: adminId,
+        action: 'place_import.row_merged',
+        resourceType: 'place_import_job',
+        resourceId: jobId,
+        diff: { rowId, placeId },
       });
-    }
-    await this.db
-      .update(schema.placeIngestRows)
-      .set({ status: 'imported', matchedPlaceId: placeId, updatedAt: new Date() })
-      .where(eq(schema.placeIngestRows.id, rowId));
-    await this.dedup.emitReindex(placeId, 'merged');
-    await this.audit(adminId, 'place_import.row_merged', jobId, { rowId, placeId });
+    });
+    if (fresh) this.metrics.increment('place_dbfirst_hit_total', { path: 'merge' });
     await this.refreshCounters(jobId);
     return this.rowView(rowId);
   }
@@ -2014,6 +2016,11 @@ export class PlaceImportJobService {
       throw AppError.conflict('PROVIDER_UNAVAILABLE', 'Không xác minh được địa điểm lúc này');
     }
     const details = outcome.details;
+    if (details.providerPlaceId !== row.resolvedGooglePlaceId)
+      throw AppError.conflict(
+        'PROVIDER_IDENTITY_CHANGED',
+        'Provider identity changed; review again',
+      );
     // #339 — the third door. Submit and `/v1/places/imports` both refuse a
     // place that has not opened; bulk publish did not, and it is the one door
     // that could not be made safe downstream: a closed place reaches the
@@ -2047,6 +2054,8 @@ export class PlaceImportJobService {
     };
 
     const stored = await this.db.transaction(async (tx) => {
+      await this.dedup.lockGoogleIdentities(tx, [details.providerPlaceId]);
+      await this.dedup.assertGoogleIdentityOwner(tx, details.providerPlaceId);
       let committedMapping: CommittedMapping | null = null;
       let mappingWrite: PersistResult | null = null;
       const [place] = await tx
@@ -2190,18 +2199,21 @@ export class PlaceImportJobService {
           datasetVersion: resolution.status === 'UNMAPPED' ? null : resolution.datasetVersion,
         };
       }
+      await this.dedup.upsertProviderSource(
+        {
+          placeId: place!.id,
+          details,
+          derivedScore: score,
+          fetchTier: details.fetchTier,
+        },
+        tx,
+      );
       return { placeId: place!.id, committedMapping, mappingWrite };
     });
 
     const { placeId, committedMapping } = stored;
     if (stored.mappingWrite) this.administrative.countPersist(stored.mappingWrite);
 
-    await this.dedup.upsertProviderSource({
-      placeId,
-      details,
-      derivedScore: score,
-      fetchTier: details.fetchTier,
-    });
     // ADM-009: the row records what happened to its publication request, so a
     // result can never call a deferred row published.
     const publication = wantsPublication ? await this.settlePublication(placeId) : null;

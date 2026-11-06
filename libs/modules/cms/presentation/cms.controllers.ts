@@ -1,3 +1,4 @@
+import { schema } from '@gogo/database';
 import { verificationSchema } from '../../shared/venue-verification';
 import {
   Body,
@@ -1292,15 +1293,7 @@ export const taxonomyLabelSchema = z
   });
 
 const taxonomyCreateSchema = z.object({
-  kind: z.enum([
-    'mood',
-    'category',
-    'setting',
-    'dietary',
-    'accessibility',
-    'spending_style',
-    'suitability',
-  ]),
+  kind: z.enum(schema.taxonomyKind.enumValues),
   key: z.string().regex(/^[a-z0-9_]{2,40}$/),
   labels: z.record(z.string(), taxonomyLabelSchema),
   sortOrder: z.number().int().min(0).optional(),
@@ -1328,19 +1321,7 @@ const collectionStatusSchema = z.object({
 const collectionItemsSchema = z.object({ placeIds: z.array(z.string().uuid()).max(100) });
 /** The CMS list defaults to BOTH active and inactive — that is the point. */
 const taxonomyListQuery = z.object({
-  kind: z
-    .enum([
-      'mood',
-      'category',
-      'setting',
-      'dietary',
-      'accessibility',
-      'spending_style',
-      'suitability',
-      'checkin_tag',
-      'amenity',
-    ])
-    .optional(),
+  kind: z.enum(schema.taxonomyKind.enumValues).optional(),
   isActive: z
     .enum(['true', 'false'])
     .transform((value) => value === 'true')

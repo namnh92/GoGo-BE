@@ -70,14 +70,6 @@ export class RateLimitGuard implements CanActivate {
     ]);
     if (!spec) return true;
 
-    if (
-      spec.action === 'places.search' &&
-      (req.query as { includeTotal?: string })?.includeTotal === 'true'
-    ) {
-      const counted = await this.store.hit(`places.search.count|${req.ip ?? 'noip'}`, 60);
-      if (counted > (this.config?.SEARCH_COUNT_PER_MINUTE ?? 20))
-        throw AppError.tooManyRequests('Too many counted searches', 60);
-    }
     const parts: string[] = [spec.action];
     if (spec.keyBy.includes('ip')) {
       // SEC-004: `edgeClientIp` is set only for a request whose edge hop
@@ -100,6 +92,19 @@ export class RateLimitGuard implements CanActivate {
       if (burst > spec.burst.limit) {
         throw AppError.tooManyRequests('Rate limit exceeded', spec.burst.windowSeconds);
       }
+    }
+    // Count refusal still consumes the ordinary quota; its ceiling wins when both run out.
+    if (
+      spec.action === 'places.search' &&
+      (req.query as { includeTotal?: string })?.includeTotal === 'true'
+    ) {
+      const counted = await this.store.hit(`places.search.count|${req.ip ?? 'noip'}`, 60);
+      if (counted > (this.config?.SEARCH_COUNT_PER_MINUTE ?? 20))
+        throw AppError.serviceUnavailable(
+          'SEARCH_COUNT_UNAVAILABLE',
+          'Search count temporarily unavailable; retry without includeTotal',
+          true,
+        );
     }
     return true;
   }
