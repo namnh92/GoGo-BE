@@ -74,6 +74,6 @@ describe('GoGo-BE#754 additive place-list and review contract', () => {
   });
 
   it('bumps the alpha contract once', () => {
-    expect(doc.info.version).toBe('4.0.0-alpha.10');
+    expect(doc.info.version).toBe('5.0.0-alpha.1');
   });
 });
