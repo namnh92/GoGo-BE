@@ -72,7 +72,27 @@ const envSchema = z
     REDIS_URL: z.string().startsWith('redis://').or(z.string().startsWith('rediss://')),
     AUTH_JWT_SECRET: z.string().default(''),
     // Sink is explicit and restricted to dev/test by IdentityModule.
-    AUTH_RECOVERY_MAIL_ADAPTER: z.enum(['disabled', 'sink']).default('disabled'),
+    AUTH_RECOVERY_MAIL_ADAPTER: z.enum(['disabled', 'sink', 'ses']).default('disabled'),
+    AUTH_RECOVERY_MAIL_SENDER: z.string().trim().default(''),
+    AUTH_RECOVERY_MAIL_REGION: z.string().trim().default(''),
+    AUTH_RECOVERY_MAIL_CONFIGURATION_SET: z.string().trim().default(''),
+    // Validated here; the SES SDK reads these directly via its default chain.
+    AWS_ACCESS_KEY_ID: z.string().trim().default(''),
+    AWS_SECRET_ACCESS_KEY: z.string().trim().default(''),
+    // SES uses static IAM-user keys only. Preserve whitespace: the SDK treats it
+    // as a configured source (notably AWS_PROFILE) in the raw process environment.
+    AWS_PROFILE: z.string().default(''),
+    AWS_SESSION_TOKEN: z.string().default(''),
+    AWS_CREDENTIAL_EXPIRATION: z.string().default(''),
+    AWS_CONFIG_FILE: z.string().default(''),
+    AWS_SHARED_CREDENTIALS_FILE: z.string().default(''),
+    AWS_WEB_IDENTITY_TOKEN_FILE: z.string().default(''),
+    AWS_ROLE_ARN: z.string().default(''),
+    AWS_ROLE_SESSION_NAME: z.string().default(''),
+    AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: z.string().default(''),
+    AWS_CONTAINER_CREDENTIALS_FULL_URI: z.string().default(''),
+    AWS_CONTAINER_AUTHORIZATION_TOKEN: z.string().default(''),
+    AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: z.string().default(''),
     AUTH_RECOVERY_KEY: z
       .string()
       .refine(
@@ -592,6 +612,78 @@ const envSchema = z
     SECRETS_READINESS_FILE: z.string().default(''),
   })
   .superRefine((env, ctx) => {
+    if (env.AUTH_RECOVERY_MAIL_ADAPTER === 'ses') {
+      const required = [
+        'AUTH_RECOVERY_MAIL_SENDER',
+        'AUTH_RECOVERY_MAIL_REGION',
+        'AUTH_RECOVERY_MAIL_CONFIGURATION_SET',
+        'AUTH_RECOVERY_KEY',
+        'AWS_ACCESS_KEY_ID',
+        'AWS_SECRET_ACCESS_KEY',
+      ] as const;
+      for (const name of required) {
+        if (!env[name]) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [name],
+            message: `${name} is required when AUTH_RECOVERY_MAIL_ADAPTER=ses`,
+          });
+        }
+      }
+      const unsupportedCredentialSources = [
+        'AWS_PROFILE',
+        'AWS_SESSION_TOKEN',
+        'AWS_CREDENTIAL_EXPIRATION',
+        'AWS_CONFIG_FILE',
+        'AWS_SHARED_CREDENTIALS_FILE',
+        'AWS_WEB_IDENTITY_TOKEN_FILE',
+        'AWS_ROLE_ARN',
+        'AWS_ROLE_SESSION_NAME',
+        'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+        'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+        'AWS_CONTAINER_AUTHORIZATION_TOKEN',
+        'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
+      ] as const;
+      for (const name of unsupportedCredentialSources) {
+        if (env[name]) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [name],
+            message: `${name} must be unset when AUTH_RECOVERY_MAIL_ADAPTER=ses; use the injected static IAM-user key pair`,
+          });
+        }
+      }
+      if (
+        env.AUTH_RECOVERY_MAIL_SENDER &&
+        !z.string().email().safeParse(env.AUTH_RECOVERY_MAIL_SENDER).success
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['AUTH_RECOVERY_MAIL_SENDER'],
+          message: 'AUTH_RECOVERY_MAIL_SENDER must be a mailbox address',
+        });
+      }
+      if (
+        env.AUTH_RECOVERY_MAIL_REGION &&
+        !/^[a-z]{2}(?:-[a-z]+)+-\d+$/.test(env.AUTH_RECOVERY_MAIL_REGION)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['AUTH_RECOVERY_MAIL_REGION'],
+          message: 'AUTH_RECOVERY_MAIL_REGION must be an AWS region name',
+        });
+      }
+      if (
+        env.AUTH_RECOVERY_MAIL_CONFIGURATION_SET &&
+        !/^[A-Za-z0-9_-]{1,64}$/.test(env.AUTH_RECOVERY_MAIL_CONFIGURATION_SET)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['AUTH_RECOVERY_MAIL_CONFIGURATION_SET'],
+          message: 'AUTH_RECOVERY_MAIL_CONFIGURATION_SET must be a configuration set name',
+        });
+      }
+    }
     // GoGo-BE#548: a credential with no resolvable account id signs for the
     // host `.r2.cloudflarestorage.com`. Refusing at boot is the only place
     // that failure is cheap — later it is a presigned URL a client trusts.
@@ -854,6 +946,12 @@ const envSchema = z
  * endpoint. `env.spec.ts` derives the set from a deployed fixture and pins it.
  */
 export const CONDITIONALLY_REQUIRED_ENV_KEYS = [
+  'AUTH_RECOVERY_MAIL_SENDER',
+  'AUTH_RECOVERY_MAIL_REGION',
+  'AUTH_RECOVERY_MAIL_CONFIGURATION_SET',
+  'AUTH_RECOVERY_KEY',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
   'AUTH_JWT_SECRET',
   'COOKIE_SECRET',
   'COOKIE_SECURE',

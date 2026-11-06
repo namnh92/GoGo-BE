@@ -7,6 +7,80 @@ const base = {
   REDIS_URL: 'redis://localhost:6379',
 };
 
+describe('SES recovery configuration (#777)', () => {
+  const ses = {
+    ...base,
+    AUTH_RECOVERY_MAIL_ADAPTER: 'ses',
+    AUTH_RECOVERY_MAIL_SENDER: 'recovery@example.com',
+    AUTH_RECOVERY_MAIL_REGION: 'ap-southeast-1',
+    AUTH_RECOVERY_MAIL_CONFIGURATION_SET: 'recovery-test',
+    AUTH_RECOVERY_KEY: 'r'.repeat(48),
+    AWS_ACCESS_KEY_ID: 'test-access-key',
+    AWS_SECRET_ACCESS_KEY: 'test-secret-key',
+  };
+
+  it('defaults to disabled and requires SES fields only when selected', () => {
+    expect(loadEnv(base).AUTH_RECOVERY_MAIL_ADAPTER).toBe('disabled');
+    expect(
+      loadEnv({ ...base, AUTH_RECOVERY_MAIL_ADAPTER: 'sink' }).AUTH_RECOVERY_MAIL_ADAPTER,
+    ).toBe('sink');
+    expect(loadEnv(ses).AUTH_RECOVERY_MAIL_ADAPTER).toBe('ses');
+    expect(() => loadEnv({ ...base, AUTH_RECOVERY_MAIL_ADAPTER: 'smtp' })).toThrow(
+      /AUTH_RECOVERY_MAIL_ADAPTER/,
+    );
+  });
+
+  it.each([
+    'AUTH_RECOVERY_MAIL_SENDER',
+    'AUTH_RECOVERY_MAIL_REGION',
+    'AUTH_RECOVERY_MAIL_CONFIGURATION_SET',
+    'AUTH_RECOVERY_KEY',
+    'AWS_ACCESS_KEY_ID',
+    'AWS_SECRET_ACCESS_KEY',
+  ] as const)('refuses absent %s and marks it conditionally required', (name) => {
+    expect(() => loadEnv({ ...ses, [name]: undefined })).toThrow(name);
+    expect(envCatalogue().find((entry) => entry.name === name)?.conditional).toBe(true);
+  });
+
+  it.each([
+    ['AUTH_RECOVERY_MAIL_SENDER', 'not-a-mailbox'],
+    ['AUTH_RECOVERY_MAIL_REGION', 'not-a-region'],
+    ['AUTH_RECOVERY_MAIL_CONFIGURATION_SET', 'bad/name'],
+    ['AUTH_RECOVERY_KEY', 'short'],
+    ['AWS_ACCESS_KEY_ID', ' '],
+    ['AWS_SECRET_ACCESS_KEY', ' '],
+  ] as const)('refuses malformed %s', (name, value) => {
+    expect(() => loadEnv({ ...ses, [name]: value })).toThrow(name);
+  });
+
+  it.each([
+    'AWS_PROFILE',
+    'AWS_SESSION_TOKEN',
+    'AWS_CREDENTIAL_EXPIRATION',
+    'AWS_CONFIG_FILE',
+    'AWS_SHARED_CREDENTIALS_FILE',
+    'AWS_WEB_IDENTITY_TOKEN_FILE',
+    'AWS_ROLE_ARN',
+    'AWS_ROLE_SESSION_NAME',
+    'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+    'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+    'AWS_CONTAINER_AUTHORIZATION_TOKEN',
+    'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
+  ])('refuses %s alongside static SES keys without exposing its value', (name) => {
+    const value = 'private-alternate-credential-source';
+    for (const nonempty of [value, ' ']) {
+      expect(() => loadEnv({ ...ses, [name]: nonempty })).toThrow(name);
+      expect(() => loadEnv({ ...ses, [name]: nonempty })).not.toThrow(value);
+    }
+    expect(() => loadEnv({ ...ses, [name]: '' })).not.toThrow();
+    for (const adapter of ['disabled', 'sink']) {
+      expect(() =>
+        loadEnv({ ...base, AUTH_RECOVERY_MAIL_ADAPTER: adapter, [name]: value }),
+      ).not.toThrow();
+    }
+  });
+});
+
 describe('loadEnv (FND-006 fail-fast config)', () => {
   it('parses a minimal valid development env', () => {
     const env = loadEnv({ ...base, NODE_ENV: 'development' });

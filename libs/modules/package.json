@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-sesv2": "^3.1162.0",
     "@fastify/cookie": "^11.1.2",
     "@gogo/cost-observability": "workspace:*",
     "@gogo/database": "workspace:*",

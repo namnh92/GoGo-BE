@@ -10,8 +10,41 @@ import { describe, expect, it } from 'vitest';
  */
 
 const ROOT = path.resolve(__dirname, '../../..');
+
+/** Pin the complete call; only formatting whitespace may vary. */
+function exactCallShape(source: string): RegExp {
+  return new RegExp(
+    source
+      .trim()
+      .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/\s+/g, '\\s*'),
+  );
+}
+
 const ALLOWED: Record<string, RegExp[]> = {
   'libs/observability/src/sentry.ts': [
+    // #777 boundary review: a fixed error, a per-capture cloned scope, and an
+    // explicit event-field allowlist prevent ambient recovery PII from leaving.
+    // Pin the entire processor so extra fields or context cannot be added silently.
+    exactCallShape(`
+      Sentry.captureException(new Error('Password recovery mail delivery failed'), {
+        // captureContext receives a clone used only to prepare this event.
+        captureContext: (scope) => {
+          scope.clear();
+          scope.addEventProcessor((event) => ({
+            ...(event.event_id !== undefined ? { event_id: event.event_id } : {}),
+            ...(event.timestamp !== undefined ? { timestamp: event.timestamp } : {}),
+            ...(event.platform !== undefined ? { platform: event.platform } : {}),
+            ...(event.level !== undefined ? { level: event.level } : {}),
+            ...(event.exception !== undefined ? { exception: event.exception } : {}),
+            ...(event.release !== undefined ? { release: event.release } : {}),
+            ...(event.environment !== undefined ? { environment: event.environment } : {}),
+            tags: { operation: 'password_recovery_send' },
+          }));
+          return scope;
+        },
+      });
+    `),
     /Sentry\.getDefaultIntegrations\(\{\}\)/,
     /Sentry\.httpIntegration\(\{ maxIncomingRequestBodySize: 'none' \}\)/,
     /Sentry\.onUnhandledRejectionIntegration\(\{ mode: 'none' \}\)/,

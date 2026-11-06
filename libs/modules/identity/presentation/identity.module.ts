@@ -40,6 +40,30 @@ import {
   RecoveryMailSink,
   UnconfiguredRecoveryMailSender,
 } from '../infrastructure/recovery-mail';
+import { SdkRecoverySesClient, SesRecoveryMailSender } from '../infrastructure/recovery-mail-ses';
+
+export function recoveryMailSenderFor(config: IdentityConfig): RecoveryMailSender {
+  if (config.AUTH_RECOVERY_MAIL_ADAPTER === 'ses') {
+    const ses = {
+      sender: config.AUTH_RECOVERY_MAIL_SENDER ?? '',
+      region: config.AUTH_RECOVERY_MAIL_REGION ?? '',
+      configurationSet: config.AUTH_RECOVERY_MAIL_CONFIGURATION_SET ?? '',
+    };
+    if ((config.AUTH_RECOVERY_KEY?.length ?? 0) < 32) {
+      return new UnconfiguredRecoveryMailSender();
+    }
+    // Fail closed even in callers that bypass the API's env validation.
+    if (!ses.sender.trim() || !ses.region.trim() || !ses.configurationSet.trim()) {
+      return new UnconfiguredRecoveryMailSender();
+    }
+    return new SesRecoveryMailSender(new SdkRecoverySesClient(ses.region), ses);
+  }
+  return config.AUTH_RECOVERY_MAIL_ADAPTER === 'sink' &&
+    config.APP_ENV === 'dev' &&
+    (config.NODE_ENV !== 'production' || (config.AUTH_RECOVERY_KEY?.length ?? 0) >= 32)
+    ? new RecoveryMailSink()
+    : new UnconfiguredRecoveryMailSender();
+}
 
 /**
  * BE-BFF-002. AuthGuard + RateLimitGuard are registered globally here:
@@ -65,12 +89,7 @@ import {
     },
     {
       provide: RecoveryMailSender,
-      useFactory: (config: IdentityConfig) =>
-        config.AUTH_RECOVERY_MAIL_ADAPTER === 'sink' &&
-        config.APP_ENV === 'dev' &&
-        (config.NODE_ENV !== 'production' || (config.AUTH_RECOVERY_KEY?.length ?? 0) >= 32)
-          ? new RecoveryMailSink()
-          : new UnconfiguredRecoveryMailSender(),
+      useFactory: recoveryMailSenderFor,
       inject: [APP_CONFIG],
     },
     {

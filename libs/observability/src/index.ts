@@ -29,5 +29,6 @@ export {
   sentryInitOptions,
   sentryRelease,
   sentryIntegrations,
+  reportRecoveryMailFailure,
   type UnhandledRejectionMode,
 } from './sentry';

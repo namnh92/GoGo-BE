@@ -34,8 +34,8 @@ export class RedisRateLimitStore implements RateLimitStore {
 
 /**
  * Fail-open wrapper: when Redis is unreachable, rate limiting degrades to
- * the per-process store instead of failing every request. Availability of
- * the API wins; the security regression window is bounded to the outage.
+ * the per-process store instead of failing every request. Recovery is the
+ * exception: its shared mail quotas fail closed (#777).
  */
 export class FallbackRateLimitStore implements RateLimitStore {
   private readonly fallback = new InMemoryRateLimitStore();
@@ -45,7 +45,9 @@ export class FallbackRateLimitStore implements RateLimitStore {
   async hit(key: string, windowSeconds: number): Promise<number> {
     try {
       return await this.primary.hit(key, windowSeconds);
-    } catch {
+    } catch (error) {
+      // Recovery sends paid security mail: never degrade shared quotas to local ones.
+      if (key.startsWith('recovery|')) throw error;
       return this.fallback.hit(key, windowSeconds);
     }
   }
