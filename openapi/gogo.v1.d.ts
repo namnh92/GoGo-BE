@@ -9118,6 +9118,13 @@ export interface components {
             caption?: string | null;
             /** @description Provider terms survive an editor touching the list (FR-INGEST-014). */
             attribution?: string | null;
+            /** @description Per-photo provider credits that must be rendered with this image. */
+            authorAttributions?: components["schemas"]["ProviderPhotoAuthor"][];
+            /**
+             * Format: uri
+             * @description Provider source link for this photo, when supplied.
+             */
+            googleMapsUri?: string | null;
             /** @description At most one per place. */
             isCover: boolean;
             /** @enum {string} */

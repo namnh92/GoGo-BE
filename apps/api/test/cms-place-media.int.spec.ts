@@ -2,7 +2,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import argon2 from 'argon2';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -10,6 +10,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
 import { PUBLIC_STORAGE_PROVIDER, STORAGE_PROVIDER, type FakeStorage } from '@gogo/providers';
 import { cmsAccessHeaders } from './support/cms-access';
+import { MediaCleanupService } from '@gogo/modules';
 
 /**
  * BE-CMS-M1 (#191) — place media is writable at last.
@@ -156,6 +157,122 @@ afterAll(async () => {
   await app?.close();
   await pool?.end();
   await container?.stop();
+});
+
+describe('approved provider media (#786 r1)', () => {
+  const credits = {
+    provider: 'google' as const,
+    sourceReference: 'ChIJ-approved-photo-786',
+    fetchedAt: '2026-11-07T00:00:00.000Z',
+    authorAttributions: [
+      { displayName: 'Lan', uri: 'https://maps.google.com/contrib/lan', photoUri: null },
+    ],
+    googleMapsUri: 'https://www.google.com/maps/photo/786',
+  };
+  async function providerMedia(storageKey = `places/provider/r1-${++seq}.jpg`) {
+    const place = await makePlace();
+    const [media] = await db
+      .insert(schema.placeMedia)
+      .values({
+        placeId: place.id,
+        storageKey,
+        moderation: 'approved',
+        sourceType: 'google_derived',
+        attribution: 'Google Maps',
+        providerPhoto: credits,
+      })
+      .returning();
+    markUploaded(storageKey);
+    return { place, media: media! };
+  }
+  const queued = (key: string) =>
+    db.select().from(schema.mediaCleanupQueue).where(eq(schema.mediaCleanupQueue.objectKey, key));
+
+  it('F-02: queues last-reference detach and the worker deletes public bytes without an upload row', async () => {
+    const { place, media } = await providerMedia();
+    expect(
+      await db
+        .select()
+        .from(schema.mediaUploads)
+        .where(eq(schema.mediaUploads.storageKey, media.storageKey)),
+    ).toHaveLength(0);
+    const result = await detachMedia(place.id, media.id);
+    expect(result.statusCode).toBe(200);
+    expect(await queued(media.storageKey)).toEqual([
+      expect.objectContaining({
+        bucket: 'public',
+        reason: 'submission_provider_photo_detached',
+      }),
+    ]);
+    const store = app.get<FakeStorage>(PUBLIC_STORAGE_PROVIDER);
+    expect(store.objects.has(media.storageKey)).toBe(true);
+    await app.get(MediaCleanupService).runDue();
+    expect(store.objects.has(media.storageKey)).toBe(false);
+    expect(await queued(media.storageKey)).toHaveLength(0);
+  });
+
+  it('F-02: preserves shared bytes until the last provider reference is detached', async () => {
+    const first = await providerMedia();
+    const second = await providerMedia(first.media.storageKey);
+    expect((await detachMedia(first.place.id, first.media.id)).statusCode).toBe(200);
+    expect(await queued(first.media.storageKey)).toHaveLength(0);
+    expect(app.get<FakeStorage>(PUBLIC_STORAGE_PROVIDER).objects.has(first.media.storageKey)).toBe(
+      true,
+    );
+    expect((await detachMedia(second.place.id, second.media.id)).statusCode).toBe(200);
+    expect(await queued(first.media.storageKey)).toHaveLength(1);
+  });
+
+  it('F-02: concurrent shared-reference detaches still enqueue exactly one cleanup', async () => {
+    const first = await providerMedia();
+    const second = await providerMedia(first.media.storageKey);
+    const results = await Promise.all([
+      detachMedia(first.place.id, first.media.id),
+      detachMedia(second.place.id, second.media.id),
+    ]);
+    expect(results.map((r) => r.statusCode)).toEqual([200, 200]);
+    expect(await queued(first.media.storageKey)).toHaveLength(1);
+  });
+
+  it('F-02: cleanup enqueue failure rolls back detach and keeps provenance and bytes', async () => {
+    const { place, media } = await providerMedia();
+    await db.execute(sql`create function fail_provider_cleanup_786() returns trigger language plpgsql as $$
+      begin raise exception 'cleanup unavailable'; end; $$`);
+    await db.execute(sql`create trigger fail_provider_cleanup_786 before insert on media_cleanup_queue
+      for each row execute function fail_provider_cleanup_786()`);
+    try {
+      expect((await detachMedia(place.id, media.id)).statusCode).toBe(500);
+      const remaining = await db
+        .select()
+        .from(schema.placeMedia)
+        .where(eq(schema.placeMedia.id, media.id));
+      expect(remaining).toEqual([expect.objectContaining({ providerPhoto: credits })]);
+      expect(await queued(media.storageKey)).toHaveLength(0);
+      expect(app.get<FakeStorage>(PUBLIC_STORAGE_PROVIDER).objects.has(media.storageKey)).toBe(
+        true,
+      );
+    } finally {
+      await db.execute(sql`drop trigger fail_provider_cleanup_786 on media_cleanup_queue`);
+      await db.execute(sql`drop function fail_provider_cleanup_786()`);
+    }
+  });
+
+  it('F-03: both the mutation DTO and catalogue detail expose stored per-photo credits', async () => {
+    const { place, media } = await providerMedia();
+    const updated = await patchMedia(place.id, media.id, { caption: 'Ảnh địa điểm' });
+    expect(updated.statusCode).toBe(200);
+    const listed = await detail(place.id);
+    expect(listed.statusCode).toBe(200);
+    for (const dto of [updated.json(), listed.json().media[0]]) {
+      expect(dto).toMatchObject({
+        attribution: 'Google Maps',
+        sourceType: 'google_derived',
+        authorAttributions: credits.authorAttributions,
+        googleMapsUri: credits.googleMapsUri,
+      });
+      expect(dto).not.toHaveProperty('providerPhoto');
+    }
+  });
 });
 
 describe('#191 upload → attach → moderate → visible', () => {

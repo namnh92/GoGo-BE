@@ -662,6 +662,7 @@ type PlaceSourceRow = {
 };
 
 type PlaceMediaRow = {
+  provider_photo: typeof schema.placeMedia.$inferSelect.providerPhoto;
   id: string;
   storage_key: string;
   width: number | null;
@@ -1406,7 +1407,7 @@ export class CmsCatalogService {
       this.db.execute(sql`
         select id, storage_key, width, height, sort_order, moderation,
                moderation_reason, moderated_by, moderated_at, caption,
-               attribution, is_cover, source_type, created_at
+               attribution, provider_photo, is_cover, source_type, created_at
         from place_media where place_id = ${placeId}::uuid
         -- #191: the cover leads, then the editor's order.
         order by is_cover desc, sort_order, created_at
@@ -1542,6 +1543,12 @@ export class CmsCatalogService {
           // editor has reordered the list it sits in.
           attribution: r.attribution,
           isCover: r.is_cover,
+          ...(r.provider_photo
+            ? {
+                authorAttributions: r.provider_photo.authorAttributions,
+                googleMapsUri: r.provider_photo.googleMapsUri,
+              }
+            : {}),
           sourceType: r.source_type,
           createdAt: toIso(r.created_at),
         };

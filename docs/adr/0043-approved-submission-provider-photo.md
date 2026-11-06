@@ -41,6 +41,12 @@ GoGo giữ tối đa một ảnh provider để Place Detail có ảnh. Ngoại 
   trong cùng transaction. Upload/transaction lỗi hoặc process crash để lại intent
   cho worker hiện có; compensation kiểm tra tham chiếu sống trước khi xoá.
   CMS không được xoá/thay Google attribution khi reorder/chỉnh caption.
+- Resolve có `Idempotency-Key` vẫn không lưu/replay response; mỗi lần retry lấy
+  preview mới. CMS mutation và detail trả `authorAttributions`, `googleMapsUri`
+  của ảnh đã lưu để client hiển thị credit riêng từng ảnh.
+- Detach tham chiếu cuối của ảnh provider enqueue cleanup public trong cùng
+  transaction; lỗi enqueue rollback cả detach. Các detach cùng storage key
+  được tuần tự hoá để không mất cleanup khi hai tham chiếu bị xoá đồng thời.
 
 ## Consequences
 

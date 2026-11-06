@@ -7,7 +7,12 @@ import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { schema } from '@gogo/database';
-import { FakePlacePhotoDisplay, PLACE_PHOTO_DISPLAY } from '@gogo/providers';
+import {
+  FakePlacePhotoDisplay,
+  PLACE_PHOTO_DISPLAY,
+  PLACE_PROVIDER,
+  type FakePlaceProvider,
+} from '@gogo/providers';
 import { ProviderPhotosService } from '../../../libs/modules/search/application/provider-photos.service';
 
 process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'metrics-token-int-tests';
@@ -168,6 +173,53 @@ beforeEach(async () => {
 });
 
 describe('GET /v1/places/:id/provider-photos', () => {
+  it('keyed link resolve returns fresh photo credits without persisting a replay (#786 F-01)', async () => {
+    const googleId = 'ChIJ-keyed-preview-786';
+    const marker = 'KeyedPreviewCredits786';
+    const clientIp = ip();
+    app.get<FakePlaceProvider>(PLACE_PROVIDER).seed({
+      providerPlaceId: googleId,
+      name: 'Preview cafe',
+      addressText: '12 Test, Hồ Chí Minh',
+      lat: 10.7769,
+      lng: 106.7009,
+    });
+    const request = () =>
+      api().inject({
+        method: 'POST',
+        url: '/v1/places/resolve-google-maps-link',
+        remoteAddress: clientIp,
+        headers: { 'idempotency-key': 'keyed-resolve-preview-786' },
+        payload: { url: `https://www.google.com/maps?place_id=${googleId}` },
+      });
+    const seed = (name: string) =>
+      fake.seed(googleId, [
+        {
+          reference: `places/${googleId}/photos/${marker}`,
+          widthPx: 100,
+          heightPx: 100,
+          authorAttributions: [{ displayName: name, uri: null, photoUri: null }],
+          googleMapsUri: `https://www.google.com/maps/photo/${marker}`,
+        },
+      ]);
+    seed(`${marker}-first`);
+    const first = await request();
+    expect(first.statusCode).toBe(201);
+    expect(first.headers['cache-control']).toBe('private, no-store');
+    expect(first.json().candidate.photo.authorAttributions[0].displayName).toBe(`${marker}-first`);
+    expect(await tablesContaining(marker)).toEqual([]);
+
+    seed(`${marker}-second`);
+    const second = await request();
+    expect(second.statusCode).toBe(201);
+    expect(second.headers['x-idempotent-replay']).toBeUndefined();
+    expect(second.json().candidate.photo.authorAttributions[0].displayName).toBe(
+      `${marker}-second`,
+    );
+    expect(fake.mediaCalls).toHaveLength(0);
+    expect(await tablesContaining(marker)).toEqual([]);
+  });
+
   it('the no-persistence probe can see a marker when one is stored (control)', async () => {
     const p = await place();
     await db.execute(sql`update places set description = ${`ctl-${MARK}`} where id = ${p.id}`);
