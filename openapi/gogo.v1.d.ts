@@ -3163,6 +3163,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/users/{id}/assistant-credits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops: user AI credit balance and ledger
+         * @description GoGo-BE#778. Read-only credit facts for ops_admin and super_admin only; editor, moderator, consumer and guest actors cannot read this endpoint. Each successful read is audited as user.assistant_credits_viewed without copying the name, balance or ledger into the audit entry. User identity is limited to id and displayName; no email or conversation data. Balance and page share one database statement snapshot. Balance is the full current account balance on each request, not the sum of the returned page. Newest first by (created_at DESC, id DESC), retaining microsecond precision. A later grant/spend may change balance between pages; this is not a frozen export. Cursor is opaque, scoped to this user and must be passed unchanged. An account without credits returns zero and an empty page. Erasure removes the balance and ledger user linkage; retained anonymized rows are not returned. An unknown user returns USER_NOT_FOUND. Malformed or wrong-user cursors return INVALID_CURSOR; invalid path/query values return VALIDATION_FAILED.
+         */
+        get: operations["cmsUserAssistantCredits"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/users/{id}/suspend": {
         parameters: {
             query?: never;
@@ -7494,6 +7514,46 @@ export interface components {
             /** @description The measured quantity the money is derived from. Units are a fact; the money is an estimate over them. */
             billableUnitsToday: number;
             billableUnitsMonthToDate: number;
+        };
+        CmsAssistantCredits: {
+            user: {
+                /** Format: uuid */
+                id: string;
+                displayName: string;
+            };
+            /** @description Full current no-expiry AI credit balance; zero when no account row exists. */
+            balance: number;
+            items: components["schemas"]["CmsAssistantCreditEntry"][];
+            /** @description Opaque user-scoped keyset cursor; null when no more rows exist. */
+            nextCursor: string | null;
+        };
+        CmsAssistantCreditEntry: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: date-time
+             * @description UTC ledger timestamp, including all six fractional digits.
+             */
+            createdAt: string;
+            /**
+             * @description Signed credits; +50 for submission_approved, -1 for message_spent.
+             * @enum {integer}
+             */
+            delta: 50 | -1;
+            /** @enum {string} */
+            reason: "submission_approved" | "message_spent";
+            /**
+             * Format: uuid
+             * @description Immutable contribution reference, even after source deletion; null for spending.
+             */
+            submissionId: string | null;
+            /** @description Immutable venue deduplication reference recorded by the grant (currently google:<placeId>), retained after source deletion. Null for spending. This is an identifier, not provider place content or a GoGo place UUID. */
+            venueIdentity: string | null;
+            /**
+             * Format: uuid
+             * @description Current GoGo place reference from the source submission, when it still exists and has a result place. Null for spending or removed sources/places.
+             */
+            placeId: string | null;
         };
         CmsAppUser: {
             /** Format: uuid */
@@ -16762,6 +16822,37 @@ export interface operations {
                     "application/json": components["schemas"]["CmsAppUserDetail"];
                 };
             };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    cmsUserAssistantCredits: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current balance and one ledger page, including an empty or exhausted page */
+            200: {
+                headers: {
+                    /** @description Credit history must not be cached. */
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsAssistantCredits"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
         };
     };

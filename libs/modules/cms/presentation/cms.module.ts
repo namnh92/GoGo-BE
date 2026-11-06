@@ -34,6 +34,8 @@ import { CmsObservabilityService } from '../application/cms-observability.servic
 import { CmsCostCenterService } from '../application/cms-cost-center.service';
 import { CmsOpsMetricsService } from '../application/cms-ops-metrics.service';
 import { CmsConfigReadinessService } from '../application/cms-config-readiness.service';
+import { CmsAssistantCreditsService } from '../application/cms-assistant-credits.service';
+import { CmsAssistantCreditsController } from './cms-assistant-credits.controller';
 import { CmsUsersService } from '../application/cms-users.service';
 import { PrivacyRequestsService } from '../application/privacy-requests.service';
 import { ModerationQueueService } from '../application/moderation-queue.service';
@@ -87,6 +89,7 @@ import {
     CmsSafetyRulesController,
     CmsUploadsController,
     CmsUsersController,
+    CmsAssistantCreditsController,
     PrivacyRequestsController,
     EmergencyController,
   ],
@@ -103,6 +106,7 @@ import {
     CmsOpsMetricsService,
     CmsConfigReadinessService,
     CmsUsersService,
+    CmsAssistantCreditsService,
     PrivacyRequestsService,
     BannersService,
     CampaignsService,

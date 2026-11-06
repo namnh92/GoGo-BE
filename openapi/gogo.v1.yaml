@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 6.0.0-alpha.1
+  version: 6.1.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -6584,6 +6584,49 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CmsAppUserDetail' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cms/users/{id}/assistant-credits:
+    get:
+      operationId: cmsUserAssistantCredits
+      tags: [cms]
+      summary: 'Ops: user AI credit balance and ledger'
+      description: >
+        GoGo-BE#778. Read-only credit facts for ops_admin and super_admin only;
+        editor, moderator, consumer and guest actors cannot read this endpoint.
+        Each successful read is audited as user.assistant_credits_viewed without
+        copying the name, balance or ledger into the audit entry.
+        User identity is limited to id and displayName; no email or conversation data.
+        Balance and page share one database statement snapshot. Balance is the full
+        current account balance on each request, not the sum of the returned page.
+        Newest first by (created_at DESC, id DESC), retaining microsecond precision.
+        A later grant/spend may change balance between pages; this is not a frozen
+        export. Cursor is opaque, scoped to this user and must be passed unchanged.
+        An account without credits returns zero and an empty page. Erasure removes
+        the balance and ledger user linkage; retained anonymized rows are not returned.
+        An unknown user returns USER_NOT_FOUND. Malformed or wrong-user cursors
+        return INVALID_CURSOR; invalid path/query values return VALIDATION_FAILED.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: cursor
+          in: query
+          schema: { type: string, minLength: 1, maxLength: 512 }
+      responses:
+        '200':
+          description: Current balance and one ledger page, including an empty or exhausted page
+          headers:
+            Cache-Control:
+              description: Credit history must not be cached.
+              schema: { type: string, const: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsAssistantCredits' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /cms/users/{id}/suspend:
@@ -15154,6 +15197,62 @@ components:
             The measured quantity the money is derived from. Units are a fact;
             the money is an estimate over them.
         billableUnitsMonthToDate: { type: integer }
+
+    CmsAssistantCredits:
+      type: object
+      additionalProperties: false
+      required: [user, balance, items, nextCursor]
+      properties:
+        user:
+          type: object
+          additionalProperties: false
+          required: [id, displayName]
+          properties:
+            id: { type: string, format: uuid }
+            displayName: { type: string }
+        balance:
+          type: integer
+          minimum: 0
+          description: Full current no-expiry AI credit balance; zero when no account row exists.
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/CmsAssistantCreditEntry' }
+        nextCursor:
+          type: [string, 'null']
+          description: Opaque user-scoped keyset cursor; null when no more rows exist.
+
+    CmsAssistantCreditEntry:
+      type: object
+      additionalProperties: false
+      required: [id, createdAt, delta, reason, submissionId, venueIdentity, placeId]
+      properties:
+        id: { type: string, format: uuid }
+        createdAt:
+          type: string
+          format: date-time
+          description: UTC ledger timestamp, including all six fractional digits.
+        delta:
+          type: integer
+          enum: [50, -1]
+          description: Signed credits; +50 for submission_approved, -1 for message_spent.
+        reason: { type: string, enum: [submission_approved, message_spent] }
+        submissionId:
+          type: [string, 'null']
+          format: uuid
+          description: Immutable contribution reference, even after source deletion; null for spending.
+        venueIdentity:
+          type: [string, 'null']
+          description: >
+            Immutable venue deduplication reference recorded by the grant (currently
+            google:<placeId>), retained after source deletion. Null for spending.
+            This is an identifier, not provider place content or a GoGo place UUID.
+        placeId:
+          type: [string, 'null']
+          format: uuid
+          description: >
+            Current GoGo place reference from the source submission, when it still
+            exists and has a result place. Null for spending or removed sources/places.
 
     CmsAppUser:
       type: object
