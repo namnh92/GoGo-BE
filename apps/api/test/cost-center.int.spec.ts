@@ -454,7 +454,7 @@ describe('#381 — the overview keeps the legacy payload and adds the Cost Cente
       runtime: {
         coverage: 'PARTIAL',
         services: { full: 3, partial: 0, notInstrumented: 2 },
-        operations: { instrumented: 13, total: 15 },
+        operations: { instrumented: 14, total: 16 },
       },
       cost: { kind: 'AUTO', freshness: 'STALE' },
     });
@@ -464,7 +464,7 @@ describe('#381 — the overview keeps the legacy payload and adds the Cost Cente
     expect(places.runtime).toEqual({
       surface: 'in_process',
       coverage: 'FULL',
-      operations: { instrumented: 10, total: 10 },
+      operations: { instrumented: 11, total: 11 },
       // #427: only a service with a boot-time operation reports a connection.
       connection: null,
     });
