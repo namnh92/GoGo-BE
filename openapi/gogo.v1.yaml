@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 4.0.0-alpha.10
+  version: 5.0.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -249,7 +249,22 @@ paths:
               required: [email, password, displayName]
               properties:
                 email: { type: string, format: email, maxLength: 254 }
-                password: { type: string, minLength: 10, maxLength: 128 }
+                password:
+                  type: string
+                  minLength: 8
+                  maxLength: 128
+                  description: >-
+                    8 to 128 UTF-16 code units (the existing login length cap),
+                    without trimming or normalization. Supplementary characters
+                    such as emoji occupy two units.
+                    Requires at least one Unicode uppercase letter (Lu), one
+                    Unicode lowercase letter (Ll), one ASCII digit (0-9), and
+                    one special character outside Unicode letters, numbers and
+                    combining marks (L, N, M). Vietnamese letters such as Đ and
+                    ă satisfy the respective case requirements. Whitespace and
+                    emoji count as special characters. Policy failures return
+                    BadRequest with code VALIDATION_FAILED and a field_errors
+                    entry whose field is password; the password is never echoed.
                 displayName: { type: string, minLength: 1, maxLength: 50 }
                 claimGuestToken:
                   type: string

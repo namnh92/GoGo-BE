@@ -123,7 +123,7 @@ async function register(email: string): Promise<string> {
     method: 'POST',
     url: '/v1/auth/register',
     remoteAddress: ip(),
-    payload: { email, password: 'sufficiently-long-pw', displayName: 'Baseline' },
+    payload: { email, password: 'Sufficiently-long-pw1!', displayName: 'Baseline' },
   });
   return res.json().accessToken as string;
 }

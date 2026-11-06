@@ -42,7 +42,7 @@ async function register(email: string) {
     method: 'POST',
     url: '/v1/auth/register',
     remoteAddress: ip(),
-    payload: { email, password: 'sufficiently-long-pw', displayName: email.split('@')[0] },
+    payload: { email, password: 'Sufficiently-long-pw1!', displayName: email.split('@')[0] },
   });
   return res.json().accessToken as string;
 }

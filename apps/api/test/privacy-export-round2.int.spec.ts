@@ -55,7 +55,7 @@ async function register(prefix: string): Promise<User> {
     method: 'POST',
     url: '/v1/auth/register',
     remoteAddress: ip(),
-    payload: { email, password: 'sufficiently-long-pw', displayName: `Marker ${prefix}` },
+    payload: { email, password: 'Sufficiently-long-pw1!', displayName: `Marker ${prefix}` },
   });
   expect(res.statusCode).toBe(201);
   return { token: res.json().accessToken, userId: res.json().userId, email };

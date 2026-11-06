@@ -8,6 +8,24 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 5.0.0-alpha.1 — consumer registration password policy (GoGo-MobileApp#482)
+
+**Breaking**, authorized by the owner on 2026-11-06 for re-design group 01,
+screen S56. Registration now requires 8–128 UTF-16 code units, including a
+Unicode uppercase letter (Lu), lowercase letter (Ll), ASCII digit (0–9), and
+a special character outside Unicode letters, numbers and marks (L/N/M).
+Whitespace and emoji qualify as special characters; combining marks do not.
+Length keeps the existing login cap; supplementary characters use two units.
+Passwords are neither trimmed nor normalized. Vietnamese `Đ` and `ă` count
+as uppercase and lowercase. The minimum falls from 10 to 8, but composition
+rejects some previously accepted passwords, hence the MAJOR bump.
+
+Consumers must update sign-up validation and hints. Read the existing 400
+`VALIDATION_FAILED` envelope and `field_errors[].field === "password"` for a
+policy failure; no error code or envelope field was added. Login validation
+and stored credentials are unchanged: existing passwords still authenticate.
+CMS admin password rules are unchanged. See ADR-0039.
+
 ## 4.0.0-alpha.10 — suggestion origin and plan next-leg travel (GoGo-BE#756)
 
 **Additive.** Suggestion candidates gain optional `travelMinutesFromOrigin`

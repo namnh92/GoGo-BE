@@ -1714,7 +1714,7 @@ describe('RBAC', () => {
       remoteAddress: ip(),
       payload: {
         email: 'not-admin@gogo.local',
-        password: 'sufficiently-long-pw',
+        password: 'Sufficiently-long-pw1!',
         displayName: 'U',
       },
     });

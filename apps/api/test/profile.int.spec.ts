@@ -46,7 +46,7 @@ async function register(email: string, displayName = email.split('@')[0]!) {
     method: 'POST',
     url: '/v1/auth/register',
     remoteAddress: ip(),
-    payload: { email, password: 'sufficiently-long-pw', displayName },
+    payload: { email, password: 'Sufficiently-long-pw1!', displayName },
   });
   const b = res.json();
   return { token: b.accessToken as string, userId: b.userId as string };

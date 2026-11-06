@@ -10913,6 +10913,7 @@ export interface operations {
                 "application/json": {
                     /** Format: email */
                     email: string;
+                    /** @description 8 to 128 UTF-16 code units (the existing login length cap), without trimming or normalization. Supplementary characters such as emoji occupy two units. Requires at least one Unicode uppercase letter (Lu), one Unicode lowercase letter (Ll), one ASCII digit (0-9), and one special character outside Unicode letters, numbers and combining marks (L, N, M). Vietnamese letters such as Đ and ă satisfy the respective case requirements. Whitespace and emoji count as special characters. Policy failures return BadRequest with code VALIDATION_FAILED and a field_errors entry whose field is password; the password is never echoed. */
                     password: string;
                     displayName: string;
                     /** @description Opaque guest token to re-parent guest history (FR-AUTH-003). */

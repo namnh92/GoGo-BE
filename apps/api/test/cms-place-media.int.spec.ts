@@ -482,7 +482,7 @@ describe('#191 the key an editor may attach', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: ip(),
-      payload: { email: 'member@gogo.id.vn', password: 'sufficiently-long-pw', displayName: 'M' },
+      payload: { email: 'member@gogo.id.vn', password: 'Sufficiently-long-pw1!', displayName: 'M' },
     });
     const consumerUpload = await api().inject({
       method: 'POST',

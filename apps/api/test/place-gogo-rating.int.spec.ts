@@ -67,7 +67,7 @@ async function account(displayName = 'Lan') {
     method: 'POST',
     url: '/v1/auth/register',
     remoteAddress: ip(),
-    payload: { email, password: 'sufficiently-long-pw', displayName },
+    payload: { email, password: 'Sufficiently-long-pw1!', displayName },
   });
   const body = res.json();
   expect(body.accessToken).toBeTruthy();

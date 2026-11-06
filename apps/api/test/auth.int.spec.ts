@@ -84,7 +84,7 @@ describe('register / login', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: freshIp(),
-      payload: { email: 'an@gogo.id.vn', password: 'sufficiently-long-pw', displayName: 'An' },
+      payload: { email: 'an@gogo.id.vn', password: 'Sufficiently-long-pw1!', displayName: 'An' },
     });
     expect(res.statusCode).toBe(201);
     const body = res.json();
@@ -103,7 +103,7 @@ describe('register / login', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: freshIp(),
-      payload: { email: 'an@gogo.id.vn', password: 'sufficiently-long-pw', displayName: 'An2' },
+      payload: { email: 'an@gogo.id.vn', password: 'Sufficiently-long-pw1!', displayName: 'An2' },
     });
     expect(dup.statusCode).toBe(409);
     expect(dup.json().code).toBe('REGISTRATION_FAILED');
@@ -130,7 +130,7 @@ describe('register / login', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: freshIp(),
-      payload: { email: 'lock@gogo.id.vn', password: 'sufficiently-long-pw', displayName: 'L' },
+      payload: { email: 'lock@gogo.id.vn', password: 'Sufficiently-long-pw1!', displayName: 'L' },
     });
     for (let i = 0; i < 5; i++) {
       await api().inject({
@@ -144,7 +144,7 @@ describe('register / login', () => {
       method: 'POST',
       url: '/v1/auth/login',
       remoteAddress: freshIp(),
-      payload: { email: 'lock@gogo.id.vn', password: 'sufficiently-long-pw' },
+      payload: { email: 'lock@gogo.id.vn', password: 'Sufficiently-long-pw1!' },
     });
     expect(blocked.statusCode).toBe(429);
     expect(blocked.json().retryable).toBe(true);
@@ -227,7 +227,7 @@ describe('refresh rotation + revoke chain (ADR-0003)', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: freshIp(),
-      payload: { email, password: 'sufficiently-long-pw', displayName: 'R' },
+      payload: { email, password: 'Sufficiently-long-pw1!', displayName: 'R' },
     });
     return res.json() as { accessToken: string; refreshToken: string };
   }
@@ -363,7 +363,7 @@ describe('guest sessions (FR-AUTH-002/003)', () => {
       remoteAddress: freshIp(),
       payload: {
         email: 'claimed@gogo.id.vn',
-        password: 'sufficiently-long-pw',
+        password: 'Sufficiently-long-pw1!',
         displayName: 'Đã Đăng Ký',
         claimGuestToken: guestBody.guestToken,
       },
@@ -396,7 +396,7 @@ describe('session revocation closes the access-token window', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: freshIp(),
-      payload: { email: 'revoke1@gogo.id.vn', password: 'sufficiently-long-pw', displayName: 'R' },
+      payload: { email: 'revoke1@gogo.id.vn', password: 'Sufficiently-long-pw1!', displayName: 'R' },
     });
     const token = reg.json().accessToken as string;
     expect(
@@ -435,7 +435,7 @@ describe('session revocation closes the access-token window', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: freshIp(),
-      payload: { email: 'revoke2@gogo.id.vn', password: 'sufficiently-long-pw', displayName: 'R' },
+      payload: { email: 'revoke2@gogo.id.vn', password: 'Sufficiently-long-pw1!', displayName: 'R' },
     });
     const first = reg.json();
     const rotated = await api().inject({
@@ -476,7 +476,7 @@ describe('authorization surface', () => {
       method: 'POST',
       url: '/v1/auth/register',
       remoteAddress: freshIp(),
-      payload: { email: 'csrf@gogo.id.vn', password: 'sufficiently-long-pw', displayName: 'C' },
+      payload: { email: 'csrf@gogo.id.vn', password: 'Sufficiently-long-pw1!', displayName: 'C' },
     });
     const cookies = reg.headers['set-cookie'] as string[];
     const cookieHeader = cookies.map((c) => c.split(';')[0]).join('; ');
