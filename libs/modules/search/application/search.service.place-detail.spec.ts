@@ -99,3 +99,37 @@ describe('Place Detail GoGo rating mapping (#217)', () => {
       expect(Object.keys(labels ?? {})).toEqual(['outcome']);
   });
 });
+
+describe('Place Detail areaSummary (#784)', () => {
+  it('maps the verified administrative fact without composing the postal address', async () => {
+    const area = {
+      datasetVersion: 'fixture-784',
+      provinceCode: '79',
+      communeCode: '26734',
+      label: 'Phường Bến Nghé',
+      locale: 'vi',
+    };
+    const { svc } = service(async () => ({
+      ...baseRow,
+      gogo_rating_count: 0,
+      address_text: '12 Nguyễn Huệ',
+      area_summary: area,
+    }));
+    expect(await svc.placeDetail(baseRow.id)).toMatchObject({
+      areaSummary: area,
+      addressText: '12 Nguyễn Huệ',
+    });
+  });
+
+  it.each([null, undefined])('omits an unavailable area (%s) from JSON', async (area) => {
+    const { svc } = service(async () => ({
+      ...baseRow,
+      gogo_rating_count: 0,
+      area_key: 'discovery-only',
+      area_summary: area,
+    }));
+    const detail = JSON.parse(JSON.stringify(await svc.placeDetail(baseRow.id)));
+    expect(detail).not.toHaveProperty('areaSummary');
+    expect(detail.areaKey).toBe('discovery-only');
+  });
+});

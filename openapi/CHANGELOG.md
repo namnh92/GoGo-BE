@@ -8,6 +8,20 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 6.3.0-alpha.1 — Place Detail areaSummary (GoGo-BE#784)
+
+**Additive MINOR** from 6.2.0-alpha.1. `GET /places/{id}` returns optional
+`areaSummary`, sharing `PlaceAreaSummary` with `PlaceSearchResult.areaSummary`:
+`datasetVersion`, `provinceCode`, nullable `communeCode`, `label`, and `locale`.
+Only VERIFIED mappings in the published dataset with an active, currently
+effective unit qualify. Commune wins; otherwise province is used. Without an
+eligible mapping the field is omitted. Detail uses Vietnamese labels, matching
+search with its default `locale=vi`. `addressText` stays a separate postal
+address; `areaKey` is still a discovery area, never an administrative fallback.
+
+No migration or provider request. Consumers regenerate their client. Rollback:
+roll back the API; consumers tolerate the optional field being absent.
+
 ## 6.2.0-alpha.1 — CMS amenity filtering (GoGo-BE#779)
 
 `GET /cms/places` accepts optional CSV `amenities`, with the same semantics as

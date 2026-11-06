@@ -441,16 +441,7 @@ export class SearchRepository {
         coalesce((select json_agg(json_build_object('kind', t.kind, 'key', t.key) order by t.kind, t.key)
           from place_taxonomies pt join taxonomies t on t.id = pt.taxonomy_id
           where pt.place_id = p.id and t.is_active and t.kind in ('category','mood','setting','amenity')), '[]'::json) as taxonomies,
-        (select json_build_object('datasetVersion', p.administrative_dataset_version, 'provinceCode', p.province_code,
-          'communeCode', case when u.level = 'COMMUNE' then u.code else null end, 'label', case when ${locale} = 'en' then coalesce(u.name_en, u.name) else u.name end,
-          'locale', case when ${locale} = 'en' and u.name_en is not null then 'en' else 'vi' end)
-          from administrative_units u join administrative_dataset_versions d on d.id = u.dataset_version_id
-          where p.administrative_mapping_status = 'VERIFIED' and d.status = 'PUBLISHED'
-            and d.combined_dataset_version = p.administrative_dataset_version
-            and (u.code = p.commune_code or (u.code = p.province_code and u.level = 'PROVINCE')) and u.status = 'ACTIVE'
-            and u.effective_from <= current_date
-            and (u.effective_to is null or u.effective_to >= current_date)
-          order by case when u.level = 'COMMUNE' then 0 else 1 end, u.effective_from desc limit 1) as area_summary
+        ${publicAreaSummarySql(locale)} as area_summary
       from places p where p.id = any(${pgArray(placeIds)}::uuid[])
     `);
     return result.rows as unknown as Pick<SearchRow, 'id' | 'taxonomies' | 'area_summary'>[];
@@ -479,6 +470,7 @@ export class SearchRepository {
       select
         p.id, p.name, p.description, p.status, p.address_text, p.area_key,
         ${publicVerificationSql()} as verification,
+        ${publicAreaSummarySql('vi')} as area_summary,
         ST_Y(p.geom) as lat, ST_X(p.geom) as lng,
         p.phone, p.website, p.rating, p.rating_count, p.price_level,
         p.avg_visit_minutes, p.suitability, p.is_lodging, p.confidence,
@@ -578,4 +570,18 @@ export function publicVerificationSql(): SQL {
   return sql`coalesce((select json_build_object('status', 'verified', 'verifiedAt', v.verified_at)
     from place_verifications v where v.place_id = p.id and v.status = 'verified' and v.identity_revision = p.identity_revision),
     json_build_object('status', 'unverified'))`;
+}
+
+/** Current verified administrative label, shared by search and detail; `p` is the place. */
+function publicAreaSummarySql(locale: 'vi' | 'en'): SQL {
+  return sql`(select json_build_object('datasetVersion', p.administrative_dataset_version, 'provinceCode', p.province_code,
+          'communeCode', case when u.level = 'COMMUNE' then u.code else null end, 'label', case when ${locale} = 'en' then coalesce(u.name_en, u.name) else u.name end,
+          'locale', case when ${locale} = 'en' and u.name_en is not null then 'en' else 'vi' end)
+          from administrative_units u join administrative_dataset_versions d on d.id = u.dataset_version_id
+          where p.administrative_mapping_status = 'VERIFIED' and d.status = 'PUBLISHED'
+            and d.combined_dataset_version = p.administrative_dataset_version
+            and (u.code = p.commune_code or (u.code = p.province_code and u.level = 'PROVINCE')) and u.status = 'ACTIVE'
+            and u.effective_from <= current_date
+            and (u.effective_to is null or u.effective_to >= current_date)
+          order by case when u.level = 'COMMUNE' then 0 else 1 end, u.effective_from desc limit 1)`;
 }

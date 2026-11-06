@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 6.2.0-alpha.1
+  version: 6.3.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -3675,6 +3675,10 @@ paths:
         moderator-published reviews, so the response is served
         `Cache-Control: no-store` and a publish, rejection, edit back to
         moderation or emergency hide shows on the next read.
+        GoGo-BE#784: optional `areaSummary` uses the same current VERIFIED
+        administrative mapping as search (commune preferred, province fallback),
+        with Vietnamese labels like search with `locale=vi`. Omitted when no
+        eligible mapping exists; `addressText` remains a separate postal address.
       security: []
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
@@ -13550,16 +13554,7 @@ components:
             properties:
               kind: { type: string, enum: [category, mood, setting, amenity] }
               key: { type: string }
-        areaSummary:
-          type: object
-          description: Current VERIFIED administrative mapping only; commune preferred, province fallback; actual label locale reported.
-          required: [datasetVersion, provinceCode, communeCode, label, locale]
-          properties:
-            datasetVersion: { type: string }
-            provinceCode: { type: string }
-            communeCode: { type: [string, 'null'] }
-            label: { type: string }
-            locale: { type: string, enum: [vi, en] }
+        areaSummary: { $ref: '#/components/schemas/PlaceAreaSummary' }
         verification: { $ref: '#/components/schemas/VenueVerification' }
         id: { type: string, format: uuid }
         name: { type: string }
@@ -15997,6 +15992,17 @@ components:
           format: uri
           nullable: true
           description: Author avatar (`https`, Google image host); null when absent or unsafe.
+    PlaceAreaSummary:
+      type: object
+      description: Current VERIFIED administrative mapping only; commune preferred, province fallback; actual label locale reported.
+      required: [datasetVersion, provinceCode, communeCode, label, locale]
+      properties:
+        datasetVersion: { type: string }
+        provinceCode: { type: string }
+        communeCode: { type: [string, 'null'] }
+        label: { type: string }
+        locale: { type: string, enum: [vi, en] }
+
     PlaceDetail:
       type: object
       required: [gogoRatingCount]
@@ -16011,6 +16017,7 @@ components:
           description: >
             GoGo-owned postal address (GoGo-BE#280). Absent when unknown —
             never an empty string. Render as plain text.
+        areaSummary: { $ref: '#/components/schemas/PlaceAreaSummary' }
         areaKey: { type: string }
         lat: { type: number }
         lng: { type: number }

@@ -422,6 +422,7 @@ export class SearchService {
       verification: row['verification'] ?? { status: 'unverified' },
       addressText: contact.values.addressText,
       areaKey: (row['area_key'] as string | null) ?? undefined,
+      areaSummary: (row['area_summary'] as SearchRow['area_summary']) ?? undefined,
       lat: num(row['lat'])!,
       lng: num(row['lng'])!,
       phone: contact.values.phone,

@@ -1666,7 +1666,7 @@ export interface paths {
         };
         /**
          * Place detail with sources, freshness, hours, verified prices
-         * @description GoGo-BE#217 (ADR-0028): carries the GoGo community rating (`gogoRating`, `gogoRatingCount`) beside the provider's (`rating`, `ratingCount`, attributed through `sources`). The two are separate facts from separate populations and are never merged into one score. The GoGo rating is computed on every read from the place's moderator-published reviews, so the response is served `Cache-Control: no-store` and a publish, rejection, edit back to moderation or emergency hide shows on the next read.
+         * @description GoGo-BE#217 (ADR-0028): carries the GoGo community rating (`gogoRating`, `gogoRatingCount`) beside the provider's (`rating`, `ratingCount`, attributed through `sources`). The two are separate facts from separate populations and are never merged into one score. The GoGo rating is computed on every read from the place's moderator-published reviews, so the response is served `Cache-Control: no-store` and a publish, rejection, edit back to moderation or emergency hide shows on the next read. GoGo-BE#784: optional `areaSummary` uses the same current VERIFIED administrative mapping as search (commune preferred, province fallback), with Vietnamese labels like search with `locale=vi`. Omitted when no eligible mapping exists; `addressText` remains a separate postal address.
          */
         get: operations["getPlaceDetail"];
         put?: never;
@@ -6569,15 +6569,7 @@ export interface components {
                 kind: "category" | "mood" | "setting" | "amenity";
                 key: string;
             }[];
-            /** @description Current VERIFIED administrative mapping only; commune preferred, province fallback; actual label locale reported. */
-            areaSummary?: {
-                datasetVersion: string;
-                provinceCode: string;
-                communeCode: string | null;
-                label: string;
-                /** @enum {string} */
-                locale: "vi" | "en";
-            };
+            areaSummary?: components["schemas"]["PlaceAreaSummary"];
             verification: components["schemas"]["VenueVerification"];
             /** Format: uuid */
             id: string;
@@ -8080,6 +8072,15 @@ export interface components {
              */
             photoUri: string | null;
         };
+        /** @description Current VERIFIED administrative mapping only; commune preferred, province fallback; actual label locale reported. */
+        PlaceAreaSummary: {
+            datasetVersion: string;
+            provinceCode: string;
+            communeCode: string | null;
+            label: string;
+            /** @enum {string} */
+            locale: "vi" | "en";
+        };
         PlaceDetail: {
             verification?: components["schemas"]["VenueVerification"];
             /** Format: uuid */
@@ -8089,6 +8090,7 @@ export interface components {
             status?: string;
             /** @description GoGo-owned postal address (GoGo-BE#280). Absent when unknown — never an empty string. Render as plain text. */
             addressText?: string;
+            areaSummary?: components["schemas"]["PlaceAreaSummary"];
             areaKey?: string;
             lat?: number;
             lng?: number;

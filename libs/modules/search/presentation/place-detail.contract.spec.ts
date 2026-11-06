@@ -91,3 +91,25 @@ describe('PlaceDetail GoGo rating contract (#217)', () => {
     for (const v of examples) expect(v).toHaveProperty('ratingCount');
   });
 });
+
+describe('PlaceDetail administrative area contract (#784)', () => {
+  it('shares the optional area schema with search', () => {
+    expect(placeDetail.properties?.['areaSummary']).toEqual({
+      $ref: '#/components/schemas/PlaceAreaSummary',
+    });
+    expect(placeDetail.properties?.['areaSummary']).toEqual(
+      doc.components.schemas['PlaceSearchResult']?.properties?.['areaSummary'],
+    );
+    expect(placeDetail.required ?? []).not.toContain('areaSummary');
+    const area = doc.components.schemas['PlaceAreaSummary']!;
+    expect(area.required).toEqual([
+      'datasetVersion',
+      'provinceCode',
+      'communeCode',
+      'label',
+      'locale',
+    ]);
+    expect(area.properties?.['communeCode']?.type).toEqual(['string', 'null']);
+    expect(getPlaceDetail.description).toContain('locale=vi');
+  });
+});
