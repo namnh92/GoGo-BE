@@ -1,3 +1,5 @@
+import { SearchModule } from '../../search/presentation/search.module';
+import { SubmissionPhotoService } from '../application/submission-photo.service';
 import { Module } from '@nestjs/common';
 import { IdentityModule } from '../../identity/presentation/identity.module';
 // ADM-017 — both import doors classify their geometry through the one resolver:
@@ -12,9 +14,10 @@ import { CmsSubmissionController, IngestionController } from './ingestion.contro
 import { PlaceImportController } from './place-import.controller';
 
 @Module({
-  imports: [IdentityModule, AdministrativeModule],
+  imports: [IdentityModule, AdministrativeModule, SearchModule],
   controllers: [IngestionController, CmsSubmissionController, PlaceImportController],
   providers: [
+    SubmissionPhotoService,
     PlaceResolverService,
     PlaceDedupService,
     PlaceSubmissionService,

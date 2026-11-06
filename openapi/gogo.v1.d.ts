@@ -1699,6 +1699,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/places/google-provider-photo/{googlePlaceId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Fetch at most one transient Google candidate photo through the BFF
+         * @description Public, 10/min/IP. Fetch the candidate photo reference as JSON and render its base64 bytes with its Google Maps and author attribution; the URL is not a directly loadable image. No Google key/name/URL for image retrieval is exposed. Fresh first photo at fetch time; response credits are authoritative. Flag place_provider_photos, google.places.display budgets, 800px/400KiB, 6s overall deadline and bounded expired-reference retry apply. Nothing is stored.
+         */
+        get: operations["getCandidateProviderPhoto"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/places/{id}/provider-photos": {
         parameters: {
             query?: never;
@@ -2363,6 +2383,8 @@ export interface paths {
          * @description `approved` creates the catalogue place and applies whatever a reviewer supplemented through `PUT /cms/place-submissions/{id}/review` over the provider's answer (GoGo-BE#528). Fields the reviewer typed are recorded `editorial` in `place_field_provenance` and carry their id; fields left as Google answered them are `google_derived` and carry the Place ID — so a later provider refresh can tell what it may overwrite.
          *
          *     **Address, phone and website (GoGo-BE#280)** are GoGo-owned and come only from the review draft, each with the evidence in its `provenance`. The provider's formatted address is no longer a fallback: a place approved with no reviewer address has none. A draft saved before #280 that carries one of these values without evidence is refused `409 REVIEW_EVIDENCE_REQUIRED`, naming the fields in `field_errors`; re-save the draft with its sources and approve again.
+         *
+         *     #786 / ADR-0043: with provider photos enabled, approval retains at most one current first Google photo with provider provenance and per-photo credits. No image or references were stored while pending. Disabled or confirmed no-photo results permit approval without imagery; photo budget, provider or storage failures return retryable `503 SUBMISSION_PHOTO_UNAVAILABLE` and leave the submission pending. Google may change photo order since preview.
          *
          *     `rejected` creates no place. `merged` points the proposal at an existing one and writes nothing to it.
          *
@@ -8031,6 +8053,17 @@ export interface components {
             currency?: string;
             confidence?: number;
         };
+        /** @description Optional single-photo BFF reference, only from a live resolved candidate with a provider photo and the flag/budget configured. Resolve buys no photo media and persists nothing. Fetch url as JSON, not an image src. Omitted for disabled/no-photo/provider-error/DB-first/ambiguous results. Approval re-fetches the current first Google photo; Google can change photo order between preview and moderation. */
+        CandidateProviderPhotoReference: {
+            /** @description Relative BFF path; no provider key or photo name */
+            url: string;
+            /** @constant */
+            provider: "google";
+            attribution: string;
+            authorAttributions: components["schemas"]["ProviderPhotoAuthor"][];
+            /** Format: uri */
+            googleMapsUri: string | null;
+        };
         /** @description GoGo-BE#509 — transient provider photos. Display once, never persist. */
         PlaceProviderPhotos: {
             /** @description Why `photos` may be empty. Unknown values mean "no photos". */
@@ -8428,6 +8461,7 @@ export interface components {
              */
             administrative?: components["schemas"]["ImportAdministrativeIdentity"] | null;
             candidate?: {
+                photo?: components["schemas"]["CandidateProviderPhotoReference"];
                 googlePlaceId?: string;
                 name?: string;
                 address?: string;
@@ -9014,6 +9048,10 @@ export interface components {
             source: "google" | "community" | "manual";
             /** @description Present for provider imagery, which must be displayed with it. Community photos are only returned once approved in moderation. */
             attribution?: string;
+            /** @description Per-photo provider credits that must be rendered with this image. */
+            authorAttributions?: components["schemas"]["ProviderPhotoAuthor"][];
+            /** Format: uri */
+            googleMapsUri?: string | null;
         };
         RoomListItem: {
             /** Format: uuid */
@@ -14108,6 +14146,33 @@ export interface operations {
             429: components["responses"]["RateLimited"];
         };
     };
+    getCandidateProviderPhoto: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                googlePlaceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Photo or an empty degraded response; never prevents link submission */
+            200: {
+                headers: {
+                    "Cache-Control"?: "private, no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaceProviderPhotos"] & {
+                        photos?: components["schemas"]["PlaceProviderPhoto"][];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
     getPlaceProviderPhotos: {
         parameters: {
             query?: never;
@@ -15341,6 +15406,15 @@ export interface operations {
                 };
             };
             409: components["responses"]["Conflict"];
+            /** @description Retryable provider verification or photo/storage/budget outage. SUBMISSION_PHOTO_UNAVAILABLE leaves the submission pending. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     listPlaceImports: {

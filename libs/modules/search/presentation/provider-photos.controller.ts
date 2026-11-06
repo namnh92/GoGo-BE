@@ -8,6 +8,17 @@ import { ProviderPhotosService } from '../application/provider-photos.service';
 export class ProviderPhotosController {
   constructor(private readonly photos: ProviderPhotosService) {}
 
+  @Public()
+  @RateLimit({ action: 'places.candidatePhoto', limit: 10, windowSeconds: 60, keyBy: 'ip' })
+  @Header('cache-control', 'private, no-store')
+  @Get('google-provider-photo/:googlePlaceId')
+  candidatePhoto(
+    @Param('googlePlaceId', new ZodValidationPipe(z.string().regex(/^[A-Za-z0-9_-]{5,255}$/)))
+    id: string,
+  ) {
+    return this.photos.firstForProvider(id);
+  }
+
   /**
    * GoGo-BE#509 — transient Google photos for one Place Detail view.
    *

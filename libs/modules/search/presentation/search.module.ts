@@ -10,6 +10,6 @@ import { SearchController } from './search.controller';
   imports: [IdentityModule],
   controllers: [SearchController, ProviderPhotosController],
   providers: [SearchRepository, SearchService, ProviderPhotosService],
-  exports: [SearchRepository, SearchService],
+  exports: [SearchRepository, SearchService, ProviderPhotosService],
 })
 export class SearchModule {}

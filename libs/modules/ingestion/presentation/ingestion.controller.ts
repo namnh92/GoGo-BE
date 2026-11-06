@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Put, Query } from '@nestjs/common';
+import { Header, Body, Controller, Get, Param, Post, Put, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { contactProvenanceSchema } from '../../shared/place-contact-schema';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
@@ -50,6 +50,7 @@ export class IngestionController {
    */
   @Public()
   @RateLimit({ action: 'places.resolve_link', limit: 10, windowSeconds: 60, keyBy: 'ip' })
+  @Header('cache-control', 'private, no-store')
   @Post('places/resolve-google-maps-link')
   resolve(@Body(new ZodValidationPipe(resolveSchema)) body: z.infer<typeof resolveSchema>) {
     return this.submissions.resolveLink({ url: body.url, cityHint: body.cityHint });

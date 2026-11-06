@@ -288,6 +288,16 @@ export class CmsPlaceMediaService {
     const rejecting = patch.moderation === 'rejected';
     const isCover = rejecting ? false : patch.isCover;
 
+    if (
+      before.providerPhoto &&
+      patch.attribution !== undefined &&
+      patch.attribution !== before.attribution
+    ) {
+      throw AppError.badRequest(
+        'PROVIDER_ATTRIBUTION_IMMUTABLE',
+        'Provider attribution must be preserved',
+      );
+    }
     const changes = {
       ...(patch.sortOrder !== undefined ? { sortOrder: patch.sortOrder } : {}),
       ...(patch.caption !== undefined ? { caption: patch.caption } : {}),

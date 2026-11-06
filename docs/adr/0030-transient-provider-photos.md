@@ -4,6 +4,13 @@
 - **Date:** 2026-10-02
 - **Deciders:** owner (product), SA (shape), DEV (implementation)
 
+## Narrow supersession (2026-11-07)
+
+[ADR-0043](0043-approved-submission-provider-photo.md), owner decision on #786,
+permits one bounded provider image only when an admin approves a link submission.
+Resolve, preview and pending submissions remain transient. The Place Detail
+provider-photo endpoint in this ADR remains transient and unchanged.
+
 ## Context
 
 GoGo-BE#509 (PI-BE-027) found two Google fields bought and discarded: `photos`

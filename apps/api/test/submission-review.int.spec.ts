@@ -8,7 +8,13 @@ import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { schema } from '@gogo/database';
-import { PLACE_PROVIDER } from '@gogo/providers';
+import {
+  PLACE_PHOTO_DISPLAY,
+  PUBLIC_STORAGE_PROVIDER,
+  type FakePlacePhotoDisplay,
+  type FakeStorage,
+  PLACE_PROVIDER,
+} from '@gogo/providers';
 import { PlaceImportJobService } from '@gogo/modules';
 import type { FakePlaceProvider } from '@gogo/providers';
 import { cmsAccessHeaders } from './support/cms-access';
@@ -167,6 +173,10 @@ beforeAll(async () => {
   process.env.NODE_ENV = 'test';
   process.env.AUTH_JWT_SECRET = 'test-secret-'.padEnd(48, 'x');
   process.env.GOOGLE_PLACES_API_KEY = '';
+  process.env.MEDIA_PUBLIC_BASE_URL = 'https://assets.gogo.test';
+  process.env.PLACE_DISPLAY_DAILY_MAX_CALLS = '100';
+  process.env.PLACE_DISPLAY_DAILY_MAX_LIST_COST_USD = '1';
+  process.env.PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_PHOTOMEDIA = '100';
 
   pool = new Pool({ connectionString: container.getConnectionUri(), max: 6 });
   pool.on('error', () => undefined);
@@ -936,5 +946,149 @@ describe('provider spend, per stage of the journey (#505/#528)', () => {
     await detail(submissionId);
 
     expect(spend()).toEqual({ freeSearches: 0, identitySearches: 0, details: [] });
+  });
+});
+
+describe('#786 approved submission provider photo', () => {
+  async function enablePhotos() {
+    await db.execute(sql`delete from feature_flags where key = 'place_provider_photos.enabled'`);
+    await db.execute(
+      sql`insert into feature_flags (key, environment, platform, enabled) values ('place_provider_photos.enabled', 'all', 'all', true)`,
+    );
+  }
+  function seedPhoto(id: string) {
+    const fake = app.get(PLACE_PHOTO_DISPLAY) as FakePlacePhotoDisplay;
+    fake.seed(
+      id,
+      [0, 1].map((n) => ({
+        reference: `places/${id}/photos/private-photo-${n}`,
+        widthPx: 1600,
+        heightPx: 900,
+        authorAttributions: [
+          { displayName: 'Lan', uri: 'https://maps.google.com/contrib/lan', photoUri: null },
+        ],
+        googleMapsUri: 'https://www.google.com/maps/photo/one',
+      })),
+    );
+    for (const n of [0, 1])
+      fake.seedMedia(`places/${id}/photos/private-photo-${n}`, {
+        contentType: 'image/jpeg',
+        bytes: new Uint8Array([255, 216, 255, 1]),
+      });
+    return fake;
+  }
+
+  it('resolve/preview/pending store no photo, approve retains exactly one attributed provider image', async () => {
+    await enablePhotos();
+    const { submissionId, googlePlaceId } = await contribute();
+    const fake = seedPhoto(googlePlaceId);
+    const storage = app.get(PUBLIC_STORAGE_PROVIDER) as FakeStorage;
+    const initialObjects = storage.objects.size;
+    const initialMediaCalls = fake.mediaCalls.length;
+    const resolved = await api().inject({
+      method: 'POST',
+      url: '/v1/places/resolve-google-maps-link',
+      remoteAddress: ip(),
+      payload: {
+        url: `https://www.google.com/maps?place_id=${googlePlaceId}`,
+      },
+    });
+    expect(resolved.statusCode, resolved.body).toBe(201);
+    const reference = resolved.json().candidate.photo;
+    expect(reference).toMatchObject({ provider: 'google', attribution: 'Google Maps' });
+    expect(resolved.headers['cache-control']).toBe('private, no-store');
+    expect(fake.mediaCalls.length).toBe(initialMediaCalls);
+    const preview = await api().inject({ method: 'GET', url: reference.url, remoteAddress: ip() });
+    expect(preview.statusCode, preview.body).toBe(200);
+    expect(preview.json().photos).toHaveLength(1);
+    expect(preview.headers['cache-control']).toBe('private, no-store');
+    expect(storage.objects.size).toBe(initialObjects);
+    expect(await db.select().from(schema.placeMedia)).toEqual([]);
+    const [pending] = await db
+      .select()
+      .from(schema.placeSubmissions)
+      .where(eq(schema.placeSubmissions.id, submissionId));
+    expect(JSON.stringify(pending)).not.toContain('private-photo');
+    expect(JSON.stringify(pending)).not.toContain('authorAttributions');
+    const approved = await decide(submissionId, { decision: 'approved', reason: 'Reviewed venue' });
+    expect(approved.statusCode, approved.body).toBe(201);
+    const placeId = approved.json().placeId;
+    const media = await db
+      .select()
+      .from(schema.placeMedia)
+      .where(eq(schema.placeMedia.placeId, placeId));
+    expect(media).toHaveLength(1);
+    expect(media[0]).toMatchObject({
+      moderation: 'approved',
+      sourceType: 'google_derived',
+      attribution: 'Google Maps',
+      providerPhoto: {
+        sourceReference: googlePlaceId,
+        authorAttributions: [{ displayName: 'Lan' }],
+      },
+    });
+    expect(storage.objects.size).toBe(initialObjects + 1);
+    expect(await db.select().from(schema.mediaCleanupQueue)).toEqual([]);
+    const detail = await api().inject({
+      method: 'GET',
+      url: `/v1/places/${placeId}`,
+      remoteAddress: ip(),
+    });
+    expect(detail.statusCode, detail.body).toBe(200);
+    expect(detail.json().photos).toMatchObject([
+      {
+        source: 'google',
+        attribution: 'Google Maps',
+        authorAttributions: [{ displayName: 'Lan' }],
+        googleMapsUri: 'https://www.google.com/maps/photo/one',
+      },
+    ]);
+    const immutable = await api().inject({
+      method: 'PATCH',
+      url: `/v1/cms/places/${placeId}/media/${media[0]!.id}`,
+      remoteAddress: ip(),
+      headers: auth(tokens.editor),
+      payload: { attribution: null },
+    });
+    expect(immutable.statusCode, immutable.body).toBe(400);
+    expect(immutable.json().code).toBe('PROVIDER_ATTRIBUTION_IMMUTABLE');
+    const again = await decide(submissionId, { decision: 'approved', reason: 'Retry approval' });
+    expect(again.statusCode).toBe(409);
+    expect(storage.objects.size).toBe(initialObjects + 1);
+  });
+
+  it('rejection never fetches or persists a provider image', async () => {
+    await enablePhotos();
+    const { submissionId, googlePlaceId } = await contribute();
+    const fake = seedPhoto(googlePlaceId);
+    const calls = fake.mediaCalls.length;
+    expect(
+      (await decide(submissionId, { decision: 'rejected', reason: 'Not acceptable' })).statusCode,
+    ).toBe(201);
+    expect(fake.mediaCalls.length).toBe(calls);
+    expect(await db.select().from(schema.placeMedia)).toEqual([]);
+  });
+
+  it('provider failure keeps submission pending so approval can retry with its photo', async () => {
+    await enablePhotos();
+    const { submissionId, googlePlaceId } = await contribute();
+    const fake = seedPhoto(googlePlaceId);
+    fake.failing = true;
+    try {
+      const approved = await decide(submissionId, {
+        decision: 'approved',
+        reason: 'Reviewed venue',
+      });
+      expect(approved.statusCode, approved.body).toBe(503);
+      expect(approved.json().code).toBe('SUBMISSION_PHOTO_UNAVAILABLE');
+      const [pending] = await db
+        .select()
+        .from(schema.placeSubmissions)
+        .where(eq(schema.placeSubmissions.id, submissionId));
+      expect(pending?.status).toBe('pending');
+      expect(await db.select().from(schema.placeMedia)).toEqual([]);
+    } finally {
+      fake.failing = false;
+    }
   });
 });
