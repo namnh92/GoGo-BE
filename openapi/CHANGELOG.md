@@ -8,6 +8,21 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 6.2.0-alpha.1 — CMS amenity filtering (GoGo-BE#779)
+
+`GET /cms/places` accepts optional CSV `amenities`, with the same semantics as
+public `/places/search`: ALL selected active taxonomy keys of kind `amenity`
+must match, while `cashless_payment` means card OR QR. Lists are trimmed,
+deduplicated and limited to 10 distinct keys of at most 64 characters; empty
+entries are ignored. Unknown, inactive and wrong-kind keys return 400
+`INVALID_TAXONOMY_KEYS` in the existing error envelope (`selections.amenity`
+field errors); malformed lists return `VALIDATION_FAILED`.
+
+The filter intersects with category, status and the other existing list filters
+before keyset pagination. Sort order, cursor format and response shape stay the
+same. No schema migration is needed. Rollback: stop sending `amenities` before
+rolling the API back. Consumers regenerate their CMS client from this contract.
+
 ## 6.1.0-alpha.1 — CMS AI credit inspection (GoGo-BE#778)
 
 **Additive MINOR** from 6.0.0-alpha.1. `GET /cms/users/{id}/assistant-credits`

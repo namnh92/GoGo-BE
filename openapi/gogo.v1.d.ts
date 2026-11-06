@@ -3545,6 +3545,7 @@ export interface paths {
         /**
          * Editor/ops: catalog list with server-side filter, sort and cursor paging
          * @description Keyset pagination, not offset: the catalog is written to while editors browse it (background imports), so an offset would repeat or skip rows. Pass the returned `nextCursor` back to get the next page; `nextCursor` is null only when there is genuinely nothing more. Text search runs on the normalized name — accent-insensitive, same behaviour as the consumer-facing search.
+         *     `amenities` uses the public search semantics: ALL selected active amenity keys must match; `cashless_payment` expands to card OR QR. It intersects with every other filter before sorting and cursor pagination.
          *
          *     **Archived places are excluded unless `status=archived` asks for them** (ADM-018). This endpoint previously had no default status filter, so an archived place — the closest thing this schema has to a soft delete — appeared in the ordinary catalogue and in anything that counted it. Every other status behaves as before.
          */
@@ -17551,6 +17552,8 @@ export interface operations {
                 areaKey?: string;
                 /** @description Taxonomy key of kind `category` */
                 category?: string;
+                /** @description Comma-separated taxonomy keys of kind `amenity`, ALL required. Whitespace and empty entries are ignored; duplicates are removed; at most 10 distinct keys, each at most 64 characters. `cashless_payment` means `card_payment` OR `qr_payment`. Unknown, inactive or wrong-kind keys return 400 INVALID_TAXONOMY_KEYS in ErrorEnvelope, with field_errors naming selections.amenity, as on public /places/search. Omitted or empty applies no amenity filter. */
+                amenities?: string;
                 /** @description Where the place came from, derived from provider/submission links. */
                 source?: "google" | "community" | "manual";
                 /** @description Freshness last verified more than N days ago, or never. */
@@ -17592,7 +17595,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description INVALID_CURSOR or a rejected filter value */
+            /** @description INVALID_CURSOR, INVALID_TAXONOMY_KEYS or VALIDATION_FAILED for a rejected filter value */
             400: {
                 headers: {
                     [name: string]: unknown;

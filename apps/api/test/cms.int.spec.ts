@@ -6599,6 +6599,152 @@ describe('place list: filter, sort, cursor paging (BE-IMP-001/002)', () => {
   });
 });
 
+describe('CMS amenity filters (GoGo-BE#779)', () => {
+  let editorToken: string;
+  const ids: string[] = [];
+  const prefix = 'cmsamenity779';
+
+  beforeAll(async () => {
+    editorToken = (await createAdmin('amenity779-editor@gogo.local', 'editor')).token;
+    const categories = await db
+      .insert(schema.taxonomies)
+      .values([
+        { kind: 'category', key: `${prefix}_category`, isActive: true },
+        { kind: 'category', key: `${prefix}_other`, isActive: true },
+        { kind: 'amenity', key: `${prefix}_inactive`, isActive: false },
+      ])
+      .returning();
+    const tags = await db.select().from(schema.taxonomies);
+    // A/B/C all have wifi; A/C also have power; B pays by QR, A by card.
+    // D lacks wifi; E has no amenity; F is archived; G is another category.
+    const amenities = [
+      ['wifi', 'power_outlets', 'card_payment'],
+      ['wifi', 'qr_payment'],
+      ['wifi', 'power_outlets'],
+      ['power_outlets'],
+      [],
+      ['wifi', 'power_outlets'],
+      ['wifi', 'power_outlets'],
+    ];
+    for (let i = 0; i < amenities.length; i++) {
+      const [place] = await db
+        .insert(schema.places)
+        .values({
+          name: `${prefix} ${i}`,
+          nameNormalized: 'set-by-trigger',
+          status: i === 5 ? 'archived' : i === 2 ? 'draft' : 'published',
+          geom: { x: 106.7, y: 10.77 },
+          areaKey: i === 1 ? 'hcm_q3' : 'hcm_q1',
+          // Exercise the UUID tie-breaker as well as the primary sort value.
+          updatedAt: new Date('2026-11-06T00:00:00Z'),
+        })
+        .returning();
+      ids.push(place!.id);
+      await db.insert(schema.placeTaxonomies).values([
+        { placeId: place!.id, taxonomyId: categories[i === 6 ? 1 : 0]!.id },
+        ...amenities[i]!.map((key) => ({
+          placeId: place!.id,
+          taxonomyId: tags.find((tag) => tag.kind === 'amenity' && tag.key === key)!.id,
+        })),
+      ]);
+    }
+  });
+
+  const request = (query: string) =>
+    api().inject({
+      method: 'GET',
+      url: `/v1/cms/places?q=${prefix}&${query}`,
+      remoteAddress: ip(),
+      headers: auth(editorToken),
+    });
+  const list = async (query: string) => {
+    const response = await request(query);
+    expect(response.statusCode).toBe(200);
+    return response.json() as { items: { id: string }[]; nextCursor: string | null };
+  };
+  const expectIds = (page: { items: { id: string }[] }, indexes: number[]) => {
+    expect(page.items.map((item) => item.id).sort()).toEqual(indexes.map((i) => ids[i]!).sort());
+  };
+
+  it('filters one amenity and excludes missing facts and archived places', async () => {
+    expectIds(await list('amenities=wifi'), [0, 1, 2, 6]);
+    expectIds(await list('amenities=wifi&status=archived'), [5]);
+  });
+
+  it('requires all amenities and deduplicates trimmed CSV keys', async () => {
+    expectIds(await list('amenities=wifi,power_outlets'), [0, 2, 6]);
+    expectIds(await list('amenities=%20wifi%20,power_outlets,wifi,,'), [0, 2, 6]);
+    expectIds(await list(`amenities=${Array(11).fill('wifi').join(',')}`), [0, 1, 2, 6]);
+    expectIds(await list('amenities=,,%20'), [0, 1, 2, 3, 4, 6]);
+  });
+
+  it('expands cashless to card OR QR while intersecting other amenities', async () => {
+    expectIds(await list('amenities=cashless_payment'), [0, 1]);
+    expectIds(await list('amenities=wifi,power_outlets,cashless_payment'), [0]);
+  });
+
+  it('intersects amenity, category, status, area and source filters', async () => {
+    expectIds(
+      await list(
+        `amenities=wifi&category=${prefix}_category&status=published&areaKey=hcm_q1&source=manual`,
+      ),
+      [0],
+    );
+  });
+
+  it.each(['does_not_exist_779', `${prefix}_category`, `${prefix}_inactive`])(
+    'rejects unknown, wrong-kind or inactive key %s in the validation envelope',
+    async (key) => {
+      const response = await request(`amenities=wifi,${key}`);
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({
+        code: 'INVALID_TAXONOMY_KEYS',
+        message: expect.any(String),
+        field_errors: [
+          { field: 'selections.amenity', code: 'unknown_key', message: expect.any(String) },
+        ],
+        request_id: expect.any(String),
+        retryable: false,
+      });
+    },
+  );
+
+  it.each([Array.from({ length: 11 }, (_, i) => `amenity779_${i}`).join(','), 'x'.repeat(65)])(
+    'rejects malformed CSV bounds before taxonomy lookup: %s',
+    async (value) => {
+      const response = await request(`amenities=${value}`);
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({
+        code: 'VALIDATION_FAILED',
+        field_errors: expect.arrayContaining([
+          expect.objectContaining({ field: expect.stringMatching(/^amenities(?:\.|$)/) }),
+        ]),
+      });
+    },
+  );
+
+  it.each(['asc', 'desc'])(
+    'pages matching places exactly once with tied sort values (%s)',
+    async (direction) => {
+      const seen: string[] = [];
+      let cursor: string | null = null;
+      let pages = 0;
+      do {
+        const page = await list(
+          `amenities=wifi,power_outlets&sort=updated_at&direction=${direction}&limit=1` +
+            (cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''),
+        );
+        expect(page.items).toHaveLength(1);
+        seen.push(page.items[0]!.id);
+        cursor = page.nextCursor;
+        expect(++pages).toBeLessThanOrEqual(3);
+      } while (cursor);
+      const expected = [ids[0]!, ids[2]!, ids[6]!].sort();
+      expect(seen).toEqual(direction === 'asc' ? expected : expected.reverse());
+    },
+  );
+});
+
 describe('RBAC: hierarchical read, exact-match write (BE-IMP-008, #143)', () => {
   let editor: { id: string; token: string };
   let moderator: { id: string; token: string };

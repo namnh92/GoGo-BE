@@ -10,6 +10,7 @@ import { METRICS, type MetricsPort } from '@gogo/observability';
 import { PlaceDedupService } from '../../ingestion/application/place-dedup.service';
 import { normalizeVietnamese } from '../../search/domain/normalize';
 import { AppError } from '../../shared/app-error';
+import { assertValidSelections } from '../../shared/taxonomy-selections';
 import { invalidateTravelOnMove } from '../../shared/place-relocation';
 import { APP_CONFIG, type MediaConfig, type ProvenanceConfig } from '../../shared/config';
 import { GOOGLE_PROVIDER, googleProvenanceRows } from '../../shared/google-provenance';
@@ -448,6 +449,7 @@ export type PlaceFilter = {
 };
 
 export type PlaceListQuery = PlaceFilter & {
+  amenities?: string[] | undefined;
   sort: PlaceSort;
   direction: 'asc' | 'desc';
   limit: number;
@@ -934,6 +936,13 @@ export class CmsCatalogService {
    * results from the consumer-facing search on identical data.
    */
   async listPlaces(query: PlaceListQuery): Promise<PlaceListPage> {
+    if (query.amenities?.length) {
+      await assertValidSelections(this.db, {
+        amenity: query.amenities.flatMap((key) =>
+          key === 'cashless_payment' ? ['card_payment', 'qr_payment'] : [key],
+        ),
+      });
+    }
     const { column, nullable, cast } = SORTABLE[query.sort];
     if (nullable) throw new Error(`sort column ${query.sort} must be NOT NULL for keyset paging`);
     const descending = query.direction === 'desc';
@@ -966,6 +975,21 @@ export class CmsCatalogService {
     }
 
     const where = this.placePredicates(query, dataset);
+
+    // ALL requested amenities, with the same cashless alias as public search.
+    // EXISTS keeps each place unique before keyset pagination and limit + 1.
+    for (const key of new Set(query.amenities ?? [])) {
+      const alternatives = key === 'cashless_payment' ? ['card_payment', 'qr_payment'] : [key];
+      where.push(sql`exists (
+        select 1 from place_taxonomies pt
+        join taxonomies t on t.id = pt.taxonomy_id
+        where pt.place_id = p.id and t.is_active and t.kind = 'amenity'
+          and (${sql.join(
+            alternatives.map((value) => sql`t.key = ${value}`),
+            sql` or `,
+          )})
+      )`);
+    }
 
     if (query.cursor) {
       const { value, id } = decodePlaceCursor(query.cursor);

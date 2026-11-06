@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 6.1.0-alpha.1
+  version: 6.2.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -7323,6 +7323,10 @@ paths:
         the normalized name — accent-insensitive, same behaviour as the
         consumer-facing search.
 
+        `amenities` uses the public search semantics: ALL selected active amenity
+        keys must match; `cashless_payment` expands to card OR QR. It intersects
+        with every other filter before sorting and cursor pagination.
+
 
         **Archived places are excluded unless `status=archived` asks for them**
         (ADM-018). This endpoint previously had no default status filter, so an
@@ -7348,6 +7352,17 @@ paths:
             description: Taxonomy key of kind `category`,
             schema: { type: string, maxLength: 64 },
           }
+        - name: amenities
+          in: query
+          description: >
+            Comma-separated taxonomy keys of kind `amenity`, ALL required.
+            Whitespace and empty entries are ignored; duplicates are removed;
+            at most 10 distinct keys, each at most 64 characters.
+            `cashless_payment` means `card_payment` OR `qr_payment`.
+            Unknown, inactive or wrong-kind keys return 400 INVALID_TAXONOMY_KEYS
+            in ErrorEnvelope, with field_errors naming selections.amenity,
+            as on public /places/search. Omitted or empty applies no amenity filter.
+          schema: { type: string }
         - name: source
           in: query
           description: Where the place came from, derived from provider/submission links.
@@ -7423,7 +7438,7 @@ paths:
                     nullable: true
                     description: Null when this is the last page.
         '400':
-          description: INVALID_CURSOR or a rejected filter value
+          description: INVALID_CURSOR, INVALID_TAXONOMY_KEYS or VALIDATION_FAILED for a rejected filter value
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
