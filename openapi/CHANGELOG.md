@@ -18,16 +18,17 @@ is independent of the existence of the visit record.
 
 The field is always present: `null` below five rooms (including zero), otherwise
 an integer at least five. Clients hide the fact for null; no room or member
-identity is exposed. An internal per-process cache retains only the suppressed
-or public aggregate for at most 60 seconds, including null. Changes, deletions
-and merges can take that long to appear. The HTTP response remains `no-store`
-so the separate community rating still follows moderation on the next read.
-Database errors on a cache miss fail the request; no false zero is returned.
+identity is exposed. Each request reads the committed population from the DB;
+no aggregate or in-flight promise is cached. Deletions, cascades and merges
+committed before that read are reflected immediately across API processes,
+including 5→4 suppression. A concurrent read uses its own statement snapshot
+and cannot supply a later request. The HTTP response remains `no-store`.
+Database errors fail the request; no false zero or stale count is returned.
 
 No migration: existing `plan_stops_place_idx`, `plans_pkey` and
-`stop_checkins_stop_member_unique` support the cache-fill query. Rollback the
+`stop_checkins_stop_member_unique` support the aggregate query. Rollback the
 API and regenerate clients; tolerate the field being absent with the older API.
-See ADR-0043 for cache bounds, privacy assumptions and verification.
+See ADR-0043 for read consistency, privacy assumptions and verification.
 
 ## 6.3.0-alpha.1 — Place Detail areaSummary (GoGo-BE#784)
 

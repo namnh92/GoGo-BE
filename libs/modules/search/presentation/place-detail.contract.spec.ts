@@ -123,11 +123,12 @@ describe('PlaceDetail checked-in room count contract (#785)', () => {
     });
   });
 
-  it('documents the population, privacy threshold and cache freshness', () => {
+  it('documents the population, privacy threshold and committed-read freshness', () => {
     const description = placeDetail.properties?.['checkedInGroupCount']?.description ?? '';
     expect(description).toContain('distinct rooms');
     expect(description).toContain('null below 5');
-    expect(description).toContain('60 seconds');
+    expect(description).toContain('each request without aggregate or in-flight promise caching');
+    expect(description).toContain('immediately across API processes');
     expect(description).toContain('No room or member identities');
   });
 

@@ -16078,9 +16078,10 @@ components:
             Always null below 5 rooms (including zero); otherwise an integer.
             Completed stops, plans, votes, saves and reviews alone do not count.
             Check-in content moderation does not change visit participation.
-            No room or member identities are returned. Cached internally for up
-            to 60 seconds per API process, including null; writes, deletion and
-            place merges may take that long to appear. Hide this fact when null.
+            No room or member identities are returned. Read from the database for
+            each request without aggregate or in-flight promise caching; deletions,
+            cascades and place merges committed before that read are reflected
+            immediately across API processes. Hide this fact when null.
         priceLevel: { type: integer }
         avgVisitMinutes: { type: integer }
         suitability:

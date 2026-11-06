@@ -16,6 +16,7 @@ let container: StartedPostgreSqlContainer;
 let pool: Pool;
 let db: ReturnType<typeof drizzle<typeof schema>>;
 let app: NestFastifyApplication;
+let otherApp: NestFastifyApplication;
 let userId: string;
 let seq = 0;
 const api = () => app.getHttpAdapter().getInstance();
@@ -134,10 +135,15 @@ beforeAll(async () => {
   app = await createApp();
   await app.init();
   await api().ready();
+  // Separate DI graph, DB pool and repository, as in another API process.
+  otherApp = await createApp();
+  await otherApp.init();
+  await otherApp.getHttpAdapter().getInstance().ready();
 }, 600_000);
 
 afterEach(() => vi.restoreAllMocks());
 afterAll(async () => {
+  await otherApp?.close();
   await app?.close();
   await pool?.end();
   await container?.stop();
@@ -200,20 +206,55 @@ describe('PlaceDetail checked-in group count (#785)', () => {
     expect(body.gogoRatingCount).toBe(0);
   });
 
-  it('refreshes cached null after a new room and suppresses again after check-in deletion', async () => {
+  it('reflects a new room and check-in deletion immediately', async () => {
     const id = await place();
     await visits(id, 4);
     const now = Date.now();
-    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    vi.spyOn(Date, 'now').mockReturnValue(now);
     expect((await detail(id)).json().checkedInGroupCount).toBeNull();
     const fifth = await stop(id, await room());
-    expect((await detail(id)).json().checkedInGroupCount).toBeNull();
-    clock.mockReturnValue(now + 60_000);
     expect((await detail(id)).json().checkedInGroupCount).toBe(5);
     await db.delete(schema.stopCheckins).where(eq(schema.stopCheckins.planStopId, fifth.stopId));
-    clock.mockReturnValue(now + 120_000);
     expect((await detail(id)).json().checkedInGroupCount).toBeNull();
   });
+
+  it.each(['check-in deletion', 'room cascade', 'place merge'] as const)(
+    'F-01: suppresses 5→4 immediately across API instances after %s commits',
+    async (mutation) => {
+      const id = await place();
+      const canonical = await place();
+      await visits(id, 4);
+      const fifthRoom = await room();
+      const fifth = await stop(id, fifthRoom);
+      const otherDetail = () =>
+        otherApp
+          .getHttpAdapter()
+          .getInstance()
+          .inject({ method: 'GET', url: `/v1/places/${id}` });
+      // Freeze time so neither instance can rely on expiry for correctness.
+      vi.spyOn(Date, 'now').mockReturnValue(Date.now());
+      expect((await detail(id)).json().checkedInGroupCount).toBe(5);
+      expect((await otherDetail()).json().checkedInGroupCount).toBe(5);
+
+      // Writes commit through the fixture's pool, independently of either API.
+      await db.transaction(async (tx) => {
+        if (mutation === 'check-in deletion') {
+          await tx
+            .delete(schema.stopCheckins)
+            .where(eq(schema.stopCheckins.planStopId, fifth.stopId));
+        } else if (mutation === 'room cascade') {
+          await tx.delete(schema.rooms).where(eq(schema.rooms.id, fifthRoom));
+        } else {
+          await tx
+            .update(schema.planStops)
+            .set({ placeId: canonical })
+            .where(eq(schema.planStops.id, fifth.stopId));
+        }
+      });
+      expect((await detail(id)).json().checkedInGroupCount).toBeNull();
+      expect((await otherDetail()).json().checkedInGroupCount).toBeNull();
+    },
+  );
 
   it('answers community places and retains existing 404 behavior', async () => {
     expect(
@@ -232,20 +273,21 @@ describe('PlaceDetail checked-in group count (#785)', () => {
     await stop(canonical, overlap, 1);
     await stop(duplicate, overlap, 2);
     const now = Date.now();
-    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    vi.spyOn(Date, 'now').mockReturnValue(now);
     expect((await detail(canonical)).json().checkedInGroupCount).toBeNull();
     // The place merge's existing reference move; no counter-specific write.
     await db
       .update(schema.planStops)
       .set({ placeId: canonical })
       .where(eq(schema.planStops.placeId, duplicate));
-    clock.mockReturnValue(now + 60_000);
     expect((await detail(canonical)).json().checkedInGroupCount).toBe(6);
     expect((await detail(duplicate)).json().checkedInGroupCount).toBeNull();
   });
 
-  it('fails a cold request on a database error rather than returning a fabricated zero/null', async () => {
+  it('fails a previously successful request on a database error rather than returning a fabricated zero/null', async () => {
     const id = await place();
+    await visits(id, 5);
+    expect((await detail(id)).json().checkedInGroupCount).toBe(5);
     await db.execute(sql`alter table stop_checkins rename to stop_checkins_unavailable`);
     try {
       const response = await detail(id);
@@ -257,7 +299,7 @@ describe('PlaceDetail checked-in group count (#785)', () => {
     expect((await detail(id)).statusCode).toBe(200);
   });
 
-  it('uses existing place and check-in indexes for the production cache-fill statement', async () => {
+  it('uses existing place and check-in indexes for the production aggregate statement', async () => {
     const target = await place();
     await visits(target, 5);
     // A meaningful competing population, without forcing the planner's choice.

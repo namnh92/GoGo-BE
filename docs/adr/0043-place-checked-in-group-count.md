@@ -27,50 +27,54 @@ giảm số; không lưu thêm lịch sử phòng đã bị xoá. Merge chuyển
 stop sẽ đưa lượt đi về canonical, vẫn deduplicate theo room. Dữ kiện này độc lập
 với `gogoRatingCount` và rating provider.
 
-## Cách đọc và giới hạn cache
+## Cách đọc và consistency
 
-Chọn cache nội bộ thay vì bảng aggregate + trigger hoặc worker/outbox mới:
-không thêm bản sao quan hệ phòng/place, không cần backfill, rollback hay đồng bộ
-mọi đường xoá/merge. Query fill dùng `COUNT(DISTINCT room_id)` với `EXISTS`
-check-in; không lấy danh tính vào application. Chỉ chạy sau khi query PlaceDetail
-đã xác nhận place đang public; 404 không fill cache.
+Mỗi request đọc trực tiếp `COUNT(DISTINCT room_id)` với `EXISTS` check-in từ
+DB; không lấy danh tính vào application. Chỉ chạy sau khi query PlaceDetail
+đã xác nhận place đang public; 404 không đọc aggregate.
 
-Mỗi SearchRepository giữ tối đa 1.000 entry, cả promise đang chạy và kết quả,
-evict entry cũ nhất khi đầy. Request đồng thời cho cùng entry dùng chung promise.
-Cache cả null, chỉ giữ giá trị đã suppression. TTL 60 giây tính từ trước query;
-không kéo dài theo hit hay thời gian query. Restart process xoá cache. Nhiều API
-process có thể thấy số khác nhau trong cửa sổ này. Khi có áp lực eviction, một
-query đang chạy bị evict có thể được chạy lại; cache không phải global rate limit.
+Astra r1 F-01: bỏ cache process 60 giây và cả việc dùng chung promise đang chạy.
+Một process khác có thể commit xoá check-in, cascade hoặc merge làm số phòng
+5→4. Request bắt đầu đọc aggregate sau commit phải thấy `null` ngay, không
+đợi TTL hay thông báo invalidate. Query đang chạy trước commit dùng statement
+snapshot của chính nó; kết quả cũ đó không được giữ lại hoặc cấp cho request
+sau commit. Không thêm registry cache hoặc hook cho mọi đường ghi/xoá/merge.
+Không có exception privacy cho số dưới năm.
 
-Tăng/giảm số, moderation, xoá và merge không invalidate ngay: dữ kiện có thể
-trễ tối đa 60 giây. Cụ thể 5→4 có thể còn trả 5 tới khi hết TTL; đây là đánh đổi
-cần Astra/CODEOWNER duyệt cùng giả định privacy. Hết TTL mà DB lỗi thì request
-5xx, không serve stale và không giả thành null/zero. Response vẫn `no-store`;
-community rating giữ quy tắc phản ánh moderation ở request kế tiếp.
+Đổi lại mỗi detail request có một aggregate query, kể cả request đồng thời.
+Không thêm bảng aggregate, trigger, worker/outbox hoặc bản sao quan hệ phòng/place.
+DB/query hoặc aggregate lỗi thì request 5xx, không serve stale và không giả thành
+null/zero. Response vẫn `no-store`; community rating giữ quy tắc phản ánh
+moderation ở request kế tiếp.
 
 Không migration/index mới: đã có `plan_stops_place_idx(place_id)`,
 `plans_pkey(id)` và prefix `stop_checkins_stop_member_unique(plan_stop_id,
 member_id)`. Integration test EXPLAIN chính statement production trên population
-20.000 stop cạnh tranh để kiểm tra không scan toàn bộ stops/check-ins. Cache
-miss tại place có rất nhiều stop vẫn phải aggregate lịch sử của riêng place đó;
-nếu miss latency vượt SLO, cần đo trước khi chuyển sang aggregate lưu sẵn.
+20.000 stop cạnh tranh để kiểm tra không scan toàn bộ stops/check-ins. Mỗi
+read tại place có rất nhiều stop phải aggregate lịch sử của riêng place đó;
+nếu read latency vượt SLO, cần đo trước khi chuyển sang aggregate lưu sẵn có
+consistency tương đương. Query/index hiện tại không thay đổi trong bản sửa F-01.
 
 ## Telemetry, kiểm chứng và rollback
 
-`place_checkin_group_cache_total{outcome=hit|miss|error}` đếm đường cache;
-`place_checkin_group_count_total{outcome=available|suppressed}` đếm kết quả fill.
-Không label place, room, member hoặc số đếm. Dùng request latency/error telemetry
-hiện có để đánh giá tác động. Không thêm log payload.
+`place_checkin_group_count_total{outcome=available|suppressed|error}` đếm mỗi
+lần đọc. Bỏ metric cache vì không còn cache. Không label place, room, member hoặc
+số đếm. Dùng request latency/error telemetry hiện có để đánh giá tác động.
+Không thêm log payload.
 
-Unit: boundary 0/1/4/5/8, cache null/public, TTL, gộp request, eviction, lỗi DB,
-aggregate malformed và labels. Contract: nullable integer, minimum 5, trường
-required, ví dụ null/public. Integration: HTTP qua PostGIS thật, distinct room
-qua member/plan versions, stop completed không check-in, check-in place khác,
-moderation độc lập, ngưỡng privacy, cache refresh và xoá, 404, DB error, EXPLAIN.
+Unit: boundary 0/1/4/5/8, đọc mới mỗi request, lỗi DB, aggregate malformed và
+labels. F-01: immediate 5→4 trên hai instance khi đồng hồ chưa đổi; request mới
+không dùng promise cũ đang chạy; kết quả query cũ hoàn tất sau commit không
+được giữ lại cho request sau. Contract: nullable integer, minimum 5, trường
+required, ví dụ null/public và consistency. Integration: HTTP qua PostGIS thật,
+distinct room qua member/plan versions, stop completed không check-in, check-in
+place khác, moderation độc lập, ngưỡng privacy, 404, DB error, EXPLAIN. F-01:
+hai API instance có DB pool riêng cùng đọc 5, sau commit xoá check-in/cascade
+phòng/merge reference trả null ngay khi đồng hồ vẫn đứng yên.
 
 Contract MINOR 6.3.0-alpha.1 → 6.4.0-alpha.1, CHANGELOG và types được cập nhật
 cùng code. Claude reconcile version với branch song song khi merge. Rollback:
-rollback API; cache trong process cũ tự mất khi dừng. Không thay đổi schema hay
+rollback API sẽ khôi phục lỗi cache F-01 nên phải cân nhắc privacy. Không thay đổi schema hay
 dữ liệu cần phục hồi. Client regenerate types, chịu được field absent khi chạy
 với API cũ và ẩn dòng khi absent/null.
 

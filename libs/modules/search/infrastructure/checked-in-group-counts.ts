@@ -12,46 +12,26 @@ export function checkedInGroupCountQuery(placeId: string): SQL {
   `;
 }
 
-export const CHECKED_IN_GROUP_COUNT_TTL_MS = 60_000;
-export const CHECKED_IN_GROUP_COUNT_CACHE_SIZE = 1_000;
 export const CHECKED_IN_GROUP_MIN_SAMPLE = 5;
 
 /**
- * Bounded per-process cache, including suppressed populations. Retained promises
- * coalesce concurrent reads. Expiry starts before SQL, so a slow read never
- * extends freshness. Failures evict themselves and propagate, never becoming 0.
- * Only the privacy-filtered count is retained; no member or room identities.
+ * Read the committed population for each request. Neither values nor in-flight
+ * promises may be reused: another process can delete/cascade/merge visits below
+ * the privacy threshold while a previous aggregate is cached or still running.
+ * A read started before a concurrent commit uses its own DB statement snapshot;
+ * it cannot populate a cache or supply a later request with that older snapshot.
  */
 export class CheckedInGroupCounts {
-  private readonly entries = new Map<
-    string,
-    { expiresAt: number; value: Promise<number | null> }
-  >();
-
   constructor(
     private readonly db: Db,
     private readonly metrics: MetricsPort,
   ) {}
 
   get(placeId: string): Promise<number | null> {
-    const now = Date.now();
-    const cached = this.entries.get(placeId);
-    if (cached && cached.expiresAt > now) {
-      this.metrics.increment('place_checkin_group_cache_total', { outcome: 'hit' });
-      return cached.value;
-    }
-    this.entries.delete(placeId);
-    if (this.entries.size >= CHECKED_IN_GROUP_COUNT_CACHE_SIZE) {
-      this.entries.delete(this.entries.keys().next().value!);
-    }
-    this.metrics.increment('place_checkin_group_cache_total', { outcome: 'miss' });
-    const value = this.load(placeId).catch((error: unknown) => {
-      if (this.entries.get(placeId)?.value === value) this.entries.delete(placeId);
-      this.metrics.increment('place_checkin_group_cache_total', { outcome: 'error' });
+    return this.load(placeId).catch((error: unknown) => {
+      this.metrics.increment('place_checkin_group_count_total', { outcome: 'error' });
       throw error;
     });
-    this.entries.set(placeId, { expiresAt: now + CHECKED_IN_GROUP_COUNT_TTL_MS, value });
-    return value;
   }
 
   private async load(placeId: string): Promise<number | null> {
