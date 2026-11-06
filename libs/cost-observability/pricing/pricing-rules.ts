@@ -571,6 +571,18 @@ export const PRICING_RULES: readonly PricingRule[] = [
   }),
   googleRule({
     serviceId: 'google.places',
+    operationId: 'google.details.address',
+    usageMetricId: 'google.details.address/requests',
+    billingSkuId: 'places.details.essentials',
+    effectiveFrom: '2026-09-01',
+    pricingModel: 'PER_1K_REQUESTS',
+    unitPriceMicros: null,
+    freeAllowance: null,
+    sourceReference:
+      'GoGo-BE#776: formattedAddress-only operation. Price and allowance unverified (offline implementation); unknown is not free. Verify before estimating spend.',
+  }),
+  googleRule({
+    serviceId: 'google.places',
     operationId: 'google.details.core',
     usageMetricId: 'google.details.core/requests',
     billingSkuId: 'places.details.pro',

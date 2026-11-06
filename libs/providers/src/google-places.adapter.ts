@@ -395,6 +395,21 @@ export class GooglePlacesAdapter
       .map((p) => ({ providerPlaceId: p.id, googleMapsUri: p.googleMapsUri ?? null }));
   }
 
+  /** #776 — owner-authorized address backfill only. One HTTP attempt per slot.
+   * formattedAddress is an Essentials field; no rich-content tier is fetched.
+   */
+  async address(providerPlaceId: string): Promise<string | null> {
+    const data = await this.call<{ formattedAddress?: unknown }>(
+      'google.details.address',
+      `https://places.googleapis.com/v1/places/${encodeURIComponent(providerPlaceId)}?${new URLSearchParams(GOOGLE_LOCALE)}`,
+      { method: 'GET', fieldMask: 'formattedAddress', redirect: 'error' },
+      { ...RESILIENCE, retries: 0 },
+    );
+    return typeof data.formattedAddress === 'string' && data.formattedAddress.trim()
+      ? data.formattedAddress.trim()
+      : null;
+  }
+
   async details(providerPlaceId: string, tier: 'liveness'): Promise<ProviderPlaceIdentity | null>;
   async details(
     providerPlaceId: string,
@@ -679,7 +694,13 @@ export class GooglePlacesAdapter
   private call<T>(
     name: string,
     url: string,
-    init: { method: string; body?: string; fieldMask?: string; signal?: AbortSignal | undefined },
+    init: {
+      method: string;
+      body?: string;
+      fieldMask?: string;
+      signal?: AbortSignal | undefined;
+      redirect?: 'error' | 'follow' | 'manual';
+    },
     resilience: typeof RESILIENCE = RESILIENCE,
   ): Promise<T> {
     const caller = init.signal;
@@ -694,6 +715,7 @@ export class GooglePlacesAdapter
       try {
         res = await fetch(url, {
           method: init.method,
+          ...(init.redirect !== undefined ? { redirect: init.redirect } : {}),
           ...(init.body !== undefined ? { body: init.body } : {}),
           signal,
           headers: {
@@ -704,6 +726,18 @@ export class GooglePlacesAdapter
           },
         });
       } catch (err) {
+        // #776: transport failures/timeouts are attempts too, with no billed unit.
+        if (name === 'google.details.address') {
+          this.metrics.increment('places_provider_requests_total', {
+            method: name,
+            status: 'error',
+          });
+          this.metrics.observe(
+            'place_provider_request_duration_seconds',
+            (Date.now() - started) / 1000,
+            { method: name, status: 'error' },
+          );
+        }
         if (caller?.aborted) throw new ProviderCallAbortedError(name);
         throw err;
       }

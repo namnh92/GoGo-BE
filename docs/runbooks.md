@@ -427,3 +427,54 @@ view bills at most 6 media calls — three photos plus one retry per expired
 photo name — so size `PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_PHOTOMEDIA` at 6 per
 expected view, not 3. A deadline during the retry still returns the photos
 already fetched.
+
+## Place address repair — GoGo-BE#776 (owner 2026-11-06)
+
+One-off ops CLI, wired like `scripts/backfill-administrative-mappings.ts`.
+This owner-authorized repair fills existing `address_text` only; it does not
+create a provider-content cache or change the public contract.
+
+```sh
+# DATABASE_URL must target the intended environment. First preview (no Google calls/writes):
+pnpm places:backfill-addresses --max-google-calls 100
+# Then explicitly execute; also requires GOOGLE_PLACES_API_KEY and APP_ENV:
+pnpm places:backfill-addresses --execute --max-google-calls 100
+```
+
+`--dry-run` is the default. The call cap flag is mandatory, including in preview;
+100 is the suggested starting value. Missing, zero, negative, fractional and
+unsafe values refuse before opening connections. Preview scans at most that many
+eligible rows and counts them as skipped. Execution spends at most one request
+per scanned candidate (5s timeout, no retries), including failed attempts, and
+stops at the cap or exhaustion. Circuit-open failures conservatively consume a
+slot without sending HTTP. Progress uses UUID keyset pages of at most 100 rows.
+
+Eligibility is NULL/empty/space-only address plus a nonempty Google external ID
+from `place_provider_sources` (`google_places`) or legacy `place_sources`
+(`google`). Canonical identity takes priority and each place is scanned once.
+Only `formattedAddress` is requested through `GooglePlacesAdapter.address`.
+The conditional UPDATE rechecks emptiness and identity after the fetch; an admin
+edit wins. The address, `place_field_provenance` (`address_text`, `google_derived`,
+Place ID reference, null system actor and independent collection time), and a
+PII-free `place.address_backfill` system audit commit together. Provenance follows
+the existing Google-derived field model; it does not claim independent GoGo ownership.
+Rerunning skips filled cells. Failures leave that place untouched and continue;
+retry them with a later bounded run. This CLI is not scheduled automatically.
+
+Output contains mode and `scanned/written/skipped/errors/callSlots` only; no
+addresses, place IDs, provider bodies or database error text. Nonzero errors
+produce exit code 1 after the summary. Fatal configuration/scan/shutdown failures
+also fail the command. Re-run the preview to inspect remaining eligibility.
+
+Cost uses the same `TeeMetrics(LogMetrics, DbUsageLedger)` path as API providers,
+with ledger flushing before DB shutdown, including on failure. Usage is recorded
+under `google.details.address` / `places.details.essentials`, even if the normal
+API ledger toggle is off. The local registry has no verified Essentials price:
+the added rule explicitly reports unknown, not free. Verify price/allowance
+before using a cost estimate; counts remain available. Abrupt process termination can lose buffered
+usage; normal completion and caught failures drain the ledger (ADR-0012). Dry-run emits no usage and writes no ledger rows.
+
+There is no automatic rollback: this command never erases addresses or restores
+old provenance. Retain the system audit when investigating a repair. No migration
+or OpenAPI change is required. Unit and PostGIS integration specs are supplied;
+Claude/owner runs the gates before execution.
