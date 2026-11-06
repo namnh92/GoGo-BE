@@ -8,6 +8,24 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 7.1.0-alpha.1 — Đóng góp địa điểm của tôi (GoGo-BE#788)
+
+MINOR bổ sung từ 7.0.0-alpha.1: `GET /me/place-submissions` dành cho user
+đăng nhập; guest/admin bị từ chối. Lọc theo chủ sở hữu ở server, phân trang
+cursor giảm dần `(createdAt, id)` với độ chính xác microsecond, `limit` 1–100
+(mặc định 25), `nextCursor: null` khi hết. Response dùng `Cache-Control: no-store`.
+
+Mỗi mục có `id`, `status`, `createdAt`, `updatedAt`; bổ sung `name`, `photoUrl`,
+`decidedAt` khi có. `placeId` chỉ có cho approved/merged khi place còn tồn tại.
+Rejected trả key `rejectionReason: MODERATION_REJECTED` để client dịch; không
+trả lý do CMS dạng tự do, ghi chú hoặc định danh người khác. Chỉ dùng ảnh
+catalogue editorial/community đã duyệt; không gọi provider hoặc lưu thêm dữ liệu Google.
+
+Giữ mô hình sở hữu hiện tại: khi dedupe, chỉ người gửi đầu tiên được lưu làm
+chủ sở hữu; không suy đoán danh tính người gửi sau. Chi tiết và giới hạn trong
+`docs/adr/0045-my-place-submissions.md`. Client sinh lại types từ phiên bản này.
+Rollback: ngừng gọi endpoint trước khi rollback API; không có migration.
+
 ## 7.0.0-alpha.1 — Required submission rejection keys (GoGo-BE#787 / PR #790)
 
 **Breaking MAJOR** from 6.5.0-alpha.1 per BE-BFF-012, owner/CODEOWNER decision

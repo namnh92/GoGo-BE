@@ -27,6 +27,8 @@
  * spreadsheet id, or anything else a user or an operator typed.
  */
 export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
+  // #788: owned-history query duration, including failures, without identity labels.
+  my_place_submissions_query_duration_ms: [],
   // #774: whole counted-query duration; no query, place or location labels.
   search_count_duration_ms: [],
 

@@ -2260,6 +2260,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/me/place-submissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the signed-in account's place submissions
+         * @description Registered users only; guest and CMS admin actors receive 403.
+         *     Ownership is selected server-side from the authenticated account, on
+         *     every page. Newest first by immutable `(createdAt, id)` descending.
+         *     Reopen from the first page to see current decisions; no client-held
+         *     submission IDs are needed. Cursors preserve timestamp microseconds.
+         *
+         *     Uses the existing original-submitter ownership model: deduplicated
+         *     submissions retain only the first submitter, so later contributors
+         *     are not granted access to that shared submission. No provider calls.
+         *     Names come from the result place or review draft when available;
+         *     missing names and photos are omitted. Photos are approved editorial
+         *     or community catalogue media only. Raw moderator reasons, contributor
+         *     notes, reviewer identities, room IDs and other users' PII are excluded.
+         */
+        get: operations["listMyPlaceSubmissions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/place-submissions/{id}": {
         parameters: {
             query?: never;
@@ -8821,6 +8853,43 @@ export interface components {
          * @enum {string}
          */
         SubmissionRejectionReason: "duplicate_place" | "incorrect_location" | "permanently_closed" | "not_public_place" | "inappropriate_content" | "other";
+        MyPlaceSubmissionsPage: {
+            items: components["schemas"]["MyPlaceSubmission"][];
+            /** @description Null at the end of the list. */
+            nextCursor: string | null;
+        };
+        MyPlaceSubmission: {
+            /** Format: uuid */
+            id: string;
+            /** @description Available stored name, omitted when unknown. */
+            name?: string;
+            /**
+             * Format: uri
+             * @description Approved GoGo catalogue photo, omitted when unavailable or hosting is unconfigured.
+             */
+            photoUrl?: string;
+            /** @enum {string} */
+            status: "pending" | "approved" | "rejected" | "merged";
+            /**
+             * @description Translation key present only for rejected submissions. Raw CMS reasons are private.
+             * @enum {string}
+             */
+            rejectionReason?: "MODERATION_REJECTED";
+            /**
+             * Format: uuid
+             * @description Result place for approved or merged submissions, omitted if the place has been deleted.
+             */
+            placeId?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /**
+             * Format: date-time
+             * @description Decision timestamp, omitted before a decision.
+             */
+            decidedAt?: string;
+        };
         PlaceSubmissionSummary: {
             /** Format: uuid */
             id: string;
@@ -15203,6 +15272,34 @@ export interface operations {
             };
             429: components["responses"]["RateLimited"];
             503: components["responses"]["SessionLookupUnavailable"];
+        };
+    };
+    listMyPlaceSubmissions: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque nextCursor from a previous page. Invalid cursors return 400 INVALID_CURSOR. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Account-owned submissions; an empty list is a successful response. */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyPlaceSubmissionsPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
     getPlaceSubmission: {

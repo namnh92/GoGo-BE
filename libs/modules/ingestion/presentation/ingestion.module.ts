@@ -10,14 +10,25 @@ import { PlaceDedupService } from '../application/place-dedup.service';
 import { PlaceImportJobService } from '../application/place-import-job.service';
 import { PlaceResolverService } from '../application/place-resolver.service';
 import { PlaceSubmissionService } from '../application/place-submission.service';
-import { CmsSubmissionController, IngestionController } from './ingestion.controller';
+import {
+  CmsSubmissionController,
+  IngestionController,
+  MyPlaceSubmissionsController,
+} from './ingestion.controller';
+import { MyPlaceSubmissionsService } from '../application/my-place-submissions.service';
 import { PlaceImportController } from './place-import.controller';
 
 @Module({
   imports: [IdentityModule, AdministrativeModule, SearchModule],
-  controllers: [IngestionController, CmsSubmissionController, PlaceImportController],
+  controllers: [
+    IngestionController,
+    CmsSubmissionController,
+    MyPlaceSubmissionsController,
+    PlaceImportController,
+  ],
   providers: [
     SubmissionPhotoService,
+    MyPlaceSubmissionsService,
     PlaceResolverService,
     PlaceDedupService,
     PlaceSubmissionService,
