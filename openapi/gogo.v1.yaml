@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 7.0.0-alpha.1
+  version: 7.1.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -4833,15 +4833,58 @@ paths:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
+  /me/place-submissions:
+    get:
+      operationId: listMyPlaceSubmissions
+      tags: [places]
+      summary: List the signed-in account's place submissions
+      description: |
+        Registered users only; guest and CMS admin actors receive 403.
+        Contribution access is selected server-side from the authenticated account, on
+        every page. Newest first by immutable `(createdAt, id)` descending.
+        Reopen from the first page to see current decisions; no client-held
+        submission IDs are needed. Cursors preserve timestamp microseconds.
+
+        All registered contributors recorded on a deduplicated proposal see
+        that same proposal and its current decision once per account. Original
+        submitters remain included. Earlier deduplicated contributors whose
+        identities were never stored cannot be backfilled. No provider calls.
+        Names come from the result place or review draft when available;
+        missing names and photos are omitted. Photos are approved editorial
+        or community catalogue media only. Raw moderator reasons, contributor
+        notes, reviewer identities, room IDs and other users' PII are excluded.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+        - name: cursor
+          in: query
+          description: Opaque nextCursor from a previous page. Invalid cursors return 400 INVALID_CURSOR.
+          schema: { type: string, minLength: 1, maxLength: 512 }
+      responses:
+        '200':
+          description: Account contributions; an empty list is a successful response.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MyPlaceSubmissionsPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /place-submissions/{id}:
     get:
       operationId: getPlaceSubmission
       tags: [places]
-      summary: Poll a submission (owner only)
+      summary: Poll a submission (recorded contributor or original submitter only)
       description: >
-        Owner only (registered user or guest). `rejectionReason` is a stable
-        public key when rejected; absent for historical decisions without a key
-        and for other statuses. Internal moderation notes are never returned.
+        Original submitter (registered user or guest) or recorded registered
+        contributor only. `rejectionReason` is a stable public key when rejected;
+        absent for historical decisions without a key and for other statuses.
+        Internal moderation notes are never returned.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -17452,6 +17495,45 @@ components:
           inappropriate_content,
           other,
         ]
+    MyPlaceSubmissionsPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/MyPlaceSubmission' }
+        nextCursor:
+          type: [string, 'null']
+          description: Null at the end of the list.
+
+    MyPlaceSubmission:
+      type: object
+      additionalProperties: false
+      required: [id, status, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        name:
+          type: string
+          description: Available stored name, omitted when unknown.
+        photoUrl:
+          type: string
+          format: uri
+          description: Approved GoGo catalogue photo, omitted when unavailable or hosting is unconfigured.
+        status: { type: string, enum: [pending, approved, rejected, merged] }
+        rejectionReason:
+          $ref: '#/components/schemas/SubmissionRejectionReason'
+          description: Stored public key for rejected submissions; omitted for historical rows without a key. Raw CMS reasons are private.
+        placeId:
+          type: string
+          format: uuid
+          description: Result place for approved or merged submissions, omitted if the place has been deleted.
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        decidedAt:
+          type: string
+          format: date-time
+          description: Decision timestamp, omitted before a decision.
+
     PlaceSubmissionSummary:
       type: object
       required: [id, googlePlaceId, status, submissionCount, createdAt]
@@ -20059,6 +20141,21 @@ components:
       properties:
         assistantCreditBalance: { type: integer, minimum: 0 }
         exportedAt: { type: string, format: date-time }
+        placeSubmissions:
+          type: array
+          description: >
+            The account's original and attributed shared place proposals, once
+            per proposal. Excludes contributor notes, provider IDs, moderator
+            free text and other contributors' identities.
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, status, createdAt, decidedAt]
+            properties:
+              id: { type: string, format: uuid }
+              status: { type: string, enum: [pending, approved, rejected, merged] }
+              createdAt: { type: string, format: date-time }
+              decidedAt: { type: [string, 'null'], format: date-time }
         assistantConversations:
           type: array
           description: >

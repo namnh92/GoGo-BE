@@ -2260,6 +2260,39 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/me/place-submissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the signed-in account's place submissions
+         * @description Registered users only; guest and CMS admin actors receive 403.
+         *     Contribution access is selected server-side from the authenticated account, on
+         *     every page. Newest first by immutable `(createdAt, id)` descending.
+         *     Reopen from the first page to see current decisions; no client-held
+         *     submission IDs are needed. Cursors preserve timestamp microseconds.
+         *
+         *     All registered contributors recorded on a deduplicated proposal see
+         *     that same proposal and its current decision once per account. Original
+         *     submitters remain included. Earlier deduplicated contributors whose
+         *     identities were never stored cannot be backfilled. No provider calls.
+         *     Names come from the result place or review draft when available;
+         *     missing names and photos are omitted. Photos are approved editorial
+         *     or community catalogue media only. Raw moderator reasons, contributor
+         *     notes, reviewer identities, room IDs and other users' PII are excluded.
+         */
+        get: operations["listMyPlaceSubmissions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/place-submissions/{id}": {
         parameters: {
             query?: never;
@@ -2268,8 +2301,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Poll a submission (owner only)
-         * @description Owner only (registered user or guest). `rejectionReason` is a stable public key when rejected; absent for historical decisions without a key and for other statuses. Internal moderation notes are never returned.
+         * Poll a submission (recorded contributor or original submitter only)
+         * @description Original submitter (registered user or guest) or recorded registered contributor only. `rejectionReason` is a stable public key when rejected; absent for historical decisions without a key and for other statuses. Internal moderation notes are never returned.
          */
         get: operations["getPlaceSubmission"];
         put?: never;
@@ -8821,6 +8854,40 @@ export interface components {
          * @enum {string}
          */
         SubmissionRejectionReason: "duplicate_place" | "incorrect_location" | "permanently_closed" | "not_public_place" | "inappropriate_content" | "other";
+        MyPlaceSubmissionsPage: {
+            items: components["schemas"]["MyPlaceSubmission"][];
+            /** @description Null at the end of the list. */
+            nextCursor: string | null;
+        };
+        MyPlaceSubmission: {
+            /** Format: uuid */
+            id: string;
+            /** @description Available stored name, omitted when unknown. */
+            name?: string;
+            /**
+             * Format: uri
+             * @description Approved GoGo catalogue photo, omitted when unavailable or hosting is unconfigured.
+             */
+            photoUrl?: string;
+            /** @enum {string} */
+            status: "pending" | "approved" | "rejected" | "merged";
+            /** @description Stored public key for rejected submissions; omitted for historical rows without a key. Raw CMS reasons are private. */
+            rejectionReason?: components["schemas"]["SubmissionRejectionReason"];
+            /**
+             * Format: uuid
+             * @description Result place for approved or merged submissions, omitted if the place has been deleted.
+             */
+            placeId?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /**
+             * Format: date-time
+             * @description Decision timestamp, omitted before a decision.
+             */
+            decidedAt?: string;
+        };
         PlaceSubmissionSummary: {
             /** Format: uuid */
             id: string;
@@ -10607,6 +10674,17 @@ export interface components {
             assistantCreditBalance?: number;
             /** Format: date-time */
             exportedAt?: string;
+            /** @description The account's original and attributed shared place proposals, once per proposal. Excludes contributor notes, provider IDs, moderator free text and other contributors' identities. */
+            placeSubmissions?: {
+                /** Format: uuid */
+                id: string;
+                /** @enum {string} */
+                status: "pending" | "approved" | "rejected" | "merged";
+                /** Format: date-time */
+                createdAt: string;
+                /** Format: date-time */
+                decidedAt: string | null;
+            }[];
             /**
              * @description 2.0.0-alpha.3 (GoGo-BE#713, owner-delegated SA decision Q2). The account's retained GoGo AI conversations (90-day retention, so only what still exists). Populated since 2.0.0-alpha.4, when the module landed; a client must still treat absent and `[]` alike.
              *
@@ -15203,6 +15281,34 @@ export interface operations {
             };
             429: components["responses"]["RateLimited"];
             503: components["responses"]["SessionLookupUnavailable"];
+        };
+    };
+    listMyPlaceSubmissions: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque nextCursor from a previous page. Invalid cursors return 400 INVALID_CURSOR. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Account contributions; an empty list is a successful response. */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyPlaceSubmissionsPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
     getPlaceSubmission: {

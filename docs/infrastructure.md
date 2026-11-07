@@ -148,6 +148,10 @@ khoá bí mật.
 
 ## 3b. Metrics & alert cho ingestion (PI-SRE-001)
 
+GoGo-BE#788: `my_place_submissions_query_duration_ms` là histogram milliseconds
+cho query danh sách đóng góp của account, đo cả khi query lỗi; không có label,
+không chứa user ID, submission ID, cursor hoặc nội dung đóng góp.
+
 MVP không chạy Prometheus/OTLP collector. Metric đi ra **theo log**, mỗi dòng
 một shape cố định (`LogMetrics` trong `@gogo/observability`):
 

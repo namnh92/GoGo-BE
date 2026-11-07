@@ -49,6 +49,40 @@ journal intact. To roll forward afterwards, explicitly reapply migration 0082
 SQL in a transaction before rolling out the new reader; the migrator will not
 rerun an entry already recorded in the journal.
 
+### GoGo-BE#788 — My place submissions attribution
+
+Semantics: registered users submitting to the same pending proposal each receive
+one `(user_id, submission_id)` attribution in `place_submission_contributors`,
+written in the proposal transaction. Repeated submits increment `submissionCount`
+without duplicating attribution. The original submitter remains on the proposal
+for existing moderation/credit rules. History and polling allow the original
+submitter or an attributed user; guest permissions stay unchanged. History order
+and cursors use proposal creation time, not contribution time.
+
+Rollout:
+
+1. Apply migration `0085_place-submission-contributors.sql` **before deploying code**
+   that reads or writes attribution. It adds the table/index and backfills original
+   submitters whose accounts are active, without changing existing proposals.
+   Historical deduped submitters were never stored and cannot be reconstructed.
+2. Deploy all readers/writers using the normal migrations → worker → API order.
+   During a mixed-version rollout, old writers do not record later contributors;
+   original-submitter access remains compatible. Attribution for new submissions
+   is complete only after every writer has upgraded.
+3. Enable client use of the new history endpoint after the API rollout. Check
+   history/polling for two registered users submitting the same pending proposal,
+   repeated submits, and isolation from an unrelated user; follow the shared
+   proposal through moderation. See [ADR-0045](adr/0045-my-place-submissions.md).
+
+Rollback: stop clients calling the new history endpoint before reverting the API.
+Redeploy the previous code and **retain the attribution table** to preserve recorded
+history. Old code does not record later contributors, so attribution has a gap
+until all writers are upgraded again; retaining the table cannot recover that gap.
+If schema removal is necessary, first revert/drain every reader and writer that
+uses the table, save an attribution backup, then forward-test and apply a new
+roll-forward migration containing `DROP TABLE place_submission_contributors`.
+Dropping the table loses recorded attribution; never run `migrate down` in production.
+
 ## 3. Incident response
 
 1. **Detect:** SLO alerts (BFF p95 ≤500ms, search ≤700ms, suggestion ≤3s, availability 99.9%) **[infra]**. Those four numbers are also thresholds in `load/` (QP-005), so a load run fails and names the SLO it broke rather than producing a chart to interpret; `/v1/cms/ops/kpis` for domain health (zero-result spike, provider errors, over-budget plans, moderation backlog).

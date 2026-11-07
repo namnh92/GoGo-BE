@@ -675,6 +675,9 @@ export class UserContentService {
       // on ADR-0023's retention list; the counts it added are derived and drop
       // with it.
       await tx.delete(schema.reviewReactions).where(eq(schema.reviewReactions.userId, userId));
+      await tx
+        .delete(schema.placeSubmissionContributors)
+        .where(eq(schema.placeSubmissionContributors.userId, userId));
       // GoGo-BE#713 — GoGo AI history is personal data, not a contribution:
       // hard-deleted, with its sources, proposals and feedback.
       await eraseAssistantDataForUser(tx, userId);

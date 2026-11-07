@@ -822,47 +822,60 @@ export class PlaceSubmissionService {
     // `assertFreshlyVerified`.
     assertFreshlyVerified(verifiedBy);
 
-    // Same provider id from many users bumps the counter, never a new draft.
-    const [existing] = await this.db
-      .select()
-      .from(schema.placeSubmissions)
-      .where(
-        sql`${schema.placeSubmissions.googlePlaceId} = ${input.googlePlaceId} and ${schema.placeSubmissions.status} = 'pending'`,
-      )
-      .limit(1);
-    if (existing) {
-      await this.db
-        .update(schema.placeSubmissions)
-        .set({ submissionCount: sql`${schema.placeSubmissions.submissionCount} + 1` })
-        .where(eq(schema.placeSubmissions.id, existing.id));
-      this.metrics.increment('mobile_place_submissions_total', { status: 'deduped' });
-      return { status: 'PENDING' as const, submissionId: existing.id, deduped: true };
-    }
-
-    const [row] = await this.db
-      .insert(schema.placeSubmissions)
-      .values({
-        googlePlaceId: input.googlePlaceId,
-        ...(actor.type === 'user'
-          ? { submittedByUserId: actor.id }
-          : { submittedByGuestSessionId: actor.id }),
-        roomId: input.roomId ?? null,
-        categoryKey: input.categoryKey ?? null,
-        priceMin: input.priceMin ?? null,
-        priceMax: input.priceMax ?? null,
-        priceUnit: input.priceUnit ?? null,
-        vibeKeys: input.vibeKeys ?? [],
-        note: input.note ?? null,
-      })
-      .returning();
-    this.metrics.increment('mobile_place_submissions_total', { status: 'pending' });
-    await writeOutbox(this.db, {
-      eventType: 'place.submission_created',
-      resourceType: 'place_submission',
-      resourceId: row!.id,
-      payload: { googlePlaceId: input.googlePlaceId },
+    // The partial unique index serializes pending dedupe. Attribution and the
+    // creation event commit with the proposal, including on a repeated submit.
+    const result = await this.db.transaction(async (tx) => {
+      if (actor.type === 'user') {
+        // Same lock order as privacy erasure: never recreate attribution after
+        // the account has been erased while provider verification was in flight.
+        await lockAssistantAccount(tx, actor.id);
+        const active = await tx.execute(
+          sql`select id from users where id = ${actor.id} and status = 'active' for share`,
+        );
+        if (!active.rows.length)
+          throw AppError.conflict('CONTRIBUTOR_UNAVAILABLE', 'Contributor account is unavailable');
+      }
+      const [row] = await tx
+        .insert(schema.placeSubmissions)
+        .values({
+          googlePlaceId: input.googlePlaceId,
+          ...(actor.type === 'user'
+            ? { submittedByUserId: actor.id }
+            : { submittedByGuestSessionId: actor.id }),
+          roomId: input.roomId ?? null,
+          categoryKey: input.categoryKey ?? null,
+          priceMin: input.priceMin ?? null,
+          priceMax: input.priceMax ?? null,
+          priceUnit: input.priceUnit ?? null,
+          vibeKeys: input.vibeKeys ?? [],
+          note: input.note ?? null,
+        })
+        .onConflictDoUpdate({
+          target: schema.placeSubmissions.googlePlaceId,
+          targetWhere: sql`${schema.placeSubmissions.status} = 'pending'`,
+          set: { submissionCount: sql`${schema.placeSubmissions.submissionCount} + 1` },
+        })
+        .returning();
+      if (actor.type === 'user') {
+        await tx
+          .insert(schema.placeSubmissionContributors)
+          .values({ submissionId: row!.id, userId: actor.id })
+          .onConflictDoNothing();
+      }
+      const deduped = row!.submissionCount > 1;
+      if (!deduped)
+        await writeOutbox(tx, {
+          eventType: 'place.submission_created',
+          resourceType: 'place_submission',
+          resourceId: row!.id,
+          payload: { googlePlaceId: input.googlePlaceId },
+        });
+      return { status: 'PENDING' as const, submissionId: row!.id, deduped };
     });
-    return { status: 'PENDING' as const, submissionId: row!.id, deduped: false };
+    this.metrics.increment('mobile_place_submissions_total', {
+      status: result.deduped ? 'deduped' : 'pending',
+    });
+    return result;
   }
 
   async getSubmission(actor: Actor, id: string) {
@@ -872,9 +885,20 @@ export class PlaceSubmissionService {
       .where(eq(schema.placeSubmissions.id, id))
       .limit(1);
     if (!row) throw AppError.notFound('SUBMISSION_NOT_FOUND', 'Submission not found');
-    const owner =
+    let owner =
       (actor.type === 'user' && row.submittedByUserId === actor.id) ||
       (actor.type === 'guest' && row.submittedByGuestSessionId === actor.id);
+    if (!owner && actor.type === 'user') {
+      const [contribution] = await this.db
+        .select({ submissionId: schema.placeSubmissionContributors.submissionId })
+        .from(schema.placeSubmissionContributors)
+        .where(
+          sql`${schema.placeSubmissionContributors.submissionId} = ${id}::uuid
+          and ${schema.placeSubmissionContributors.userId} = ${actor.id}::uuid`,
+        )
+        .limit(1);
+      owner = !!contribution;
+    }
     if (!owner) throw AppError.forbidden();
     return {
       id: row.id,

@@ -1,4 +1,4 @@
-import { Header, Body, Controller, Get, Param, Post, Put, Query } from '@nestjs/common';
+import { Body, Controller, Get, Header, Param, Post, Put, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { contactProvenanceSchema } from '../../shared/place-contact-schema';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
@@ -8,8 +8,28 @@ import { RequireRole } from '../../cms/presentation/admin.guard';
 import { PlaceSubmissionService } from '../application/place-submission.service';
 import { NoIdempotencyReplay } from '../../shared/idempotency.interceptor';
 import { SUBMISSION_REJECTION_REASONS } from '../domain/submission-rejection';
+import { MyPlaceSubmissionsService } from '../application/my-place-submissions.service';
 
 const Uuid = new ZodValidationPipe(z.string().uuid());
+
+const mySubmissionsQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+  cursor: z.string().min(1).max(512).optional(),
+});
+
+@Controller('me/place-submissions')
+export class MyPlaceSubmissionsController {
+  constructor(private readonly submissions: MyPlaceSubmissionsService) {}
+
+  @Get()
+  @Header('Cache-Control', 'no-store')
+  list(
+    @CurrentActor() actor: Actor,
+    @Query(new ZodValidationPipe(mySubmissionsQuery)) query: z.infer<typeof mySubmissionsQuery>,
+  ) {
+    return this.submissions.list(actor, query);
+  }
+}
 
 const resolveSchema = z.object({
   url: z.string().trim().url().max(2000),

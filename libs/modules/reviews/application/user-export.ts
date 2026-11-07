@@ -225,6 +225,36 @@ export async function collectUserExport(
   );
 
   const notificationSettings = await readNotificationSettings(db, userId);
+  const s = schema.placeSubmissions;
+  const placeSubmissions = await collectPaged(
+    (after, limit) =>
+      db
+        .select({
+          id: s.id,
+          status: s.status,
+          createdAt: s.createdAt,
+          decidedAt: s.decidedAt,
+        })
+        .from(s)
+        .where(
+          and(
+            sql`(${s.submittedByUserId} = ${userId}::uuid or exists (
+        select 1 from place_submission_contributors c
+        where c.submission_id = ${s.id} and c.user_id = ${userId}::uuid
+      ))`,
+            after ? gt(s.id, after) : undefined,
+          ),
+        )
+        .orderBy(asc(s.id))
+        .limit(limit),
+    (row) => ({
+      id: row.id,
+      status: row.status,
+      createdAt: row.createdAt.toISOString(),
+      decidedAt: row.decidedAt?.toISOString() ?? null,
+    }),
+    budget,
+  );
   // GoGo-BE#713 Q2 — retained GoGo AI conversations (absent before the module).
   const assistantConversations = await collectAssistantExport(db, userId, (v) => budget.charge(v));
 
@@ -250,6 +280,7 @@ export async function collectUserExport(
       source: notificationSettings.source,
     },
     reviewReactions,
+    placeSubmissions,
     assistantConversations,
     assistantCreditBalance: await creditBalance(db, userId),
   };

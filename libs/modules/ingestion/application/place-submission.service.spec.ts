@@ -29,6 +29,11 @@ function fixture(over: Record<string, unknown> = {}) {
     for: vi.fn().mockReturnThis(),
     limit: vi.fn(async () => [row]),
   };
+  // A submission row is not evidence that an unrelated user contributed.
+  query.from.mockImplementation((table: unknown) => ({
+    ...query,
+    limit: vi.fn(async () => (table === schema.placeSubmissions ? [row] : [])),
+  }));
   const written: { table: unknown; value: Record<string, unknown> }[] = [];
   const update = vi.fn((table: unknown) => ({
     set: (value: Record<string, unknown>) => ({
@@ -158,12 +163,15 @@ describe('submission public response (#787)', () => {
     expect(JSON.stringify(result)).not.toContain('PRIVATE');
   });
 
-  it.each(['user', 'guest'])('denies a different %s actor', async (type) => {
-    const { service, row } = fixture({ status: 'rejected', rejectionReason: 'other' });
-    await expect(
-      service.getSubmission({ id: randomUUID(), type } as Actor, row.id),
-    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
-  });
+  it.each(['user', 'guest'])(
+    'denies a different %s actor with no recorded contribution',
+    async (type) => {
+      const { service, row } = fixture({ status: 'rejected', rejectionReason: 'other' });
+      await expect(
+        service.getSubmission({ id: randomUUID(), type } as Actor, row.id),
+      ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    },
+  );
 
   it('allows the owning guest to read the public key', async () => {
     const guestId = randomUUID();

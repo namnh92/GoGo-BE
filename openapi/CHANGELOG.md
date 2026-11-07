@@ -8,6 +8,40 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 7.1.0-alpha.1 — Đóng góp địa điểm của tôi (GoGo-BE#788)
+
+MINOR bổ sung từ 7.0.0-alpha.1: `GET /me/place-submissions` dành cho user
+đăng nhập; guest/admin bị từ chối. Lọc theo người gửi đầu tiên hoặc attribution ở server, phân trang
+cursor giảm dần `(createdAt, id)` với độ chính xác microsecond, `limit` 1–100
+(mặc định 25), `nextCursor: null` khi hết. Response dùng `Cache-Control: no-store`.
+
+Mỗi mục có `id`, `status`, `createdAt`, `updatedAt`; bổ sung `name`, `photoUrl`,
+`decidedAt` khi có. `placeId` chỉ có cho approved/merged khi place còn tồn tại.
+Rejected trả `rejectionReason` đã lưu theo taxonomy `SubmissionRejectionReason`
+của #787 để client dịch; bỏ field khi dữ liệu lịch sử chưa có key. Không
+trả lý do CMS dạng tự do, ghi chú hoặc định danh người khác. Chỉ dùng ảnh
+catalogue editorial/community đã duyệt; không gọi provider hoặc lưu thêm dữ liệu Google.
+
+Khi dedupe vào một proposal pending, mọi user đã đăng ký gửi đóng góp được ghi
+vào `place_submission_contributors` cùng transaction với proposal. Submit lặp
+vẫn tăng `submissionCount` nhưng không lặp attribution; người gửi đầu tiên vẫn
+giữ vai trò moderation/credit cũ. History và polling cho phép người gửi đầu tiên
+hoặc user có attribution; mỗi proposal một lần trên mỗi account. Guest giữ quyền
+polling của người gửi đầu tiên. Thứ tự/cursor theo proposal, không theo lần góp.
+Migration `0085_place-submission-contributors` backfill người gửi đầu tiên còn
+active; không khôi phục được người từng dedupe mà trước đây không lưu. Áp migration
+trước khi rollout code; chỉ coi attribution mới đầy đủ khi mọi writer đã nâng cấp.
+Export thêm `placeSubmissions` chỉ gồm id, status, createdAt, decidedAt;
+xóa account xóa attribution của account đó. Polling và CMS giữ taxonomy reason key
+của #787; CMS vẫn bắt buộc `rejectionReason` khi từ chối.
+Rollback: ngừng client gọi endpoint mới trước khi rollback API, giữ bảng attribution.
+Writer cũ không ghi người góp sau; giữ bảng không khôi phục được attribution thiếu
+trong rollout hỗn hợp hoặc rollback. Nếu cần gỡ schema, rollback và drain mọi
+reader/writer dùng bảng trước, sao lưu attribution, rồi dùng migration roll-forward
+đã kiểm tra trên snapshot để drop bảng; thao tác này mất lịch sử attribution.
+Chi tiết và giới hạn trong `docs/adr/0045-my-place-submissions.md` và runbook GoGo-BE#788
+ở `docs/runbooks.md`. Client sinh lại types từ phiên bản này.
+
 ## 7.0.0-alpha.1 — Required submission rejection keys (GoGo-BE#787 / PR #790)
 
 **Breaking MAJOR** from 6.5.0-alpha.1 per BE-BFF-012, owner/CODEOWNER decision
