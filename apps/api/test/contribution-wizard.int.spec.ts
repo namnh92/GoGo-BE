@@ -48,9 +48,14 @@ beforeAll(async () => {
   db = drizzle(pool, { schema });
   const folder = path.resolve(__dirname, '../../../migrations');
   const journal = JSON.parse(await readFile(path.join(folder, 'meta/_journal.json'), 'utf8'));
-  const prior = journal.entries.filter(
-    (entry: { tag: string }) => entry.tag !== '0089_place-contribution-wizard',
+  const wizardMigrationIndex = journal.entries.findIndex(
+    (entry: { tag: string }) => entry.tag === '0089_place-contribution-wizard',
   );
+  if (wizardMigrationIndex < 0)
+    throw new Error('0089_place-contribution-wizard is missing from the journal');
+  // Apply only the prefix before 0089. Applying 0090 or any later migration
+  // first advances Drizzle's timestamp watermark and makes it skip 0089.
+  const prior = journal.entries.slice(0, wizardMigrationIndex);
   const snapshot = await mkdtemp(path.join(os.tmpdir(), 'gogo-796-snapshot-'));
   try {
     await mkdir(path.join(snapshot, 'meta'));
