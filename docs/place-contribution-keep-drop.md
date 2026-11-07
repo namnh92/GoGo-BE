@@ -58,7 +58,9 @@ sau thay giá trị trước; key không xuất hiện giữ nguyên dữ liệu
 Facts taxonomy được kiểm lại active khi quyết định, lỗi rollback cả transaction.
 Review draft/legacy estimate độc lập với wizard, tiếp tục theo #528/#802;
 selection không xóa dữ liệu catalogue hay bản nháp review đã được duyệt trước đó.
-Canonical place merge giữ facts hai bên; canonical thắng khi cùng key.
+Canonical place merge giữ facts hai bên; canonical thắng khi cùng key. Sau khi
+chuyển taxonomy, transaction đối chiếu lại amenity theo facts đã gộp: false xóa
+liên kết, true bảo đảm liên kết taxonomy còn active, thiếu key giữ nguyên liên kết.
 
 Menu/bill được giữ dùng pipeline #802: public userPhotos của mục đánh giá,
 credit uploader gốc; không tạo official gallery/cover. Bill bỏ được enqueue

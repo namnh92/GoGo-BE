@@ -2697,9 +2697,10 @@ export class CmsCatalogService {
         (identities.rows as { external_id: string }[]).map((r) => r.external_id),
       );
       // Preserve moderated wizard facts; the canonical place wins key conflicts.
-      await tx.execute(sql`update places canonical set contribution_facts =
+      const mergedFacts = await tx.execute(sql`update places canonical set contribution_facts =
         coalesce(duplicate.contribution_facts, '{}'::jsonb) || coalesce(canonical.contribution_facts, '{}'::jsonb)
-        from places duplicate where canonical.id = ${canonicalId} and duplicate.id = ${duplicateId}`);
+        from places duplicate where canonical.id = ${canonicalId} and duplicate.id = ${duplicateId}
+        returning canonical.contribution_facts`);
       for (const table of [
         schema.placeSources,
         schema.placeProviderSources,
@@ -2727,6 +2728,30 @@ export class CmsCatalogService {
       await tx.execute(sql`
         delete from place_taxonomies where place_id = ${duplicateId}::uuid
       `);
+
+      // Reconcile after transfer so a duplicate cannot restore an amenity the
+      // retained facts explicitly deny. Missing keys leave catalogue links alone.
+      const facts = (
+        mergedFacts.rows[0] as { contribution_facts: Record<string, unknown> } | undefined
+      )?.contribution_facts;
+      for (const [fact, value] of Object.entries(facts ?? {})) {
+        if (!fact.startsWith('amenities:') || typeof value !== 'boolean') continue;
+        const key = fact.slice('amenities:'.length);
+        if (value) {
+          await tx.execute(sql`
+            insert into place_taxonomies (place_id, taxonomy_id)
+            select ${canonicalId}::uuid, id from taxonomies
+            where kind = 'amenity' and key = ${key} and is_active
+            on conflict do nothing
+          `);
+        } else {
+          await tx.execute(sql`
+            delete from place_taxonomies pt using taxonomies t
+            where pt.place_id = ${canonicalId}::uuid and pt.taxonomy_id = t.id
+              and t.kind = 'amenity' and t.key = ${key}
+          `);
+        }
+      }
 
       await tx.execute(sql`
         update saved_items si set target_id = ${canonicalId}::uuid

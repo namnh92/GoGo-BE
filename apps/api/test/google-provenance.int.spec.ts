@@ -641,6 +641,127 @@ describe('an open identity conflict blocks every runtime path (#334)', () => {
   });
 });
 
+describe('canonical merge retains amenity facts and links consistently (#806 Astra F-01)', () => {
+  it.each([
+    { canonical: false, duplicate: true, canonicalLink: false, duplicateLink: true },
+    // Also repair a missing link for a retained true, rather than relying on transfer.
+    { canonical: true, duplicate: false, canonicalLink: false, duplicateLink: false },
+    { canonical: undefined, duplicate: false, canonicalLink: true, duplicateLink: false },
+    { canonical: undefined, duplicate: true, canonicalLink: false, duplicateLink: true },
+  ])(
+    'reconciles canonical=$canonical, duplicate=$duplicate after transfer',
+    async ({ canonical, duplicate, canonicalLink, duplicateLink }) => {
+      const canonicalId = await newPlace('Quán Giữ Facts', 106.73, 10.81);
+      const duplicateId = await newPlace('Quán Gộp Facts', 106.74, 10.82);
+      await db
+        .update(schema.places)
+        .set({
+          contributionFacts: {
+            visitTips: 'Canonical tip',
+            ...(canonical === undefined ? {} : { 'amenities:car_parking': canonical }),
+          },
+        })
+        .where(eq(schema.places.id, canonicalId));
+      await db
+        .update(schema.places)
+        .set({
+          contributionFacts: {
+            visitTips: 'Duplicate tip',
+            recommendedDishes: 'Retained dish',
+            'amenities:car_parking': duplicate,
+          },
+        })
+        .where(eq(schema.places.id, duplicateId));
+      await db
+        .insert(schema.taxonomies)
+        .values([
+          { kind: 'amenity', key: 'car_parking' },
+          { kind: 'amenity', key: 'wifi' },
+        ])
+        .onConflictDoNothing();
+      const [parking] = await db
+        .select()
+        .from(schema.taxonomies)
+        .where(
+          and(eq(schema.taxonomies.kind, 'amenity'), eq(schema.taxonomies.key, 'car_parking')),
+        );
+      const [wifi] = await db
+        .select()
+        .from(schema.taxonomies)
+        .where(and(eq(schema.taxonomies.kind, 'amenity'), eq(schema.taxonomies.key, 'wifi')));
+      const [cafe] = await db
+        .select()
+        .from(schema.taxonomies)
+        .where(and(eq(schema.taxonomies.kind, 'category'), eq(schema.taxonomies.key, 'cafe')));
+      await db
+        .insert(schema.placeTaxonomies)
+        .values([
+          { placeId: duplicateId, taxonomyId: wifi!.id },
+          { placeId: duplicateId, taxonomyId: cafe!.id },
+          ...(canonicalLink ? [{ placeId: canonicalId, taxonomyId: parking!.id }] : []),
+          ...(duplicateLink ? [{ placeId: duplicateId, taxonomyId: parking!.id }] : []),
+        ]);
+      const admin = await createAdmin(`merge-f01-${canonicalId}@gogo.local`, 'editor');
+      const merged = await api().inject({
+        method: 'POST',
+        url: `/v1/cms/places/${canonicalId}/merge`,
+        remoteAddress: ip(),
+        headers: auth(admin.token),
+        payload: { duplicateId },
+      });
+      expect(merged.statusCode, merged.body).toBe(201);
+      const retained = canonical ?? duplicate;
+      const expectedFacts = {
+        visitTips: 'Canonical tip',
+        recommendedDishes: 'Retained dish',
+        'amenities:car_parking': retained,
+      };
+      const [stored] = await db
+        .select()
+        .from(schema.places)
+        .where(eq(schema.places.id, canonicalId));
+      expect(stored!.contributionFacts).toEqual(expectedFacts);
+      const links = await db
+        .select()
+        .from(schema.placeTaxonomies)
+        .where(eq(schema.placeTaxonomies.placeId, canonicalId));
+      expect(links.map((link) => link.taxonomyId).sort()).toEqual(
+        [wifi!.id, cafe!.id, ...(retained ? [parking!.id] : [])].sort(),
+      );
+      expect(
+        await db
+          .select()
+          .from(schema.placeTaxonomies)
+          .where(eq(schema.placeTaxonomies.placeId, duplicateId)),
+      ).toEqual([]);
+      const detail = await api().inject({ method: 'GET', url: `/v1/places/${canonicalId}` });
+      expect(detail.statusCode, detail.body).toBe(200);
+      expect(detail.json().contributionFacts).toEqual(expectedFacts);
+      const parkingTaxonomy = { kind: 'amenity', key: 'car_parking' };
+      if (retained) expect(detail.json().taxonomies).toContainEqual(parkingTaxonomy);
+      else expect(detail.json().taxonomies).not.toContainEqual(parkingTaxonomy);
+      // Compare the unfiltered search with the amenity filter to prove that a
+      // missing result is due to the retained fact, rather than search eligibility.
+      for (const filter of ['', '&amenities=car_parking']) {
+        const search = await api().inject({
+          method: 'GET',
+          url: `/v1/places/search?lat=10.81&lng=106.73&radiusM=10000&sort=distance&limit=50${filter}`,
+          remoteAddress: ip(),
+        });
+        expect(search.statusCode, search.body).toBe(200);
+        const ids = search.json().results.map((place: { id: string }) => place.id);
+        expect(ids.includes(canonicalId)).toBe(!filter || retained);
+        expect(ids).not.toContain(duplicateId);
+      }
+      const [archived] = await db
+        .select()
+        .from(schema.places)
+        .where(eq(schema.places.id, duplicateId));
+      expect(archived!.status).toBe('archived');
+    },
+  );
+});
+
 describe('merge moves the identity with the place (#334)', () => {
   it('leaves no provider row on the archived duplicate and dedup follows', async () => {
     const canonicalId = await newPlace('Quán Gộp Đích', 106.73, 10.81);
