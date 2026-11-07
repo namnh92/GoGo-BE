@@ -1,3 +1,9 @@
+import {
+  enrichmentFacts,
+  selectEnrichment,
+  type EnrichmentSelection,
+  type ContributionFacts,
+} from '../domain/enrichment-selection';
 import { freshSnapshot, snapshotFromDetails } from '../domain/submission-display-snapshot';
 import type { SubmissionDisplaySnapshot } from '@gogo/database';
 import { randomUUID } from 'node:crypto';
@@ -14,7 +20,11 @@ import {
 } from '../../search/application/provider-photos.service';
 import { SubmissionPhotoService } from './submission-photo.service';
 import { SubmissionPhotosService } from './submission-photos.service';
-import { grantSubmissionCredits, lockAssistantAccount } from '../../shared/assistant-credits';
+import {
+  grantSubmissionCredits,
+  lockAssistantAccount,
+  submissionCreditFacts,
+} from '../../shared/assistant-credits';
 import type { Tx } from '../../shared/outbox';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
@@ -1218,8 +1228,20 @@ export class PlaceSubmissionService {
       limit 50
     `);
 
+    const reviewPhotos = await this.photos.list(id);
+    const availableMediaIds = reviewPhotos
+      .filter((p) => p.status === 'pending')
+      .map((p) => p.mediaId);
+    const availableEvidence =
+      row.enrichment?.photos?.filter((p) => availableMediaIds.includes(p.mediaId.toLowerCase())) ??
+      [];
     return {
       id: row.id,
+      enrichmentItems: {
+        factKeys: Object.keys(enrichmentFacts(row.enrichment)).sort(),
+        photoMediaIds: availableEvidence.map((p) => p.mediaId.toLowerCase()),
+      },
+      expectedCredit: await this.expectedEnrichmentCredit(row, availableEvidence.length),
       status: row.status,
       rejectionReason: row.status === 'rejected' ? (row.rejectionReason ?? undefined) : undefined,
       googlePlaceId: row.googlePlaceId,
@@ -1231,7 +1253,7 @@ export class PlaceSubmissionService {
       updatedAt: row.updatedAt.toISOString(),
       decidedAt: iso(row.decidedAt),
       decisionReason: row.decisionReason ?? undefined,
-      photos: await this.photos.list(id),
+      photos: reviewPhotos,
       // What the contributor sent, untouched by any review.
       contribution: {
         enrichment: row.enrichment ?? undefined,
@@ -1441,6 +1463,7 @@ export class PlaceSubmissionService {
     mergeIntoPlaceId?: string,
     rejectionReason?: string,
     approvedPhotoIds?: string[],
+    enrichmentSelection?: EnrichmentSelection,
   ) {
     if (
       (decision === 'rejected' || rejectionReason !== undefined) &&
@@ -1464,6 +1487,37 @@ export class PlaceSubmissionService {
       throw AppError.conflict('ALREADY_DECIDED', 'Submission already decided');
     }
 
+    if (decision === 'rejected' && enrichmentSelection)
+      throw AppError.badRequest('INVALID_ENRICHMENT_SELECTION', 'Rejection cannot keep enrichment');
+    const selection = enrichmentSelection
+      ? selectEnrichment(row.enrichment, enrichmentSelection)
+      : undefined;
+    let selectedPhotoIds = approvedPhotoIds;
+    if (selection) {
+      const photos = await this.photos.list(id);
+      const selected = photos.filter((p) => selection.keptPhotoMediaIds.includes(p.mediaId));
+      if (
+        selected.length !== selection.keptPhotoMediaIds.length ||
+        selected.some((p) => p.status !== 'pending')
+      )
+        throw AppError.badRequest(
+          'INVALID_ENRICHMENT_SELECTION',
+          'Selected photo is no longer pending',
+        );
+      const wizardIds = new Set((row.enrichment?.photos ?? []).map((p) => p.mediaId.toLowerCase()));
+      const ordinaryIds = approvedPhotoIds ?? [];
+      if (
+        ordinaryIds.some((photoId) =>
+          photos.some((p) => p.id === photoId && wizardIds.has(p.mediaId)),
+        )
+      )
+        throw AppError.badRequest(
+          'INVALID_ENRICHMENT_SELECTION',
+          'Choose wizard photos only through enrichmentSelection',
+        );
+      selectedPhotoIds = [...ordinaryIds, ...selected.map((p) => p.id)];
+    }
+
     let billCleanup: Awaited<ReturnType<SubmissionPhotosService['decide']>> | undefined;
     const finalize = async (tx: Tx, resultPlaceId: string | null) => {
       billCleanup = await this.photos.decide(
@@ -1472,8 +1526,15 @@ export class PlaceSubmissionService {
         resultPlaceId,
         adminId,
         reason,
-        approvedPhotoIds,
+        selectedPhotoIds,
       );
+      if (resultPlaceId && selection && Object.keys(selection.facts).length) {
+        try {
+          await this.applyEnrichmentFacts(tx, resultPlaceId, selection.facts);
+        } catch (error) {
+          contributionStorageFailure(error);
+        }
+      }
       await tx
         .update(schema.placeSubmissions)
         .set({
@@ -1505,7 +1566,7 @@ export class PlaceSubmissionService {
           row.id,
           `google:${row.googlePlaceId}`,
           Number((approvedEvidence?.rows[0] as { n: number } | undefined)?.n ?? 0),
-          decision === 'approved',
+          decision === 'approved' || selection !== undefined,
         );
       }
       await writeAudit(tx, {
@@ -1518,7 +1579,22 @@ export class PlaceSubmissionService {
           decision,
           reason,
           resultPlaceId,
-          approvedPhotoIds,
+          approvedPhotoIds: selectedPhotoIds,
+          ...(selection
+            ? {
+                enrichmentSelection: {
+                  keptFactKeys: selection.keptFactKeys,
+                  droppedFactKeys: selection.droppedFactKeys,
+                  keptPhotoMediaIds: selection.keptPhotoMediaIds,
+                  droppedPhotoMediaIds: selection.droppedPhotoMediaIds,
+                },
+              }
+            : {
+                enrichmentSelection: {
+                  mode: 'legacy',
+                  droppedFactKeys: Object.keys(enrichmentFacts(row.enrichment)).sort(),
+                },
+              }),
           ...(decision === 'rejected' ? { rejectionReason } : {}),
         },
       });
@@ -1545,6 +1621,7 @@ export class PlaceSubmissionService {
             .select({ id: schema.places.id })
             .from(schema.places)
             .where(eq(schema.places.id, mergeIntoPlaceId))
+            .for('update')
             .limit(1);
           if (!target.length)
             throw AppError.notFound('MERGE_TARGET_NOT_FOUND', 'Target place not found');
@@ -1565,6 +1642,100 @@ export class PlaceSubmissionService {
       { decision },
     );
     return { id, status: decision, placeId: resultPlaceId ?? undefined };
+  }
+
+  async previewEnrichmentCredit(id: string, input: EnrichmentSelection) {
+    const [row] = await this.db
+      .select()
+      .from(schema.placeSubmissions)
+      .where(eq(schema.placeSubmissions.id, id))
+      .limit(1);
+    if (!row) throw AppError.notFound('SUBMISSION_NOT_FOUND', 'Submission not found');
+    if (row.status !== 'pending')
+      throw AppError.conflict('ALREADY_DECIDED', 'Submission already decided');
+    const selection = selectEnrichment(row.enrichment, input);
+    const photos = await this.photos.list(id);
+    if (
+      selection.keptPhotoMediaIds.some(
+        (id) => !photos.some((p) => p.mediaId === id && p.status === 'pending'),
+      )
+    )
+      throw AppError.badRequest(
+        'INVALID_ENRICHMENT_SELECTION',
+        'Selected photo is no longer pending',
+      );
+    return {
+      expectedCredit: await this.expectedEnrichmentCredit(row, selection.keptPhotoMediaIds.length),
+    };
+  }
+
+  private async expectedEnrichmentCredit(
+    row: typeof schema.placeSubmissions.$inferSelect,
+    count: number,
+  ) {
+    if (!row.submittedByUserId || row.status !== 'pending') return submissionCreditFacts(0, false);
+    const { rows } = await this.db
+      .execute(sql`select id from users where id = ${row.submittedByUserId} and status = 'active'
+      and not exists (select 1 from assistant_credit_ledger where submission_id = ${row.id} or venue_identity = ${`google:${row.googlePlaceId}`})`);
+    return rows.length ? submissionCreditFacts(count) : submissionCreditFacts(0, false);
+  }
+
+  private async applyEnrichmentFacts(tx: Tx, placeId: string, facts: ContributionFacts) {
+    // Lock the target: concurrent merges must not lose each other's retained facts.
+    await tx.execute(sql`select id from places where id = ${placeId} for update`);
+    await tx.execute(
+      sql`update places set contribution_facts = coalesce(contribution_facts, '{}'::jsonb) || ${JSON.stringify(facts)}::jsonb where id = ${placeId}`,
+    );
+    // Revalidate vocabulary at decision time. Removed keys fail atomically.
+    for (const [fact, value] of Object.entries(facts)) {
+      const separator = fact.indexOf(':');
+      const field = fact.slice(0, separator);
+      const key = separator < 0 ? undefined : fact.slice(separator + 1);
+      const kind =
+        field === 'purposeKeys'
+          ? 'suitability'
+          : field === 'vibeKeys'
+            ? 'mood'
+            : field === 'amenities'
+              ? 'amenity'
+              : field === 'service.chipKeys' || field === 'space.chipKeys'
+                ? 'checkin_tag'
+                : null;
+      if (!kind || !key) continue;
+      const { rows } = await tx.execute(
+        sql`select id from taxonomies where kind = ${kind} and key = ${key} and is_active for share`,
+      );
+      const taxonomyId = (rows[0] as { id: string } | undefined)?.id;
+      if (!taxonomyId)
+        throw AppError.conflict(
+          'ENRICHMENT_TAXONOMY_CHANGED',
+          'Selected taxonomy is no longer active',
+        );
+      if (kind === 'checkin_tag') continue;
+      if (value === false)
+        await tx.execute(
+          sql`delete from place_taxonomies where place_id = ${placeId} and taxonomy_id = ${taxonomyId}`,
+        );
+      else
+        await tx
+          .insert(schema.placeTaxonomies)
+          .values({ placeId, taxonomyId })
+          .onConflictDoNothing();
+    }
+    const price = facts.price;
+    // Preserve units the legacy price table cannot represent in contribution_facts.
+    if (price && typeof price === 'object' && PRICE_UNITS.includes(price.unit as PriceUnit))
+      await tx.insert(schema.placePrices).values({
+        placeId,
+        priceMin: price.min,
+        priceMax: price.max,
+        currency: price.currency,
+        unit: price.unit as PriceUnit,
+        confidence: '0.70',
+        source: 'editor',
+        verifiedAt: sql`clock_timestamp()`,
+        createdAt: sql`clock_timestamp()`,
+      });
   }
 
   private async lockPendingSubmission(

@@ -209,3 +209,66 @@ describe('submission public response (#787)', () => {
     ).toBe('other');
   });
 });
+
+describe('CMS credit preview (#806)', () => {
+  it.each([0, 1, 3])('returns the actual award formula with %s kept photos', async (count) => {
+    const mediaIds = Array.from({ length: count }, () => randomUUID());
+    const { service, row, db, photos } = fixture({
+      enrichment: {
+        visitTips: 'Tip',
+        photos: mediaIds.map((mediaId) => ({ mediaId, kind: 'menu' })),
+      },
+    });
+    Object.assign(db, { execute: vi.fn(async () => ({ rows: [{ id: row.submittedByUserId }] })) });
+    Object.assign(photos, {
+      list: vi.fn(async () => mediaIds.map((mediaId) => ({ mediaId, status: 'pending' }))),
+    });
+    expect(
+      await service.previewEnrichmentCredit(row.id, {
+        keptFactKeys: [],
+        keptPhotoMediaIds: mediaIds,
+      }),
+    ).toEqual({ expectedCredit: { base: 50, photoBonus: count ? 20 : 0, total: count ? 70 : 50 } });
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+  it('returns zero when the venue was already credited or the contributor is ineligible', async () => {
+    const { service, row, db, photos } = fixture({ enrichment: null });
+    Object.assign(db, { execute: vi.fn(async () => ({ rows: [] })) });
+    Object.assign(photos, { list: vi.fn(async () => []) });
+    expect(
+      await service.previewEnrichmentCredit(row.id, { keptFactKeys: [], keptPhotoMediaIds: [] }),
+    ).toEqual({ expectedCredit: { base: 0, photoBonus: 0, total: 0 } });
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+  it('refuses a removed photo rather than advertising its bonus', async () => {
+    const mediaId = randomUUID();
+    const { service, row, photos } = fixture({
+      enrichment: { photos: [{ mediaId, kind: 'bill' }] },
+    });
+    Object.assign(photos, { list: vi.fn(async () => [{ mediaId, status: 'rejected' }]) });
+    await expect(
+      service.previewEnrichmentCredit(row.id, { keptFactKeys: [], keptPhotoMediaIds: [mediaId] }),
+    ).rejects.toMatchObject({ code: 'INVALID_ENRICHMENT_SELECTION' });
+  });
+  it('refuses preview after decision and rejects keep selection on rejection', async () => {
+    const { service, row, db } = fixture({ status: 'approved' });
+    await expect(
+      service.previewEnrichmentCredit(row.id, { keptFactKeys: [], keptPhotoMediaIds: [] }),
+    ).rejects.toMatchObject({ code: 'ALREADY_DECIDED' });
+    expect(db.transaction).not.toHaveBeenCalled();
+    const pending = fixture();
+    await expect(
+      pending.service.decide(
+        randomUUID(),
+        pending.row.id,
+        'rejected',
+        'Checked',
+        undefined,
+        'inappropriate_content',
+        undefined,
+        { keptFactKeys: [], keptPhotoMediaIds: [] },
+      ),
+    ).rejects.toMatchObject({ code: 'INVALID_ENRICHMENT_SELECTION' });
+    expect(pending.db.transaction).not.toHaveBeenCalled();
+  });
+});

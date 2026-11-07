@@ -803,3 +803,206 @@ describe('submission photo lifecycle (#793)', () => {
     expect(place.json().photos[0].contributor.displayName).toBe('Mai');
   });
 });
+
+describe('wizard explicit keep/drop HTTP (#806)', () => {
+  const request = (id: string, payload: Record<string, unknown>, token = moderator, key?: string) =>
+    api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-submissions/${id}/decide`,
+      remoteAddress: ip(),
+      headers: { ...auth(token), ...(key ? { 'idempotency-key': key } : {}) },
+      payload,
+    });
+  async function proposal() {
+    const menu = await upload(),
+      bill = await upload();
+    const sent = await api().inject({
+      method: 'POST',
+      url: '/v1/place-submissions',
+      remoteAddress: ip(),
+      headers: auth(user),
+      payload: {
+        googlePlaceId: identity(),
+        enrichment: {
+          price: { min: 10000, max: 30000, currency: 'VND', unit: 'per_person' },
+          purposeKeys: ['work_reading'],
+          vibeKeys: ['chill'],
+          amenities: { car_parking: false },
+          visitTips: 'Kept tip',
+          recommendedDishes: 'Dropped dish',
+          billPhotoPublicConsent: true,
+          photos: [
+            { mediaId: menu.id, kind: 'menu' },
+            { mediaId: bill.id, kind: 'bill' },
+          ],
+        },
+      },
+    });
+    expect(sent.statusCode, sent.body).toBe(201);
+    return { id: sent.json().submissionId as string, menu, bill };
+  }
+  it.each(['approved', 'merged'])(
+    'partially keeps facts/photos on %s, audits and replays once',
+    async (decision) => {
+      const { id, menu, bill } = await proposal();
+      const before = await detail(id);
+      expect(before.json().expectedCredit).toEqual({ base: 50, photoBonus: 20, total: 70 });
+      expect(before.json().enrichmentItems.factKeys).toContain('amenities:car_parking');
+      let target: string | undefined;
+      if (decision === 'merged') {
+        const parent = await submit(identity(), []);
+        target = (await decide(parent.json().submissionId, 'approved')).json().placeId;
+      }
+      const enrichmentSelection = {
+        keptFactKeys: ['price', 'visitTips', 'purposeKeys:work_reading', 'amenities:car_parking'],
+        keptPhotoMediaIds: [menu.id],
+      };
+      const preview = await api().inject({
+        method: 'POST',
+        url: `/v1/cms/place-submissions/${id}/credit-preview`,
+        headers: auth(moderator),
+        payload: { enrichmentSelection },
+      });
+      expect(preview.statusCode, preview.body).toBe(201);
+      expect(preview.json().expectedCredit).toEqual(before.json().expectedCredit);
+      const payload = {
+        decision,
+        reason: 'Verified selected items',
+        enrichmentSelection,
+        ...(target ? { mergeIntoPlaceId: target } : {}),
+      };
+      const key = randomUUID();
+      const result = await request(id, payload, editor, key);
+      expect(result.statusCode, result.body).toBe(201);
+      const again = await request(id, payload, editor, key);
+      expect(again.statusCode, again.body).toBe(201);
+      expect(again.json()).toEqual(result.json());
+      const changed = await request(
+        id,
+        { ...payload, enrichmentSelection: { keptFactKeys: [], keptPhotoMediaIds: [] } },
+        editor,
+        key,
+      );
+      expect(changed.statusCode).toBe(422);
+      const placeId = result.json().placeId;
+      const place = (await api().inject({ method: 'GET', url: `/v1/places/${placeId}` })).json();
+      expect(place.contributionFacts).toEqual({
+        price: { min: 10000, max: 30000, currency: 'VND', unit: 'per_person' },
+        visitTips: 'Kept tip',
+        'purposeKeys:work_reading': 'work_reading',
+        'amenities:car_parking': false,
+      });
+      expect(place.userPhotos).toHaveLength(1);
+      expect(place.userPhotos[0].contributor.displayName).toBe('Mai');
+      expect(place.photos).toEqual([]);
+      expect(place.prices).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ priceMin: 10000, priceMax: 30000, unit: 'per_person' }),
+        ]),
+      );
+      expect(place.taxonomies).toContainEqual({ kind: 'suitability', key: 'work_reading' });
+      expect(place.taxonomies).not.toContainEqual({ kind: 'mood', key: 'chill' });
+      expect(place.taxonomies).not.toContainEqual({ kind: 'amenity', key: 'car_parking' });
+      expect(
+        await db.select().from(schema.placeMedia).where(eq(schema.placeMedia.placeId, placeId)),
+      ).toEqual([]);
+      const photos = await db
+        .select()
+        .from(schema.placeSubmissionPhotos)
+        .where(eq(schema.placeSubmissionPhotos.submissionId, id));
+      expect(photos.find((p) => p.mediaUploadId === menu.id)).toMatchObject({
+        status: 'approved',
+        placeId,
+      });
+      expect(photos.find((p) => p.mediaUploadId === bill.id)).toMatchObject({
+        status: 'rejected',
+        placeId: null,
+      });
+      const credits = await db
+        .select()
+        .from(schema.assistantCreditLedger)
+        .where(eq(schema.assistantCreditLedger.submissionId, id));
+      expect(credits.map((c) => c.delta)).toEqual([preview.json().expectedCredit.total]);
+      const audit = await db.execute(
+        sql`select diff from audit_logs where resource_id = ${id} and action = 'place_submission.decided'`,
+      );
+      expect(audit.rows).toHaveLength(1);
+      expect((audit.rows[0] as { diff: unknown }).diff).toMatchObject({
+        enrichmentSelection: {
+          ...enrichmentSelection,
+          keptFactKeys: [...enrichmentSelection.keptFactKeys].sort(),
+          droppedFactKeys: ['recommendedDishes', 'vibeKeys:chill'],
+          droppedPhotoMediaIds: [bill.id],
+        },
+      });
+      expect((await detail(id)).json().expectedCredit).toEqual({
+        base: 0,
+        photoBonus: 0,
+        total: 0,
+      });
+    },
+  );
+  it('all-drop rejects every wizard photo and applies no facts with +50 only', async () => {
+    const { id } = await proposal();
+    const enrichmentSelection = { keptFactKeys: [], keptPhotoMediaIds: [] };
+    const preview = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/place-submissions/${id}/credit-preview`,
+      headers: auth(moderator),
+      payload: { enrichmentSelection },
+    });
+    expect(preview.json().expectedCredit).toEqual({ base: 50, photoBonus: 0, total: 50 });
+    const result = await request(id, {
+      decision: 'approved',
+      reason: 'Identity only',
+      enrichmentSelection,
+    });
+    expect(result.statusCode, result.body).toBe(201);
+    const place = (
+      await api().inject({ method: 'GET', url: `/v1/places/${result.json().placeId}` })
+    ).json();
+    expect(place.contributionFacts).toBeUndefined();
+    expect(place.userPhotos).toEqual([]);
+    expect(place.prices).toEqual([]);
+    const photos = await db
+      .select()
+      .from(schema.placeSubmissionPhotos)
+      .where(eq(schema.placeSubmissionPhotos.submissionId, id));
+    expect(photos.every((p) => p.status === 'rejected' && p.placeId === null)).toBe(true);
+    const credits = await db
+      .select()
+      .from(schema.assistantCreditLedger)
+      .where(eq(schema.assistantCreditLedger.submissionId, id));
+    expect(credits.map((c) => c.delta)).toEqual([50]);
+  });
+  it('denies consumer requests, rejects foreign keys/photos and preserves pending state', async () => {
+    const { id, menu } = await proposal();
+    const payload = {
+      decision: 'approved',
+      reason: 'Forbidden keep',
+      enrichmentSelection: { keptFactKeys: ['visitTips'], keptPhotoMediaIds: [menu.id] },
+    };
+    const denied = await request(id, payload, user);
+    expect(denied.statusCode).toBe(403);
+    for (const enrichmentSelection of [
+      { keptFactKeys: ['unknown'], keptPhotoMediaIds: [] },
+      { keptFactKeys: [], keptPhotoMediaIds: [randomUUID()] },
+    ])
+      expect((await request(id, { ...payload, enrichmentSelection })).statusCode).toBe(400);
+    expect(
+      (
+        await request(id, {
+          ...payload,
+          approvedPhotoIds: [(await detail(id)).json().photos[0].id],
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect((await detail(id)).json().status).toBe('pending');
+    expect(
+      await db
+        .select()
+        .from(schema.assistantCreditLedger)
+        .where(eq(schema.assistantCreditLedger.submissionId, id)),
+    ).toEqual([]);
+  });
+});

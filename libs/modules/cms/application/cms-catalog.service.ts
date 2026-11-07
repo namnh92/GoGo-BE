@@ -2696,6 +2696,10 @@ export class CmsCatalogService {
         tx,
         (identities.rows as { external_id: string }[]).map((r) => r.external_id),
       );
+      // Preserve moderated wizard facts; the canonical place wins key conflicts.
+      await tx.execute(sql`update places canonical set contribution_facts =
+        coalesce(duplicate.contribution_facts, '{}'::jsonb) || coalesce(canonical.contribution_facts, '{}'::jsonb)
+        from places duplicate where canonical.id = ${canonicalId} and duplicate.id = ${duplicateId}`);
       for (const table of [
         schema.placeSources,
         schema.placeProviderSources,

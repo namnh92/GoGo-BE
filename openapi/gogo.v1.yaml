@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 7.5.0-alpha.1
+  version: 7.6.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -5322,11 +5322,12 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
-  /cms/place-submissions/{id}/decide:
+  /cms/place-submissions/{id}/credit-preview:
     post:
-      operationId: decidePlaceSubmission
+      operationId: previewPlaceSubmissionCredit
       tags: [cms]
-      summary: 'Moderator/editor: approve, reject or merge a submission (PI-CMS-007)'
+      summary: 'Moderator/editor: server credit facts for an explicit wizard selection'
+      description: Read-only, no provider request or award. Only pending submissions; rejects unavailable selected photos. Shares the award formula and ledger eligibility with approval. No replay cache.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       requestBody:
@@ -5334,6 +5335,41 @@ paths:
         content:
           application/json:
             schema:
+              type: object
+              additionalProperties: false
+              required: [enrichmentSelection]
+              properties:
+                enrichmentSelection: { $ref: '#/components/schemas/EnrichmentSelection' }
+      responses:
+        '201':
+          description: Preview only; no award
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [expectedCredit]
+                properties:
+                  expectedCredit: { $ref: '#/components/schemas/SubmissionCreditFacts' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: ALREADY_DECIDED }
+
+  /cms/place-submissions/{id}/decide:
+    post:
+      operationId: decidePlaceSubmission
+      tags: [cms]
+      summary: 'Moderator/editor: approve, reject or merge a submission (PI-CMS-007)'
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              properties:
+                enrichmentSelection: { $ref: '#/components/schemas/EnrichmentSelection' }
               oneOf:
                 - type: object
                   required: [decision, rejectionReason]
@@ -5418,6 +5454,19 @@ paths:
         for immediate cleanup. These menu/bill rules take precedence over the general
         cleanup description on approvedPhotoIds. Accepted menu/bill evidence adds
         20 credits once; approval also grants the 50-credit base.
+
+
+        #806: optional enrichmentSelection explicitly keeps wizard facts and photos;
+        everything else in that proposal is dropped. With selection present, approvedPhotoIds
+        may select only additional ordinary photos, never wizard references. Empty arrays
+        drop every wizard item. Omission preserves #802: no wizard facts applied,
+        photos selected by approvedPhotoIds, approve +50 base, merge no base.
+        Explicit selection grants +50 base for approve or merge, plus +20 for at least
+        one kept original-contributor menu/bill photo, subject to existing unique venue/submission
+        ledger constraints. Detail/credit-preview provide the formula as facts.
+        Audit records kept/dropped stable keys and media ids, without their content.
+        Send Idempotency-Key to replay the same response; changing the payload under the
+        same key is rejected by the existing idempotency policy.
 
 
         Approval is not verification and not publication: the administrative
@@ -16552,6 +16601,7 @@ components:
       type: object
       required: [gogoRatingCount, checkedInGroupCount]
       properties:
+        contributionFacts: { $ref: '#/components/schemas/KeptContributionFacts' }
         verification: { $ref: '#/components/schemas/VenueVerification' }
         id: { type: string, format: uuid }
         name: { type: string }
@@ -18384,6 +18434,45 @@ components:
             under the same rule as `cmsUpdatePlace`: a non-null value needs its
             entry, `null` needs none. Values and evidence are stored normalized
             (E.164, `https://`, `collectedAt` in UTC) and returned that way.
+    EnrichmentSelection:
+      type: object
+      additionalProperties: false
+      required: [keptFactKeys, keptPhotoMediaIds]
+      description: >
+        Explicit wizard selection. Stable fact keys: price (atomic range/unit),
+        purposeKeys:<key>, vibeKeys:<key>, amenities:<key> (false is a fact),
+        recommendedDishes, visitTips, service.rating, space.rating,
+        service.chipKeys:<key>, space.chipKeys:<key>. Keys come from detail.enrichmentItems;
+        photos use the proposal's mediaId, never array indexes or photo-row ids.
+        Consent is evidence for upload, never a selectable place fact.
+      properties:
+        keptFactKeys:
+          type: array
+          maxItems: 64
+          uniqueItems: true
+          items: { type: string, minLength: 1, maxLength: 128 }
+        keptPhotoMediaIds:
+          type: array
+          maxItems: 5
+          uniqueItems: true
+          items: { type: string, format: uuid }
+    SubmissionCreditFacts:
+      type: object
+      required: [base, photoBonus, total]
+      properties:
+        base: { type: integer, minimum: 0 }
+        photoBonus: { type: integer, minimum: 0 }
+        total: { type: integer, minimum: 0 }
+    KeptContributionFacts:
+      type: object
+      additionalProperties: true
+      description: >
+        Explicitly moderated wizard facts keyed by the stable keys in EnrichmentSelection.
+        Scalar strings, booleans, integer ratings or an atomic price object with min/max/currency/unit.
+        Only kept items, no photos, consent, user ids or unmoderated content. Service/space ratings
+        remain individual contribution facts, never provider/community rating aggregates.
+        Per-group/free prices retain their original unit here; the legacy prices table only
+        receives units it can represent. Later kept values replace the same key; absent keys remain.
     SubmissionPhoto:
       type: object
       required: [id, mediaId, width, height, status, url]
@@ -18410,6 +18499,16 @@ components:
       required:
         [id, googlePlaceId, status, submissionCount, createdAt, updatedAt, contribution, history]
       properties:
+        expectedCredit:
+          allOf: [{ $ref: '#/components/schemas/SubmissionCreditFacts' }]
+          description: Potential explicit-selection approval credit with all still-pending original evidence kept. Zero if contributor/ledger/state ineligible. Use credit-preview after changing selection; no client arithmetic.
+        enrichmentItems:
+          type: object
+          required: [factKeys, photoMediaIds]
+          properties:
+            factKeys: { type: array, items: { type: string } }
+            photoMediaIds: { type: array, items: { type: string, format: uuid } }
+
         id: { type: string, format: uuid }
         googlePlaceId: { type: string }
         googleMapsUrl:

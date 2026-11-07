@@ -115,6 +115,8 @@ export const places = pgTable(
     // Lowercased, unaccented name maintained by trigger/app for trigram search.
     nameNormalized: text('name_normalized').notNull(),
     description: text('description'),
+    /** Explicitly kept wizard facts; independent of provider aggregates. */
+    contributionFacts: jsonb('contribution_facts').$type<Record<string, unknown>>(),
     status: placeStatus('status').notNull().default('draft'),
     geom: geometry('geom', { type: 'point', mode: 'xy', srid: 4326 }).notNull(),
     addressText: text('address_text'),
