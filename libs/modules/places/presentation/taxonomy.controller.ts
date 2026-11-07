@@ -23,29 +23,31 @@ export class TaxonomyController {
     @Res({ passthrough: true }) reply: FastifyReply,
     @Headers('if-none-match') ifNoneMatch?: string,
   ) {
+    void reply.header('Cache-Control', 'no-store');
     const state = await readTaxonomyVersion(this.db);
     return this.answer(
       reply,
       ifNoneMatch,
-      'version',
-      state.version,
+      this.etag('version', state.version),
       'public, max-age=0, must-revalidate',
     )
       ? state
       : undefined;
   }
 
-  private answer(
-    reply: FastifyReply,
-    header: string | undefined,
-    scope: string,
-    version: number,
-    cacheControl = 'public, max-age=60, stale-while-revalidate=300',
-  ) {
+  private etag(scope: string, version: number) {
     const hash = createHash('sha256')
       .update(JSON.stringify([1, version, scope]))
       .digest('base64url');
-    const etag = `W/"${hash}"`;
+    return `W/"${hash}"`;
+  }
+
+  private answer(
+    reply: FastifyReply,
+    header: string | undefined,
+    etag: string,
+    cacheControl = 'public, max-age=60, stale-while-revalidate=300',
+  ) {
     void reply.header('ETag', etag).header('Cache-Control', cacheControl);
     if (ifNoneMatchSatisfied(header, etag)) {
       void reply.status(304).send();
@@ -62,6 +64,7 @@ export class TaxonomyController {
     @Query('locale') locale?: string,
     @Headers('if-none-match') ifNoneMatch?: string,
   ) {
+    void reply.header('Cache-Control', 'no-store');
     const wanted = kinds
       ? new Set(
           kinds
@@ -71,11 +74,12 @@ export class TaxonomyController {
         )
       : null;
     // The generation and rows must come from the same MVCC snapshot.
-    return this.db.transaction(
+    const result = await this.db.transaction(
       async (tx) => {
         const state = await readTaxonomyVersion(tx);
         const scope = JSON.stringify(['list', wanted ? [...wanted].sort() : null, locale ?? null]);
-        if (!this.answer(reply, ifNoneMatch, scope, state.version)) return undefined;
+        const etag = this.etag(scope, state.version);
+        if (ifNoneMatchSatisfied(ifNoneMatch, etag)) return { etag, body: undefined };
         const rows = await tx
           .select({
             id: schema.taxonomies.id,
@@ -116,13 +120,18 @@ export class TaxonomyController {
           byKind.set(row.kind, kindMap);
         }
         return {
-          version: state.version,
-          kinds: Object.fromEntries(
-            [...byKind.entries()].map(([kind, entries]) => [kind, [...entries.values()]]),
-          ),
+          etag,
+          body: {
+            version: state.version,
+            kinds: Object.fromEntries(
+              [...byKind.entries()].map(([kind, entries]) => [kind, [...entries.values()]]),
+            ),
+          },
         };
       },
       { isolationLevel: 'repeatable read', accessMode: 'read only' },
     );
+    // Neither a cacheable response nor a 304 may escape a failed transaction.
+    return this.answer(reply, ifNoneMatch, result.etag) ? result.body : undefined;
   }
 }

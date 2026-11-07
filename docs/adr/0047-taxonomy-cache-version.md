@@ -50,6 +50,9 @@ retains the validator and cache policy. A matching list validator reads only the
 singleton, skipping the list query. List policy is
 `public, max-age=60, stale-while-revalidate=300`: this permits bounded staleness;
 clients requiring a current generation call the version endpoint to revalidate.
+Success headers and 304 responses are published only after the read transaction
+completes. Failed taxonomy reads retain `Cache-Control: no-store` and no ETag,
+including failures while completing an otherwise unchanged conditional read.
 
 ## Consequences and verification
 

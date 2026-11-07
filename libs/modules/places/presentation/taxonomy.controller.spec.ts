@@ -45,6 +45,7 @@ function fixture() {
     controller,
     transaction,
     select,
+    query,
     list,
     reply,
     bump: () => {
@@ -123,6 +124,26 @@ describe('taxonomy conditional reads', () => {
     await f.controller.list(list.raw);
     expect(list.headers.ETag).not.toBe(first.headers.ETag);
   });
+
+  it.each([undefined, '*'])(
+    'waits for transaction completion before publishing success (%s)',
+    async (header) => {
+      const f = fixture();
+      const response = f.reply();
+      f.transaction.mockImplementationOnce(async (fn) => {
+        const result = await fn({ select: f.select });
+        expect(response.headers).toEqual({ 'Cache-Control': 'no-store' });
+        expect(response.response.send).not.toHaveBeenCalled();
+        return result;
+      });
+      await f.controller.list(response.raw, undefined, undefined, header);
+      expect(response.headers.ETag).toEqual(expect.any(String));
+      expect(response.headers['Cache-Control']).toBe(
+        'public, max-age=60, stale-while-revalidate=300',
+      );
+      if (header) expect(response.response.status).toHaveBeenCalledWith(304);
+    },
+  );
 });
 
 it('serves conditional GET over Nest/Fastify with an empty 304 payload', async () => {
