@@ -33,8 +33,14 @@ Hiện trạng tại base `re-design` `45d9d082`:
   enrichment và không được biến thành nhiều phiếu.
 - Nhánh `be-796` (PR #802), `0048-place-contribution-wizard.md`: enrichment là
   proposal chưa xác minh; giá có đơn vị, purpose/vibe/amenities/tips, service/space
-  rating, ảnh menu/bill. Private bill không được công khai và bị dọn sau decision;
-  public bill phải có consent và chọn ảnh rõ ràng. Không sửa các giới hạn đó.
+  rating, ảnh menu/bill. Bản working tree hiện tại trên HEAD `581c2749` ghi quyết
+  định **FINAL của owner 2026-11-07**: không nhận `visibility`, mọi ảnh menu/bill
+  được duyệt đều công khai trong `userPhotos`, không tự vào gallery/cover. Mỗi
+  lần save/submit có bill phải có `enrichment.billPhotoPublicConsent=true`;
+  không có lựa chọn bill chỉ GoGo xem, không DLP. Draft/pending ở private storage;
+  bill bị reject/không được chọn được dọn, bill approved giữ bytes để phục vụ
+  user photo. OpenAPI working tree của #802 định nghĩa `userPhotos: PlacePhoto[]`;
+  ADR này giữ nguyên array và item contract đó, chỉ mở rộng additive.
 - Nhánh `be-801` (PR #803), `0048-my-submission-display-detail.md`: display snapshot
   provider chỉ phục vụ lịch sử của tôi, không là facts canonical, input tác giả
   hay bằng chứng xu hướng. Cả hai ADR song song dùng 0048; ADR này dành số 0049.
@@ -68,9 +74,9 @@ hữu proposal và moderation đầu vào; dùng application port/outbox để n
 | `community_entries` | id, place_id, author_user_id nullable sau ẩn danh, source_kind, source_id, created_at, updated_at, version, trạng thái; một tác giả thật cho mỗi entry |
 | `community_entry_revisions` | snapshot input tác giả theo revision, text/tips, enrichment có schema version, moderation verdict/reason nội bộ; chỉ revision published được đọc công khai |
 | Liên kết review | review_id unique nullable; rating tổng thể lấy từ review hiện hữu, không sao chép thành rating thứ hai; review về plan không tự xuất hiện ở place |
-| `community_entry_photos` | entry/revision, photo_id ổn định, uploader thật, kind photo/menu/bill, visibility, moderation, derivative reference; private evidence không vào projection public |
+| `community_entry_photos` | entry/revision, photo_id ổn định, uploader thật, kind photo/menu/bill, moderation, derivative reference, consent record cho bill; không có visibility input/nhánh private cho menu/bill mới; legacy private evidence tách riêng, không vào projection public |
 | `community_observations` | entry/revision, author, place, attribute key/value chuẩn hóa, observed_at; chỉ từ input có tác giả và đã duyệt, không từ provider snapshot |
-| `community_trend_aggregates` | place/attribute/value, support_count, respondent_count, window_start/end, computed_at, policy_version, source_revision; projection có thể dựng lại |
+| `community_trend_aggregates` | place/attribute/value, support_count, respondent_count, window_start/end, computed_at, policy_version, source_revision, dirty/required_revision, next_expiry_at; projection có thể dựng lại, không lưu quyết định chiếm slot bootstrap |
 | `community_promotions` | đích photo hoặc attribute/value, trạng thái, version, actor CMS, reason, evidence revision, timestamps; quyết định và audit riêng |
 
 Entry có thể chỉ có ảnh hoặc enrichment, không ép thêm sao giả. Service/space
@@ -91,8 +97,8 @@ Trạng thái revision: `pending → published | rejected`; published có thể 
 ETag, tạo revision pending và rút revision cũ khỏi public ngay, tương thích hành
 vi edit review hiện có. Chỉ publish lại sau duyệt; không tự fallback revision cũ
 để cộng phiếu. Phần ảnh còn có quyết định từng ảnh: entry published không đủ để
-đọc ảnh pending/rejected/private. Reject có reason key an toàn cho owner;
-moderator notes không ra public. Sửa/xóa review liên kết phải cập nhật entry,
+đọc ảnh pending/rejected hoặc legacy private evidence. Reject có reason key an
+toàn cho owner; moderator notes không ra public. Sửa/xóa review liên kết phải cập nhật entry,
 vô hiệu observations/promotions phụ thuộc trong cùng transaction.
 
 ### 2. Quy tắc promote xu hướng
@@ -114,8 +120,8 @@ Quyết định **FINAL của owner ngày 2026-11-07**:
 Mỗi người chỉ được tính một lần cho mỗi thuộc tính tại một place; chỉ đóng góp
 đã duyệt mới được tính. `support_count` là số người dùng khác nhau đề xuất cùng
 thuộc tính/giá trị. Hàng 2 dùng `support_count > x`, mặc định cần ít nhất 1001
-người; hàng 3 dùng ngưỡng bootstrap riêng, mặc định ít nhất 3 người. Khi recompute,
-đếm các trend duy nhất từ hàng 1 và 2 trước, rồi chọn ứng viên bootstrap theo
+người; hàng 3 dùng ngưỡng bootstrap riêng, mặc định ít nhất 3 người. Khi chọn tại
+read, đếm các trend duy nhất từ hàng 1 và 2 trước, rồi chọn ứng viên bootstrap theo
 `support_count` giảm dần để lấp tối đa 5 trend; hòa dùng key/value ổn định.
 Khi đã có ít nhất 5 trend từ hàng 1 và 2, hàng 3 không còn áp dụng.
 
@@ -162,9 +168,33 @@ số nguồn “N người dùng”**, lấy từ count thực theo policy, khô
 Mutation publish/edit/delete/takedown/account state/promotion ghi outbox cùng
 transaction; worker idempotent recompute theo place/attribute từ dữ liệu nguồn,
 không tăng/giảm counter mù. Serialize theo aggregate key, kiểm source revision
-trước swap để job cũ không ghi đè job mới. Sweep hằng ngày xử lý hết cửa sổ dù
-không có mutation; reconciliation dựng lại toàn bộ theo batch có checkpoint.
+trước swap để job cũ không ghi đè job mới. Serialization này chỉ bảo vệ count,
+không quyết định eligibility/ranking/slot bootstrap của cả place. Sweep hằng ngày
+xử lý hết cửa sổ dù không có mutation; reconciliation dựng lại toàn bộ theo batch có checkpoint.
 Đề xuất SLO cập nhật thông thường ≤5 phút, chờ owner/ops duyệt.
+
+**Chọn xu hướng tại read từ snapshot nhất quán của cả place:** dùng một SQL
+statement hoặc read-only transaction `REPEATABLE READ`, cùng mốc thời gian UTC,
+đọc toàn bộ aggregate rows của place cùng policy active, required revisions,
+taxonomy, manual promotions và suppression. Chỉ dùng aggregate sạch, đủ source
+revision, đúng policy version và chưa tới `next_expiry_at` (null nghĩa không có
+expiry theo policy hiện tại); áp safety/privacy
+gate và suppression trước, manual override cùng attribute trước auto. Đếm tập
+duy nhất hàng 1/2 còn hợp lệ, rồi xếp các aggregate bootstrap đủ ngưỡng/guard theo
+`support_count DESC, key/value` để chọn tối đa `max(0, 5 - count(hàng 1/2))` ứng viên.
+Từ tập đó chọn TOP 5 và hợp nhất manual theo mục 3. Rank aggregate rows, không
+quét lại observations ở mỗi read; không phân trang/cắt candidate pool trước khi
+chọn. Hai attribute tranh slot cuối được so trong cùng snapshot, chỉ một được
+chọn; không persist bootstrap selection riêng ở từng aggregate.
+
+Mỗi lần đọc chọn lại toàn place: aggregate swap/count thay đổi, promote/unpromote,
+suppression/clear, evidence bị rút, taxonomy/policy đổi đều làm selection cũ hết
+giá trị sau commit. Mutation nguồn đánh dấu các aggregate liên quan dirty và
+tăng required revision trong cùng transaction; worker chỉ clear khi swap đúng
+revision. Expiry vô hiệu row ngay khi tới `next_expiry_at`, kể cả chưa có event
+hay sweep. Bỏ row không hợp lệ rồi chọn lại slot/TOP 5 từ snapshot còn lại;
+không giữ bootstrap winner cũ hoặc count cũ để lấp slot. Không cache selection
+qua request; thiếu aggregate hợp lệ thì trả freshness/status degraded.
 
 Thu hồi vì privacy/moderation phải có hiệu lực ở lần đọc kế tiếp: transaction
 đánh dấu aggregate bẩn và promotion phụ thuộc không hợp lệ; read bỏ aggregate
@@ -188,8 +218,10 @@ PUT attribute chứa value chuẩn hóa và evidence entry revision; PUT photo c
 lost update, conflict trả 409 theo error envelope hiện hữu.
 
 Ảnh phải published, public, đã sanitize, place đang readable và có quyền sử dụng;
-private bill không thể promote. Promote chỉ tạo tham chiếu gallery, không copy
-bytes hay đổi ownership/source thành editorial. Gallery và cover giữ credit gốc;
+pending/rejected và legacy private evidence không thể promote. Menu/bill approved
+đã là public user photo theo #802; promote là quyết định gallery/cover riêng.
+Promote chỉ tạo tham chiếu gallery, không copy bytes hay đổi ownership/source
+thành editorial. Gallery và cover giữ credit gốc;
 chọn cover là hành động rõ ràng có audit, không tự lấy ảnh user đầu tiên. Unpromote
 cover xóa cover reference nguyên tử, không tự chọn ảnh user khác. Ảnh vẫn nằm ở
 mục đóng góp nếu còn hợp lệ. Mọi đường CMS đặt cover/reorder/attach phải kiểm
@@ -235,14 +267,27 @@ bằng chứng. Mâu thuẫn giữa fact và trend được giữ nguồn riêng
 | --- | --- |
 | `communityEntries` | page `items/nextCursor`; entryId, version, timestamps, sourceKind, author.displayName nullable, optional overallRating, text/tips, enrichment, photo preview |
 | `communityTrends` | key/value, source=community, selection, supportCount bắt buộc, respondentCount khi có, windowStart/end, computedAt, policyVersion, freshness/status |
-| `userPhotos` | page `items/nextCursor`; photoId, entryId, kind, BFF URL, dimensions, author.displayName nullable, contributedAt, publishedAt, promotion placement nếu có |
+| `userPhotos` | giữ array `PlacePhoto[]` trên place detail theo #802; required `id`, `url`, `source`; optional `width`, `height`, `contributor.displayName`, `attribution`, `authorAttributions`, `googleMapsUri` giữ nguyên tên/kiểu/semantics |
+| `userPhotosPagination` (optional, mới) | metadata sibling của array detail: `nextCursor` nullable để đọc tiếp tại `/v1/places/{id}/user-photos`; không bọc/đổi kiểu `userPhotos` |
+| Page `/v1/places/{id}/user-photos` (mới) | `{items: PlacePhoto[], nextCursor: string \| null}`; cùng item contract/ID/URL/credit với detail; metadata entry/kind/timestamps/promotion nếu thêm vào item đều optional |
 | `photos` và cover hiện hữu | editorial/provider hiện hữu và ảnh user có promotion còn hiệu lực; mỗi ảnh giữ source/credit riêng |
 
-Place detail trả preview có giới hạn và link/cursor đọc tiếp. Proposed GET
+Giữ nguyên `PlacePhoto`: không đổi `id` thành `photoId`, `width/height` thành
+`dimensions`, hoặc `contributor` thành `author`. `contributor` khi có vẫn bắt buộc
+`displayName: string`; bỏ cả object cho guest/erased account, không trả null thay
+string. Giữ enum `source=google|community|manual`, user photo vẫn `community` sau
+promote. Các metadata mới như `entryId`, `kind`, `contributedAt`, `publishedAt`,
+`promotion` chỉ là field optional bổ sung; không thay field hiện hữu hoặc bắt
+client cũ đọc chúng. Quy tắc nullable author của entry không áp sang PlacePhoto.
+
+Place detail giữ nội dung/ordering array theo #802; thêm metadata đọc tiếp mà
+không tự cắt ngắn array cũ trong lần tiến hóa MINOR này. Với array đã trả hết,
+`userPhotosPagination.nextCursor=null`. Preview của projection mới có thể giới
+hạn; endpoint user-photo mới cung cấp phân trang độc lập. Proposed GET
 `/v1/places/{id}/community-entries`, `/community-trends`, `/user-photos` cho các
 trang độc lập; không tái định nghĩa response `/reviews` cũ để nhận rating optional.
-Entry/photo mặc định keyset `(created_at, id)` giảm dần, limit mặc định 20/max 50,
-cursor có place/filter và timestamp microseconds; timestamp sort không đổi khi
+Endpoint entry/photo mới mặc định keyset `(created_at, id)` giảm dần, limit mặc
+định 20/max 50, cursor có place/filter và timestamp microseconds; timestamp sort không đổi khi
 edit. Cursor không mang quyền; kiểm visibility/ownership mỗi request. Không hứa
 snapshot giữa các trang khi có moderation. Preview trend tại place áp dụng TOP 5
 và bổ sung mọi trend promote còn hiệu lực theo mục 3; DTO dùng `selection=manual`
@@ -251,13 +296,16 @@ và bổ sung mọi trend promote còn hiệu lực theo mục 3; DTO dùng `sel
 riêng; private `/me` và CMS
 không dùng chung cache. URL content BFF kiểm lại quyền/trạng thái mỗi lần đọc.
 
-Public chỉ có displayName được phép hiển thị, không public user ID/avatar, reviewer,
+Public credit chỉ có entry `author.displayName` hoặc photo `contributor.displayName`
+theo contract tương ứng, không public user ID/avatar, reviewer,
 room, danh sách người vote, notes hoặc private evidence. DTO trả source/count/key,
 không trả câu “12 người dùng”; client dịch từ facts. Unknown bỏ field, không sinh
 placeholder. GoGo/provider rating và cỡ mẫu giữ riêng theo core 14. Card vẫn dùng
 PlaceCard hiện hữu theo core 15; không tạo biến thể card tự bịa facts từ trend.
 
-OpenAPI thêm field optional và route mới theo MINOR; generated TS client phát
+OpenAPI thêm field optional và route mới theo MINOR; kiểm compatibility trên
+OpenAPI working tree mới nhất của #802 trước khi publish, kể cả #802 merge trước.
+Không thay array/item contract dưới nhãn additive. Generated TS client phát
 hành từ BE, CMS/Mobile regenerate. Loại ảnh user chưa promote khỏi `photos` là
 thay đổi hành vi có chủ đích theo owner, phải ghi release note/consumer acceptance;
 additive schema không có nghĩa client cũ giữ gallery như trước. Không cần tạo
@@ -265,10 +313,25 @@ promotion giả để giữ ảnh cũ. BFF là cổng duy nhất, không gọi D
 
 ### 5. Privacy và vòng đời
 
-Tái dùng sanitize/claim/cleanup ADR-0046 và consent/visibility #796. Không tự
-publish private bill, không lấy giá từ ảnh bằng AI; consent upload không phải
-consent promote mọi nội dung. Export owner gồm entry/revision đang giữ, input,
-visibility và promotion của ảnh mình; không gồm moderator notes hay người khác.
+Tái dùng sanitize/claim/cleanup ADR-0046 và quyết định FINAL của #802 trên #796:
+không nhận visibility input; mọi menu/bill approved đều public trong `userPhotos`.
+Mỗi save/submit có bill bắt buộc `enrichment.billPhotoPublicConsent=true`; thiếu
+hoặc false trả 400 `VALIDATION_FAILED`, field error tại field đó. User xác nhận
+đồng ý công khai sau duyệt và đã tự xóa/che PII; menu không cần consent bổ sung.
+Không DLP hay provider xử lý PII bên ngoài; re-encode/strip metadata không che
+nội dung ảnh. Moderator được bỏ ảnh còn PII. Draft/pending ở private storage,
+chỉ owner/CMS có quyền tương ứng; public BFF recheck approval/place mỗi lần đọc.
+Bill rejected/không được chọn enqueue cleanup bytes/derivatives trong transaction
+decision, thử dọn sau commit và worker retry; bill approved giữ bytes cho userPhotos.
+Menu rejected giữ retention #794 (7 ngày); draft hết hạn/bỏ ref/delete/erasure
+đi qua cleanup queue. Không lấy giá từ ảnh bằng AI; consent public user photo
+không tự cấp gallery/cover promotion. Export owner gồm entry/revision đang giữ,
+input, consent và promotion của ảnh mình; không gồm moderator notes hay người khác.
+
+Chỉ dữ liệu lịch sử có bằng chứng policy/consent private từ trước quyết định FINAL
+mới là **legacy private evidence**: không backfill thành user photo, không promote,
+cleanup theo retention/decision cũ. Đây không phải lựa chọn cho upload mới và
+không suy ra production đang có dữ liệu loại này.
 
 Owner xóa entry/photo: chặn public read ngay, vô hiệu promotion/cover và observation
 trong transaction, enqueue cleanup khi không còn tham chiếu sống. Tham chiếu
@@ -278,7 +341,7 @@ hiện hữu, có retry/dead letter; không đổi private object thành public 
 Account deletion hiện theo [ADR-0023](0023-account-deletion-policy.md): review
 và ảnh đóng góp có thể được giữ nhưng bỏ tên. Không tự đổi chính sách đó trong
 #804. Với entry mới, đề xuất giữ public contribution đã duyệt dưới credit null,
-xóa draft/private evidence và loại account deleted khỏi population xu hướng;
+xóa draft/legacy private evidence và loại account deleted khỏi population xu hướng;
 entry/ảnh đã promote còn giữ chỉ nếu policy retention cho phép và không có yêu
 cầu xóa nội dung. Owner phải chốt extension này trước triển khai. Yêu cầu erasure
 nội dung rõ ràng áp dụng đường thu hồi ở trên, kể cả bản đã promote. Dùng account
@@ -305,11 +368,17 @@ Gate cho triển khai sau ADR: Astra review mô hình/quyền/retention, owner c
 các câu hỏi còn mở bên dưới, CODEOWNER review contract/migration. Kiểm chứng phải có: dedupe nhiều
 uploader, retry approve/backfill, sửa/xóa trong khi worker chạy, x và majority
 boundary, false/absent/ties, recency expiry không có event, giá khác unit, account
-abuse/deletion, promotion race và audit failure, private bill không đọc/promote,
-credit sau unpromote, TOP 5 theo số người đề xuất, promote ngoài TOP 5 vẫn hiện
+abuse/deletion, promotion race và audit failure, bill thiếu/false consent bị từ
+chối, không có visibility input/DLP, menu/bill approved giữ bytes và public trong
+userPhotos, bill rejected/không chọn được dọn, pending/legacy private không đọc
+public/promote, credit sau unpromote, TOP 5 theo số người đề xuất, promote ngoài TOP 5 vẫn hiện
 và có nhãn “đã duyệt”, bootstrap lấp slot tới 5 và dừng khi hàng 1/2 đủ 5,
-count luôn hiện, dedupe trend auto/manual, cover invariant, cursor ties, không đổi
-rating cũ, rollback không phục hồi gallery sai. Đây là acceptance plan, chưa phải test đã chạy.
+hai attribute tranh slot cuối, chọn lại toàn place khi count/promotion/suppression/
+expiry đổi và khi worker swap trễ, không scan observations mỗi read,
+count luôn hiện, dedupe trend auto/manual, cover invariant, cursor ties, client
+#802 vẫn đọc array `userPhotos` và `PlacePhoto` cũ (kể cả contributor bị omit),
+page mới dùng cùng item shape, không đổi rating cũ, rollback không phục hồi
+gallery sai. Đây là acceptance plan, chưa phải test đã chạy.
 
 Các câu hỏi cần owner chốt trước code:
 
@@ -326,13 +395,19 @@ Các câu hỏi cần owner chốt trước code:
 
 1. Sau Astra review mới lập migration/contract cụ thể; không chiếm số SQL tại
    ADR này. Reconcile hai nhánh #802/#803 (cùng đề xuất migration 0088/ADR 0048)
-   theo thứ tự merge thực tế. Không lấy display_snapshot làm input cộng đồng.
+   theo thứ tự merge thực tế; lấy OpenAPI #802 mới nhất làm compatibility basis,
+   giữ `userPhotos: PlacePhoto[]` và thêm metadata/endpoint như mục 4, không rename.
+   Không lấy display_snapshot làm input cộng đồng.
 2. Inventory read-only/dry-run: đối chiếu `place_submission_photos` approved,
    media upload/uploader, `place_media` community và mọi cover reference. Báo
-   counts nguồn, orphan/ambiguous links; không giả định production đã có rows.
+   counts nguồn, orphan/ambiguous links và legacy private evidence theo bằng chứng
+   consent/policy cũ; không giả định production đã có rows.
 3. Deploy schema additive và writer mới: approve/merge #794 chỉ publish vào
-   user entry/photo, không tạo gallery media/cover. #796 public menu/bill đi cùng
-   luồng; private bill vẫn evidence-only và cleanup sau decision. Không đổi
+   user entry/photo, không tạo gallery media/cover. Mọi menu/bill approved của
+   #802 đi cùng luồng, giữ bytes/credit cho userPhotos; bill mới bắt buộc public
+   consent, không nhận visibility và không DLP. Bill rejected/không được chọn
+   enqueue dọn ngay, menu rejected theo retention #794; legacy private evidence
+   giữ ngoài public projection và cleanup theo policy cũ. Không đổi
    credit ledger/bonus lịch sử hoặc tự replay thưởng khi tạo entry.
 4. Backfill theo batch/checkpoint, unique source keys và transaction: liên kết
    ảnh #794 với đúng uploader/entry, giữ ID/URL content legacy qua resolver an
@@ -345,7 +420,8 @@ Các câu hỏi cần owner chốt trước code:
    enrichment #796 chỉ dùng input contributor gốc có tác giả/decision hợp lệ,
    không chia cho mọi attribution dedupe. Không có per-component approval lịch
    sử thì tạo pending để duyệt lại trước publish/aggregate. Không resurrect
-   private bill đã dọn, không suy ra observed_at từ ngày backfill hoặc tự approve.
+   legacy private bill đã dọn hoặc publish legacy private evidence, không suy ra
+   observed_at từ ngày backfill hoặc tự approve.
 6. Shadow recompute, so count theo distinct-user SQL độc lập; kiểm bảo toàn
    credit/bytes, không orphan và không còn user cover/gallery thiếu promotion.
    Race writer cũ: fence version/feature flag và drain trước cutover, quét delta
@@ -354,7 +430,8 @@ Các câu hỏi cần owner chốt trước code:
    Các flag riêng cho feed/userPhotos, manual promotion, auto trends. Auto mặc
    định off tới khi hoàn tất các gate triển khai còn lại; policy ngưỡng đã được
    owner chốt ngày 2026-11-07, mở canary sau reconciliation. Không có
-   flag nào được bypass visibility hoặc đưa user media chưa promote về gallery.
+   flag nào được bypass consent/moderation gate hoặc đưa user media chưa promote
+   về gallery; không tạo lại lựa chọn private/public cho bill.
 
 Rollback ưu tiên tắt auto trends/manual mutations/feed mới và giữ schema, nguồn,
 audit/credit. Writer approve và gallery read gate đúng theo chỉ đạo owner phải
