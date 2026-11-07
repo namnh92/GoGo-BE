@@ -451,7 +451,7 @@ describe('CORS allowlist (BE-IMP-003)', () => {
       headers: {
         origin,
         'access-control-request-method': 'GET',
-        'access-control-request-headers': 'authorization,x-gogo-csrf',
+        'access-control-request-headers': 'authorization,x-gogo-csrf,if-none-match,cache-control',
       },
     });
 
@@ -463,6 +463,17 @@ describe('CORS allowlist (BE-IMP-003)', () => {
     const allowed = String(res.headers['access-control-allow-headers'] ?? '').toLowerCase();
     expect(allowed).toContain('x-gogo-csrf');
     expect(allowed).toContain('idempotency-key');
+    expect(allowed).toContain('if-none-match');
+    expect(allowed).toContain('cache-control');
+  });
+
+  it('exposes validators to browser cache clients', async () => {
+    const res = await api().inject({
+      method: 'GET',
+      url: '/v1/health',
+      headers: { origin: 'http://localhost:5174' },
+    });
+    expect(String(res.headers['access-control-expose-headers']).toLowerCase()).toContain('etag');
   });
 
   it('refuses an origin that is not on the list', async () => {

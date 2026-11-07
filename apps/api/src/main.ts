@@ -165,9 +165,11 @@ export async function createApp(
       'authorization',
       'idempotency-key',
       'x-request-id',
+      'if-none-match',
+      'cache-control',
       CSRF_HEADER,
     ],
-    exposedHeaders: ['x-request-id'],
+    exposedHeaders: ['x-request-id', 'etag'],
     maxAge: 600,
   });
   app.setGlobalPrefix('v1');

@@ -596,6 +596,13 @@
       "when": 1794009600086,
       "tag": "0086_place-submission-photos",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1794009600087,
+      "tag": "0087_taxonomy-version",
+      "breakpoints": true
     }
   ]
 }

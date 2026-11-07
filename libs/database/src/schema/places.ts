@@ -41,6 +41,20 @@ export const taxonomyKind = pgEnum('taxonomy_kind', [
   'checkin_tag',
 ]);
 
+/** Singleton cache generation, serialized by CMS write transactions. */
+export const taxonomyVersion = pgTable(
+  'taxonomy_version',
+  {
+    id: integer('id').primaryKey().default(1),
+    version: integer('version').notNull().default(1),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('taxonomy_version_id_check', sql`${t.id} = 1`),
+    check('taxonomy_version_version_check', sql`${t.version} > 0`),
+  ],
+);
+
 export const taxonomies = pgTable(
   'taxonomies',
   {

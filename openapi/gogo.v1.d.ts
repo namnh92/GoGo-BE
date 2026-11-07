@@ -1620,6 +1620,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/taxonomies/version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Cheap global taxonomy generation check
+         * @description One singleton-row read. Compare version before downloading lists; locale independent.
+         */
+        get: operations["getTaxonomyVersion"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/taxonomies": {
         parameters: {
             query?: never;
@@ -1627,7 +1647,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Stable taxonomy keys + i18n labels (clients never hard-code ids) */
+        /**
+         * Stable taxonomy keys + i18n labels (clients never hard-code ids)
+         * @description Version and rows share a database snapshot. Persist by locale and kinds; use cached data immediately, including offline, then revalidate. Weak ETag includes global version, canonical kinds and locale. Validators support lists, weak comparison and wildcard. A version change invalidates every locale/kinds variant, including search synonym changes.
+         */
         get: operations["listTaxonomies"];
         put?: never;
         post?: never;
@@ -3965,6 +3988,23 @@ export interface paths {
          *     A query term is only named once at least 5 searches produced it. Below that floor the rows are still counted, in `hiddenBelowFloor`, but the text is withheld: a query one person typed is effectively that person's query. Hiding the rows entirely would understate how much of search is failing, which is the opposite of the point.
          */
         get: operations["cmsSearchAnalytics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/taxonomies/version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Editor/Ops: current taxonomy version and last successful write time */
+        get: operations["cmsGetTaxonomyVersion"];
         put?: never;
         post?: never;
         delete?: never;
@@ -8501,7 +8541,18 @@ export interface components {
             /** @enum {string} */
             moderation?: "pending" | "approved" | "rejected";
         };
+        TaxonomyVersion: {
+            /** @description Global monotonically increasing taxonomy generation. */
+            version: number;
+            /**
+             * Format: date-time
+             * @description Last successful CMS write; initial migration time before any write.
+             */
+            updatedAt: string;
+        };
         TaxonomyList: {
+            /** @description Global taxonomy generation of this snapshot. */
+            version?: number;
             /** @description Kind → entries. Store the stable `key`, resolve labels via `labels[locale]`. */
             kinds?: {
                 [key: string]: {
@@ -14167,13 +14218,51 @@ export interface operations {
             429: components["responses"]["RateLimited"];
         };
     };
+    getTaxonomyVersion: {
+        parameters: {
+            query?: never;
+            header?: {
+                "If-None-Match"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current global version and last successful CMS write time */
+            200: {
+                headers: {
+                    ETag?: string;
+                    /** @description public, max-age=0, must-revalidate */
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaxonomyVersion"];
+                };
+            };
+            /** @description Unchanged; empty body */
+            304: {
+                headers: {
+                    ETag?: string;
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     listTaxonomies: {
         parameters: {
             query?: {
                 /** @description Comma-separated kind filter (mood,category,setting,dietary,accessibility,spending_style,suitability,checkin_tag,amenity) */
                 kinds?: string;
+                /** @description Optional exact label locale; omitted returns all locales as before. No fallback; a missing translation is omitted. */
+                locale?: string;
             };
-            header?: never;
+            header?: {
+                "If-None-Match"?: string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -14182,11 +14271,23 @@ export interface operations {
             /** @description Taxonomy keys with i18n labels */
             200: {
                 headers: {
+                    ETag?: string;
+                    /** @description public, max-age=60, stale-while-revalidate=300 */
+                    "Cache-Control"?: string;
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["TaxonomyList"];
                 };
+            };
+            /** @description Unchanged; empty body */
+            304: {
+                headers: {
+                    ETag?: string;
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -18731,6 +18832,26 @@ export interface operations {
             };
         };
     };
+    cmsGetTaxonomyVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Global taxonomy generation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaxonomyVersion"];
+                };
+            };
+        };
+    };
     cmsListTaxonomies: {
         parameters: {
             query?: {
@@ -18776,12 +18897,17 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Created */
+            /** @description Created atomically with version increment and audit */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["TaxonomyVersion"] & {
+                        /** Format: uuid */
+                        id?: string;
+                    };
+                };
             };
         };
     };
@@ -18807,12 +18933,16 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Updated */
+            /** @description Updated atomically with version increment and audit */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["TaxonomyVersion"] & {
+                        updated?: boolean;
+                    };
+                };
             };
             404: components["responses"]["NotFound"];
         };
@@ -18836,12 +18966,16 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Synonym added (feeds query expansion) */
+            /** @description Synonym added atomically with version increment and audit (feeds query expansion) */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["TaxonomyVersion"] & {
+                        added?: boolean;
+                    };
+                };
             };
         };
     };
