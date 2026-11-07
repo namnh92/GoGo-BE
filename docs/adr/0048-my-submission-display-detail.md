@@ -20,17 +20,25 @@ chậm đã làm mất cả facts mà request vừa trả tiền.
 
 ## Quyết định và contract
 
-- MINOR `7.5.0-alpha.1`. `GET /v1/me/place-submissions` trả snapshot còn mới
+- MINOR `7.4.0-alpha.1`. `GET /v1/me/place-submissions` trả snapshot còn mới
   trong `providerDisplay`: name, short address (fallback full address), category
   key đã đối chiếu taxonomy lúc fetch, Google rating/count, attribution,
   weekly hours nếu có, googleMapsUri, source và fetchedAt. Unknown hours là
   array rỗng, không phải đóng cửa. Không trộn rating Google với GoGo.
-- Resolve ký allowlist snapshot cùng Place ID vào `resolutionToken` hiện hữu.
-  Client gửi lại token opaque, không gửi facts tự khai. HMAC/expiry/identity
-  được kiểm trước khi persist lúc submit. Token tối đa 32768 ký tự; chứa facts
-  đã có trong candidate, không raw payload/coordinates/photo refs/bytes. Token
-  identity-only cũ vẫn hợp lệ, tạo row thiếu snapshot; detail có thể hydrate.
-  Không tạo DB/Redis cache ở resolve. Snapshot fetchedAt giữ thời điểm đã fetch,
+- Resolve ký Place ID và UUID resolution vào `resolutionToken` hiện hữu, tối đa
+  **1024 ký tự**, giữ nguyên contract ba endpoint resolve/preview. Allowlist
+  snapshot từ candidate nằm trong Redis record `place-resolution:<uuid>`, TTL
+  tuyệt đối bằng expiresAt của token (PLACE_RESOLUTION_TTL_S từ fetchedAt).
+  Không cache theo Place ID, không ghi raw payload/coordinates/photo refs/bytes.
+  Dùng connection Redis hiện hữu; test/dev một instance không Redis dùng memory
+  giới hạn 1000 record, timer xoá đúng expiry; không fallback memory khi Redis lỗi.
+  Client gửi lại token opaque, không gửi facts tự khai. HMAC/expiry/identity và
+  fetchedAt/expiry của record được kiểm trước khi persist lúc submit. Record
+  thiếu/hết hạn/lỗi trả retryable RESOLUTION_TOKEN_INVALID, không gọi provider;
+  resolve không lưu được record trả retryable PLACE_PROVIDER_UNAVAILABLE (503),
+  không phát token thiếu snapshot. Không consume record khi submit để hỗ trợ retry.
+  Token identity-only cũ vẫn hợp lệ, tạo row thiếu snapshot; detail có thể hydrate.
+  Snapshot fetchedAt giữ thời điểm đã fetch,
   không gán lại khi submit/list. Nếu không dùng token, submit lấy một quality
   Details để xác minh và có đủ snapshot (thay core trong nhánh này).
 - Submission mới lưu snapshot cùng transaction/attribution/outbox. Dedup tăng
@@ -97,7 +105,9 @@ còn tự tiêu cả $0.50. Không tuyên bố đây là estimate bill cố đ�
 Place ID được giữ theo vòng đời hiện hữu (Google cho phép giữ ID không thời hạn).
 Snapshot ứng dụng nằm trong `place_submissions.display_snapshot`; chỉ phục vụ khi
 còn mới ≤30 ngày; row hết hạn không được trả facts, detail refresh theo budget.
-Không lưu photo/raw payload vào snapshot, event, log, job hay cache khác.
+Không lưu photo/raw payload vào snapshot, event, log, job hay resolution record.
+Resolution record chỉ tồn tại tới expiry của token và tự xoá qua Redis TTL;
+snapshot lâu dài chỉ nằm trên submission sau submit.
 
 **30 ngày là quyết định freshness của owner, không phải khẳng định Google cấp
 quyền cache mọi field trong 30 ngày.** [Places API policy](https://developers.google.com/maps/documentation/places/web-service/policies)
@@ -113,24 +123,25 @@ purge vật lý thì phải có quyết định retention tương ứng trước
 
 `0088_submission-display-snapshot` dùng journal idx 88, sau upstream
 `0086_place-submission-photos` và `0087_taxonomy-version`. ADR dùng 0048 vì
-upstream #800 đã dùng 0047; contract reconcile thành `7.5.0-alpha.1`.
+upstream #800 đã dùng 0047; contract reconcile thành `7.4.0-alpha.1`.
 Hai cột nullable `display_snapshot` và `display_refresh_started_at`,
 không backfill/Google call khi migrate. Legacy rows list thiếu facts cho tới khi
 user mở detail. Chạy migration trước API; ảnh/attribution/input hiện hữu giữ nguyên.
 
 Rollback API/client trước rồi drop hai cột bằng migration mới; không có bytes
-snapshot cần cleanup. Snapshot token chỉ thêm field trong payload v1 có chữ ký;
-verifier cũ bỏ qua field nhưng giới hạn 1024 cũ không nhận token dài, nên rollback
-client cần resolve token mới theo API cũ. Không downgrade schema trước reader.
+snapshot cần cleanup. Token chỉ thêm resolution id trong payload v1 có chữ ký,
+vẫn ≤1024 ký tự; verifier cũ bỏ qua field và chấp nhận identity proof. Redis
+record tự hết hạn, không cần migration hay cleanup riêng khi rollback.
+Không downgrade schema trước reader.
 Tắt units quality dừng detail refresh, list fresh snapshot vẫn không gọi provider.
 No-store/rate/auth/photo budget và moderation không phụ thuộc rollback snapshot.
 
-## Owner decision — 2026-11-07
+## Owner decision 2026-11-07
 
-Astra r2 F-03 P1 found that persisting the Google name/address/category/rating/
-hours/display snapshot at submit has no established storage right under
-ADR-0006 §9.3: only Place ID may be retained indefinitely, and coordinates for
-≤30 days. The owner accepted this risk and ordered to proceed and merge:
-“Vẫn làm. Merged đi”. The 30-day refresh is an internal freshness rule, not a
-Google permission. Follow-up: verify against the current Google Maps Platform
-terms and adjust if needed.
+Astra r2 F-03 P1 found that persisting the Google display snapshot (name,
+address, category, rating/count, hours) at submit has no established storage
+right under ADR-0006 §9.3: only Place ID may be retained indefinitely, and
+coordinates for ≤30 consecutive days. The owner accepted this risk and ordered
+to proceed and merge: “Vẫn làm. Merged đi”. The 30-day refresh is an internal
+freshness rule, not a Google permission. Follow-up: verify against the current Google Maps Platform
+terms and change the design if required.

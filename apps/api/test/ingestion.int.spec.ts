@@ -486,6 +486,10 @@ describe('#337 — duplicate Google calls', () => {
     expect(preview.json().status).toBe('RESOLVED');
     const resolutionToken = preview.json().resolutionToken as string;
     expect(resolutionToken, 'an operational place gets a token').toBeTruthy();
+    expect(resolutionToken.length).toBeLessThanOrEqual(1024);
+    const claim = JSON.parse(Buffer.from(resolutionToken.split('.')[0]!, 'base64url').toString());
+    expect(claim.resolutionId).toBeTruthy();
+    expect(claim).not.toHaveProperty('displaySnapshot');
     // #338 — the one preview that stays Enterprise, and the assertion below is
     // why: the candidate the client renders carries Google's rating, and the
     // mobile card drops the whole rating row when it is absent. A `core`
@@ -509,6 +513,7 @@ describe('#337 — duplicate Google calls', () => {
       googleRating: 4.4,
       googleRatingCount: 250,
       attributions: preview.json().candidate.attributions,
+      fetchedAt: preview.json().candidate.fetchedAt,
     });
     expect(saved!.displaySnapshot).not.toHaveProperty('photo');
 

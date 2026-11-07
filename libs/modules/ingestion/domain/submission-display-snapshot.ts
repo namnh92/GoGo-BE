@@ -4,7 +4,7 @@ import type { ResolvedProviderPlace } from '@gogo/providers';
 import { normalizeGoogleAttribution } from '../../shared/attribution';
 
 export const SUBMISSION_DISPLAY_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
-// An allowlist also keeps raw provider data, photos and private input out of signed tokens/DB.
+// An allowlist keeps raw provider data, photos and private input out of the resolution store/DB.
 export const submissionDisplaySnapshotSchema = z.object({
   source: z.literal('google_places'),
   fetchedAt: z.string().datetime(),

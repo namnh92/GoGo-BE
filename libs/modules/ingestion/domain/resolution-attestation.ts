@@ -1,11 +1,9 @@
-import type { SubmissionDisplaySnapshot } from '@gogo/database';
-import { submissionDisplaySnapshotSchema } from './submission-display-snapshot';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 /**
  * #337 identity attestation, extended by #801 owner decision (ADR-0048).
- * A signed, allowlisted display snapshot travels with the existing candidate;
- * only submit persists it. No raw payload, photo reference or bytes are signed.
+ * A signed resolution ID references a short-lived server-side display snapshot;
+ * only submit persists it on the submission. No display facts travel in the token.
  * Legacy identity-only tokens remain valid. Signature, expiry and Place ID checks
  * still gate submission; the snapshot never bypasses authorization or moderation.
  */
@@ -14,7 +12,7 @@ export const RESOLUTION_ATTESTATION_VERSION = 1;
 export const RESOLUTION_PURPOSE = 'place_submission';
 
 /** Long enough for any Place ID, short enough that no parser is a DoS target. */
-export const MAX_RESOLUTION_TOKEN_LENGTH = 32768;
+export const MAX_RESOLUTION_TOKEN_LENGTH = 1024;
 
 export type ResolutionAttestation = {
   version: typeof RESOLUTION_ATTESTATION_VERSION;
@@ -24,7 +22,7 @@ export type ResolutionAttestation = {
   verifiedAt: string;
   /** ISO-8601 UTC — `verifiedAt` + PLACE_RESOLUTION_TTL_S. */
   expiresAt: string;
-  displaySnapshot?: SubmissionDisplaySnapshot;
+  resolutionId?: string;
 };
 
 /**
@@ -62,23 +60,21 @@ export function signResolutionAttestation(input: {
   secret: string;
   ttlSeconds: number;
   now?: Date;
-  displaySnapshot?: SubmissionDisplaySnapshot;
+  resolutionId?: string;
 }): string {
   const now = input.now ?? new Date();
   const attestation: ResolutionAttestation = {
-    ...(input.displaySnapshot
-      ? { displaySnapshot: submissionDisplaySnapshotSchema.parse(input.displaySnapshot) }
-      : {}),
+    ...(input.resolutionId ? { resolutionId: input.resolutionId } : {}),
     version: RESOLUTION_ATTESTATION_VERSION,
     purpose: RESOLUTION_PURPOSE,
     googlePlaceId: input.googlePlaceId,
-    verifiedAt: input.displaySnapshot?.fetchedAt ?? now.toISOString(),
-    expiresAt: new Date(
-      Date.parse(input.displaySnapshot?.fetchedAt ?? now.toISOString()) + input.ttlSeconds * 1000,
-    ).toISOString(),
+    verifiedAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + input.ttlSeconds * 1000).toISOString(),
   };
   const body = b64url(Buffer.from(JSON.stringify(attestation)));
-  return `${body}.${b64url(sign(body, input.secret))}`;
+  const token = `${body}.${b64url(sign(body, input.secret))}`;
+  if (token.length > MAX_RESOLUTION_TOKEN_LENGTH) throw new Error('Resolution token too long');
+  return token;
 }
 
 /**
@@ -141,11 +137,14 @@ export function verifyResolutionAttestation(
   if (Number.isNaN(expiresAt)) return { ok: false, reason: 'MALFORMED' };
   if ((input.now ?? new Date()).getTime() >= expiresAt) return { ok: false, reason: 'EXPIRED' };
 
-  if (claim.displaySnapshot !== undefined) {
-    const parsed = submissionDisplaySnapshotSchema.safeParse(claim.displaySnapshot);
-    if (!parsed.success || parsed.data.fetchedAt !== claim.verifiedAt)
+  if (claim.resolutionId !== undefined) {
+    if (
+      typeof claim.resolutionId !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+        claim.resolutionId,
+      )
+    )
       return { ok: false, reason: 'MALFORMED' };
-    claim.displaySnapshot = parsed.data;
   }
   return { ok: true, attestation: claim as ResolutionAttestation };
 }

@@ -8,7 +8,7 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
-## 7.5.0-alpha.1 — Facts và chi tiết đóng góp (GoGo-BE#801)
+## 7.4.0-alpha.1 — Facts và chi tiết đóng góp (GoGo-BE#801)
 
 MINOR additive: list thêm `providerDisplay` từ snapshot còn mới được lưu lúc
 submit, attribution, hours, rating/count và lazy reference một ảnh JSON proxy
@@ -19,7 +19,8 @@ không trả moderation note hay PII/input người khác. Unknown/không có qu
 404 trước billing; guest/admin 403. CMS vẫn bắt buộc rejectionReason theo #787.
 
 LIST không gọi provider, không reserve display budget hoặc hydrate background.
-Resolve ký allowlist snapshot vào token; submit lưu cùng transaction, không ghi
+Resolve ký resolution id trong token ≤1024 ký tự, giữ allowlist snapshot phía
+server tới cùng expiry với token; submit đọc record và lưu cùng transaction, không ghi
 đè snapshot còn mới khi dedup. Pending/rejected detail thiếu snapshot hoặc quá
 30 ngày mới refresh trong budget quality hiện hữu, atomic lease 60s và cửa sổ
 6s; photo timeout không làm mất facts đã nhận. Approved/merged dùng canonical

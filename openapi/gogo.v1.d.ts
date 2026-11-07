@@ -3725,7 +3725,7 @@ export interface paths {
          *
          *     It is a separate route from `resolveGoogleMapsLink` for two reasons, neither of them the response shape. **Who pays:** the public route is unauthenticated and rate-limited on IP without an edge-client-IP hop, so behind Cloudflare every caller in the world shares one bucket of 10/minute, and an editor entering a morning's worth of places would be throttled by strangers. This route keys on `ip+actor`, 20/minute. **Who is asking:** a resolution that misses cache costs a provider request, and a request that costs money should name the person who spent it.
          *
-         *     Requires `place.write`. Nothing is written — this is a preview, and the place is created by `cmsCreatePlace` carrying the `googlePlaceId` this returned.
+         *     Requires `place.write`. The catalogue is unchanged by this preview; a short-lived server-side resolution snapshot may be retained until its token expires (ADR-0048). The place is created by `cmsCreatePlace` carrying the `googlePlaceId` this returned.
          *
          *     Takes either a link or a Place ID; see the request body. A `CANDIDATE_SELECTION` answer is meant to be resolved by sending one of its `candidates[].googlePlaceId` straight back here.
          */
@@ -8644,7 +8644,7 @@ export interface components {
             reasonCodes?: string[];
             /** Format: uuid */
             existingPlaceId?: string;
-            /** @description Opaque, short-lived proof that this request verified the Google Place ID with the provider (#337). Present only when the answer came from a live provider check and the place is operational; send it back on `POST /place-submissions` to skip the duplicate verification fetch. It carries a signed allowlisted display snapshot for persistence at submit (ADR-0048), never raw payload or photo references, and authorises nothing. An expired or edited token is rejected with a retryable `RESOLUTION_TOKEN_INVALID` and the client resolves again. */
+            /** @description Opaque, short-lived proof that this request verified the Google Place ID with the provider (#337). Present only when the answer came from a live provider check and the place is operational; send it back on `POST /place-submissions` to skip the duplicate verification fetch. It carries a signed resolution id referencing a short-lived server-side display snapshot for persistence at submit (ADR-0048), never display facts, raw payload or photo references, and authorises nothing. An expired or edited token, or an unavailable resolution record, is rejected with a retryable `RESOLUTION_TOKEN_INVALID` and the client resolves again. */
             resolutionToken?: string;
             /**
              * @description ADM-017 — the two current administrative levels the candidate's coordinate falls in, so a create form can open on a real identity instead of two empty boxes.
@@ -15561,7 +15561,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             429: components["responses"]["RateLimited"];
-            /** @description PLACE_PROVIDER_UNAVAILABLE — GoGo cannot verify places right now: no working provider credential, an API not enabled, quota exhausted, or the provider is down. A statement about this deployment, not about the link, so the client must not present it as "địa điểm không tồn tại" (GoGo-BE#279). `retryable` is true; the envelope deliberately names neither the provider nor the fault. */
+            /** @description PLACE_PROVIDER_UNAVAILABLE — GoGo cannot verify places right now: no working provider credential, an API not enabled, quota exhausted, or the provider is down, or the short-lived resolution record cannot be stored. A statement about this deployment, not about the link, so the client must not present it as "địa điểm không tồn tại" (GoGo-BE#279). `retryable` is true; the envelope deliberately names neither the provider nor the fault. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -15596,7 +15596,7 @@ export interface operations {
                     note?: string;
                     /** @description Optional media ids from POST /uploads purpose place_photo, owned by this actor. JPEG/PNG/WebP only, at most 10 MiB each; actual bytes and size are verified. HEIC must be converted by the client. Originals are never served. Photos stay private until explicitly selected by staff at the submission decision. Deduplicated submissions retain each photo's actual uploader; at most five non-rejected photos per pending submission, including concurrent requests. */
                     mediaIds?: string[];
-                    /** @description The `resolutionToken` from the preceding `POST /places/resolve-google-maps-link` (#337). Optional — without it the server verifies the place with the provider again with quality Details to capture the display snapshot. A signed snapshot is persisted only on successful submission; legacy identity-only tokens remain valid without a snapshot. */
+                    /** @description The `resolutionToken` from the preceding `POST /places/resolve-google-maps-link` (#337). Optional — without it the server verifies the place with the provider again with quality Details to capture the display snapshot. A signed resolution id references an allowlisted server-side snapshot with the same expiry as the token. The snapshot is persisted on the submission only on successful submission; legacy identity-only tokens remain valid without a snapshot. */
                     resolutionToken?: string;
                 };
             };
@@ -18391,7 +18391,7 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             429: components["responses"]["RateLimited"];
-            /** @description PLACE_PROVIDER_UNAVAILABLE — GoGo cannot verify places right now. A statement about this deployment, not about the link, so the console must not present it as "không tìm thấy địa điểm" (GoGo-BE#279). `retryable` is true. */
+            /** @description PLACE_PROVIDER_UNAVAILABLE — GoGo cannot verify places right now. A statement about this deployment, not about the link, so the console must not present it as "không tìm thấy địa điểm" (GoGo-BE#279). This also covers failure to store the short-lived resolution record. `retryable` is true. */
             503: {
                 headers: {
                     [name: string]: unknown;

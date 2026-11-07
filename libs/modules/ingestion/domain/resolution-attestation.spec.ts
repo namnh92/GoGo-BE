@@ -184,53 +184,41 @@ describe('#337 — resolution attestation', () => {
   });
 });
 
-const displaySnapshot = {
-  source: 'google_places' as const,
-  fetchedAt: NOW.toISOString(),
-  name: 'Snapshot café',
-  addressShort: 'Hà Nội',
-  attributions: ['Google Maps'],
-  googleMapsUri: null,
-  googleRating: 4.6,
-  googleRatingCount: 980,
-  openingHours: [],
-};
-it('#801 signs only allowed display facts, preserving fetchedAt and no photo/raw fields', () => {
+it('#801 signs a resolution ID within the unchanged 1024-character contract', () => {
+  const resolutionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   const token = signResolutionAttestation({
-    googlePlaceId: PLACE,
+    googlePlaceId: 'x'.repeat(255),
     secret: SECRET,
     ttlSeconds: 600,
     now: NOW,
-    displaySnapshot: {
-      ...displaySnapshot,
-      photo: 'private',
-      raw: 'private',
-    } as typeof displaySnapshot,
+    resolutionId,
   });
   const answer = verifyResolutionAttestation(token, { secret: SECRET, now: NOW });
-  expect(answer.ok && answer.attestation.displaySnapshot).toEqual(displaySnapshot);
-  expect(Buffer.from(token.split('.')[0]!, 'base64url').toString()).not.toContain('private');
+  expect(answer.ok && answer.attestation.resolutionId).toBe(resolutionId);
+  expect(MAX_RESOLUTION_TOKEN_LENGTH).toBe(1024);
+  expect(token.length).toBeLessThanOrEqual(1024);
+  expect(answer.ok && answer.attestation).not.toHaveProperty('displaySnapshot');
   const [body, signature] = token.split('.');
   const forged = Buffer.from(
     JSON.stringify({
       ...JSON.parse(Buffer.from(body!, 'base64url').toString()),
-      displaySnapshot: { ...displaySnapshot, name: 'Forged' },
+      resolutionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
     }),
   ).toString('base64url');
   expect(
     verifyResolutionAttestation(`${forged}.${signature}`, { secret: SECRET, now: NOW }),
   ).toEqual({ ok: false, reason: 'BAD_SIGNATURE' });
 });
-it('#801 rejects a signed snapshot with a fake fetch time or invalid rating', () => {
-  for (const snapshot of [
-    { ...displaySnapshot, fetchedAt: '2020-01-01T00:00:00.000Z' },
-    { ...displaySnapshot, googleRating: 99 },
-  ]) {
+it('#801 rejects malformed resolution IDs and refuses to mint oversized tokens', () => {
+  for (const resolutionId of ['', 'not-an-id', 123, '../another-key']) {
     expect(
-      verifyResolutionAttestation(mint({ displaySnapshot: snapshot }), {
+      verifyResolutionAttestation(mint({ resolutionId }), {
         secret: SECRET,
         now: NOW,
       }),
     ).toEqual({ ok: false, reason: 'MALFORMED' });
   }
+  expect(() =>
+    signResolutionAttestation({ googlePlaceId: 'x'.repeat(1024), secret: SECRET, ttlSeconds: 600 }),
+  ).toThrow('Resolution token too long');
 });

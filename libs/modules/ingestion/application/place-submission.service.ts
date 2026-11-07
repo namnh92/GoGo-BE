@@ -1,5 +1,7 @@
 import { freshSnapshot, snapshotFromDetails } from '../domain/submission-display-snapshot';
 import type { SubmissionDisplaySnapshot } from '@gogo/database';
+import { randomUUID } from 'node:crypto';
+import { ResolutionSnapshotStore } from './resolution-snapshot.store';
 import {
   ProviderPhotosService,
   type CandidatePhotoReference,
@@ -62,7 +64,7 @@ export type ResolveLinkResponse = {
   existingPlaceId?: string | undefined;
   /**
    * #337 — proof that this request verified the Place ID with Google, for the
-   * submit that usually follows. Opaque, short-lived, includes a signed
+   * submit that usually follows. Opaque, short-lived, references a server-side
    * display snapshot (#801), and is minted only for an `OPERATIONAL` place.
    * Absent whenever the answer did not come from a live provider check.
    */
@@ -261,6 +263,7 @@ export class PlaceSubmissionService {
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
     @Optional() private readonly providerPhotos?: ProviderPhotosService,
     @Optional() private readonly submissionPhotos?: SubmissionPhotoService,
+    @Optional() private readonly resolutionSnapshots?: ResolutionSnapshotStore,
   ) {}
 
   private async dbFirstEnabled(): Promise<boolean> {
@@ -568,15 +571,33 @@ export class PlaceSubmissionService {
       return {};
     }
     if (details.businessStatus !== 'OPERATIONAL') return {};
-    this.metrics.increment('place_resolution_attestation_total', { result: 'issued' });
-    return {
-      resolutionToken: signResolutionAttestation({
-        displaySnapshot,
+    const resolutionId = randomUUID();
+    const verifiedAt = new Date(displaySnapshot.fetchedAt);
+    try {
+      if (!this.resolutionSnapshots) throw new Error('Resolution store unavailable');
+      const resolutionToken = signResolutionAttestation({
+        resolutionId,
+        now: verifiedAt,
         googlePlaceId: details.providerPlaceId,
         secret: this.config.PLACE_RESOLUTION_ATTESTATION_SECRET,
         ttlSeconds: this.config.PLACE_RESOLUTION_TTL_S,
-      }),
-    };
+      });
+      await this.resolutionSnapshots.put(resolutionId, {
+        googlePlaceId: details.providerPlaceId,
+        expiresAt: new Date(
+          verifiedAt.getTime() + this.config.PLACE_RESOLUTION_TTL_S * 1000,
+        ).toISOString(),
+        snapshot: displaySnapshot,
+      });
+      this.metrics.increment('place_resolution_attestation_total', { result: 'issued' });
+      return { resolutionToken };
+    } catch {
+      // Never return proof that would lose its snapshot or silently cost another fetch.
+      this.metrics.increment('place_resolution_attestation_total', { result: 'store_unavailable' });
+      throw new AppError('PLACE_PROVIDER_UNAVAILABLE', 'Không thể xác minh địa điểm lúc này', 503, {
+        retryable: true,
+      });
+    }
   }
 
   private toCandidate(details: ResolvedProviderPlace, score: number, categoryKey: string | null) {
@@ -689,12 +710,30 @@ export class PlaceSubmissionService {
       );
     }
 
+    let displaySnapshot: SubmissionDisplaySnapshot | undefined;
+    if (verdict.attestation.resolutionId) {
+      try {
+        displaySnapshot = await this.resolutionSnapshots?.get(
+          verdict.attestation.resolutionId,
+          verdict.attestation,
+        );
+      } catch {
+        // Fail closed: an outage must not silently trigger another paid provider fetch.
+      }
+      if (!displaySnapshot) {
+        this.metrics.increment('place_resolution_attestation_total', {
+          result: 'snapshot_unavailable',
+        });
+        throw new AppError(
+          'RESOLUTION_TOKEN_INVALID',
+          'Cần mở lại liên kết để xác minh địa điểm rồi thử lại',
+          400,
+          { retryable: true },
+        );
+      }
+    }
     this.metrics.increment('place_resolution_attestation_total', { result: 'accepted' });
-    return {
-      ...(verdict.attestation.displaySnapshot
-        ? { displaySnapshot: verdict.attestation.displaySnapshot }
-        : {}),
-    };
+    return displaySnapshot ? { displaySnapshot } : {};
   }
 
   /** FR-INGEST-011/012 — proposal only; publishing stays with CMS. */

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 7.5.0-alpha.1
+  version: 7.4.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -4815,7 +4815,8 @@ paths:
           description: >-
             PLACE_PROVIDER_UNAVAILABLE — GoGo cannot verify places right now: no working
             provider credential, an API not enabled, quota exhausted, or the provider is
-            down. A statement about this deployment, not about the link, so the client must
+            down, or the short-lived resolution record cannot be stored. A statement
+            about this deployment, not about the link, so the client must
             not present it as "địa điểm không tồn tại" (GoGo-BE#279). `retryable` is true;
             the envelope deliberately names neither the provider nor the fault.
           content:
@@ -4874,13 +4875,15 @@ paths:
                     non-rejected photos per pending submission, including concurrent requests.
                 resolutionToken:
                   type: string
-                  maxLength: 32768
+                  maxLength: 1024
                   description: >
                     The `resolutionToken` from the preceding
                     `POST /places/resolve-google-maps-link` (#337). Optional —
                     without it the server verifies the place with the provider
                     again with quality Details to capture the display snapshot.
-                    A signed snapshot is persisted only on successful submission;
+                    A signed resolution id references an allowlisted server-side
+                    snapshot with the same expiry as the token. The snapshot is
+                    persisted on the submission only on successful submission;
                     legacy identity-only tokens remain valid without a snapshot.
       responses:
         '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
@@ -8066,9 +8069,10 @@ paths:
         it.
 
 
-        Requires `place.write`. Nothing is written — this is a preview, and the
-        place is created by `cmsCreatePlace` carrying the `googlePlaceId` this
-        returned.
+        Requires `place.write`. The catalogue is unchanged by this preview; a
+        short-lived server-side resolution snapshot may be retained until its
+        token expires (ADR-0048). The place is created by `cmsCreatePlace`
+        carrying the `googlePlaceId` this returned.
 
 
         Takes either a link or a Place ID; see the request body. A
@@ -8124,7 +8128,8 @@ paths:
           description: >-
             PLACE_PROVIDER_UNAVAILABLE — GoGo cannot verify places right now. A statement
             about this deployment, not about the link, so the console must not present it
-            as "không tìm thấy địa điểm" (GoGo-BE#279). `retryable` is true.
+            as "không tìm thấy địa điểm" (GoGo-BE#279). This also covers failure to
+            store the short-lived resolution record. `retryable` is true.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -17082,15 +17087,16 @@ components:
         existingPlaceId: { type: string, format: uuid }
         resolutionToken:
           type: string
-          maxLength: 32768
+          maxLength: 1024
           description: >
             Opaque, short-lived proof that this request verified the Google Place
             ID with the provider (#337). Present only when the answer came from a
             live provider check and the place is operational; send it back on
             `POST /place-submissions` to skip the duplicate verification fetch. It
-            carries a signed allowlisted display snapshot for persistence at submit
-            (ADR-0048), never raw payload or photo references, and authorises nothing.
-            An expired or edited token is rejected with a retryable `RESOLUTION_TOKEN_INVALID`
+            carries a signed resolution id referencing a short-lived server-side
+            display snapshot for persistence at submit (ADR-0048), never display facts,
+            raw payload or photo references, and authorises nothing.
+            An expired or edited token, or an unavailable resolution record, is rejected with a retryable `RESOLUTION_TOKEN_INVALID`
             and the client resolves again.
         administrative:
           oneOf:
