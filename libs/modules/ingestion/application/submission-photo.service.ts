@@ -15,7 +15,7 @@ type PreparedPhoto = {
   metadata: NonNullable<typeof schema.placeMedia.$inferInsert.providerPhoto>;
 };
 
-/** ADR-0043: only the explicit approve path may make a provider image durable. */
+/** ADR-0043: approval and the explicitly authorized #797 backfill share persistence. */
 @Injectable()
 export class SubmissionPhotoService {
   constructor(
@@ -94,7 +94,13 @@ export class SubmissionPhotoService {
     }
   }
 
-  async attach(tx: Tx, placeId: string, adminId: string, photo: PreparedPhoto): Promise<void> {
+  async attach(
+    tx: Tx,
+    placeId: string,
+    adminId: string | null,
+    photo: PreparedPhoto,
+    reason = 'Approved with place submission',
+  ): Promise<void> {
     await tx.insert(schema.placeMedia).values({
       placeId,
       storageKey: photo.key,
@@ -102,7 +108,7 @@ export class SubmissionPhotoService {
       attribution: 'Google Maps',
       providerPhoto: photo.metadata,
       moderation: 'approved',
-      moderationReason: 'Approved with place submission',
+      moderationReason: reason,
       moderatedBy: adminId,
       moderatedAt: new Date(),
       isCover: true,

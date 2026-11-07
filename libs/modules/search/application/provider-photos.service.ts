@@ -179,6 +179,31 @@ export class ProviderPhotosService {
     return result.dto;
   }
 
+  /** #797: references only, with explicit empty/error outcomes; never reserve or store. */
+  async probeForProvider(
+    providerPlaceId: string,
+  ): Promise<{ status: ProviderPhotosStatus; hasPhoto: boolean }> {
+    if (!(await this.enabled())) return { status: 'disabled', hasPhoto: false };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.deadlineMs);
+    try {
+      const refs = await Promise.race([
+        this.refsFor(providerPlaceId, controller.signal),
+        new Promise<null>((resolve) =>
+          controller.signal.addEventListener('abort', () => resolve(null), { once: true }),
+        ),
+      ]);
+      return refs === null
+        ? { status: 'unavailable', hasPhoto: false }
+        : { status: 'ok', hasPhoto: refs.length > 0 };
+    } catch {
+      return { status: 'unavailable', hasPhoto: false };
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
+    }
+  }
+
   private async resolve(placeId: string): Promise<Result> {
     return this.resolveProvider(await this.googleIdOf(placeId), MAX_PROVIDER_PHOTOS);
   }
@@ -388,7 +413,7 @@ export class ProviderPhotosService {
     return this.config.PROVENANCE_UNIFIED_READS ?? true;
   }
 
-  private async enabled(): Promise<boolean> {
+  async enabled(): Promise<boolean> {
     const resolved = await resolveFlag(this.db, 'place_provider_photos.enabled', {
       environment: flagEnvironmentOf(this.config.APP_ENV),
     });

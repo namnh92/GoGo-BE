@@ -366,3 +366,69 @@ describe('#786 single candidate photo', () => {
     expect(await service.candidateReference(GOOGLE_ID)).toBeUndefined();
   });
 });
+
+describe('#797 reference-only probe', () => {
+  function probeSetup() {
+    const db = {
+      execute: vi.fn(async () => ({
+        rows: [{ environment: 'all', platform: 'all', enabled: true, payload: null }],
+      })),
+    };
+    const port = {
+      photoRefs: vi.fn(async () => ({ providerPlaceId: GOOGLE_ID, photos: [ref('first')] })),
+      photoMedia: vi.fn(),
+    };
+    const reserve = vi.fn();
+    const service = new ProviderPhotosService(db as never, port as never, CONFIG, undefined, {
+      reserve,
+    } as never);
+    return { db, port, reserve, service };
+  }
+  it('distinguishes photos, empty, identity mismatch and errors without media or budget writes', async () => {
+    const f = probeSetup();
+    expect(await f.service.probeForProvider(GOOGLE_ID)).toEqual({ status: 'ok', hasPhoto: true });
+    f.port.photoRefs.mockResolvedValue({ providerPlaceId: GOOGLE_ID, photos: [] });
+    expect(await f.service.probeForProvider(GOOGLE_ID)).toEqual({ status: 'ok', hasPhoto: false });
+    f.port.photoRefs.mockResolvedValue({ providerPlaceId: 'other', photos: [] });
+    expect(await f.service.probeForProvider(GOOGLE_ID)).toEqual({
+      status: 'unavailable',
+      hasPhoto: false,
+    });
+    f.port.photoRefs.mockRejectedValue(new Error('secret'));
+    expect(await f.service.probeForProvider(GOOGLE_ID)).toEqual({
+      status: 'unavailable',
+      hasPhoto: false,
+    });
+    expect(f.port.photoMedia).not.toHaveBeenCalled();
+    expect(f.reserve).not.toHaveBeenCalled();
+  });
+  it('skips all calls when disabled', async () => {
+    const f = probeSetup();
+    f.db.execute.mockResolvedValue({
+      rows: [{ environment: 'all', platform: 'all', enabled: false, payload: null }],
+    });
+    expect(await f.service.probeForProvider(GOOGLE_ID)).toEqual({
+      status: 'disabled',
+      hasPhoto: false,
+    });
+    expect(f.port.photoRefs).not.toHaveBeenCalled();
+  });
+  it('aborts reference lookup at the existing deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = probeSetup();
+      let signal: AbortSignal | undefined;
+      f.port.photoRefs.mockImplementation((_id?: string, options?: { signal?: AbortSignal }) => {
+        signal = options?.signal;
+        return new Promise(() => undefined);
+      });
+      const pending = f.service.probeForProvider(GOOGLE_ID);
+      await vi.advanceTimersByTimeAsync(PROVIDER_PHOTOS_DEADLINE_MS);
+      expect(await pending).toEqual({ status: 'unavailable', hasPhoto: false });
+      expect(signal?.aborted).toBe(true);
+      expect(f.port.photoMedia).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

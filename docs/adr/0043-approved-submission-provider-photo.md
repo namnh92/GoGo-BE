@@ -64,3 +64,15 @@ preview và lưu ảnh mới; ảnh đã duyệt vẫn giữ attribution trên d
 ngoại lệ: enqueue từng storage_key provider trong cleanup queue khi detach media,
 đợi worker xoá bytes rồi drop cột provider_photo. Không drop metadata trước khi
 xoá media vì sẽ mất credit. Không thay hành vi transient detail ADR-0030.
+
+## Owner extension 2026-11-07 — GoGo-BE#797
+
+Owner cho phép ops backfill một ảnh Google cho địa điểm published có Google
+Place ID và chưa có media approved, chấp nhận chi phí một ảnh/địa điểm. Script
+`places:backfill-provider-photos` dùng lại pipeline approve #786 (fetch, budget,
+storage, cleanup intent, metadata/credit); không mở rộng sang nội dung khác.
+Dry-run mặc định chỉ đọc; probe chỉ Details; persist chỉ với `--apply` rõ ràng.
+Recheck eligibility/identity dưới row lock trước attach, system moderation và
+audit riêng. Không đổi contract/schema. Xem
+[runbook #797](../runbooks/place-provider-photo-backfill.md) cho giới hạn, chi phí,
+kill switch, cleanup và rollback.
