@@ -7,7 +7,7 @@ import argon2 from 'argon2';
 import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { schema } from '@gogo/database';
+import { schema, type SubmissionEnrichment } from '@gogo/database';
 import {
   PLACE_PHOTO_DISPLAY,
   PUBLIC_STORAGE_PROVIDER,
@@ -97,6 +97,7 @@ async function contribute(
     estimatedPrice: { min: number; max: number; unit: string };
     note: string;
     vibes: string[];
+    enrichment: SubmissionEnrichment;
   }> = {},
 ): Promise<{ submissionId: string; googlePlaceId: string; token: string }> {
   seq += 1;
@@ -124,6 +125,7 @@ async function contribute(
       ...(over.estimatedPrice ? { estimatedPrice: over.estimatedPrice } : {}),
       ...(over.note ? { note: over.note } : {}),
       ...(over.vibes ? { vibes: over.vibes } : {}),
+      ...(over.enrichment ? { enrichment: over.enrichment } : {}),
     },
   });
   expect(submitted.statusCode, submitted.body).toBe(201);
@@ -1224,5 +1226,92 @@ describe('public rejection keys (#787)', () => {
     expect(result.json().status).toBe('approved');
     expect(result.json().rejectionReason).toBeUndefined();
     expect(result.body).not.toContain('PRIVATE');
+  });
+});
+
+describe('wizard claims through real HTTP approval (#796)', () => {
+  it('shows unverified claims to CMS, grants only on approval and never promotes enrichment automatically', async () => {
+    const enrichment: SubmissionEnrichment = {
+      price: { min: 12345, max: 98765, currency: 'VND', unit: 'per_group' },
+      purposeKeys: ['work_reading'],
+      vibeKeys: ['chill'],
+      amenities: { open_after_23: true, car_parking: false },
+      service: { rating: 5, chipKeys: ['service_friendly'] },
+      space: { rating: 4, chipKeys: ['space_quiet'] },
+      visitTips: 'PRIVATE WIZARD TIP',
+    };
+    await enablePhotos();
+    const { submissionId, token, googlePlaceId } = await contribute({ enrichment });
+    seedPhoto(googlePlaceId);
+    const before = await rows(
+      sql`select delta from assistant_credit_ledger where submission_id=${submissionId}::uuid`,
+    );
+    expect(before).toEqual([]);
+    const review = await detail(submissionId);
+    expect(review.statusCode, review.body).toBe(200);
+    expect(review.json().contribution).toMatchObject({
+      enrichment,
+      verificationStatus: 'unverified',
+    });
+    const approved = await decide(submissionId, {
+      decision: 'approved',
+      reason: 'Verified identity only',
+    });
+    expect(approved.statusCode, approved.body).toBe(201);
+    const placeId = approved.json().placeId;
+    expect(await rows(sql`select * from place_prices where place_id=${placeId}::uuid`)).toEqual([]);
+    expect(
+      await rows(
+        sql`select t.key from place_taxonomies pt join taxonomies t on t.id=pt.taxonomy_id where pt.place_id=${placeId}::uuid and t.key in ('open_after_23','car_parking','chill','work_reading','service_friendly','space_quiet')`,
+      ),
+    ).toEqual([]);
+    expect(
+      await rows(
+        sql`select delta from assistant_credit_ledger where submission_id=${submissionId}::uuid`,
+      ),
+    ).toEqual([{ delta: 50 }]);
+    const again = await decide(submissionId, { decision: 'approved', reason: 'Retry' });
+    expect(again.statusCode).toBe(409);
+    expect(
+      await rows(
+        sql`select delta from assistant_credit_ledger where submission_id=${submissionId}::uuid`,
+      ),
+    ).toEqual([{ delta: 50 }]);
+    const own = await api().inject({
+      method: 'GET',
+      url: `/v1/place-submissions/${submissionId}`,
+      headers: auth(token),
+    });
+    expect(own.json()).toMatchObject({ enrichment, verificationStatus: 'unverified' });
+    expect(own.body).not.toContain('Verified identity only');
+  });
+  it('enforces authentication and ownership through draft HTTP endpoints', async () => {
+    const token = await register(`wizard-draft-${++seq}@gogo.id.vn`);
+    const outsider = await register(`wizard-other-${++seq}@gogo.id.vn`);
+    const id = 'd9796d97-9679-4967-8967-967996799679';
+    const url = `/v1/place-contribution-drafts/${id}`;
+    const payload = {
+      googlePlaceId: 'wizard-http-provider',
+      expectedVersion: 0,
+      enrichment: { visitTips: 'PRIVATE DRAFT TIP' },
+    };
+    const anonymous = await api().inject({ method: 'GET', url });
+    expect(anonymous.statusCode).toBe(401);
+    const admin = await api().inject({ method: 'PUT', url, headers: auth(tokens.editor), payload });
+    expect(admin.statusCode).toBe(403);
+    const saved = await api().inject({ method: 'PUT', url, headers: auth(token), payload });
+    expect(saved.statusCode, saved.body).toBe(200);
+    expect(saved.json()).toMatchObject({ version: 1, enrichment: payload.enrichment });
+    const own = await api().inject({ method: 'GET', url, headers: auth(token) });
+    expect(own.headers['cache-control']).toBe('private, no-store');
+    const forbidden = await api().inject({ method: 'GET', url, headers: auth(outsider) });
+    expect(forbidden.statusCode).toBe(404);
+    const removed = await api().inject({
+      method: 'DELETE',
+      url: `${url}?version=1`,
+      headers: auth(token),
+    });
+    expect(removed.statusCode, removed.body).toBe(200);
+    expect((await api().inject({ method: 'GET', url, headers: auth(token) })).statusCode).toBe(404);
   });
 });

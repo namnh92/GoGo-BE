@@ -2,6 +2,12 @@ import { freshSnapshot, snapshotFromDetails } from '../domain/submission-display
 import type { SubmissionDisplaySnapshot } from '@gogo/database';
 import { randomUUID } from 'node:crypto';
 import { ResolutionSnapshotStore } from './resolution-snapshot.store';
+import { enrichmentSchema } from '../domain/contribution-enrichment';
+import {
+  assertContributor,
+  validateEnrichment,
+  contributionStorageFailure,
+} from './contribution-enrichment';
 import {
   ProviderPhotosService,
   type CandidatePhotoReference,
@@ -12,7 +18,12 @@ import { grantSubmissionCredits, lockAssistantAccount } from '../../shared/assis
 import type { Tx } from '../../shared/outbox';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
-import { schema, type Db, type SubmissionReviewDraft } from '@gogo/database';
+import {
+  schema,
+  type Db,
+  type SubmissionReviewDraft,
+  type SubmissionEnrichment,
+} from '@gogo/database';
 import { CONTACT_API_FIELD } from '../../shared/place-contact';
 import { planContactWrite, type ContactWritePlan } from '../../shared/place-contact-write';
 import {
@@ -741,6 +752,7 @@ export class PlaceSubmissionService {
     actor: Actor,
     input: {
       googlePlaceId: string;
+      enrichment?: SubmissionEnrichment | undefined;
       roomId?: string | undefined;
       categoryKey?: string | undefined;
       priceMin?: number | undefined;
@@ -752,6 +764,11 @@ export class PlaceSubmissionService {
       mediaIds?: string[] | undefined;
     },
   ) {
+    if (input.enrichment !== undefined) {
+      assertContributor(actor);
+      input.enrichment = enrichmentSchema.parse(input.enrichment);
+      await validateEnrichment(this.db, input.enrichment);
+    }
     if (actor.type === 'guest' && !input.roomId) {
       throw AppError.forbidden('ROOM_SCOPE_REQUIRED', 'Guests submit within their room only');
     }
@@ -885,78 +902,89 @@ export class PlaceSubmissionService {
       .where(sql`google_place_id = ${input.googlePlaceId} and status = 'pending'`)
       .limit(1);
     const prepared = await this.photos.prepare(actor, input.mediaIds ?? [], pending?.id ?? null);
-    const result = await this.db.transaction(async (tx) => {
-      if (actor.type === 'user') {
-        // Same lock order as privacy erasure: never recreate attribution after
-        // the account has been erased while provider verification was in flight.
-        await lockAssistantAccount(tx, actor.id);
-        const active = await tx.execute(
-          sql`select id from users where id = ${actor.id} and status = 'active' for share`,
+    const result = await this.db
+      .transaction(async (tx) => {
+        if (actor.type === 'user') {
+          // Same lock order as privacy erasure: never recreate attribution after
+          // the account has been erased while provider verification was in flight.
+          await lockAssistantAccount(tx, actor.id);
+          const active = await tx.execute(
+            sql`select id from users where id = ${actor.id} and status = 'active' for share`,
+          );
+          if (!active.rows.length)
+            throw AppError.conflict(
+              'CONTRIBUTOR_UNAVAILABLE',
+              'Contributor account is unavailable',
+            );
+        }
+        // Submit-only mutex; approval uses submission -> identity lock order.
+        // Do not acquire the identity mutex here before locking a submission.
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${`submission:${input.googlePlaceId}`}, 0))`,
         );
-        if (!active.rows.length)
-          throw AppError.conflict('CONTRIBUTOR_UNAVAILABLE', 'Contributor account is unavailable');
-      }
-      // Submit-only mutex; approval uses submission -> identity lock order.
-      // Do not acquire the identity mutex here before locking a submission.
-      await tx.execute(
-        sql`select pg_advisory_xact_lock(hashtextextended(${`submission:${input.googlePlaceId}`}, 0))`,
-      );
-      let [row] = await tx
-        .select()
-        .from(schema.placeSubmissions)
-        .where(sql`google_place_id = ${input.googlePlaceId} and status = 'pending'`)
-        .for('update')
-        .limit(1);
-      const deduped = !!row;
-      if (row) {
-        await tx
-          .update(schema.placeSubmissions)
-          .set({
-            submissionCount: sql`submission_count + 1`,
-            // The pending row is locked above; retain a snapshot while it is fresh.
-            ...(displaySnapshot && !freshSnapshot(row.displaySnapshot) ? { displaySnapshot } : {}),
-            ...(prepared.photos.length
-              ? {
-                  updatedAt: sql`clock_timestamp()`,
-                  submissionRevision: sql`submission_revision + 1`,
-                }
-              : {}),
-          })
-          .where(eq(schema.placeSubmissions.id, row.id));
-      } else {
-        [row] = await tx
-          .insert(schema.placeSubmissions)
-          .values({
-            googlePlaceId: input.googlePlaceId,
-            displaySnapshot: displaySnapshot ?? null,
-            ...(actor.type === 'user'
-              ? { submittedByUserId: actor.id }
-              : { submittedByGuestSessionId: actor.id }),
-            roomId: input.roomId ?? null,
-            categoryKey: input.categoryKey ?? null,
-            priceMin: input.priceMin ?? null,
-            priceMax: input.priceMax ?? null,
-            priceUnit: input.priceUnit ?? null,
-            vibeKeys: input.vibeKeys ?? [],
-            note: input.note ?? null,
-          })
-          .returning();
-        await writeOutbox(tx, {
-          eventType: 'place.submission_created',
-          resourceType: 'place_submission',
-          resourceId: row!.id,
-          payload: { googlePlaceId: input.googlePlaceId },
-        });
-      }
-      if (actor.type === 'user') {
-        await tx
-          .insert(schema.placeSubmissionContributors)
-          .values({ submissionId: row!.id, userId: actor.id })
-          .onConflictDoNothing();
-      }
-      await this.photos.attach(tx, actor, row!.id, prepared);
-      return { status: 'PENDING' as const, submissionId: row!.id, deduped };
-    });
+        let [row] = await tx
+          .select()
+          .from(schema.placeSubmissions)
+          .where(sql`google_place_id = ${input.googlePlaceId} and status = 'pending'`)
+          .for('update')
+          .limit(1);
+        const deduped = !!row;
+        if (row) {
+          await tx
+            .update(schema.placeSubmissions)
+            .set({
+              submissionCount: sql`submission_count + 1`,
+              // The pending row is locked above; retain a snapshot while it is fresh.
+              ...(displaySnapshot && !freshSnapshot(row.displaySnapshot)
+                ? { displaySnapshot }
+                : {}),
+              ...(prepared.photos.length
+                ? {
+                    updatedAt: sql`clock_timestamp()`,
+                    submissionRevision: sql`submission_revision + 1`,
+                  }
+                : {}),
+            })
+            .where(eq(schema.placeSubmissions.id, row.id));
+        } else {
+          [row] = await tx
+            .insert(schema.placeSubmissions)
+            .values({
+              googlePlaceId: input.googlePlaceId,
+              enrichment: input.enrichment ?? null,
+              displaySnapshot: displaySnapshot ?? null,
+              ...(actor.type === 'user'
+                ? { submittedByUserId: actor.id }
+                : { submittedByGuestSessionId: actor.id }),
+              roomId: input.roomId ?? null,
+              categoryKey: input.categoryKey ?? null,
+              priceMin: input.priceMin ?? null,
+              priceMax: input.priceMax ?? null,
+              priceUnit: input.priceUnit ?? null,
+              vibeKeys: input.vibeKeys ?? [],
+              note: input.note ?? null,
+            })
+            .returning();
+          await writeOutbox(tx, {
+            eventType: 'place.submission_created',
+            resourceType: 'place_submission',
+            resourceId: row!.id,
+            payload: { googlePlaceId: input.googlePlaceId },
+          });
+        }
+        if (actor.type === 'user') {
+          await tx
+            .insert(schema.placeSubmissionContributors)
+            .values({ submissionId: row!.id, userId: actor.id })
+            .onConflictDoNothing();
+        }
+        await this.photos.attach(tx, actor, row!.id, prepared);
+        return { status: 'PENDING' as const, submissionId: row!.id, deduped };
+      })
+      .catch((error: unknown) => {
+        if (input.enrichment !== undefined) contributionStorageFailure(error);
+        throw error;
+      });
     this.metrics.increment('mobile_place_submissions_total', {
       status: result.deduped ? 'deduped' : 'pending',
     });
@@ -990,6 +1018,8 @@ export class PlaceSubmissionService {
       status: row.status,
       rejectionReason: row.status === 'rejected' ? (row.rejectionReason ?? undefined) : undefined,
       googlePlaceId: row.googlePlaceId,
+      enrichment: row.enrichment ?? undefined,
+      verificationStatus: row.enrichment ? ('unverified' as const) : undefined,
       placeId: row.resultPlaceId ?? undefined,
       submissionCount: row.submissionCount,
       createdAt: row.createdAt.toISOString(),
@@ -1193,6 +1223,8 @@ export class PlaceSubmissionService {
       photos: await this.photos.list(id),
       // What the contributor sent, untouched by any review.
       contribution: {
+        enrichment: row.enrichment ?? undefined,
+        verificationStatus: row.enrichment ? ('unverified' as const) : undefined,
         categoryKey: row.categoryKey ?? undefined,
         estimatedPrice:
           row.priceMin !== null && row.priceMax !== null

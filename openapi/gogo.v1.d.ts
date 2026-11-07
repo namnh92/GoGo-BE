@@ -2263,6 +2263,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/place-contribution-drafts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List own unexpired drafts (registered users only)
+         * @description Bounded collection, at most 20 live drafts. Private, no-store. Stable UUID order.
+         */
+        get: operations["listPlaceContributionDrafts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/place-contribution-drafts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** Resume own draft (registered users only) */
+        get: operations["getPlaceContributionDraft"];
+        /**
+         * Save complete draft snapshot (registered users only)
+         * @description Client-generated UUID. expectedVersion 0 creates, otherwise matches the current version; success increments it. 30-day sliding expiry, at most 20 live drafts. Draft enrichment fields are optional. No provider content or resolution token is persisted. Private no-store; optimistic version handles retries without retaining free text in replay storage. Nonempty photos are BLOCKED on #794 (503 SUBMISSION_EVIDENCE_BLOCKED, retryable false); no raw image reaches CMS.
+         */
+        put: operations["savePlaceContributionDraft"];
+        post?: never;
+        /** Delete own draft (registered users only) */
+        delete: operations["deletePlaceContributionDraft"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/place-submissions": {
         parameters: {
             query?: never;
@@ -7734,7 +7778,7 @@ export interface components {
              */
             createdAt: string;
             /**
-             * @description Signed credits; +50 for submission_approved, -1 for message_spent.
+             * @description Signed credits; +50 or +70 for submission_approved, -1 for message_spent. Bonus requires approved menu/bill evidence (#794).
              * @enum {integer}
              */
             delta: 50 | -1;
@@ -8703,6 +8747,62 @@ export interface components {
                 confidence?: number;
             }[];
         };
+        /** @description Integer minor units; max >= min. Free requires both amounts zero. Omit unknown price. */
+        ContributionPrice: {
+            min: number;
+            max: number;
+            /** @enum {string} */
+            currency: "VND";
+            /** @enum {string} */
+            unit: "per_person" | "per_group" | "per_item" | "per_hour" | "per_night" | "free";
+        };
+        ContributionRating: {
+            rating: number;
+            chipKeys: string[];
+        };
+        /** @description Unverified user claims. Stable active taxonomy keys only: purposes use suitability, vibes mood, amenities amenity, chips checkin_tag (service_ or space_ prefix respectively). Unknown price/amenities omitted. Never automatically copied to catalogue, including on approval. Photo support remains BLOCKED on #794; nonempty photos return 503 retryable false. */
+        ContributionEnrichmentDraft: {
+            price?: components["schemas"]["ContributionPrice"];
+            purposeKeys?: string[];
+            vibeKeys?: string[];
+            /** @description False is explicit absence; omitted is unknown. Only the six named keys are accepted. */
+            amenities?: {
+                car_parking?: boolean;
+                power_at_each_table?: boolean;
+                pets_allowed?: boolean;
+                separate_smoking_area?: boolean;
+                open_after_23?: boolean;
+                tables_over_six?: boolean;
+            };
+            /** @description Unique mediaId; private owner claim and receipt masking required before CMS access. Currently BLOCKED on */
+            photos?: {
+                /** Format: uuid */
+                mediaId: string;
+                /** @enum {string} */
+                kind: "menu" | "bill";
+            }[];
+            recommendedDishes?: string;
+            visitTips?: string;
+            service?: components["schemas"]["ContributionRating"];
+            space?: components["schemas"]["ContributionRating"];
+        };
+        ContributionEnrichment: components["schemas"]["ContributionEnrichmentDraft"] & {
+            purposeKeys: string[];
+            vibeKeys: string[];
+        };
+        ContributionDraft: {
+            /** Format: uuid */
+            id: string;
+            googlePlaceId: string;
+            enrichment: components["schemas"]["ContributionEnrichmentDraft"];
+            /** @enum {string} */
+            verificationStatus: "unverified";
+            version: number;
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: date-time */
+            expiresAt: string;
+        };
         SubmissionResult: {
             /** @enum {string} */
             status?: "PENDING" | "ALREADY_EXISTS";
@@ -9286,8 +9386,11 @@ export interface components {
             rejectionReason?: components["schemas"]["SubmissionRejectionReason"];
             /** @description Sanitised photos with bearer-authenticated CMS preview URLs. Fetch with the CMS Authorization header; never load from the public asset host. No original keys. */
             photos?: components["schemas"]["SubmissionPhoto"][];
-            /** @description What the contributor sent, untouched by any review. */
+            /** @description What the contributor sent, untouched by any review. Never automatically promoted to place facts. */
             contribution: {
+                enrichment?: components["schemas"]["ContributionEnrichment"];
+                /** @enum {string} */
+                verificationStatus?: "unverified";
                 categoryKey?: string;
                 estimatedPrice?: {
                     min?: number;
@@ -10529,7 +10632,7 @@ export interface components {
             }[];
         };
         AssistantStatus: {
-            /** @description No-expiry contributor credits. Prospective registered-user submission approval grants +50 once. Daily allowance first, then one credit per accepted user send (202), including later provider failure. Replay/rejection costs zero; credits never bypass burst/readiness/budget gates. */
+            /** @description No-expiry contributor credits. Prospective registered-user submission approval grants +50 once, or +70 with at least one approved menu/bill photo; photo support remains blocked on #794. Daily allowance first, then one credit per accepted user send (202), including later provider failure. Replay/rejection costs zero; credits never bypass burst/readiness/budget gates. */
             creditBalance: number;
             /** @description `enabled` — sending works. `disabled` — kill switch off (`assistant.enabled`), or the environment cannot take new replies (for example its spending limit is reached). `limit_reached` — this account's daily messages and contributor credits are both spent until `resetsAt`. Unknown values mean "cannot send now". */
             state: string;
@@ -10965,6 +11068,14 @@ export interface components {
         };
         /** @description The allowlisted export document served by `GET /me/export` and by a redeemed secure export (`POST /me/exports/{id}/download`) — one shared collector, so both carry the same sections. Only the sections whose shape this contract pins are listed here; the rest of the allowlist (profile, memberships, preferences, votes, saved, reviews, reviewReactions, notificationSettings) is described on `exportMyData`. Unknown sections may appear; ignore them. */
         UserExportDocument: {
+            contributionDrafts?: components["schemas"]["ContributionDraft"][];
+            contributionEnrichments?: {
+                /** Format: uuid */
+                submissionId: string;
+                enrichment: components["schemas"]["ContributionEnrichment"] | null;
+                /** @enum {string} */
+                verificationStatus: "unverified";
+            }[];
             assistantCreditBalance?: number;
             /** Format: date-time */
             exportedAt?: string;
@@ -15572,6 +15683,138 @@ export interface operations {
             };
         };
     };
+    listPlaceContributionDrafts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description All own live drafts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["ContributionDraft"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    getPlaceContributionDraft: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Own live draft, private no-store */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContributionDraft"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    savePlaceContributionDraft: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    googlePlaceId: string;
+                    expectedVersion: number;
+                    enrichment: components["schemas"]["ContributionEnrichmentDraft"];
+                };
+            };
+        };
+        responses: {
+            /** @description Saved draft */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContributionDraft"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description DRAFT_MODIFIED or DRAFT_LIMIT_REACHED */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            /** @description SUBMISSION_EVIDENCE_BLOCKED until private claim and sanitise pipeline */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    deletePlaceContributionDraft: {
+        parameters: {
+            query: {
+                version: number;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Draft deleted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {boolean} */
+                        deleted: true;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
     submitPlace: {
         parameters: {
             query?: never;
@@ -15582,6 +15825,7 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    enrichment?: components["schemas"]["ContributionEnrichment"];
                     googlePlaceId: string;
                     /** Format: uuid */
                     roomId?: string;
@@ -15725,6 +15969,9 @@ export interface operations {
                         googlePlaceId?: string;
                         /** Format: uuid */
                         placeId?: string;
+                        enrichment?: components["schemas"]["ContributionEnrichment"];
+                        /** @enum {string} */
+                        verificationStatus?: "unverified";
                         submissionCount?: number;
                         /** Format: date-time */
                         createdAt?: string;

@@ -8,6 +8,20 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 7.5.0-alpha.1 — Contribution wizard and private drafts (GoGo-BE#796)
+
+MINOR additive: add optional `enrichment` to place submission and owner/CMS detail responses;
+proposal facts remain unverified and never automatically become place facts.
+Add registered-user-only `/place-contribution-drafts` list and `/{id}`
+GET/PUT/DELETE, version checks and 30-day retention. Taxonomy keys, price unit
+and currency, 1–3 vibes, amenity yes/no, service/space ratings and chips.
+Menu/bill refs capped at five; nonempty photos return
+`503 SUBMISSION_EVIDENCE_BLOCKED` until #794 private claim/sanitise/masking is
+connected. Approval credit is +50, +20 only with approved menu/bill evidence
+(max +70; bonus activation blocked on #794). No old required fields change.
+Consumers regenerate clients; CMS/mobile integration and Astra/CODEOWNER review
+remain required. ADR-0048 and migration 0089.
+
 ## 7.4.0-alpha.1 — Facts và chi tiết đóng góp (GoGo-BE#801)
 
 MINOR additive: list thêm `providerDisplay` từ snapshot còn mới được lưu lúc

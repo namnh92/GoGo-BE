@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 7.4.0-alpha.1
+  version: 7.5.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -4823,6 +4823,108 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
+  /place-contribution-drafts:
+    get:
+      operationId: listPlaceContributionDrafts
+      tags: [places]
+      summary: List own unexpired drafts (registered users only)
+      description: Bounded collection, at most 20 live drafts. Private, no-store. Stable UUID order.
+      responses:
+        '200':
+          description: All own live drafts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 20
+                    items: { $ref: '#/components/schemas/ContributionDraft' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /place-contribution-drafts/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      operationId: getPlaceContributionDraft
+      tags: [places]
+      summary: Resume own draft (registered users only)
+      responses:
+        '200':
+          description: Own live draft, private no-store
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContributionDraft' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: savePlaceContributionDraft
+      tags: [places]
+      summary: Save complete draft snapshot (registered users only)
+      description: >
+        Client-generated UUID. expectedVersion 0 creates, otherwise matches the
+        current version; success increments it. 30-day sliding expiry, at most
+        20 live drafts. Draft enrichment fields are optional. No provider content
+        or resolution token is persisted. Private no-store; optimistic version
+        handles retries without retaining free text in replay storage.
+        Nonempty photos are BLOCKED on #794 (503 SUBMISSION_EVIDENCE_BLOCKED,
+        retryable false); no raw image reaches CMS.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [googlePlaceId, expectedVersion, enrichment]
+              properties:
+                googlePlaceId: { type: string, minLength: 5, maxLength: 255 }
+                expectedVersion: { type: integer, minimum: 0 }
+                enrichment: { $ref: '#/components/schemas/ContributionEnrichmentDraft' }
+      responses:
+        '200':
+          description: Saved draft
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContributionDraft' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: DRAFT_MODIFIED or DRAFT_LIMIT_REACHED
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503':
+          description: SUBMISSION_EVIDENCE_BLOCKED until private claim and sanitise pipeline #794 is connected
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    delete:
+      operationId: deletePlaceContributionDraft
+      tags: [places]
+      summary: Delete own draft (registered users only)
+      parameters:
+        - { name: version, in: query, required: true, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200':
+          description: Draft deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted: { type: boolean, enum: [true] }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /place-submissions:
     post:
       operationId: submitPlace
@@ -4846,6 +4948,7 @@ paths:
               type: object
               required: [googlePlaceId]
               properties:
+                enrichment: { $ref: '#/components/schemas/ContributionEnrichment' }
                 googlePlaceId: { type: string }
                 roomId: { type: string, format: uuid }
                 category: { type: string }
@@ -5034,6 +5137,8 @@ paths:
                   status: { type: string, enum: [pending, approved, rejected, merged] }
                   googlePlaceId: { type: string }
                   placeId: { type: string, format: uuid }
+                  enrichment: { $ref: '#/components/schemas/ContributionEnrichment' }
+                  verificationStatus: { type: string, enum: [unverified] }
                   submissionCount: { type: integer }
                   createdAt: { type: string, format: date-time }
                   rejectionReason: { $ref: '#/components/schemas/SubmissionRejectionReason' }
@@ -15658,7 +15763,7 @@ components:
         delta:
           type: integer
           enum: [50, -1]
-          description: Signed credits; +50 for submission_approved, -1 for message_spent.
+          description: Signed credits; +50 or +70 for submission_approved, -1 for message_spent. Bonus requires approved menu/bill evidence (#794).
         reason: { type: string, enum: [submission_approved, message_spent] }
         submissionId:
           type: [string, 'null']
@@ -17199,6 +17304,95 @@ components:
               name: { type: string }
               address: { type: string }
               confidence: { type: number }
+    ContributionPrice:
+      type: object
+      additionalProperties: false
+      required: [min, max, currency, unit]
+      description: Integer minor units; max >= min. Free requires both amounts zero. Omit unknown price.
+      properties:
+        min: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        max: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        currency: { type: string, enum: [VND] }
+        unit: { type: string, enum: [per_person, per_group, per_item, per_hour, per_night, free] }
+    ContributionRating:
+      type: object
+      additionalProperties: false
+      required: [rating, chipKeys]
+      properties:
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        chipKeys:
+          type: array
+          maxItems: 5
+          uniqueItems: true
+          items: { type: string, pattern: '^[a-z][a-z0-9_]{0,63}$' }
+    ContributionEnrichmentDraft:
+      type: object
+      additionalProperties: false
+      description: >
+        Unverified user claims. Stable active taxonomy keys only: purposes use
+        suitability, vibes mood, amenities amenity, chips checkin_tag (service_
+        or space_ prefix respectively). Unknown price/amenities omitted. Never
+        automatically copied to catalogue, including on approval. Photo support
+        remains BLOCKED on #794; nonempty photos return 503 retryable false.
+      properties:
+        price: { $ref: '#/components/schemas/ContributionPrice' }
+        purposeKeys:
+          type: array
+          maxItems: 10
+          uniqueItems: true
+          items: { type: string, pattern: '^[a-z][a-z0-9_]{0,63}$' }
+        vibeKeys:
+          type: array
+          maxItems: 3
+          uniqueItems: true
+          items: { type: string, pattern: '^[a-z][a-z0-9_]{0,63}$' }
+        amenities:
+          type: object
+          maxProperties: 6
+          description: False is explicit absence; omitted is unknown. Only the six named keys are accepted.
+          additionalProperties: false
+          properties:
+            car_parking: { type: boolean }
+            power_at_each_table: { type: boolean }
+            pets_allowed: { type: boolean }
+            separate_smoking_area: { type: boolean }
+            open_after_23: { type: boolean }
+            tables_over_six: { type: boolean }
+        photos:
+          type: array
+          maxItems: 5
+          description: Unique mediaId; private owner claim and receipt masking required before CMS access. Currently BLOCKED on #794.
+          items:
+            type: object
+            additionalProperties: false
+            required: [mediaId, kind]
+            properties:
+              mediaId: { type: string, format: uuid }
+              kind: { type: string, enum: [menu, bill] }
+        recommendedDishes: { type: string, maxLength: 1000 }
+        visitTips: { type: string, maxLength: 2000 }
+        service: { $ref: '#/components/schemas/ContributionRating' }
+        space: { $ref: '#/components/schemas/ContributionRating' }
+    ContributionEnrichment:
+      allOf:
+        - { $ref: '#/components/schemas/ContributionEnrichmentDraft' }
+        - type: object
+          required: [purposeKeys, vibeKeys, service, space]
+          properties:
+            purposeKeys: { type: array, minItems: 1, maxItems: 10, items: { type: string } }
+            vibeKeys: { type: array, minItems: 1, maxItems: 3, items: { type: string } }
+    ContributionDraft:
+      type: object
+      required: [id, googlePlaceId, enrichment, verificationStatus, version, updatedAt, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        googlePlaceId: { type: string }
+        enrichment: { $ref: '#/components/schemas/ContributionEnrichmentDraft' }
+        verificationStatus: { type: string, enum: [unverified] }
+        version: { type: integer, minimum: 1 }
+        updatedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+
     SubmissionResult:
       type: object
       properties:
@@ -18193,8 +18387,10 @@ components:
             CMS Authorization header; never load from the public asset host. No original keys.
         contribution:
           type: object
-          description: What the contributor sent, untouched by any review.
+          description: What the contributor sent, untouched by any review. Never automatically promoted to place facts.
           properties:
+            enrichment: { $ref: '#/components/schemas/ContributionEnrichment' }
+            verificationStatus: { type: string, enum: [unverified] }
             categoryKey: { type: string }
             estimatedPrice:
               type: object
@@ -20111,7 +20307,7 @@ components:
         creditBalance:
           type: integer
           minimum: 0
-          description: 'No-expiry contributor credits. Prospective registered-user submission approval grants +50 once. Daily allowance first, then one credit per accepted user send (202), including later provider failure. Replay/rejection costs zero; credits never bypass burst/readiness/budget gates.'
+          description: 'No-expiry contributor credits. Prospective registered-user submission approval grants +50 once, or +70 with at least one approved menu/bill photo; photo support remains blocked on #794. Daily allowance first, then one credit per accepted user send (202), including later provider failure. Replay/rejection costs zero; credits never bypass burst/readiness/budget gates.'
         state:
           type: string
           description: >
@@ -20647,6 +20843,22 @@ components:
         reviews, reviewReactions, notificationSettings) is described on
         `exportMyData`. Unknown sections may appear; ignore them.
       properties:
+        contributionDrafts:
+          type: array
+          items: { $ref: '#/components/schemas/ContributionDraft' }
+        contributionEnrichments:
+          type: array
+          items:
+            type: object
+            required: [submissionId, enrichment, verificationStatus]
+            properties:
+              submissionId: { type: string, format: uuid }
+              enrichment:
+                oneOf:
+                  - { $ref: '#/components/schemas/ContributionEnrichment' }
+                  - { type: 'null' }
+              verificationStatus: { type: string, enum: [unverified] }
+
         assistantCreditBalance: { type: integer, minimum: 0 }
         exportedAt: { type: string, format: date-time }
         placeSubmissions:

@@ -3,6 +3,7 @@ import { type Db } from '@gogo/database';
 import { purgeAssistantRetention } from '../assistant/application/assistant-privacy';
 
 export type PrivacyRunReport = {
+  contributionDraftsPurged: number;
   searchTermsPurged: number;
   loginAttemptsPurged: number;
   idempotencyKeysPurged: number;
@@ -36,6 +37,7 @@ export class PrivacyJobs {
 
   async run(dryRun = false): Promise<PrivacyRunReport> {
     const report: PrivacyRunReport = {
+      contributionDraftsPurged: 0,
       searchTermsPurged: 0,
       loginAttemptsPurged: 0,
       idempotencyKeysPurged: 0,
@@ -52,6 +54,13 @@ export class PrivacyJobs {
       const res = await this.db.execute(sql.raw(`select count(*)::int as n from (${query}) q`));
       return (res.rows[0] as { n: number }).n;
     };
+
+    report.contributionDraftsPurged = await count(
+      'select id from place_contribution_drafts where expires_at <= now()',
+    );
+    if (!dryRun && report.contributionDraftsPurged > 0) {
+      await this.db.execute(sql`delete from place_contribution_drafts where expires_at <= now()`);
+    }
 
     // SE-006 search terms: 90-day retention on the text, not on the counts.
     // The aggregate stays so trends survive; the free-text term is dropped,

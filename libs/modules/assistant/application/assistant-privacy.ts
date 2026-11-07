@@ -18,6 +18,10 @@ export const LEDGER_RETENTION_DAYS = 400;
  */
 export async function eraseAssistantDataForUser(tx: Exec, userId: string): Promise<void> {
   await lockAssistantAccount(tx, userId);
+  await tx.execute(sql`delete from place_contribution_drafts where user_id = ${userId}`);
+  await tx.execute(
+    sql`update place_submissions set enrichment = null where submitted_by_user_id = ${userId}`,
+  );
   await tx.execute(
     sql`update place_submissions set submitted_by_user_id = null where submitted_by_user_id = ${userId}`,
   );

@@ -334,7 +334,7 @@ export const assistantCreditLedger = pgTable(
     ),
     check(
       'assistant_credit_ledger_check',
-      sql`(${t.reason}='submission_approved' and ${t.delta}=50 and ${t.submissionId} is not null and ${t.venueIdentity} is not null and ${t.usageLedgerId} is null) or (${t.reason}='message_spent' and ${t.delta}=-1 and ${t.usageLedgerId} is not null and ${t.submissionId} is null and ${t.venueIdentity} is null)`,
+      sql`(${t.reason}='submission_approved' and ${t.delta} in (50,70) and ${t.submissionId} is not null and ${t.venueIdentity} is not null and ${t.usageLedgerId} is null) or (${t.reason}='message_spent' and ${t.delta}=-1 and ${t.usageLedgerId} is not null and ${t.submissionId} is null and ${t.venueIdentity} is null)`,
     ),
   ],
 );

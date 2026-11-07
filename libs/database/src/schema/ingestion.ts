@@ -430,6 +430,7 @@ export const placeSubmissions = pgTable(
      * provider content.
      */
     submissionRevision: integer('submission_revision').notNull().default(1),
+    enrichment: jsonb('enrichment').$type<SubmissionEnrichment>(),
     reviewDraft: jsonb('review_draft').$type<SubmissionReviewDraft>(),
     reviewedByAdminId: uuid('reviewed_by_admin_id'),
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
@@ -498,5 +499,45 @@ export const placeSubmissionPhotos = pgTable(
       'place_submission_photos_status_check',
       sql`${t.status} in ('pending','approved','rejected')`,
     ),
+  ],
+);
+
+/** Unverified contributor claims. Never a catalogue fact or provider content. */
+export type SubmissionEnrichment = {
+  price?:
+    | {
+        min: number;
+        max: number;
+        currency: 'VND';
+        unit: 'per_person' | 'per_group' | 'per_item' | 'per_hour' | 'per_night' | 'free';
+      }
+    | undefined;
+  purposeKeys?: string[] | undefined;
+  vibeKeys?: string[] | undefined;
+  amenities?: Record<string, boolean> | undefined;
+  photos?: { mediaId: string; kind: 'menu' | 'bill' }[] | undefined;
+  recommendedDishes?: string | undefined;
+  visitTips?: string | undefined;
+  service?: { rating: number; chipKeys: string[] } | undefined;
+  space?: { rating: number; chipKeys: string[] } | undefined;
+};
+
+export const placeContributionDrafts = pgTable(
+  'place_contribution_drafts',
+  {
+    id: uuid('id').primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    googlePlaceId: text('google_place_id').notNull(),
+    enrichment: jsonb('enrichment').$type<SubmissionEnrichment>().notNull(),
+    version: integer('version').notNull().default(1),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    index('place_contribution_drafts_owner_idx').on(t.userId),
+    index('place_contribution_drafts_expiry_idx').on(t.expiresAt),
+    check('place_contribution_drafts_version_check', sql`${t.version} > 0`),
   ],
 );

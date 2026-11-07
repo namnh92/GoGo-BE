@@ -224,6 +224,52 @@ export async function collectUserExport(
     budget,
   );
 
+  const contributionDrafts = await collectPaged(
+    (after, limit) =>
+      db
+        .select()
+        .from(schema.placeContributionDrafts)
+        .where(
+          and(
+            eq(schema.placeContributionDrafts.userId, userId),
+            gt(schema.placeContributionDrafts.expiresAt, sql`now()`),
+            after ? gt(schema.placeContributionDrafts.id, after) : undefined,
+          ),
+        )
+        .orderBy(asc(schema.placeContributionDrafts.id))
+        .limit(limit),
+    (row) => ({
+      id: row.id,
+      googlePlaceId: row.googlePlaceId,
+      enrichment: row.enrichment,
+      verificationStatus: 'unverified' as const,
+      version: row.version,
+      updatedAt: row.updatedAt.toISOString(),
+      expiresAt: row.expiresAt.toISOString(),
+    }),
+    budget,
+  );
+  const contributionEnrichments = await collectPaged(
+    (after, limit) =>
+      db
+        .select()
+        .from(schema.placeSubmissions)
+        .where(
+          and(
+            eq(schema.placeSubmissions.submittedByUserId, userId),
+            after ? gt(schema.placeSubmissions.id, after) : undefined,
+          ),
+        )
+        .orderBy(asc(schema.placeSubmissions.id))
+        .limit(limit),
+    (row) => ({
+      submissionId: row.id,
+      enrichment: row.enrichment,
+      verificationStatus: 'unverified' as const,
+    }),
+    budget,
+  );
+
   const notificationSettings = await readNotificationSettings(db, userId);
   const s = schema.placeSubmissions;
   const placeSubmissions = await collectPaged(
@@ -282,6 +328,8 @@ export async function collectUserExport(
     reviewReactions,
     placeSubmissions,
     assistantConversations,
+    contributionDrafts,
+    contributionEnrichments,
     assistantCreditBalance: await creditBalance(db, userId),
   };
 }
