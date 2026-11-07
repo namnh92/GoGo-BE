@@ -8,6 +8,18 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 6.5.0-alpha.1 — 2026-11-07
+
+Additive MINOR from 6.4.0-alpha.1.
+
+- #786: optional single-photo `ResolveLinkResult.candidate.photo` BFF reference;
+  public `getCandidateProviderPhoto` JSON proxy with at most one transient image,
+  no-store, Google/author credits, shared flag and cost limits.
+- Approved link submissions may retain one current first Google photo as approved
+  provider media (ADR-0043); Place Detail and cards carry per-photo credits/source.
+  Pending and rejected submissions retain no provider image data. Photo pipeline
+  outages leave approval pending with retryable `SUBMISSION_PHOTO_UNAVAILABLE`.
+
 ## 6.4.0-alpha.1 — Checked-in room count (GoGo-BE#785)
 
 Additive MINOR from 6.3.0-alpha.1. `PlaceDetail.checkedInGroupCount` counts

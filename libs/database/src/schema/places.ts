@@ -430,6 +430,14 @@ export const placeMedia = pgTable(
      * the moment an editor reorders the list is the failure this prevents.
      */
     attribution: text('attribution'),
+    /** #786: durable only after approval; provider identity and credits stay provider-owned. */
+    providerPhoto: jsonb('provider_photo').$type<{
+      provider: 'google';
+      sourceReference: string;
+      fetchedAt: string;
+      authorAttributions: { displayName: string; uri: string | null; photoUri: string | null }[];
+      googleMapsUri: string | null;
+    }>(),
     /** One per place — enforced by a partial unique index, not by convention. */
     isCover: boolean('is_cover').notNull().default(false),
     /** Same vocabulary as `place_field_provenance`: who the image came from. */

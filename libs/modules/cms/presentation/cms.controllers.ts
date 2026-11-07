@@ -979,6 +979,7 @@ export class CmsCatalogController {
    */
   @NoIdempotencyReplay()
   @RateLimit({ action: 'cms.places.resolve_link', limit: 20, windowSeconds: 60, keyBy: 'ip+actor' })
+  @Header('cache-control', 'private, no-store')
   @Post('resolve-link')
   resolveLink(
     @Body(new ZodValidationPipe(resolveLinkSchema)) body: z.infer<typeof resolveLinkSchema>,

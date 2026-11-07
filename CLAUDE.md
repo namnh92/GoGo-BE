@@ -16,7 +16,12 @@ Backend BFF for GoGo (couple/group date planning). Modular monolith: `apps/api` 
 - Constraint change → dependent scores/plans stale. Locked stops survive regenerate. Votes idempotent.
 - AI never overrides hard constraints; only allowlisted candidate IDs; schema + budget/time validation; ≤15s timeout → deterministic fallback; kill switch.
 - Place facts (price/hours/availability) only from verified data, never AI output.
-- **No new persistent Google content.** Place IDs may be stored indefinitely; a
+- **Narrow owner exception (2026-11-07, GoGo-BE#786):** explicit admin
+  approval of a link submission may retain at most one bounded provider photo
+  with Google provenance and author attribution; see [ADR-0043](docs/adr/0043-approved-submission-provider-photo.md).
+  No persistence during resolve, preview or pending submission. This exception
+  changes no other Google content rules.
+- **No new persistent Google content outside that exception.** Place IDs may be stored indefinitely; a
   provider object reused inside one execution persists nothing. Adding a
   provider-response snapshot, a new provider-derived column, or a cache of
   names/addresses/ratings/hours/coordinates is a blocking review finding. The

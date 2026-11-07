@@ -1,3 +1,8 @@
+import {
+  ProviderPhotosService,
+  type CandidatePhotoReference,
+} from '../../search/application/provider-photos.service';
+import { SubmissionPhotoService } from './submission-photo.service';
 import { grantSubmissionCredits, lockAssistantAccount } from '../../shared/assistant-credits';
 import type { Tx } from '../../shared/outbox';
 import { Inject, Injectable, Optional } from '@nestjs/common';
@@ -59,6 +64,7 @@ export type ResolveLinkResponse = {
    */
   resolutionToken?: string | undefined;
   candidate?: {
+    photo?: CandidatePhotoReference;
     googlePlaceId: string;
     name: string;
     address: string;
@@ -248,6 +254,8 @@ export class PlaceSubmissionService {
     @Inject(APP_CONFIG)
     private readonly config: PlatformConfig & ResolutionAttestationConfig,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
+    @Optional() private readonly providerPhotos?: ProviderPhotosService,
+    @Optional() private readonly submissionPhotos?: SubmissionPhotoService,
   ) {}
 
   private async dbFirstEnabled(): Promise<boolean> {
@@ -392,6 +400,8 @@ export class PlaceSubmissionService {
         candidate,
       };
     }
+    const photo = await this.providerPhotos?.candidateReference(details.providerPlaceId);
+    if (photo) Object.assign(candidate, { photo });
     return {
       status: 'RESOLVED',
       matchConfidence: decision.best?.confidence,
@@ -1447,6 +1457,7 @@ export class PlaceSubmissionService {
             }
           : null;
 
+    const photo = await this.submissionPhotos?.prepare(row.googlePlaceId);
     return this.db
       .transaction(async (tx) => {
         // Account first: erasure may clear submission ownership while holding it.
@@ -1486,6 +1497,7 @@ export class PlaceSubmissionService {
             freshnessCheckedAt: new Date(),
           })
           .returning();
+        if (photo) await this.submissionPhotos!.attach(tx, place!.id, adminId, photo);
         for (const h of d.hours) {
           await tx.insert(schema.placeHours).values({
             placeId: place!.id,
@@ -1591,6 +1603,10 @@ export class PlaceSubmissionService {
         await this.dedup.emitReindex(place!.id, 'published', tx);
         await finalize(tx, place!.id);
         return place!.id;
+      })
+      .catch(async (error: unknown) => {
+        if (photo) await this.submissionPhotos!.discard(photo);
+        throw error;
       })
       .then((placeId) => {
         if (mappingWrite) this.administrative.countPersist(mappingWrite);

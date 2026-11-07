@@ -288,6 +288,16 @@ export class CmsPlaceMediaService {
     const rejecting = patch.moderation === 'rejected';
     const isCover = rejecting ? false : patch.isCover;
 
+    if (
+      before.providerPhoto &&
+      patch.attribution !== undefined &&
+      patch.attribution !== before.attribution
+    ) {
+      throw AppError.badRequest(
+        'PROVIDER_ATTRIBUTION_IMMUTABLE',
+        'Provider attribution must be preserved',
+      );
+    }
     const changes = {
       ...(patch.sortOrder !== undefined ? { sortOrder: patch.sortOrder } : {}),
       ...(patch.caption !== undefined ? { caption: patch.caption } : {}),
@@ -344,12 +354,18 @@ export class CmsPlaceMediaService {
    * another place after a merge — and because an editor removing a photo from
    * one place has not asked to destroy a file. Only when nothing else
    * references the key is the upload released back to `pending`, so the
-   * existing sweeper can reclaim it on its own schedule.
+   * existing sweeper can reclaim it on its own schedule. Approved provider
+   * photos have no upload row: their last reference instead queues public
+   * object cleanup in the same transaction as the detach.
    */
   async detach(actor: Actor, placeId: string, mediaId: string) {
     const row = await this.row(placeId, mediaId);
 
     await this.db.transaction(async (tx) => {
+      // Serialise shared provider-key detaches: concurrent transactions must
+      // not each see the other's final reference and both skip cleanup.
+      if (row.providerPhoto)
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${row.storageKey}, 0))`);
       await tx.delete(schema.placeMedia).where(eq(schema.placeMedia.id, mediaId));
 
       const [{ refs }] = (await tx
@@ -358,6 +374,16 @@ export class CmsPlaceMediaService {
         )
         .then((r) => r.rows)) as [{ refs: number }];
       if (Number(refs) === 0) {
+        if (row.providerPhoto) {
+          await tx
+            .insert(schema.mediaCleanupQueue)
+            .values({
+              bucket: 'public',
+              objectKey: row.storageKey,
+              reason: 'submission_provider_photo_detached',
+            })
+            .onConflictDoNothing();
+        }
         await tx
           .update(schema.mediaUploads)
           .set({ status: 'pending', attachedToType: null, attachedToId: null, attachedAt: null })
@@ -387,6 +413,12 @@ export class CmsPlaceMediaService {
       moderatedAt: row.moderatedAt?.toISOString() ?? null,
       caption: row.caption,
       attribution: row.attribution,
+      ...(row.providerPhoto
+        ? {
+            authorAttributions: row.providerPhoto.authorAttributions,
+            googleMapsUri: row.providerPhoto.googleMapsUri,
+          }
+        : {}),
       isCover: row.isCover,
       sourceType: row.sourceType,
       createdAt: row.createdAt.toISOString(),

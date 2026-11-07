@@ -17,7 +17,12 @@ export type PlacePhotoRow = {
   storageKey: string;
   width: number | null;
   height: number | null;
-  source: 'manual' | 'community';
+  source: 'google' | 'manual' | 'community';
+  attribution?: string | null;
+  providerPhoto?: {
+    authorAttributions: { displayName: string; uri: string | null; photoUri: string | null }[];
+    googleMapsUri: string | null;
+  } | null;
   moderation: string;
 };
 
@@ -28,6 +33,8 @@ export type PlacePhoto = {
   height?: number | undefined;
   source: 'google' | 'community' | 'manual';
   attribution?: string | undefined;
+  authorAttributions?: { displayName: string; uri: string | null; photoUri: string | null }[];
+  googleMapsUri?: string | null;
 };
 
 /** `numeric` is a string over the wire; `null` stays absent, never NaN. */
@@ -72,6 +79,14 @@ export function toPhotos(
       source: row.source,
       // Provider imagery must be shown with its attribution; GoGo's own is not
       // attributed to anyone.
-      ...(row.source !== 'manual' && attribution ? { attribution } : {}),
+      ...(row.source !== 'manual' && (row.attribution || attribution)
+        ? { attribution: row.attribution || attribution }
+        : {}),
+      ...(row.source === 'google' && row.providerPhoto
+        ? {
+            authorAttributions: row.providerPhoto.authorAttributions,
+            googleMapsUri: row.providerPhoto.googleMapsUri,
+          }
+        : {}),
     }));
 }

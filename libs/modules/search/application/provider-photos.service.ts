@@ -86,6 +86,14 @@ export const PROVIDER_PHOTO_OUTCOMES = [
 ] as const;
 type ProviderPhotoOutcome = (typeof PROVIDER_PHOTO_OUTCOMES)[number];
 
+export type CandidatePhotoReference = {
+  url: string;
+  provider: 'google';
+  attribution: string;
+  authorAttributions: ProviderPhotoAuthor[];
+  googleMapsUri: string | null;
+};
+
 type Result = { dto: ProviderPhotosDto; outcome: ProviderPhotoOutcome };
 /** Photos paid for so far in this request, by position; `null` = not shown. */
 type Bought = { photos: (ProviderPhotoDto | null)[] };
@@ -135,8 +143,47 @@ export class ProviderPhotosService {
     return result.dto;
   }
 
+  /** #786: references only; no billed media and nothing retained between requests. */
+  async candidateReference(providerPlaceId: string): Promise<CandidatePhotoReference | undefined> {
+    if (!(await this.enabled()) || !this.mediaBudgetConfigured()) return undefined;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.deadlineMs);
+    try {
+      const refs = await Promise.race([
+        this.refsFor(providerPlaceId, controller.signal),
+        new Promise<null>((resolve) =>
+          controller.signal.addEventListener('abort', () => resolve(null), { once: true }),
+        ),
+      ]);
+      const first = refs?.[0];
+      if (!first) return undefined;
+      return {
+        url: `/v1/places/google-provider-photo/${encodeURIComponent(providerPlaceId)}`,
+        provider: 'google',
+        attribution: GOOGLE_ATTRIBUTION,
+        authorAttributions: first.authorAttributions,
+        googleMapsUri: first.googleMapsUri,
+      };
+    } catch {
+      return undefined;
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
+    }
+  }
+
+  /** #786: candidate proxy and approval share the existing bounded, metered pipeline. */
+  async firstForProvider(providerPlaceId: string): Promise<ProviderPhotosDto> {
+    const result = await this.resolveProvider(providerPlaceId, 1);
+    this.metrics.increment('place_provider_photos_total', { outcome: result.outcome });
+    return result.dto;
+  }
+
   private async resolve(placeId: string): Promise<Result> {
-    const providerPlaceId = await this.googleIdOf(placeId);
+    return this.resolveProvider(await this.googleIdOf(placeId), MAX_PROVIDER_PHOTOS);
+  }
+
+  private async resolveProvider(providerPlaceId: string | null, limit: number): Promise<Result> {
     if (!(await this.enabled())) return this.result('disabled', 'disabled');
     if (!providerPlaceId) return this.result('not_linked', 'not_linked');
     // The reference lookup is IDs Only and free, so it reserves nothing — but
@@ -158,7 +205,7 @@ export class ProviderPhotosService {
     // F-09 (SA): photos already bought stay visible here, so a deadline that
     // fires during the expired-name retry still shows what was paid for.
     const bought: Bought = { photos: [] };
-    const work = this.fetch(providerPlaceId, controller.signal, bought).catch((): Result =>
+    const work = this.fetch(providerPlaceId, controller.signal, bought, limit).catch((): Result =>
       this.result('unavailable', 'provider_error'),
     );
     try {
@@ -176,11 +223,12 @@ export class ProviderPhotosService {
     providerPlaceId: string,
     signal: AbortSignal,
     bought: Bought,
+    limit: number,
   ): Promise<Result> {
     const refs = await this.refsFor(providerPlaceId, signal);
     if (!refs) return this.result('unavailable', 'identity_mismatch');
 
-    const wanted = refs.slice(0, MAX_PROVIDER_PHOTOS);
+    const wanted = refs.slice(0, limit);
     if (wanted.length === 0) return this.result('ok', 'empty');
 
     // One reservation per billed call, immediately before it — the refresh

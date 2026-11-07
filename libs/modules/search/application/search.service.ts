@@ -340,7 +340,14 @@ export class SearchService {
                 storageKey: row.photo_key,
                 width: row.photo_width,
                 height: row.photo_height,
-                source: row.photo_from_community ? 'community' : 'manual',
+                source:
+                  row.photo_source_type === 'google_derived' || row.photo_source_type === 'provider'
+                    ? 'google'
+                    : row.photo_from_community
+                      ? 'community'
+                      : 'manual',
+                attribution: row.photo_attribution ?? null,
+                providerPhoto: row.photo_provider_metadata ?? null,
                 moderation: 'approved',
               },
             ],

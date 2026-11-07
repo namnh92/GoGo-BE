@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Put, Query } from '@nestjs/common';
+import { Header, Body, Controller, Get, Param, Post, Put, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { contactProvenanceSchema } from '../../shared/place-contact-schema';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
@@ -6,6 +6,7 @@ import type { Actor } from '../../identity/domain/actor';
 import { CurrentActor, Public, RateLimit } from '../../identity/presentation/decorators';
 import { RequireRole } from '../../cms/presentation/admin.guard';
 import { PlaceSubmissionService } from '../application/place-submission.service';
+import { NoIdempotencyReplay } from '../../shared/idempotency.interceptor';
 
 const Uuid = new ZodValidationPipe(z.string().uuid());
 
@@ -50,6 +51,8 @@ export class IngestionController {
    */
   @Public()
   @RateLimit({ action: 'places.resolve_link', limit: 10, windowSeconds: 60, keyBy: 'ip' })
+  @Header('cache-control', 'private, no-store')
+  @NoIdempotencyReplay()
   @Post('places/resolve-google-maps-link')
   resolve(@Body(new ZodValidationPipe(resolveSchema)) body: z.infer<typeof resolveSchema>) {
     return this.submissions.resolveLink({ url: body.url, cityHint: body.cityHint });

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 6.4.0-alpha.1
+  version: 6.5.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -3798,6 +3798,43 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
+  /places/google-provider-photo/{googlePlaceId}:
+    get:
+      tags: [places]
+      operationId: getCandidateProviderPhoto
+      summary: Fetch at most one transient Google candidate photo through the BFF
+      description: >
+        Public, 10/min/IP. Fetch the candidate photo reference as JSON and render
+        its base64 bytes with its Google Maps and author attribution; the URL is
+        not a directly loadable image. No Google key/name/URL for image retrieval
+        is exposed. Fresh first photo at fetch time; response credits are authoritative.
+        Flag place_provider_photos, google.places.display budgets, 800px/400KiB,
+        6s overall deadline and bounded expired-reference retry apply. Nothing is stored.
+      security: []
+      parameters:
+        - name: googlePlaceId
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[A-Za-z0-9_-]{5,255}$' }
+      responses:
+        '200':
+          description: Photo or an empty degraded response; never prevents link submission
+          headers:
+            Cache-Control:
+              schema: { type: string, const: 'private, no-store' }
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: '#/components/schemas/PlaceProviderPhotos' }
+                  - type: object
+                    properties:
+                      photos:
+                        type: array
+                        maxItems: 1
+                        items: { $ref: '#/components/schemas/PlaceProviderPhoto' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /places/{id}/provider-photos:
     get:
       operationId: getPlaceProviderPhotos
@@ -5038,6 +5075,14 @@ paths:
         `field_errors`; re-save the draft with its sources and approve again.
 
 
+        #786 / ADR-0043: with provider photos enabled, approval retains at most
+        one current first Google photo with provider provenance and per-photo
+        credits. No image or references were stored while pending. Disabled or
+        confirmed no-photo results permit approval without imagery; photo budget,
+        provider or storage failures return retryable `503 SUBMISSION_PHOTO_UNAVAILABLE`
+        and leave the submission pending. Google may change photo order since preview.
+
+
         `rejected` creates no place. `merged` points the proposal at an existing
         one and writes nothing to it.
 
@@ -5055,6 +5100,13 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503':
+          description: >
+            Retryable provider verification or photo/storage/budget outage.
+            SUBMISSION_PHOTO_UNAVAILABLE leaves the submission pending.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /cms/place-imports:
     post:
@@ -15931,6 +15983,24 @@ components:
         max: { type: integer }
         currency: { type: string }
         confidence: { type: number, minimum: 0, maximum: 1 }
+    CandidateProviderPhotoReference:
+      type: object
+      description: >
+        Optional single-photo BFF reference, only from a live resolved candidate
+        with a provider photo and the flag/budget configured. Resolve buys no
+        photo media and persists nothing. Fetch url as JSON, not an image src.
+        Omitted for disabled/no-photo/provider-error/DB-first/ambiguous results.
+        Approval re-fetches the current first Google photo; Google can change
+        photo order between preview and moderation.
+      required: [url, provider, attribution, authorAttributions, googleMapsUri]
+      properties:
+        url: { type: string, description: Relative BFF path; no provider key or photo name }
+        provider: { type: string, const: google }
+        attribution: { type: string }
+        authorAttributions:
+          type: array
+          items: { $ref: '#/components/schemas/ProviderPhotoAuthor' }
+        googleMapsUri: { type: [string, 'null'], format: uri }
     PlaceProviderPhotos:
       type: object
       description: >
@@ -16674,6 +16744,8 @@ components:
         candidate:
           type: object
           properties:
+            photo:
+              $ref: '#/components/schemas/CandidateProviderPhotoReference'
             googlePlaceId: { type: string }
             name: { type: string }
             address: { type: string }
@@ -17682,6 +17754,11 @@ components:
           description: >
             Present for provider imagery, which must be displayed with it.
             Community photos are only returned once approved in moderation.
+        authorAttributions:
+          type: array
+          description: Per-photo provider credits that must be rendered with this image.
+          items: { $ref: '#/components/schemas/ProviderPhotoAuthor' }
+        googleMapsUri: { type: [string, 'null'], format: uri }
     RoomListItem:
       type: object
       required: [id, type, status, decisionMode, participantCount, updatedAt, myRole, myMemberId]
@@ -17764,6 +17841,14 @@ components:
         attribution:
           type: [string, 'null']
           description: Provider terms survive an editor touching the list (FR-INGEST-014).
+        authorAttributions:
+          type: array
+          description: Per-photo provider credits that must be rendered with this image.
+          items: { $ref: '#/components/schemas/ProviderPhotoAuthor' }
+        googleMapsUri:
+          type: [string, 'null']
+          format: uri
+          description: Provider source link for this photo, when supplied.
         isCover: { type: boolean, description: At most one per place. }
         sourceType: { type: string, enum: [editorial, provider, community, google_derived] }
         createdAt: { type: [string, 'null'], format: date-time }

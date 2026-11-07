@@ -300,3 +300,69 @@ describe('ProviderPhotosService', () => {
     expect(outcomes).toEqual(['refused_budget']);
   });
 });
+
+describe('#786 single candidate photo', () => {
+  function candidateService(enabled = true) {
+    const port = {
+      photoRefs: vi.fn(async () => ({
+        providerPlaceId: GOOGLE_ID,
+        photos: [ref('one'), ref('two')],
+      })),
+      photoMedia: vi.fn(async () => JPEG),
+    };
+    const reserve = vi.fn(async () => ({ ok: true }));
+    const db = {
+      execute: vi.fn(async () => ({
+        rows: [{ environment: 'all', platform: 'all', enabled, payload: null }],
+      })),
+    };
+    return {
+      port,
+      reserve,
+      service: new ProviderPhotosService(db as never, port as never, CONFIG, undefined, {
+        reserve,
+      } as never),
+    };
+  }
+
+  it('resolve returns one BFF reference and credits without buying or exposing a Google ref', async () => {
+    const { service, port, reserve } = candidateService();
+    const result = await service.candidateReference(GOOGLE_ID);
+    expect(result).toMatchObject({
+      url: `/v1/places/google-provider-photo/${GOOGLE_ID}`,
+      provider: 'google',
+      attribution: 'Google Maps',
+      authorAttributions: [{ displayName: 'Lan' }],
+    });
+    expect(JSON.stringify(result)).not.toContain('/photos/');
+    expect(port.photoMedia).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+  });
+
+  it('flag off skips references and media for both preview and approval', async () => {
+    const { service, port } = candidateService(false);
+    expect(await service.candidateReference(GOOGLE_ID)).toBeUndefined();
+    expect(await service.firstForProvider(GOOGLE_ID)).toMatchObject({
+      status: 'disabled',
+      photos: [],
+    });
+    expect(port.photoRefs).not.toHaveBeenCalled();
+    expect(port.photoMedia).not.toHaveBeenCalled();
+  });
+
+  it('proxy buys at most one first photo using existing reservation', async () => {
+    const { service, port, reserve } = candidateService();
+    const result = await service.firstForProvider(GOOGLE_ID);
+    expect(result.photos).toHaveLength(1);
+    expect(port.photoMedia).toHaveBeenCalledTimes(1);
+    expect(reserve).toHaveBeenCalledTimes(1);
+  });
+
+  it('missing photos and identity changes omit candidate reference', async () => {
+    const { service, port } = candidateService();
+    port.photoRefs.mockResolvedValueOnce({ providerPlaceId: GOOGLE_ID, photos: [] });
+    expect(await service.candidateReference(GOOGLE_ID)).toBeUndefined();
+    port.photoRefs.mockResolvedValueOnce({ providerPlaceId: 'different', photos: [ref('one')] });
+    expect(await service.candidateReference(GOOGLE_ID)).toBeUndefined();
+  });
+});

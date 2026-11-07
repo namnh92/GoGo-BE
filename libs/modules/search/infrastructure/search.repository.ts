@@ -10,6 +10,7 @@ import { DB } from '../../shared/tokens';
 import { PUBLIC_REVIEW_STATUS } from '../../reviews/domain/public-review';
 import { toSearchQuery } from '../domain/normalize';
 import { CheckedInGroupCounts } from './checked-in-group-counts';
+import type { PlacePhotoRow } from '../domain/place-dto';
 
 export type SearchWeights = {
   text: number;
@@ -82,6 +83,9 @@ export type SearchRow = {
   photo_width: number | null;
   photo_height: number | null;
   photo_from_community: boolean | null;
+  photo_source_type?: string | null;
+  photo_attribution?: string | null;
+  photo_provider_metadata?: PlacePhotoRow['providerPhoto'];
   name: string;
   address_text: string | null;
   area_key: string | null;
@@ -366,6 +370,8 @@ export class SearchRepository {
         pm.id as photo_id, pm.storage_key as photo_key,
         pm.width as photo_width, pm.height as photo_height,
         pm.uploaded_by_user_id is not null as photo_from_community,
+        pm.source_type as photo_source_type, pm.attribution as photo_attribution,
+        pm.provider_photo as photo_provider_metadata,
         ${distanceM} as distance_m,
         ${textScore} as text_score,
         sv.sort_value,
@@ -379,7 +385,7 @@ export class SearchRepository {
         limit 1
       ) lp on true
       left join lateral (
-        select m.id, m.storage_key, m.width, m.height, m.uploaded_by_user_id
+        select m.id, m.storage_key, m.width, m.height, m.uploaded_by_user_id, m.source_type, m.attribution, m.provider_photo
         from place_media m
         where m.place_id = p.id and m.moderation = 'approved'
         -- #191: the cover is what an editor chose to represent the place, so
@@ -522,7 +528,8 @@ export class SearchRepository {
         (select json_agg(json_build_object(
             'id', m.id, 'storageKey', m.storage_key,
             'width', m.width, 'height', m.height,
-            'source', case when m.uploaded_by_user_id is null then 'manual' else 'community' end,
+            'source', case when m.source_type in ('google_derived', 'provider') then 'google' when m.uploaded_by_user_id is null then 'manual' else 'community' end,
+            'providerPhoto', m.provider_photo,
             'moderation', m.moderation,
             'caption', m.caption, 'attribution', m.attribution,
             'isCover', m.is_cover)

@@ -151,7 +151,13 @@ export class MediaCleanupService {
       .from(schema.users)
       .where(eq(schema.users.avatarKey, objectKey))
       .limit(1);
-    return referenced !== undefined;
+    if (referenced !== undefined) return true;
+    const [media] = await this.db
+      .select({ id: schema.placeMedia.id })
+      .from(schema.placeMedia)
+      .where(eq(schema.placeMedia.storageKey, objectKey))
+      .limit(1);
+    return media !== undefined;
   }
 
   private async attempt(
