@@ -138,26 +138,38 @@ it('serializes concurrent writers without lost versions', async () => {
 });
 
 it('rolls back taxonomy, generation and audit on label or audit failure', async () => {
-  const before = await cms.taxonomyVersion();
+  const snapshot = async () => ({
+    generation: await cms.taxonomyVersion(),
+    taxonomies: await db.select().from(schema.taxonomies).orderBy(schema.taxonomies.id),
+    labels: await db
+      .select()
+      .from(schema.taxonomyLabels)
+      .orderBy(schema.taxonomyLabels.taxonomyId, schema.taxonomyLabels.locale),
+    audits: await db.select().from(schema.auditLogs).orderBy(schema.auditLogs.id),
+  });
+  const before = await snapshot();
   await expect(
-    cms.createTaxonomy(actor, { kind: 'mood', key: 'failed799', labels: { vi: null as never } }),
-  ).rejects.toThrow();
+    cms.createTaxonomy(actor, {
+      kind: 'mood',
+      key: 'failed799',
+      labels: { en: 'Written before failure', vi: null as never },
+    }),
+  ).rejects.toMatchObject({ cause: { code: '23502', column: 'label' } });
+  expect(await snapshot()).toEqual(before);
   await expect(cms.updateTaxonomy(actor, randomUUID(), { sortOrder: 1 })).rejects.toThrow();
   await expect(cms.addSynonym(actor, randomUUID(), { term: 'missing' })).rejects.toThrow();
+  expect(await snapshot()).toEqual(before);
   await db.execute(sql`create function reject_taxonomy_audit799() returns trigger language plpgsql as $$
     begin if new.action like 'taxonomy.%' then raise exception 'audit unavailable'; end if; return new; end $$`);
   await db.execute(sql`create trigger reject_taxonomy_audit799 before insert on audit_logs
     for each row execute function reject_taxonomy_audit799()`);
   try {
+    // Drizzle wraps the trigger's PostgreSQL error in the query error's cause.
     await expect(
       cms.createTaxonomy(actor, { kind: 'mood', key: 'auditfailed799', labels: { vi: 'Nhãn' } }),
-    ).rejects.toThrow('audit unavailable');
+    ).rejects.toMatchObject({ cause: { code: 'P0001', message: 'audit unavailable' } });
   } finally {
     await db.execute(sql`drop trigger reject_taxonomy_audit799 on audit_logs`);
   }
-  expect(await cms.taxonomyVersion()).toEqual(before);
-  const failed = await db.execute(
-    sql`select id from taxonomies where key in ('failed799', 'auditfailed799')`,
-  );
-  expect(failed.rows).toEqual([]);
+  expect(await snapshot()).toEqual(before);
 });
