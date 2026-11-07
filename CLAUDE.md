@@ -19,6 +19,8 @@ Backend BFF for GoGo (couple/group date planning). Modular monolith: `apps/api` 
 - **Narrow owner exception (2026-11-07, GoGo-BE#786):** explicit admin
   approval of a link submission may retain at most one bounded provider photo
   with Google provenance and author attribution; see [ADR-0043](docs/adr/0043-approved-submission-provider-photo.md).
+  Owner extension #797 also permits the explicit ops backfill for published
+  places with no approved media, through the same pipeline and attribution.
   No persistence during resolve, preview or pending submission. This exception
   changes no other Google content rules.
 - **No new persistent Google content outside that exception.** Place IDs may be stored indefinitely; a

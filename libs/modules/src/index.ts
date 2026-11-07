@@ -610,3 +610,10 @@ export {
   type AddressBackfillStore,
   type AddressCandidate,
 } from '../places/application/place-address-backfill';
+
+export {
+  backfillProviderPhotos,
+  DbPhotoBackfillStore,
+} from '../places/application/place-provider-photo-backfill';
+export { SubmissionPhotoService } from '../ingestion/application/submission-photo.service';
+export { ProviderPhotosService } from '../search/application/provider-photos.service';
