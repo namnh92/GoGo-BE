@@ -76,7 +76,7 @@ hữu proposal và moderation đầu vào; dùng application port/outbox để n
 | Liên kết review | review_id unique nullable; rating tổng thể lấy từ review hiện hữu, không sao chép thành rating thứ hai; review về plan không tự xuất hiện ở place |
 | `community_entry_photos` | entry/revision, photo_id ổn định, uploader thật, kind photo/menu/bill, moderation, derivative reference, consent record cho bill; không có visibility input/nhánh private cho menu/bill mới; legacy private evidence tách riêng, không vào projection public |
 | `community_observations` | entry/revision, author, place, attribute key/value chuẩn hóa, observed_at; chỉ từ input có tác giả và đã duyệt, không từ provider snapshot |
-| `community_trend_aggregates` | place/attribute/value, support_count, respondent_count, window_start/end, computed_at, policy_version, source_revision, dirty/required_revision, next_expiry_at; projection có thể dựng lại, không lưu quyết định chiếm slot bootstrap |
+| `community_trend_aggregates` | place/attribute/value, support_count, respondent_count, window_start/end, computed_at, policy_version, policy_generation, source_revision, dirty/required_revision, next_expiry_at; projection có thể dựng lại, không lưu quyết định chiếm slot bootstrap |
 | `community_promotions` | đích photo hoặc attribute/value, trạng thái, version, actor CMS, reason, evidence revision, timestamps; quyết định và audit riêng |
 
 Entry có thể chỉ có ảnh hoặc enrichment, không ép thêm sao giả. Service/space
@@ -167,19 +167,56 @@ số nguồn “N người dùng”**, lấy từ count thực theo policy, khô
 
 Mutation publish/edit/delete/takedown/account state/promotion ghi outbox cùng
 transaction; worker idempotent recompute theo place/attribute từ dữ liệu nguồn,
-không tăng/giảm counter mù. Serialize theo aggregate key, kiểm source revision
-trước swap để job cũ không ghi đè job mới. Serialization này chỉ bảo vệ count,
-không quyết định eligibility/ranking/slot bootstrap của cả place. Sweep hằng ngày
+không tăng/giảm counter mù. Serialize theo aggregate key và fence policy/source
+ở bước swap bên dưới; chỉ bảo vệ count, không quyết định eligibility/ranking/slot
+bootstrap của cả place. Sweep hằng ngày
 xử lý hết cửa sổ dù không có mutation; reconciliation dựng lại toàn bộ theo batch có checkpoint.
 Đề xuất SLO cập nhật thông thường ≤5 phút, chờ owner/ops duyệt.
+
+**Đổi policy là trigger recompute độc lập:** `policy_version` định danh cấu hình
+bất biến; `policy_generation` là số lần kích hoạt tăng đơn điệu, kể cả rollback
+về version cũ cũng phải có generation mới. Bất kỳ đổi ngưỡng/guard/cửa sổ hay
+phạm vi policy đều trong cùng transaction cập nhật policy active và ghi outbox
+`CommunityTrendPolicyChanged` chứa version cũ/mới, generation mới và phạm vi ảnh
+hưởng; lỗi ghi event thì rollback activation. Event đủ để khởi động recompute
+kể cả không có mutation đóng góp; không trông chờ sweep expiry hay mutation kế
+tiếp. Phạm vi event phải bao phủ mọi aggregate/key dùng generation đó, không chỉ
+trend đang hiển thị hoặc key có eligibility thay đổi. Aggregate/job mang cả
+`policy_version` và `policy_generation`; read loại
+generation cũ ngay sau commit, không đợi fan-out đánh dấu từng row dirty.
+
+**Fan-out bền vững:** consumer liệt kê hợp các aggregate hiện hữu và keys nguồn
+place/attribute có thể chịu policy mới, kể cả chưa có aggregate; không lọc theo
+ngưỡng/guard/cửa sổ đủ điều kiện của policy cũ. Duyệt keyset ổn định theo batch có
+giới hạn cấu hình, lưu checkpoint theo generation; mỗi batch trong cùng transaction
+ghi outbox yêu cầu recompute từng key rồi tiến checkpoint, chỉ enqueue sau commit.
+Fan-out delivery/retry phải idempotent theo `(policy_generation, aggregate_key)`; crash
+thì resume từ checkpoint, không scan toàn bộ trong request đổi cấu hình hoặc mất
+key vì checkpoint đi trước enqueue bền vững. Các mutation nguồn mới vẫn phát job
+với generation active, bao phủ cả key được tạo sau khi cursor đã đi qua. Nếu có
+generation mới khi fan-out chưa xong, generation mới phải quét lại toàn phạm vi
+ảnh hưởng của policy active; task cũ được supersede, không được bỏ việc mới.
+Fan-out hết trang chỉ nghĩa đã ghi đủ yêu cầu; retry/dead letter và reconciliation
+phải theo dõi tới khi mọi key có aggregate sạch đúng generation/revision hiện tại,
+kể cả count bằng 0, hoặc được loại theo safety/privacy gate có căn cứ.
+
+**Worker swap có hai fence:** job chụp `(policy_generation, source_revision)` và
+cấu hình bất biến tương ứng khi recompute từ snapshot nguồn. Swap trong transaction
+ngắn khóa policy active và aggregate key: generation chụp phải bằng generation active,
+version phải khớp, và source_revision chụp phải bằng required_revision hiện tại.
+Kiểm tra và swap/clear dirty phải serialize với cả đổi policy và mutation nguồn,
+không kiểm trước transaction rồi ghi sau. Nếu một fence sai thì không swap và
+không clear dirty hoặc hạ required_revision; ghi bền vững yêu cầu enqueue lại theo
+generation/revision mới nhất. Job trùng đã có kết quả sạch cùng tuple thì no-op;
+job cũ không thể ghi đè kết quả mới, kể cả policy A → B → A với cùng version A.
 
 **Chọn xu hướng tại read từ snapshot nhất quán của cả place:** dùng một SQL
 statement hoặc read-only transaction `REPEATABLE READ`, cùng mốc thời gian UTC,
 đọc toàn bộ aggregate rows của place cùng policy active, required revisions,
 taxonomy, manual promotions và suppression. Chỉ dùng aggregate sạch, đủ source
-revision, đúng policy version và chưa tới `next_expiry_at` (null nghĩa không có
-expiry theo policy hiện tại); áp safety/privacy
-gate và suppression trước, manual override cùng attribute trước auto. Đếm tập
+revision, đúng policy version/generation và chưa tới `next_expiry_at` (null nghĩa
+không có expiry theo policy hiện tại); áp safety/privacy gate và suppression
+trước, manual override cùng attribute trước auto. Đếm tập
 duy nhất hàng 1/2 còn hợp lệ, rồi xếp các aggregate bootstrap đủ ngưỡng/guard theo
 `support_count DESC, key/value` để chọn tối đa `max(0, 5 - count(hàng 1/2))` ứng viên.
 Từ tập đó chọn TOP 5 và hợp nhất manual theo mục 3. Rank aggregate rows, không
@@ -190,9 +227,9 @@ chọn; không persist bootstrap selection riêng ở từng aggregate.
 Mỗi lần đọc chọn lại toàn place: aggregate swap/count thay đổi, promote/unpromote,
 suppression/clear, evidence bị rút, taxonomy/policy đổi đều làm selection cũ hết
 giá trị sau commit. Mutation nguồn đánh dấu các aggregate liên quan dirty và
-tăng required revision trong cùng transaction; worker chỉ clear khi swap đúng
-revision. Expiry vô hiệu row ngay khi tới `next_expiry_at`, kể cả chưa có event
-hay sweep. Bỏ row không hợp lệ rồi chọn lại slot/TOP 5 từ snapshot còn lại;
+tăng required revision trong cùng transaction; worker chỉ clear khi swap đúng generation và revision.
+Expiry vô hiệu row ngay khi tới `next_expiry_at`, kể cả chưa có event hay sweep.
+Bỏ row không hợp lệ rồi chọn lại slot/TOP 5 từ snapshot còn lại;
 không giữ bootstrap winner cũ hoặc count cũ để lấp slot. Không cache selection
 qua request; thiếu aggregate hợp lệ thì trả freshness/status degraded.
 
@@ -358,7 +395,8 @@ khác facts. Cần làm rõ khác biệt giữa duyệt, promote và xác minh c
 
 Metric đề xuất: `community_entry_transition_total{outcome}`,
 `community_trend_recompute_total{outcome}`, recompute duration/lag, dirty aggregate
-age, `community_promotion_total{target,action,outcome}`, backfill counters theo
+age, policy fan-out backlog/lag và số aggregate sai generation,
+`community_promotion_total{target,action,outcome}`, backfill counters theo
 outcome và cleanup failures. Labels hữu hạn; không user/place/photo IDs, URL,
 text/tips/bill hay exact location. Alert worker lag, outbox retry/dead letter,
 unpromoted community media/cover lọt gallery, projection lệch source và erasure
@@ -379,6 +417,20 @@ count luôn hiện, dedupe trend auto/manual, cover invariant, cursor ties, clie
 #802 vẫn đọc array `userPhotos` và `PlacePhoto` cũ (kể cả contributor bị omit),
 page mới dùng cùng item shape, không đổi rating cũ, rollback không phục hồi
 gallery sai. Đây là acceptance plan, chưa phải test đã chạy.
+
+Riêng policy-change phải kiểm chứng các trường hợp sau trước triển khai:
+
+- Đổi ngưỡng/guard/cửa sổ khi không có contribution mutation: read degraded ngay
+  sau commit rồi phục hồi sau recompute; bao phủ key chưa có aggregate hoặc bị
+  loại bởi cửa sổ cũ. Lỗi ghi outbox phải rollback cả policy activation.
+- Fan-out nhiều batch: crash trước/sau commit batch, delivery trùng rồi resume từ
+  checkpoint không mất key; key mới phía sau cursor vẫn được mutation outbox xử lý.
+- Worker chụp A rồi đổi A → B → A: A kích hoạt lại có generation mới; job A cũ
+  không swap/clear dirty dù version và source revision không đổi. Đổi policy lần
+  nữa trong fan-out phải hoàn tất coverage của generation mới nhất.
+- Worker chụp nguồn rồi có source mutation trước swap: không clear dirty hoặc
+  ghi đè kết quả mới; retry đúng generation/revision mới nhất mới được swap.
+  Chạy cả race policy/source commit ngay trong bước kiểm tra và swap.
 
 Các câu hỏi cần owner chốt trước code:
 
