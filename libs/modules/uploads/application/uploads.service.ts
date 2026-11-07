@@ -41,6 +41,8 @@ export const AVATAR_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as
  * the public bucket under a key of its own; this one is never served.
  */
 export const AVATAR_ORIGINAL_PREFIX = 'tmp/avatars';
+/** One-day private lifecycle also covers place-photo uploads never submitted. */
+export const PLACE_PHOTO_ORIGINAL_PREFIX = 'tmp/place-photos';
 
 /**
  * BE-CMS-G5 (#227) — purposes only a staff account may ask for.
@@ -187,9 +189,11 @@ export class UploadsService {
     }
     const key = isAvatar
       ? `${AVATAR_ORIGINAL_PREFIX}/${actor.id}/${randomUUID()}.${extension}`
-      : publicPrefix
-        ? `${publicPrefix}/${actor.id}/${randomUUID()}.${extension}`
-        : `u/${actor.type}/${actor.id}/${randomUUID()}.${extension}`;
+      : input.purpose === 'place_photo'
+        ? `${PLACE_PHOTO_ORIGINAL_PREFIX}/${actor.type}/${actor.id}/${randomUUID()}.${extension}`
+        : publicPrefix
+          ? `${publicPrefix}/${actor.id}/${randomUUID()}.${extension}`
+          : `u/${actor.type}/${actor.id}/${randomUUID()}.${extension}`;
     const presigned = await (publicPrefix ? this.publicStorage : this.storage).presignUpload(
       key,
       input.contentType,

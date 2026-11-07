@@ -8,6 +8,35 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 7.2.0-alpha.1 — Optional submission photos (GoGo-BE#793)
+
+Owner/CODEOWNER decision 2026-11-07 on PR #794: **"Ghi exception, giữ MINOR"**.
+[ADR-0046](../docs/adr/0046-place-submission-photos.md#contract-compatibility-exception-2026-11-07)
+records the exact-byte exception `BE-793-submission-photos-decide-oneof` in
+`.github/oasdiff-exceptions.json`: oasdiff matches inline `oneOf` subschemas by
+exact equality and reports both branches removed when optional `approvedPhotoIds`
+is added. Keep `7.2.0-alpha.1`. **Deploy together with
+[GoGo-CMS#283](https://github.com/namnh92/GoGo-CMS/pull/283)** after CMS syncs its
+contract/generated client and sends explicit photo selections. Old CMS approving
+a submission with pending photos receives `409 PHOTO_REVIEW_REQUIRED`.
+
+Additive MINOR from 7.1.0-alpha.1. `POST /place-submissions` accepts `mediaIds` (0–5 distinct ids
+from the sender's `POST /uploads`, purpose `place_photo`). The upload response
+now documents its existing `id`; new originals use the private one-day `tmp/`
+lifecycle. JPEG/PNG/WebP are
+validated against actual bytes and size, re-encoded to WebP with EXIF/GPS
+removed, and retained privately. Convert HEIC before upload.
+
+CMS submission detail adds `photos` with authenticated BFF preview URLs;
+`DELETE /cms/place-submissions/{id}/photos/{photoId}` rejects one with a reason.
+Approve/merge with pending photos requires explicit `approvedPhotoIds`;
+omitting it yields `409 PHOTO_REVIEW_REQUIRED`, and `[]` rejects all. The older
+CMS cannot accidentally publish unseen photos. Selected photos become approved
+GoGo place photos with the actual uploader's `contributor` credit. Others are
+unreadable immediately and scheduled for deletion after seven days. Public
+photo URLs recheck approval and place visibility at every read. Original
+uploads are never served. Resolve root-relative URLs against the API origin.
+
 ## 7.1.0-alpha.1 — Đóng góp địa điểm của tôi (GoGo-BE#788)
 
 MINOR bổ sung từ 7.0.0-alpha.1: `GET /me/place-submissions` dành cho user

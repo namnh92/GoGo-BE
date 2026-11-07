@@ -1,3 +1,4 @@
+import { isSubmissionPhotoKey, communityPhotoUrl } from '../../shared/submission-photo-url';
 import { isPublicKey } from '../../shared/media-url';
 /**
  * #169 — the boundary between a SQL row and the `/v1` contract.
@@ -24,6 +25,7 @@ export type PlacePhotoRow = {
     googleMapsUri: string | null;
   } | null;
   moderation: string;
+  contributor?: { displayName: string } | null;
 };
 
 export type PlacePhoto = {
@@ -35,6 +37,7 @@ export type PlacePhoto = {
   attribution?: string | undefined;
   authorAttributions?: { displayName: string; uri: string | null; photoUri: string | null }[];
   googleMapsUri?: string | null;
+  contributor?: { displayName: string } | undefined;
 };
 
 /** `numeric` is a string over the wire; `null` stays absent, never NaN. */
@@ -50,36 +53,39 @@ export function iso(value: unknown): string | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
-/**
- * Photos are only offered when they can actually be loaded. With no public
- * media base configured the list is empty, so a client shows its placeholder
- * instead of a broken image — the honest failure of the two.
- *
- * The same reasoning excludes a key that is not on the public host. Catalogue
- * uploads were presigned against the private bucket while this URL was
- * composed against the public one (ADR-0005), so those objects answer 404 and
- * no URL will make them appear. Handing one to a phone buys a broken tile in a
- * search result; omitting it buys the placeholder this comment already
- * promises.
+/** Approved catalogue objects use the CDN; sanitised community derivatives
+ * use a BFF URL which rechecks moderation and place visibility on every read.
+ * Unknown private keys are never offered, including uploaded originals.
  */
 export function toPhotos(
   rows: PlacePhotoRow[] | null | undefined,
   baseUrl: string,
   attribution?: string | undefined,
+  placeId?: string,
 ): PlacePhoto[] {
-  if (!baseUrl || !rows) return [];
+  if (!rows) return [];
   const base = baseUrl.replace(/\/$/, '');
   return rows
-    .filter((row) => isPublicKey(row.storageKey))
+    .filter(
+      (row) =>
+        row.moderation === 'approved' &&
+        ((!!baseUrl && isPublicKey(row.storageKey)) ||
+          (!!placeId && isSubmissionPhotoKey(row.storageKey))),
+    )
     .map((row) => ({
       id: row.id,
-      url: `${base}/${row.storageKey.replace(/^\//, '')}`,
+      url: isSubmissionPhotoKey(row.storageKey)
+        ? communityPhotoUrl(placeId!, row.id)
+        : `${base}/${row.storageKey.replace(/^\//, '')}`,
       ...(row.width !== null ? { width: row.width } : {}),
       ...(row.height !== null ? { height: row.height } : {}),
       source: row.source,
+      ...(row.contributor ? { contributor: row.contributor } : {}),
       // Provider imagery must be shown with its attribution; GoGo's own is not
       // attributed to anyone.
-      ...(row.source !== 'manual' && (row.attribution || attribution)
+      ...(!isSubmissionPhotoKey(row.storageKey) &&
+      row.source !== 'manual' &&
+      (row.attribution || attribution)
         ? { attribution: row.attribution || attribution }
         : {}),
       ...(row.source === 'google' && row.providerPhoto

@@ -3,6 +3,7 @@ import {
   type CandidatePhotoReference,
 } from '../../search/application/provider-photos.service';
 import { SubmissionPhotoService } from './submission-photo.service';
+import { SubmissionPhotosService } from './submission-photos.service';
 import { grantSubmissionCredits, lockAssistantAccount } from '../../shared/assistant-credits';
 import type { Tx } from '../../shared/outbox';
 import { Inject, Injectable, Optional } from '@nestjs/common';
@@ -254,6 +255,7 @@ export class PlaceSubmissionService {
     private readonly administrative: AdministrativeResolverService,
     @Inject(APP_CONFIG)
     private readonly config: PlatformConfig & ResolutionAttestationConfig,
+    private readonly photos: SubmissionPhotosService,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
     @Optional() private readonly providerPhotos?: ProviderPhotosService,
     @Optional() private readonly submissionPhotos?: SubmissionPhotoService,
@@ -697,6 +699,7 @@ export class PlaceSubmissionService {
       vibeKeys?: string[] | undefined;
       note?: string | undefined;
       resolutionToken?: string | undefined;
+      mediaIds?: string[] | undefined;
     },
   ) {
     if (actor.type === 'guest' && !input.roomId) {
@@ -822,8 +825,12 @@ export class PlaceSubmissionService {
     // `assertFreshlyVerified`.
     assertFreshlyVerified(verifiedBy);
 
-    // The partial unique index serializes pending dedupe. Attribution and the
-    // creation event commit with the proposal, including on a repeated submit.
+    const [pending] = await this.db
+      .select({ id: schema.placeSubmissions.id })
+      .from(schema.placeSubmissions)
+      .where(sql`google_place_id = ${input.googlePlaceId} and status = 'pending'`)
+      .limit(1);
+    const prepared = await this.photos.prepare(actor, input.mediaIds ?? [], pending?.id ?? null);
     const result = await this.db.transaction(async (tx) => {
       if (actor.type === 'user') {
         // Same lock order as privacy erasure: never recreate attribution after
@@ -835,41 +842,62 @@ export class PlaceSubmissionService {
         if (!active.rows.length)
           throw AppError.conflict('CONTRIBUTOR_UNAVAILABLE', 'Contributor account is unavailable');
       }
-      const [row] = await tx
-        .insert(schema.placeSubmissions)
-        .values({
-          googlePlaceId: input.googlePlaceId,
-          ...(actor.type === 'user'
-            ? { submittedByUserId: actor.id }
-            : { submittedByGuestSessionId: actor.id }),
-          roomId: input.roomId ?? null,
-          categoryKey: input.categoryKey ?? null,
-          priceMin: input.priceMin ?? null,
-          priceMax: input.priceMax ?? null,
-          priceUnit: input.priceUnit ?? null,
-          vibeKeys: input.vibeKeys ?? [],
-          note: input.note ?? null,
-        })
-        .onConflictDoUpdate({
-          target: schema.placeSubmissions.googlePlaceId,
-          targetWhere: sql`${schema.placeSubmissions.status} = 'pending'`,
-          set: { submissionCount: sql`${schema.placeSubmissions.submissionCount} + 1` },
-        })
-        .returning();
-      if (actor.type === 'user') {
+      // Submit-only mutex; approval uses submission -> identity lock order.
+      // Do not acquire the identity mutex here before locking a submission.
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`submission:${input.googlePlaceId}`}, 0))`,
+      );
+      let [row] = await tx
+        .select()
+        .from(schema.placeSubmissions)
+        .where(sql`google_place_id = ${input.googlePlaceId} and status = 'pending'`)
+        .for('update')
+        .limit(1);
+      const deduped = !!row;
+      if (row) {
         await tx
-          .insert(schema.placeSubmissionContributors)
-          .values({ submissionId: row!.id, userId: actor.id })
-          .onConflictDoNothing();
-      }
-      const deduped = row!.submissionCount > 1;
-      if (!deduped)
+          .update(schema.placeSubmissions)
+          .set({
+            submissionCount: sql`submission_count + 1`,
+            ...(prepared.photos.length
+              ? {
+                  updatedAt: sql`clock_timestamp()`,
+                  submissionRevision: sql`submission_revision + 1`,
+                }
+              : {}),
+          })
+          .where(eq(schema.placeSubmissions.id, row.id));
+      } else {
+        [row] = await tx
+          .insert(schema.placeSubmissions)
+          .values({
+            googlePlaceId: input.googlePlaceId,
+            ...(actor.type === 'user'
+              ? { submittedByUserId: actor.id }
+              : { submittedByGuestSessionId: actor.id }),
+            roomId: input.roomId ?? null,
+            categoryKey: input.categoryKey ?? null,
+            priceMin: input.priceMin ?? null,
+            priceMax: input.priceMax ?? null,
+            priceUnit: input.priceUnit ?? null,
+            vibeKeys: input.vibeKeys ?? [],
+            note: input.note ?? null,
+          })
+          .returning();
         await writeOutbox(tx, {
           eventType: 'place.submission_created',
           resourceType: 'place_submission',
           resourceId: row!.id,
           payload: { googlePlaceId: input.googlePlaceId },
         });
+      }
+      if (actor.type === 'user') {
+        await tx
+          .insert(schema.placeSubmissionContributors)
+          .values({ submissionId: row!.id, userId: actor.id })
+          .onConflictDoNothing();
+      }
+      await this.photos.attach(tx, actor, row!.id, prepared);
       return { status: 'PENDING' as const, submissionId: row!.id, deduped };
     });
     this.metrics.increment('mobile_place_submissions_total', {
@@ -1105,6 +1133,7 @@ export class PlaceSubmissionService {
       updatedAt: row.updatedAt.toISOString(),
       decidedAt: iso(row.decidedAt),
       decisionReason: row.decisionReason ?? undefined,
+      photos: await this.photos.list(id),
       // What the contributor sent, untouched by any review.
       contribution: {
         categoryKey: row.categoryKey ?? undefined,
@@ -1311,6 +1340,7 @@ export class PlaceSubmissionService {
     reason: string | undefined,
     mergeIntoPlaceId?: string,
     rejectionReason?: string,
+    approvedPhotoIds?: string[],
   ) {
     if (
       (decision === 'rejected' || rejectionReason !== undefined) &&
@@ -1335,6 +1365,7 @@ export class PlaceSubmissionService {
     }
 
     const finalize = async (tx: Tx, resultPlaceId: string | null) => {
+      await this.photos.decide(tx, id, resultPlaceId, adminId, reason, approvedPhotoIds);
       await tx
         .update(schema.placeSubmissions)
         .set({
@@ -1365,6 +1396,7 @@ export class PlaceSubmissionService {
           decision,
           reason,
           resultPlaceId,
+          approvedPhotoIds,
           ...(decision === 'rejected' ? { rejectionReason } : {}),
         },
       });

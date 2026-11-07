@@ -1,3 +1,4 @@
+import { SubmissionPhotosService } from '../../../libs/modules/ingestion/application/submission-photos.service';
 import { PlaceSubmissionService } from '../../../libs/modules/ingestion/application/place-submission.service';
 import { PlaceDedupService } from '../../../libs/modules/ingestion/application/place-dedup.service';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
@@ -394,6 +395,7 @@ describe('#774 approval commits its decision, draft, source and award atomically
       new PlaceDedupService(db),
       {} as never,
       {} as never,
+      new SubmissionPhotosService(db, {} as never, {} as never, {} as never),
     );
 
   it('concurrent decisions cannot create two drafts or two awards', async () => {

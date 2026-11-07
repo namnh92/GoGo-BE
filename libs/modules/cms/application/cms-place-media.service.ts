@@ -1,3 +1,4 @@
+import { isSubmissionPhotoKey, communityPhotoUrl } from '../../shared/submission-photo-url';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { and, eq, ne, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
@@ -354,17 +355,19 @@ export class CmsPlaceMediaService {
    * another place after a merge — and because an editor removing a photo from
    * one place has not asked to destroy a file. Only when nothing else
    * references the key is the upload released back to `pending`, so the
-   * existing sweeper can reclaim it on its own schedule. Approved provider
-   * photos have no upload row: their last reference instead queues public
-   * object cleanup in the same transaction as the detach.
+   * existing sweeper can reclaim it on its own schedule. Provider photos and
+   * submission derivatives cannot use that path: their last reference queues
+   * public or private cleanup respectively in the same transaction as detach.
    */
   async detach(actor: Actor, placeId: string, mediaId: string) {
     const row = await this.row(placeId, mediaId);
+    const submissionPhoto = isSubmissionPhotoKey(row.storageKey);
+    const queuesCleanup = Boolean(row.providerPhoto) || submissionPhoto;
 
     await this.db.transaction(async (tx) => {
-      // Serialise shared provider-key detaches: concurrent transactions must
+      // Serialise shared-key detaches: concurrent transactions must
       // not each see the other's final reference and both skip cleanup.
-      if (row.providerPhoto)
+      if (queuesCleanup)
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${row.storageKey}, 0))`);
       await tx.delete(schema.placeMedia).where(eq(schema.placeMedia.id, mediaId));
 
@@ -374,13 +377,15 @@ export class CmsPlaceMediaService {
         )
         .then((r) => r.rows)) as [{ refs: number }];
       if (Number(refs) === 0) {
-        if (row.providerPhoto) {
+        if (queuesCleanup) {
           await tx
             .insert(schema.mediaCleanupQueue)
             .values({
-              bucket: 'public',
+              bucket: submissionPhoto ? 'private' : 'public',
               objectKey: row.storageKey,
-              reason: 'submission_provider_photo_detached',
+              reason: submissionPhoto
+                ? 'submission_photo_detached'
+                : 'submission_provider_photo_detached',
             })
             .onConflictDoNothing();
         }
@@ -403,7 +408,11 @@ export class CmsPlaceMediaService {
     return {
       id: row.id,
       storageKey: row.storageKey,
-      url: this.readUrl(row.storageKey),
+      url: isSubmissionPhotoKey(row.storageKey)
+        ? row.moderation === 'approved'
+          ? communityPhotoUrl(row.placeId, row.id)
+          : null
+        : this.readUrl(row.storageKey),
       width: row.width,
       height: row.height,
       sortOrder: row.sortOrder,

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Db } from '@gogo/database';
 import type { Actor } from '../../identity/domain/actor';
 import { PlaceSubmissionService } from './place-submission.service';
+import type { SubmissionPhotosService } from './submission-photos.service';
 import type { PlaceResolverService } from './place-resolver.service';
 import type { PlaceDedupService } from './place-dedup.service';
 import type { AdministrativeResolverService } from '../../administrative/application/administrative-resolver.service';
@@ -31,6 +32,7 @@ function fixture() {
     select: () => ({
       from: (table: Parameters<typeof getTableName>[0]) => ({
         where: () => ({
+          for: () => ({ limit: async () => [proposal] }),
           limit: async () =>
             getTableName(table) === 'place_submissions' ? [proposal] : contributions,
         }),
@@ -47,6 +49,14 @@ function fixture() {
     }),
     transaction: async (work: (tx: unknown) => Promise<unknown>) => work(db),
   };
+  const photos = {
+    prepare: vi.fn<SubmissionPhotosService['prepare']>().mockResolvedValue({
+      photos: [],
+      reusedIds: [],
+      verified: {} as never,
+    }),
+    attach: vi.fn<SubmissionPhotosService['attach']>().mockResolvedValue(undefined),
+  };
   const service = new PlaceSubmissionService(
     db as unknown as Db,
     {
@@ -61,6 +71,7 @@ function fixture() {
     } as unknown as PlaceDedupService,
     {} as AdministrativeResolverService,
     {} as PlatformConfig & ResolutionAttestationConfig,
+    photos as unknown as SubmissionPhotosService,
   );
   return { service, contributions, db };
 }

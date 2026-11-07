@@ -1,3 +1,4 @@
+import type { SubmissionPhotosService } from './submission-photos.service';
 import { randomUUID } from 'node:crypto';
 import { getTableName, type SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
@@ -256,6 +257,7 @@ function harness(owner?: string, legacy?: string) {
     dedup,
     {} as never,
     {} as never,
+    { decide: async () => undefined } as unknown as SubmissionPhotosService,
   );
   // The read outside the transaction is the same pending revision; row locking runs inside it.
   db.select = (() => ({
