@@ -90,7 +90,7 @@ và cleanup hiện hữu đo các bước còn lại. Không log payload ảnh, 
 ## Migration / rollback / kiểm chứng
 
 Migration `0086_place-submission-photos` chỉ thêm bảng và index, không sửa
-bảng lớn. Số 0082–0084 đã được upstream dùng. OpenAPI
+bảng lớn. Số 0082–0085 đã được upstream dùng. OpenAPI
 MINOR `7.2.0-alpha.1`, generated types được tạo bằng `pnpm api:types`.
 
 Ưu tiên rollback application và giữ schema additive. Code cũ bỏ qua ảnh mới;
