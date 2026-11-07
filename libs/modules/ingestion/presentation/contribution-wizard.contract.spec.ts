@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { parse } from 'yaml';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
+import type { components } from '../../../../openapi/gogo.v1';
 const doc = parse(
   readFileSync(path.resolve(__dirname, '../../../../openapi/gogo.v1.yaml'), 'utf8'),
 );
@@ -23,5 +24,14 @@ describe('contribution wizard additive contract (#796)', () => {
     expect(s.ContributionRating.properties.rating).toMatchObject({ minimum: 1, maximum: 5 });
     expect(s.ContributionEnrichmentDraft.description.toLowerCase()).toContain('unverified');
     expect(s.ContributionDraft.properties.verificationStatus.enum).toEqual(['unverified']);
+  });
+  it('allows bonus approval credits and keeps CMS ledger deltas extensible', () => {
+    const delta = doc.components.schemas.CmsAssistantCreditEntry.properties.delta;
+    expect(delta.type).toBe('integer');
+    expect(delta['x-extensible-enum']).toEqual([50, 70, -1]);
+    expect(delta).not.toHaveProperty('enum');
+    expectTypeOf<
+      components['schemas']['CmsAssistantCreditEntry']['delta']
+    >().toEqualTypeOf<number>();
   });
 });

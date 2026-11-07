@@ -7777,11 +7777,8 @@ export interface components {
              * @description UTC ledger timestamp, including all six fractional digits.
              */
             createdAt: string;
-            /**
-             * @description Signed credits; +50 or +70 for submission_approved, -1 for message_spent. Bonus requires approved menu/bill evidence (#794).
-             * @enum {integer}
-             */
-            delta: 50 | -1;
+            /** @description Signed credits; +50 or +70 for submission_approved, -1 for message_spent. Bonus requires approved menu/bill evidence (#794). Values are extensible; consumers must accept unknown integer deltas. */
+            delta: number;
             /** @enum {string} */
             reason: "submission_approved" | "message_spent";
             /**

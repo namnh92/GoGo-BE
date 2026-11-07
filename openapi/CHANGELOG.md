@@ -19,6 +19,11 @@ Menu/bill refs capped at five; nonempty photos return
 `503 SUBMISSION_EVIDENCE_BLOCKED` until #794 private claim/sanitise/masking is
 connected. Approval credit is +50, +20 only with approved menu/bill evidence
 (max +70; bonus activation blocked on #794). No old required fields change.
+CMS credit history `CmsAssistantCreditEntry.delta` documents +50, +70 and -1
+with `x-extensible-enum`; generated clients accept integer deltas. Consumers
+must tolerate unknown integer deltas. Clients generated from the previous
+closed enum must regenerate before receiving +70; making the schema extensible
+does not make existing closed-enum readers tolerant.
 Consumers regenerate clients; CMS/mobile integration and Astra/CODEOWNER review
 remain required. ADR-0048 and migration 0089.
 
