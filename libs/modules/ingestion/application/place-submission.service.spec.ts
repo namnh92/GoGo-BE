@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { schema, type Db } from '@gogo/database';
 import { PlaceSubmissionService } from './place-submission.service';
+import type { SubmissionPhotosService } from './submission-photos.service';
 import { SUBMISSION_REJECTION_REASONS } from '../domain/submission-rejection';
 import type { Actor } from '../../identity/domain/actor';
 import { CmsSubmissionController } from '../presentation/ingestion.controller';
@@ -56,9 +57,19 @@ function fixture(over: Record<string, unknown> = {}) {
     select: vi.fn(() => query),
     transaction: vi.fn(async (work: (transaction: typeof tx) => Promise<unknown>) => work(tx)),
   };
-  const service = new PlaceSubmissionService(db as unknown as Db, null!, null!, null!, null!);
+  const photos = {
+    decide: vi.fn<SubmissionPhotosService['decide']>().mockResolvedValue(undefined),
+  };
+  const service = new PlaceSubmissionService(
+    db as unknown as Db,
+    null!,
+    null!,
+    null!,
+    null!,
+    photos as unknown as SubmissionPhotosService,
+  );
   const owner = { id: row.submittedByUserId, type: 'user' } as Actor;
-  return { row, owner, db, service, written };
+  return { row, owner, db, service, written, photos, tx };
 }
 
 // Exercise the actual HTTP body pipe; do not copy its Zod rules into the test.
@@ -125,9 +136,18 @@ describe('submission public response (#787)', () => {
   it.each(SUBMISSION_REJECTION_REASONS)(
     'stores %s with the decision/audit and polls it',
     async (key) => {
-      const { row, service, owner, db, written } = fixture();
-      await service.decide(randomUUID(), row.id, 'rejected', 'PRIVATE', undefined, key);
+      const { row, service, owner, db, written, photos, tx } = fixture();
+      const adminId = randomUUID();
+      await service.decide(adminId, row.id, 'rejected', 'PRIVATE', undefined, key);
       expect(db.transaction).toHaveBeenCalledOnce();
+      expect(photos.decide).toHaveBeenCalledExactlyOnceWith(
+        tx,
+        row.id,
+        null,
+        adminId,
+        'PRIVATE',
+        undefined,
+      );
       expect(written.find((entry) => entry.table === schema.placeSubmissions)?.value).toMatchObject(
         { status: 'rejected', rejectionReason: key, decisionReason: 'PRIVATE' },
       );
