@@ -47,28 +47,63 @@ xuất của contributor trước (FR-INGEST-012), không thêm credit cho ngư�
 ## Ảnh và PII — phụ thuộc #794
 
 Tối đa 5 reference UUID, mỗi reference có kind menu/bill. Không nhận URL/storage
-key hoặc cờ masked/approved từ client. Menu được nối vào pipeline #794:
+key hoặc cờ masked/approved từ client. Menu/bill được nối vào pipeline #794:
 gộp mediaIds và refs, verify owner, sanitise/strip metadata ngoài transaction,
 claim upload trong transaction submission; chỉ CMS được xem derivative pending.
-Bản public chỉ xuất hiện sau chọn ảnh rõ ràng khi approve/merge, theo ADR-0046.
+Bản public chỉ xuất hiện sau chọn ảnh rõ ràng khi approve/merge, theo ADR-0046, với tập userPhotos riêng theo amendment dưới đây.
 Cleanup/export/erasure tái dùng pipeline này. Dedupe không ghi đè enrichment gốc.
 
-Receipt vẫn trả 503 SUBMISSION_EVIDENCE_BLOCKED (retryable false) trước ghi DB:
-#794 **không** cung cấp OCR/mask PII. ADR yêu cầu mask tên/số điện thoại/địa chỉ
-cá nhân/mã thanh toán và rà soát trước CMS; chưa có provider/adapter thật trong
-repo. Không coi strip metadata là mask PII, không giả OCR hoặc tin cờ client.
-Đây là phần #796 chưa hoàn tất, cần pipeline thực trước mở bill.
+Owner decision cuối cùng 2026-11-07 thay mọi lựa chọn visibility trước đó:
+“Không phải việc khách chọn Chỉ GoGo xem hay Công khai. Xác định up là công khai cho mọi người luôn.”
+Không nhận trường `visibility`. Mọi ảnh menu/bill là đóng góp công khai **sau khi moderator duyệt**.
+Mỗi request lưu nháp hoặc submit có bill phải gửi `enrichment.billPhotoPublicConsent: true`.
+Consent bắt buộc hiển thị cho user:
+“Tôi đồng ý ảnh hóa đơn được hiển thị công khai sau khi kiểm duyệt và xác nhận đã tự xóa hoặc che thông tin cá nhân trên ảnh.”
+Thiếu/false trả 400 `VALIDATION_FAILED`, field error `enrichment.billPhotoPublicConsent`.
+Menu không cần consent bổ sung. Không DLP, không provider/dịch vụ xử lý PII bên ngoài;
+WebP re-encode chỉ strip metadata, không tự che nội dung ảnh. Moderator có thể bỏ
+bất kỳ ảnh nào, ví dụ còn thông tin cá nhân, trước khi duyệt.
+
+Amendment cuối cùng cùng ngày: ảnh wizard là **ảnh từ người dùng** của địa điểm,
+không phải ảnh chính. Approval/merge chỉ liên kết `place_submission_photos.place_id`
+và đổi status thành approved trong transaction quyết định; không tạo `place_media`.
+GET place detail trả `userPhotos` riêng, credit `contributor.displayName` của uploader gốc;
+không dùng làm gallery `photos` hay cover. Pending/rejected không xuất hiện trong tập này.
+BFF đọc bytes recheck status approved và place published/community_submitted mỗi lần;
+CMS preview chỉ cho pending. Account erased không còn credit định danh.
+Chỉ Editor/Moderator được promote vào gallery chính qua endpoint riêng, theo dõi ở
+[GoGo-BE#804](https://github.com/namnh92/GoGo-BE/issues/804); không triển khai endpoint promote ở đây.
+#804 cũng theo dõi migration/backfill ảnh thường #794 đã nằm trong gallery;
+không tự chuyển dữ liệu lịch sử trong migration 0089.
+
+Prefix `submission-photos/menus/` giữ menu trong user-photo set qua nháp/dedupe.
+Prefix `submission-photos/bills/` giữ phân loại bill qua nháp/dedupe/relabel,
+để không thể bỏ consent bằng cách đổi kind. Ảnh pending luôn ở private storage;
+không có public URL trước approval. Bill không được chọn hoặc rejected được enqueue
+xóa bytes/derivatives ngay trong transaction, thử cleanup sau commit, worker retry.
+Menu rejected giữ retention #794 (7 ngày). Bill approved giữ bytes cho userPhotos.
+Original còn PUT URL được xóa theo deadline và giữ job dọn nếu upload tái tạo trước expiry.
+Nháp hết hạn/bỏ ref/delete/erasure release bytes qua cleanup queue.
+Không log ảnh, nội dung bill hoặc storage error thô.
+
+Nháp claim media_uploads vào contribution_draft, thay storageKey bằng derivative
+server riêng ngoài tmp/ và giữ đến expiresAt nháp. Snapshot/version, claim và
+cleanup deadline commit cùng transaction. Save lại gia hạn; bỏ ref/delete/expiry/
+erasure đẩy cleanup ngay. Khi gửi, recheck owner/nháp/claim dưới khóa rồi chuyển
+claim sang submission; DELETE nháp sau đó không xóa ảnh đã chuyển. Original chỉ
+đợi presigned URL hết hạn; không phụ thuộc lifecycle một ngày để giữ nháp.
 
 ## Credit
 
 Chỉ khi decision approved: +50 cơ bản; +20 nếu ít nhất một ảnh menu/bill của
-submission được duyệt, tổng +70. Không cộng khi draft, submit, merged/rejected.
-Một ledger row approval có delta 50 hoặc 70, unique submission và venue giữ
+submission được duyệt, tổng +70. Merge chỉ +20 khi có evidence được chấp nhận; rejected/draft/submit không cộng.
+Một ledger row approval có delta 20, 50 hoặc 70, unique submission và venue giữ
 idempotency xuyên retry/concurrency. Account lock + ledger insert + balance
-update trong transaction approval. Sau photos.decide, đếm ảnh approved của submission có mediaUploadId trong
+update trong transaction decision. Reason ledger lịch sử `submission_approved`
+cũng dùng cho bonus-only 20 khi merge; không đổi unique source/venue. Sau photos.decide, đếm ảnh approved của submission có mediaUploadId trong
 proposal gốc và uploader là contributor gốc, trong transaction approval.
 Ảnh thường/ảnh của contributor dedupe không làm tăng bonus; không tin count client.
-Receipt chưa được nhận nên hiện bonus chỉ có thể kích hoạt từ menu.
+Menu/bill chỉ kích hoạt bonus khi ảnh đã qua pipeline private và được moderator duyệt.
 
 ## Hệ quả, rollout và rollback
 
@@ -81,12 +116,17 @@ Astra/CODEOWNER và tích hợp CMS/mobile vẫn là merge/acceptance gates riê
 
 ## Contract compatibility exception (2026-11-07)
 
-Owner quyết định giữ MINOR `7.4.0-alpha.1` và ghi exception
+Owner quyết định giữ MINOR `7.5.0-alpha.1` và ghi exception
 `BE-796-credit-delta-extensible` cho finding `response-property-became-not-enum`
 của GET `/cms/users/{id}/assistant-credits`, property `items/items/delta`.
-`delta` là integer với `x-extensible-enum: [50, 70, -1]`, không còn closed enum.
+`delta` là integer với `x-extensible-enum: [20, 50, 70, -1]`, không còn closed enum.
 CMS phải regenerate client và chấp nhận integer mới trước rollout +70.
-Exception chỉ áp dụng raw SHA-256 của base `origin/re-design` và YAML tree này.
-Docker socket bị từ chối trong sandbox: report dựng lại từ finding owner cung cấp,
-không phải đo mới; replay oasdiff thực chưa được kiểm chứng. Không có finding khác
-được miễn. Cần chạy command CI-shaped trong artifacts/be-796-gates/README.md.
+Report oasdiff thực do owner cung cấp có thêm `request-body-one-of-removed` do
+sửa description trong hai inline branch của decide. Khôi phục nguyên bytes hai
+branch từ `origin/re-design`; chuyển quy tắc userPhotos/cleanup lên description
+của operation. Mọi ảnh menu/bill được duyệt đều public trong userPhotos, không
+vào official gallery/cover. Rebind exception hiện có theo SHA-256 raw YAML cuối.
+Replay policy với riêng finding credit được giữ lại PASS; đây không phải đo mới.
+Docker socket vẫn bị từ chối nên chưa xác minh tập finding cuối bằng oasdiff.
+Không miễn finding nào khác. Output và command replay:
+`docs/verification/be-802-owner-visibility.md`.

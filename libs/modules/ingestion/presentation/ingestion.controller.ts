@@ -54,8 +54,8 @@ const submitSchema = z.object({
   category: z.string().trim().max(64).optional(),
   estimatedPrice: z
     .object({
-      min: z.number().int().min(0),
-      max: z.number().int().min(0),
+      min: z.number().int().min(0).optional(),
+      max: z.number().int().min(0).optional(),
       unit: z
         .enum(['per_person', 'per_group', 'per_item', 'free', 'unknown'])
         .default('per_person'),

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { enrichmentDraftSchema, enrichmentSchema } from './contribution-enrichment';
 import { assertContributor, validateEnrichment } from '../application/contribution-enrichment';
 import type { Actor } from '../../identity/domain/actor';
@@ -35,26 +35,57 @@ describe('contribution wizard validation (#796)', () => {
     { space: { rating: 2.5, chipKeys: [] } },
     { photos: Array.from({ length: 6 }, () => ({ mediaId: randomUUID(), kind: 'bill' })) },
     { photos: [{ mediaId: randomUUID(), kind: 'bill', masked: true }] },
+    { photos: [{ mediaId: randomUUID(), kind: 'bill', visibility: 'moderators' }] },
     { photos: [{ url: 'https://raw-receipt.test/receipt.jpg', kind: 'bill' }] },
     { visitTips: 'x'.repeat(2001) },
     { credit: 70 },
   ])('rejects invalid claims %j', (patch) => {
     expect(enrichmentSchema.safeParse({ ...completeEnrichment, ...patch }).success).toBe(false);
   });
+  it.each(['private', 'public'])(
+    'rejects the removed photo visibility field (%s)',
+    (visibility) => {
+      expect(
+        enrichmentDraftSchema.safeParse({
+          billPhotoPublicConsent: true,
+          photos: [{ mediaId: randomUUID(), kind: 'bill', visibility }],
+        }).success,
+      ).toBe(false);
+    },
+  );
   it.each(['guest', 'admin'])('refuses %s contributor', (type) => {
     expect(() => assertContributor({ type } as Actor)).toThrow('Registered user required');
   });
-  it('blocks unmasked evidence before DB access', async () => {
-    const db = { select: vi.fn() };
+  it('accepts bill references for server-side processing instead of unconditionally blocking', async () => {
+    const db = { select: () => ({ from: () => ({ where: async () => [] }) }) };
     await expect(
-      validateEnrichment(db as never, { photos: [{ mediaId: randomUUID(), kind: 'bill' }] }),
-    ).rejects.toMatchObject({
-      code: 'SUBMISSION_EVIDENCE_BLOCKED',
-      httpStatus: 503,
-      options: { retryable: false },
-    });
-    expect(db.select).not.toHaveBeenCalled();
+      validateEnrichment(db as never, {
+        billPhotoPublicConsent: true,
+        photos: [{ mediaId: randomUUID(), kind: 'bill' }],
+      }),
+    ).resolves.toBeUndefined();
   });
+  it.each([undefined, false])(
+    'requires bill consent on draft and submission validation (%s)',
+    async (billPhotoPublicConsent) => {
+      const db = {
+        select: () => {
+          throw new Error('Must reject before I/O');
+        },
+      };
+      await expect(
+        validateEnrichment(db as never, {
+          billPhotoPublicConsent,
+          photos: [{ mediaId: randomUUID(), kind: 'bill' }],
+        }),
+      ).rejects.toMatchObject({
+        httpStatus: 400,
+        options: {
+          fieldErrors: [{ field: 'enrichment.billPhotoPublicConsent', code: 'consent_required' }],
+        },
+      });
+    },
+  );
   it('checks taxonomy kind without imposing a service/space prefix', async () => {
     const rows = [
       ['suitability', 'work_reading'],

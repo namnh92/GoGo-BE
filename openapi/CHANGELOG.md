@@ -17,6 +17,7 @@ GET/PUT/DELETE, version checks and 30-day retention. Taxonomy keys, price unit
 and currency, 1–3 vibes, amenity yes/no, service/space ratings and chips.
 Menu/bill refs capped at five including ordinary mediaIds; menu refs use #794's
 private owner claim/sanitisation pipeline and explicit CMS photo selection.
+Initial implementation (superseded by the final owner decision below):
 Bills still return `503 SUBMISSION_EVIDENCE_BLOCKED` pending real server-side
 PII masking (ADR-0048; incomplete #796 requirement). Approval credit is +50,
 +20 only with server-approved original-contributor menu/bill evidence (max +70).
@@ -32,6 +33,27 @@ keep MINOR and record `BE-796-credit-delta-extensible` for the exact-byte
 uses the supplied known finding; fresh oasdiff replay remains unverified.
 Consumers regenerate clients; CMS/mobile integration and Astra/CODEOWNER review
 remain required. ADR-0048 and migration 0089.
+
+Final owner decision 2026-11-07 removes `visibility`: every bill/menu upload is a
+public contribution after explicit moderator approval. Bill saves/submits require
+`enrichment.billPhotoPublicConsent: true`, confirming public display after approval
+and that the uploader removed/hid personal information themselves. No DLP or external
+receipt processor. Missing/false consent with bills returns a 400 field error.
+Final amendment: wizard photos become a separate read-only `PlaceDetail.userPhotos`
+set, credited to the original uploader; they do not enter `photos` or the cover.
+Editor/moderator promotion is tracked separately in GoGo-BE#804. Pending/rejected
+images never become public; moderators can discard any photo. Rejected bills are
+queued for immediate cleanup; rejected menus retain #794's seven-day retention.
+Draft expiry releases retained bytes. CMS photo detail exposes optional `kind`.
+Accepted menu/bill evidence grants +20 once, including on merge; approval adds +50.
+Ledger deltas are extensible integers (20/50/70/-1); CMS must regenerate types.
+The consent property is optional in OpenAPI, with runtime conditional validation.
+Restore both decide request `oneOf` branches byte-for-byte from `origin/re-design`;
+photo publication and cleanup rules live in the operation description to avoid
+oasdiff treating description edits as branch removal. Rebind the existing
+`BE-796-credit-delta-extensible` exception to the final raw YAML SHA-256.
+Credit-only policy replay passes; fresh oasdiff remains blocked by Docker socket
+permissions. See `docs/verification/be-802-owner-visibility.md` for evidence.
 
 ## 7.4.0-alpha.1 — Facts và chi tiết đóng góp (GoGo-BE#801)
 

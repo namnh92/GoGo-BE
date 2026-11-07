@@ -537,6 +537,16 @@ export class SearchRepository {
             order by m.is_cover desc, m.sort_order, m.created_at)
           from place_media m
           where m.place_id = p.id and m.moderation = 'approved') as media,
+        -- #796: uploader contributions stay separate from official gallery/cover.
+        (select json_agg(json_build_object(
+            'id', up.id, 'storageKey', up.storage_key,
+            'width', up.width, 'height', up.height,
+            'source', 'community', 'moderation', up.status,
+            'contributor', (select json_build_object('displayName', u.display_name)
+              from users u where u.id = up.uploaded_by_user_id and u.status = 'active'))
+            order by up.created_at, up.id)
+          from place_submission_photos up
+          where up.place_id = p.id and up.status = 'approved') as user_photos,
         -- GoGo-BE#217 (ADR-0028): the GoGo community rating, count and mean
         -- from one aggregate in this one statement, so the two always describe
         -- the same population. Published reviews of this place only, through

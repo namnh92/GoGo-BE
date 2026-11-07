@@ -25,8 +25,10 @@ export async function grantSubmissionCredits(
   submissionId: string,
   venueIdentity: string,
   approvedMenuBillPhotoCount = 0,
+  grantBase = true,
 ): Promise<void> {
-  const delta = approvedMenuBillPhotoCount > 0 ? 70 : 50;
+  const delta = (grantBase ? 50 : 0) + (approvedMenuBillPhotoCount > 0 ? 20 : 0);
+  if (!delta) return;
   await lockAssistantAccount(tx, userId);
   const active = await tx.execute(
     sql`select id from users where id = ${userId} and status = 'active' for share`,

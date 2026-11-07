@@ -38,10 +38,33 @@ describe('contribution wizard additive contract (#796)', () => {
       'enum',
     );
   });
+  it('keeps consent additive and optional in request schemas', () => {
+    const draft = doc.components.schemas.ContributionEnrichmentDraft;
+    expect(draft.properties.billPhotoPublicConsent.type).toBe('boolean');
+    const photo = draft.properties.photos.items;
+    expect(photo.properties).not.toHaveProperty('visibility');
+    expect(doc.components.schemas.SubmissionPhoto.properties).not.toHaveProperty('visibility');
+    expect(draft.required ?? []).not.toContain('billPhotoPublicConsent');
+    expect(doc.components.schemas.ContributionEnrichment.allOf[1].required).not.toContain(
+      'billPhotoPublicConsent',
+    );
+    expectTypeOf<
+      components['schemas']['ContributionEnrichmentDraft']['billPhotoPublicConsent']
+    >().toEqualTypeOf<boolean | undefined>();
+  });
+  it('adds read-only userPhotos without requiring it from existing clients', () => {
+    const detail = doc.components.schemas.PlaceDetail;
+    expect(detail.required).not.toContain('userPhotos');
+    expect(detail.properties.userPhotos).toMatchObject({
+      type: 'array',
+      readOnly: true,
+      items: { $ref: '#/components/schemas/PlacePhoto' },
+    });
+  });
   it('allows bonus approval credits and keeps CMS ledger deltas extensible', () => {
     const delta = doc.components.schemas.CmsAssistantCreditEntry.properties.delta;
     expect(delta.type).toBe('integer');
-    expect(delta['x-extensible-enum']).toEqual([50, 70, -1]);
+    expect(delta['x-extensible-enum']).toEqual([20, 50, 70, -1]);
     expect(delta).not.toHaveProperty('enum');
     expectTypeOf<
       components['schemas']['CmsAssistantCreditEntry']['delta']

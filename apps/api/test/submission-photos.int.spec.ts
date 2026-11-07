@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { drizzle } from 'drizzle-orm/node-postgres';
@@ -7,7 +8,7 @@ import argon2 from 'argon2';
 import sharp from 'sharp';
 import path from 'node:path';
 import { Pool } from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { schema } from '@gogo/database';
 import {
   PLACE_PROVIDER,
@@ -139,13 +140,18 @@ beforeAll(async () => {
     if (role === 'moderator') moderator = logged.json().accessToken;
     else editor = logged.json().accessToken;
   }
-  user = await register('photo-user@gogo.local');
-  other = await register('other-photo-user@gogo.local');
   original = await sharp({ create: { width: 80, height: 60, channels: 3, background: '#ff0000' } })
     .withMetadata({ orientation: 6, exif: { IFD0: { Copyright: 'must be removed' } } })
     .jpeg()
     .toBuffer();
 }, 180000);
+beforeEach(async () => {
+  // uploads.create is actor-keyed (30/min): rotating IPs cannot isolate it.
+  // Keep ownership/retries shared within a test, but never share its quota with another test.
+  const id = randomUUID();
+  user = await register(`photo-user-${id}@gogo.local`);
+  other = await register(`other-photo-user-${id}@gogo.local`);
+});
 afterAll(async () => {
   await app?.close();
   await pool?.end();
@@ -325,10 +331,123 @@ describe('wizard menu evidence and approval credits (#796)', () => {
     expect(await ledger(submissionId)).toEqual([]);
     const approved = await decide(submissionId, 'approved', [photos[0].id]);
     expect(approved.statusCode, approved.body).toBe(201);
+    const placeDetail = (
+      await api().inject({ method: 'GET', url: `/v1/places/${approved.json().placeId}` })
+    ).json();
+    expect(placeDetail.photos).toEqual([]);
+    expect(placeDetail.userPhotos).toHaveLength(1);
+    expect(placeDetail.userPhotos[0].contributor.displayName).toBe('Mai');
     expect((await ledger(submissionId)).map((row) => row.delta)).toEqual([70]);
     expect((await decide(submissionId, 'approved', [photos[0].id])).statusCode).toBe(409);
     expect((await ledger(submissionId)).map((row) => row.delta)).toEqual([70]);
   });
+  it.each(['approved', 'merged', 'rejected', 'dropped'])(
+    'publishes all bill evidence only after selection (%s)',
+    async (decision) => {
+      const item = await upload();
+      const bill = {
+        ...enrichment(item.id),
+        billPhotoPublicConsent: true,
+        photos: [{ mediaId: item.id, kind: 'bill' }],
+      };
+      const id = identity();
+      for (const consent of [undefined, false]) {
+        const rejected = await send(id, {
+          ...bill,
+          billPhotoPublicConsent: consent,
+        } as typeof bill);
+        expect(rejected.statusCode, rejected.body).toBe(400);
+        expect(rejected.json().field_errors).toContainEqual(
+          expect.objectContaining({ field: 'enrichment.billPhotoPublicConsent' }),
+        );
+      }
+      const sent = await send(id, bill);
+      expect(sent.statusCode, sent.body).toBe(201);
+      const submissionId = sent.json().submissionId;
+      const [photo] = (await detail(submissionId)).json().photos;
+      expect(photo).toMatchObject({ kind: 'bill' });
+      expect(photo).not.toHaveProperty('visibility');
+      expect((await api().inject({ method: 'GET', url: photo.url })).statusCode).toBe(401);
+      expect(
+        (await api().inject({ method: 'GET', url: photo.url, headers: auth(user) })).statusCode,
+      ).toBe(403);
+      const preview = await api().inject({
+        method: 'GET',
+        url: photo.url,
+        headers: auth(moderator),
+      });
+      expect(preview.statusCode, preview.body).toBe(200);
+      expect((await submit(id, [], other)).statusCode).toBe(201);
+      const [pending] = await db
+        .select()
+        .from(schema.placeSubmissionPhotos)
+        .where(eq(schema.placeSubmissionPhotos.id, photo.id));
+      const premature = await api().inject({
+        method: 'GET',
+        url: `/v1/places/${randomUUID()}/photos/${photo.id}/content`,
+      });
+      expect(premature.statusCode).toBe(404);
+      let target: string | undefined;
+      if (decision === 'merged') {
+        const parent = await submit(identity(), []);
+        target = (await decide(parent.json().submissionId, 'approved')).json().placeId;
+      }
+      const selected = decision === 'approved' || decision === 'merged';
+      const actualDecision = decision === 'dropped' ? 'approved' : decision;
+      const result = await decide(submissionId, actualDecision, selected ? [photo.id] : [], target);
+      expect(result.statusCode, result.body).toBe(201);
+      const media = await db
+        .select()
+        .from(schema.placeMedia)
+        .where(eq(schema.placeMedia.mediaUploadId, item.id));
+      expect(media).toHaveLength(0);
+      const userPhotos = await db
+        .select()
+        .from(schema.placeSubmissionPhotos)
+        .where(eq(schema.placeSubmissionPhotos.mediaUploadId, item.id));
+      expect(userPhotos[0]).toMatchObject({
+        status: selected ? 'approved' : 'rejected',
+        placeId: selected ? result.json().placeId : null,
+      });
+      if (selected) {
+        expect(userPhotos[0]!.uploadedByUserId).toBe(
+          JSON.parse(Buffer.from(user.split('.')[1]!, 'base64url').toString()).sub,
+        );
+        expect(userPhotos[0]!.storageKey).toMatch(/^submission-photos\/bills\//);
+        const placeDetail = (
+          await api().inject({ method: 'GET', url: `/v1/places/${userPhotos[0]!.placeId}` })
+        ).json();
+        expect(placeDetail.photos).toEqual([]);
+        expect(placeDetail.userPhotos).toHaveLength(1);
+        expect(placeDetail.userPhotos[0].contributor.displayName).toBe('Mai');
+        const publicRead = await api().inject({
+          method: 'GET',
+          url: `/v1/places/${userPhotos[0]!.placeId}/photos/${userPhotos[0]!.id}/content`,
+        });
+        expect(publicRead.statusCode, publicRead.body).toBe(200);
+        await app.get(MediaCleanupService).runDue(1000);
+        expect(storage().objects.has(userPhotos[0]!.storageKey!)).toBe(true);
+      }
+      if (!selected) {
+        await app.get(MediaCleanupService).runDue(1000);
+        expect(storage().objects.has(pending!.storageKey)).toBe(false);
+      }
+      expect(
+        (await api().inject({ method: 'GET', url: photo.url, headers: auth(moderator) }))
+          .statusCode,
+      ).toBe(404);
+      expect((await ledger(submissionId)).map((r) => r.delta)).toEqual(
+        decision === 'approved'
+          ? [70]
+          : decision === 'merged'
+            ? [20]
+            : decision === 'dropped'
+              ? [50]
+              : [],
+      );
+      expect((await decide(submissionId, actualDecision, [], target)).statusCode).toBe(409);
+    },
+  );
   it('does not award the bonus for discarded evidence or a dedup contributor photo', async () => {
     for (const keepEvidence of [false, true]) {
       const id = identity();

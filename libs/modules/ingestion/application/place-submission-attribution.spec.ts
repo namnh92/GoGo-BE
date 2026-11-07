@@ -33,6 +33,7 @@ const proposal = {
   status: 'pending',
   createdAt: new Date(),
   note: 'A private note',
+  enrichment: { visitTips: 'PRIVATE-TIP', photos: [{ mediaId: 'PRIVATE-EVIDENCE', kind: 'menu' }] },
 };
 
 function fixture() {
@@ -123,6 +124,10 @@ describe('Shared proposal contribution attribution (#788 F-01)', () => {
   it('lets an attributed contributor poll without exposing the original contributor’s note', async () => {
     const { service } = fixture();
     await service.submit(actor, { googlePlaceId: proposal.googlePlaceId });
+    const polled = await service.getSubmission(actor, proposal.id);
+    expect(polled).not.toHaveProperty('enrichment');
+    expect(polled).not.toHaveProperty('verificationStatus');
+    expect(JSON.stringify(polled)).not.toContain('PRIVATE');
     await expect(service.getSubmission(actor, proposal.id)).resolves.toEqual({
       id: proposal.id,
       status: 'pending',
@@ -131,6 +136,16 @@ describe('Shared proposal contribution attribution (#788 F-01)', () => {
       submissionCount: 2,
       createdAt: proposal.createdAt.toISOString(),
       decidedAt: undefined,
+    });
+  });
+
+  it('returns enrichment to the original submitter only', async () => {
+    const { service } = fixture();
+    await expect(
+      service.getSubmission({ ...actor, id: 'user-a' }, proposal.id),
+    ).resolves.toMatchObject({
+      enrichment: proposal.enrichment,
+      verificationStatus: 'unverified',
     });
   });
 

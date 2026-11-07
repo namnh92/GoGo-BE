@@ -2296,7 +2296,7 @@ export interface paths {
         get: operations["getPlaceContributionDraft"];
         /**
          * Save complete draft snapshot (registered users only)
-         * @description Client-generated UUID. expectedVersion 0 creates, otherwise matches the current version; success increments it. 30-day sliding expiry, at most 20 live drafts. Draft enrichment fields are optional. No provider content or resolution token is persisted. Private no-store; optimistic version handles retries without retaining free text in replay storage. Nonempty photos are BLOCKED on #794 (503 SUBMISSION_EVIDENCE_BLOCKED, retryable false); no raw image reaches CMS.
+         * @description Owned photos are claimed and copied to private retained storage through draft expiry. Client-generated UUID. expectedVersion 0 creates, otherwise matches the current version; success increments it. 30-day sliding expiry, at most 20 live drafts. Draft enrichment fields are optional. No provider content or resolution token is persisted. Private no-store; optimistic version handles retries without retaining free text in replay storage. Bill photos require enrichment.billPhotoPublicConsent=true (400 with field error otherwise). Only authorised moderators can preview pending bill images. All menu/bill photos are public contributions: explicitly approved photos become userPhotos with uploader attribution, never official gallery/cover; moderators can drop any photo.
          */
         put: operations["savePlaceContributionDraft"];
         post?: never;
@@ -2416,7 +2416,7 @@ export interface paths {
         };
         /**
          * Poll a submission (recorded contributor or original submitter only)
-         * @description Original submitter (registered user or guest) or recorded registered contributor only. `rejectionReason` is a stable public key when rejected; absent for historical decisions without a key and for other statuses. Internal moderation notes are never returned.
+         * @description Original submitter (registered user or guest) or recorded registered contributor only. `rejectionReason` is a stable public key when rejected; absent for historical decisions without a key and for other statuses. Internal moderation notes are never returned. Enrichment and verificationStatus are returned only to the original submitter; deduplicated contributors receive status metadata without private text or evidence references.
          */
         get: operations["getPlaceSubmission"];
         put?: never;
@@ -2536,7 +2536,7 @@ export interface paths {
          *
          *     #786 / ADR-0043: with provider photos enabled, approval retains at most one current first Google photo with provider provenance and per-photo credits. No image or references were stored while pending. Disabled or confirmed no-photo results permit approval without imagery; photo budget, provider or storage failures return retryable `503 SUBMISSION_PHOTO_UNAVAILABLE` and leave the submission pending. Google may change photo order since preview.
          *
-         *     `rejected` creates no place. `merged` points the proposal at an existing one and attaches the explicitly selected photos to it.
+         *     `rejected` creates no place. `merged` points the proposal at an existing one and attaches the explicitly selected photos to it. Every approved menu/bill photo is public in userPhotos with uploader credit, never in the official gallery or cover. Unselected menu photos are rejected and cleaned after seven days; rejected bills and their derivatives are queued for immediate cleanup. These menu/bill rules take precedence over the general cleanup description on approvedPhotoIds. Accepted menu/bill evidence adds 20 credits once; approval also grants the 50-credit base.
          *
          *     Approval is not verification and not publication: the administrative mapping is resolved from the new place's own coordinate and is never `VERIFIED`, and the publication blocker stays until somebody confirms it (ADM-017, GoGo-BE#525).
          */
@@ -7777,7 +7777,7 @@ export interface components {
              * @description UTC ledger timestamp, including all six fractional digits.
              */
             createdAt: string;
-            /** @description Signed credits; +50 or +70 for submission_approved, -1 for message_spent. Bonus requires approved menu/bill evidence (#794). Values are extensible; consumers must accept unknown integer deltas. */
+            /** @description Signed credits; +50 or +70 for approval, +20 for accepted evidence on merge (ledger reason submission_approved), -1 for message_spent. Bonus requires approved menu/bill evidence (#794). Values are extensible; consumers must accept unknown integer deltas. */
             delta: number;
             /** @enum {string} */
             reason: "submission_approved" | "message_spent";
@@ -8375,8 +8375,10 @@ export interface components {
             curatedRank?: number;
             /** Format: date-time */
             freshnessCheckedAt?: string;
-            /** @description Ordered gallery; empty when the place has no approved imagery. */
+            /** @description Official place gallery; user contributions are returned separately in userPhotos. */
             photos?: components["schemas"]["PlacePhoto"][];
+            /** @description Ảnh từ người dùng: approved community/review contributions, credited to the original uploader. Includes menu and bill photos from the wizard. Empty before approval. Separate from the official photos gallery and cover; only an editor/moderator may promote a photo in a separately tracked feature. */
+            readonly userPhotos?: components["schemas"]["PlacePhoto"][];
             taxonomies?: {
                 kind?: string;
                 key?: string;
@@ -8757,7 +8759,7 @@ export interface components {
             rating: number;
             chipKeys: string[];
         };
-        /** @description Unverified user claims. Stable active taxonomy keys only: purposes use suitability, vibes mood, amenities amenity, service/space chips checkin_tag. Keys are managed by CMS and checked against enabled taxonomy rows at request time. Unknown price/amenities omitted. Never automatically copied to catalogue, including on approval. Menu photos use private submission-photo processing; bills return 503 retryable false until server-side PII masking is available. */
+        /** @description Unverified user claims. Stable active taxonomy keys only: purposes use suitability, vibes mood, amenities amenity, service/space chips checkin_tag. Keys are managed by CMS and checked against enabled taxonomy rows at request time. Unknown price/amenities omitted. Never automatically copied to catalogue, including on approval. Menu photos use private submission-photo processing; bills require explicit billPhotoPublicConsent=true on each save or submit (400 field error otherwise). Every menu/bill photo is a public contribution, attached to the place with uploader attribution only after explicit moderator approval. Moderators can drop any photo, including personal data. Draft expiry deletes retained photos. No DLP or external personal-data processing provider. */
         ContributionEnrichmentDraft: {
             price?: components["schemas"]["ContributionPrice"];
             purposeKeys?: string[];
@@ -8766,7 +8768,9 @@ export interface components {
             amenities?: {
                 [key: string]: boolean;
             };
-            /** @description Unique mediaId; menu evidence uses private owner claim and sanitisation before CMS access. Bill evidence is blocked pending server-side PII masking. */
+            /** @description Optional for menu-only requests. Must be true when saving or submitting any bill photo. The user confirms the photo may be shown publicly after moderator approval and that they removed or hid personal information themselves. Missing or false with bills returns 400 VALIDATION_FAILED, field_errors field enrichment.billPhotoPublicConsent. */
+            billPhotoPublicConsent?: boolean;
+            /** @description Unique mediaId; private owner claim and sanitisation before CMS access. Bills require explicit consent. All menu/bill photos become userPhotos only after explicit approval with uploader attribution; never official gallery/cover. Draft photos are retained to draft expiry and transferred on submission. */
             photos?: {
                 /** Format: uuid */
                 mediaId: string;
@@ -9352,6 +9356,11 @@ export interface components {
             height: number;
             /** @enum {string} */
             status: "pending" | "approved" | "rejected";
+            /**
+             * @description Bill classification is durable; ordinary submission photos use menu.
+             * @enum {string}
+             */
+            kind?: "menu" | "bill";
             /** @description Root-relative API URL for an authenticated CMS fetch; null after decision or removal. */
             url: string | null;
         };
@@ -10624,7 +10633,7 @@ export interface components {
             }[];
         };
         AssistantStatus: {
-            /** @description No-expiry contributor credits. Prospective registered-user submission approval grants +50 once, or +70 with at least one approved menu/bill photo; photo support remains blocked on #794. Daily allowance first, then one credit per accepted user send (202), including later provider failure. Replay/rejection costs zero; credits never bypass burst/readiness/budget gates. */
+            /** @description No-expiry contributor credits. Prospective registered-user submission approval grants +50 once, or +70 with at least one approved menu/bill photo; merge grants +20 only when menu/bill evidence is accepted. All bill uploads require public consent; approved menu/bill photos appear in userPhotos with uploader credit, separately from the official gallery/cover. Daily allowance first, then one credit per accepted user send (202), including later provider failure. Replay/rejection costs zero; credits never bypass burst/readiness/budget gates. */
             creditBalance: number;
             /** @description `enabled` — sending works. `disabled` — kill switch off (`assistant.enabled`), or the environment cannot take new replies (for example its spending limit is reached). `limit_reached` — this account's daily messages and contributor credits are both spent until `resetsAt`. Unknown values mean "cannot send now". */
             state: string;

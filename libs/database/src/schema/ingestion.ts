@@ -480,6 +480,8 @@ export const placeSubmissionPhotos = pgTable(
     submissionId: uuid('submission_id')
       .notNull()
       .references(() => placeSubmissions.id, { onDelete: 'cascade' }),
+    /** Approved user-photo set; never an official gallery/cover row. */
+    placeId: uuid('place_id').references(() => places.id, { onDelete: 'set null' }),
     mediaUploadId: uuid('media_upload_id')
       .notNull()
       .references(() => mediaUploads.id),
@@ -494,6 +496,7 @@ export const placeSubmissionPhotos = pgTable(
   },
   (t) => [
     index('place_submission_photos_submission_idx').on(t.submissionId, t.status),
+    index('place_submission_photos_place_idx').on(t.placeId, t.status),
     uniqueIndex('place_submission_photos_upload_unique').on(t.mediaUploadId),
     check(
       'place_submission_photos_status_check',
@@ -515,6 +518,7 @@ export type SubmissionEnrichment = {
   purposeKeys?: string[] | undefined;
   vibeKeys?: string[] | undefined;
   amenities?: Record<string, boolean> | undefined;
+  billPhotoPublicConsent?: boolean | undefined;
   photos?: { mediaId: string; kind: 'menu' | 'bill' }[] | undefined;
   recommendedDishes?: string | undefined;
   visitTips?: string | undefined;

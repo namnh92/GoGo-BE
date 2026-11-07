@@ -8,17 +8,15 @@ export function assertContributor(actor: Actor): void {
     throw AppError.forbidden('REGISTERED_USER_REQUIRED', 'Registered user required');
 }
 
-/** Menu references use #794; receipts remain closed until server-side PII masking exists. */
+/** Photo ownership and sanitisation run in the private photo pipeline. */
 export async function validateEnrichment(
   db: Pick<Db, 'select'>,
   value: SubmissionEnrichment,
 ): Promise<void> {
-  if (value.photos?.some((photo) => photo.kind === 'bill'))
-    throw AppError.serviceUnavailable(
-      'SUBMISSION_EVIDENCE_BLOCKED',
-      'Receipt evidence requires server-side PII masking',
-      false,
-    );
+  assertBillPhotoConsent(
+    value.photos?.some((p) => p.kind === 'bill') ?? false,
+    value.billPhotoPublicConsent,
+  );
   const amenities = Object.keys(value.amenities ?? {});
   await assertValidSelections(db, {
     suitability: value.purposeKeys ?? [],
@@ -35,4 +33,17 @@ export function contributionStorageFailure(error: unknown): never {
     'CONTRIBUTION_STORAGE_UNAVAILABLE',
     'Contribution storage unavailable',
   );
+}
+
+/** Required on every request that saves or submits a bill, including retained uploads. */
+export function assertBillPhotoConsent(hasBill: boolean, consent?: boolean): void {
+  if (hasBill && consent !== true)
+    throw AppError.badRequest('VALIDATION_FAILED', 'Request validation failed', [
+      {
+        field: 'enrichment.billPhotoPublicConsent',
+        code: 'consent_required',
+        message:
+          'Confirm that this bill photo may be shown publicly after moderator approval and that you removed or hid personal information yourself',
+      },
+    ]);
 }

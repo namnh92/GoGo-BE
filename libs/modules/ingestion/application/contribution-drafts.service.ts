@@ -1,3 +1,4 @@
+import { SubmissionPhotosService } from './submission-photos.service';
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq, gt, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
@@ -28,11 +29,26 @@ function view(row: typeof drafts.$inferSelect) {
 }
 @Injectable()
 export class ContributionDraftsService {
-  constructor(@Inject(DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DB) private readonly db: Db,
+    private readonly photos: SubmissionPhotosService,
+  ) {}
 
   async save(actor: Actor, id: string, input: SaveContributionDraft) {
     assertContributor(actor);
     input = saveContributionDraftSchema.parse(input);
+    // Validate and copy bytes before opening a DB transaction. Claims are rechecked below.
+    await validateEnrichment(this.db, input.enrichment);
+    const prepared = await this.photos.prepare(
+      actor,
+      (input.enrichment.photos ?? []).map((p) => p.mediaId),
+      null,
+      {
+        draftId: id,
+        evidence: input.enrichment.photos,
+        billPhotoPublicConsent: input.enrichment.billPhotoPublicConsent,
+      },
+    );
     return this.db
       .transaction(async (tx) => {
         // Serialise the per-owner cap, expiry and privacy erasure. No payload in locks/logs.
@@ -49,11 +65,13 @@ export class ContributionDraftsService {
         if (current && current.expiresAt <= new Date()) throw AppError.notFound();
         if ((current?.version ?? 0) !== input.expectedVersion)
           throw AppError.conflict('DRAFT_MODIFIED', 'Draft version changed');
+        const updatedAt = new Date();
+        const expiresAt = new Date(updatedAt.getTime() + 30 * 86400000);
         const values = {
           googlePlaceId: input.googlePlaceId,
           enrichment: input.enrichment,
-          updatedAt: sql`clock_timestamp()`,
-          expiresAt: sql`clock_timestamp() + interval '30 days'`,
+          updatedAt,
+          expiresAt,
         };
         if (current) {
           const [row] = await tx
@@ -61,6 +79,7 @@ export class ContributionDraftsService {
             .set({ ...values, version: current.version + 1 })
             .where(eq(drafts.id, id))
             .returning();
+          await this.photos.retainDraft(tx, actor, id, prepared, expiresAt);
           return view(row!);
         }
         const count = await tx.execute(
@@ -75,6 +94,7 @@ export class ContributionDraftsService {
           .onConflictDoNothing()
           .returning();
         if (!row) throw AppError.conflict('DRAFT_MODIFIED', 'Draft ID already exists');
+        await this.photos.retainDraft(tx, actor, id, prepared, expiresAt);
         return view(row);
       })
       .catch(contributionStorageFailure);
@@ -103,12 +123,23 @@ export class ContributionDraftsService {
 
   async delete(actor: Actor, id: string, version: number) {
     assertContributor(actor);
-    const rows = await this.db
-      .delete(drafts)
-      .where(and(eq(drafts.id, id), eq(drafts.userId, actor.id), eq(drafts.version, version)))
-      .returning({ id: drafts.id });
-    if (!rows.length)
-      throw AppError.notFound('DRAFT_NOT_FOUND_OR_MODIFIED', 'Draft not found or version changed');
-    return { deleted: true };
+    return this.db
+      .transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${`assistant:${actor.id}`}, 0))`,
+        );
+        const rows = await tx
+          .delete(drafts)
+          .where(and(eq(drafts.id, id), eq(drafts.userId, actor.id), eq(drafts.version, version)))
+          .returning({ id: drafts.id });
+        if (!rows.length)
+          throw AppError.notFound(
+            'DRAFT_NOT_FOUND_OR_MODIFIED',
+            'Draft not found or version changed',
+          );
+        await this.photos.releaseDraft(tx, id);
+        return { deleted: true };
+      })
+      .catch(contributionStorageFailure);
   }
 }

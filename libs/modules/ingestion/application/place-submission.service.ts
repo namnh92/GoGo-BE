@@ -907,7 +907,10 @@ export class PlaceSubmissionService {
         ...(input.enrichment?.photos ?? []).map((photo) => photo.mediaId),
       ]),
     ];
-    const prepared = await this.photos.prepare(actor, mediaIds, pending?.id ?? null);
+    const prepared = await this.photos.prepare(actor, mediaIds, pending?.id ?? null, {
+      evidence: input.enrichment?.photos,
+      billPhotoPublicConsent: input.enrichment?.billPhotoPublicConsent,
+    });
     const result = await this.db
       .transaction(async (tx) => {
         if (actor.type === 'user') {
@@ -1004,9 +1007,10 @@ export class PlaceSubmissionService {
       .where(eq(schema.placeSubmissions.id, id))
       .limit(1);
     if (!row) throw AppError.notFound('SUBMISSION_NOT_FOUND', 'Submission not found');
-    let owner =
+    const originalSubmitter =
       (actor.type === 'user' && row.submittedByUserId === actor.id) ||
       (actor.type === 'guest' && row.submittedByGuestSessionId === actor.id);
+    let owner = originalSubmitter;
     if (!owner && actor.type === 'user') {
       const [contribution] = await this.db
         .select({ submissionId: schema.placeSubmissionContributors.submissionId })
@@ -1024,8 +1028,9 @@ export class PlaceSubmissionService {
       status: row.status,
       rejectionReason: row.status === 'rejected' ? (row.rejectionReason ?? undefined) : undefined,
       googlePlaceId: row.googlePlaceId,
-      enrichment: row.enrichment ?? undefined,
-      verificationStatus: row.enrichment ? ('unverified' as const) : undefined,
+      ...(originalSubmitter && row.enrichment
+        ? { enrichment: row.enrichment, verificationStatus: 'unverified' as const }
+        : {}),
       placeId: row.resultPlaceId ?? undefined,
       submissionCount: row.submissionCount,
       createdAt: row.createdAt.toISOString(),
@@ -1459,8 +1464,16 @@ export class PlaceSubmissionService {
       throw AppError.conflict('ALREADY_DECIDED', 'Submission already decided');
     }
 
+    let billCleanup: Awaited<ReturnType<SubmissionPhotosService['decide']>> | undefined;
     const finalize = async (tx: Tx, resultPlaceId: string | null) => {
-      await this.photos.decide(tx, id, resultPlaceId, adminId, reason, approvedPhotoIds);
+      billCleanup = await this.photos.decide(
+        tx,
+        id,
+        resultPlaceId,
+        adminId,
+        reason,
+        approvedPhotoIds,
+      );
       await tx
         .update(schema.placeSubmissions)
         .set({
@@ -1473,7 +1486,7 @@ export class PlaceSubmissionService {
           resultPlaceId,
         })
         .where(eq(schema.placeSubmissions.id, id));
-      if (decision === 'approved' && row.submittedByUserId) {
+      if ((decision === 'approved' || decision === 'merged') && row.submittedByUserId) {
         // Count only server-approved evidence from the original contributor's proposal.
         // Dedupe uploads and ordinary place photos cannot earn this bonus.
         const evidenceIds = (row.enrichment?.photos ?? []).map((photo) => photo.mediaId);
@@ -1492,6 +1505,7 @@ export class PlaceSubmissionService {
           row.id,
           `google:${row.googlePlaceId}`,
           Number((approvedEvidence?.rows[0] as { n: number } | undefined)?.n ?? 0),
+          decision === 'approved',
         );
       }
       await writeAudit(tx, {
@@ -1520,6 +1534,8 @@ export class PlaceSubmissionService {
       resultPlaceId = await this.createDraftFromSubmission(row, adminId, finalize);
     } else {
       resultPlaceId = await this.db.transaction(async (tx) => {
+        if (decision === 'merged' && row.submittedByUserId)
+          await lockAssistantAccount(tx, row.submittedByUserId);
         await this.lockPendingSubmission(tx, row);
         let targetId: string | null = null;
         if (decision === 'merged') {
@@ -1539,6 +1555,8 @@ export class PlaceSubmissionService {
         return targetId;
       });
     }
+    if (billCleanup && (billCleanup.cleanupIds.length || billCleanup.originalKeys.length))
+      await this.photos.cleanupDecidedBills(billCleanup);
     this.metrics.increment('mobile_place_submissions_total', { status: decision });
     // How long a proposal waited before an editor acted on it (spec §13).
     this.metrics.observe(

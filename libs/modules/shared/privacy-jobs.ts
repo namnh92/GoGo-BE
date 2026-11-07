@@ -59,7 +59,17 @@ export class PrivacyJobs {
       'select id from place_contribution_drafts where expires_at <= now()',
     );
     if (!dryRun && report.contributionDraftsPurged > 0) {
-      await this.db.execute(sql`delete from place_contribution_drafts where expires_at <= now()`);
+      await this.db.execute(sql`
+        with expired as (
+          delete from place_contribution_drafts where expires_at <= now() returning id
+        ), released as (
+          update media_uploads set status = 'expired', expires_at = now()
+          where attached_to_type = 'contribution_draft' and attached_to_id in (select id::text from expired)
+          returning storage_key
+        )
+        update media_cleanup_queue set next_attempt_at = now()
+        where bucket = 'private' and object_key in (select storage_key from released)
+      `);
     }
 
     // SE-006 search terms: 90-day retention on the text, not on the counts.
@@ -147,12 +157,12 @@ export class PrivacyJobs {
     // that never PUT, or a request that failed before it could attach. The
     // object, if one exists, is under a lifecycle prefix and leaves on its own.
     const uploadsQ = `select id from media_uploads
-      where status = 'pending' and expires_at < now() - interval '1 day'`;
+      where status in ('pending', 'expired') and expires_at < now() - interval '1 day'`;
     report.mediaUploadsPurged = await count(uploadsQ);
     if (!dryRun && report.mediaUploadsPurged > 0) {
       await this.db.execute(sql`
         delete from media_uploads
-        where status = 'pending' and expires_at < now() - interval '1 day'
+        where status in ('pending', 'expired') and expires_at < now() - interval '1 day'
       `);
     }
 

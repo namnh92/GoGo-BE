@@ -2700,6 +2700,7 @@ export class CmsCatalogService {
         schema.placeSources,
         schema.placeProviderSources,
         schema.placeMedia,
+        schema.placeSubmissionPhotos,
         schema.placePrices,
         schema.reviews,
         schema.roomSeedPlaces,

@@ -17,7 +17,7 @@ CREATE INDEX place_contribution_drafts_expiry_idx ON place_contribution_drafts(e
 ALTER TABLE assistant_credit_ledger DROP CONSTRAINT assistant_credit_ledger_check;
 --> statement-breakpoint
 ALTER TABLE assistant_credit_ledger ADD CONSTRAINT assistant_credit_ledger_check CHECK
- ((reason='submission_approved' AND delta IN (50,70) AND submission_id IS NOT NULL AND venue_identity IS NOT NULL AND usage_ledger_id IS NULL)
+ ((reason='submission_approved' AND delta IN (20,50,70) AND submission_id IS NOT NULL AND venue_identity IS NOT NULL AND usage_ledger_id IS NULL)
  OR (reason='message_spent' AND delta=-1 AND usage_ledger_id IS NOT NULL AND submission_id IS NULL AND venue_identity IS NULL)) NOT VALID;
 --> statement-breakpoint
 WITH vocabulary(kind,key,vi,en) AS (VALUES
@@ -44,3 +44,9 @@ INSERT INTO taxonomy_labels(taxonomy_id,locale,label)
 SELECT t.id,l.locale,l.label FROM vocabulary v JOIN taxonomies t ON t.kind::text=v.kind AND t.key=v.key
 CROSS JOIN LATERAL (VALUES ('vi',v.vi),('en',v.en)) l(locale,label)
 ON CONFLICT (taxonomy_id,locale) DO NOTHING;
+
+--> statement-breakpoint
+-- Approval attaches user contributions to a separate set, never place_media.
+ALTER TABLE place_submission_photos ADD COLUMN place_id uuid REFERENCES places(id) ON DELETE SET NULL;
+--> statement-breakpoint
+CREATE INDEX place_submission_photos_place_idx ON place_submission_photos(place_id, status);

@@ -4865,13 +4865,14 @@ paths:
       tags: [places]
       summary: Save complete draft snapshot (registered users only)
       description: >
+        Owned photos are claimed and copied to private retained storage through draft expiry.
         Client-generated UUID. expectedVersion 0 creates, otherwise matches the
         current version; success increments it. 30-day sliding expiry, at most
         20 live drafts. Draft enrichment fields are optional. No provider content
         or resolution token is persisted. Private no-store; optimistic version
         handles retries without retaining free text in replay storage.
-        Nonempty photos are BLOCKED on #794 (503 SUBMISSION_EVIDENCE_BLOCKED,
-        retryable false); no raw image reaches CMS.
+        Bill photos require enrichment.billPhotoPublicConsent=true (400 with field error otherwise).
+        Only authorised moderators can preview pending bill images. All menu/bill photos are public contributions: explicitly approved photos become userPhotos with uploader attribution, never official gallery/cover; moderators can drop any photo.
       requestBody:
         required: true
         content:
@@ -5121,7 +5122,9 @@ paths:
         Original submitter (registered user or guest) or recorded registered
         contributor only. `rejectionReason` is a stable public key when rejected;
         absent for historical decisions without a key and for other statuses.
-        Internal moderation notes are never returned.
+        Internal moderation notes are never returned. Enrichment and verificationStatus
+        are returned only to the original submitter; deduplicated contributors receive
+        status metadata without private text or evidence references.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -5409,6 +5412,12 @@ paths:
 
         `rejected` creates no place. `merged` points the proposal at an existing
         one and attaches the explicitly selected photos to it.
+        Every approved menu/bill photo is public in userPhotos with uploader credit,
+        never in the official gallery or cover. Unselected menu photos are rejected
+        and cleaned after seven days; rejected bills and their derivatives are queued
+        for immediate cleanup. These menu/bill rules take precedence over the general
+        cleanup description on approvedPhotoIds. Accepted menu/bill evidence adds
+        20 credits once; approval also grants the 50-credit base.
 
 
         Approval is not verification and not publication: the administrative
@@ -15762,8 +15771,8 @@ components:
           description: UTC ledger timestamp, including all six fractional digits.
         delta:
           type: integer
-          x-extensible-enum: [50, 70, -1]
-          description: Signed credits; +50 or +70 for submission_approved, -1 for message_spent. Bonus requires approved menu/bill evidence (#794). Values are extensible; consumers must accept unknown integer deltas.
+          x-extensible-enum: [20, 50, 70, -1]
+          description: Signed credits; +50 or +70 for approval, +20 for accepted evidence on merge (ledger reason submission_approved), -1 for message_spent. Bonus requires approved menu/bill evidence (#794). Values are extensible; consumers must accept unknown integer deltas.
         reason: { type: string, enum: [submission_approved, message_spent] }
         submissionId:
           type: [string, 'null']
@@ -16626,7 +16635,16 @@ components:
         freshnessCheckedAt: { type: string, format: date-time }
         photos:
           type: array
-          description: Ordered gallery; empty when the place has no approved imagery.
+          description: Official place gallery; user contributions are returned separately in userPhotos.
+          items: { $ref: '#/components/schemas/PlacePhoto' }
+        userPhotos:
+          type: array
+          readOnly: true
+          description: >
+            Ảnh từ người dùng: approved community/review contributions, credited to
+            the original uploader. Includes menu and bill photos from the wizard.
+            Empty before approval. Separate from the official photos gallery and cover;
+            only an editor/moderator may promote a photo in a separately tracked feature.
           items: { $ref: '#/components/schemas/PlacePhoto' }
         taxonomies:
           type: array
@@ -17341,7 +17359,10 @@ components:
         Keys are managed by CMS and checked against enabled taxonomy rows at request time.
         Unknown price/amenities omitted. Never automatically copied to catalogue,
         including on approval. Menu photos use private submission-photo processing;
-        bills return 503 retryable false until server-side PII masking is available.
+        bills require explicit billPhotoPublicConsent=true on each save or submit (400 field error otherwise).
+        Every menu/bill photo is a public contribution, attached to the place with uploader attribution
+        only after explicit moderator approval. Moderators can drop any photo, including personal data.
+        Draft expiry deletes retained photos. No DLP or external personal-data processing provider.
       properties:
         price: { $ref: '#/components/schemas/ContributionPrice' }
         purposeKeys:
@@ -17375,10 +17396,17 @@ components:
             Keys are active amenity taxonomy keys managed by CMS. False is explicit
             absence; omitted is unknown. No closed key enum.
           additionalProperties: { type: boolean }
+        billPhotoPublicConsent:
+          type: boolean
+          description: >
+            Optional for menu-only requests. Must be true when saving or submitting any bill photo.
+            The user confirms the photo may be shown publicly after moderator approval and that
+            they removed or hid personal information themselves. Missing or false with bills
+            returns 400 VALIDATION_FAILED, field_errors field enrichment.billPhotoPublicConsent.
         photos:
           type: array
           maxItems: 5
-          description: Unique mediaId; menu evidence uses private owner claim and sanitisation before CMS access. Bill evidence is blocked pending server-side PII masking.
+          description: Unique mediaId; private owner claim and sanitisation before CMS access. Bills require explicit consent. All menu/bill photos become userPhotos only after explicit approval with uploader attribution; never official gallery/cover. Draft photos are retained to draft expiry and transferred on submission.
           items:
             type: object
             additionalProperties: false
@@ -18365,6 +18393,10 @@ components:
         width: { type: integer }
         height: { type: integer }
         status: { type: string, enum: [pending, approved, rejected] }
+        kind:
+          type: string
+          enum: [menu, bill]
+          description: Bill classification is durable; ordinary submission photos use menu.
         url:
           type: [string, 'null']
           description: Root-relative API URL for an authenticated CMS fetch; null after decision or removal.
@@ -20324,7 +20356,7 @@ components:
         creditBalance:
           type: integer
           minimum: 0
-          description: 'No-expiry contributor credits. Prospective registered-user submission approval grants +50 once, or +70 with at least one approved menu/bill photo; photo support remains blocked on #794. Daily allowance first, then one credit per accepted user send (202), including later provider failure. Replay/rejection costs zero; credits never bypass burst/readiness/budget gates.'
+          description: 'No-expiry contributor credits. Prospective registered-user submission approval grants +50 once, or +70 with at least one approved menu/bill photo; merge grants +20 only when menu/bill evidence is accepted. All bill uploads require public consent; approved menu/bill photos appear in userPhotos with uploader credit, separately from the official gallery/cover. Daily allowance first, then one credit per accepted user send (202), including later provider failure. Replay/rejection costs zero; credits never bypass burst/readiness/budget gates.'
         state:
           type: string
           description: >

@@ -1,3 +1,4 @@
+import sharp from 'sharp';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -7,7 +8,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { eq, sql } from 'drizzle-orm';
 import { Pool } from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { schema } from '@gogo/database';
 import { ContributionDraftsService } from '../../../libs/modules/ingestion/application/contribution-drafts.service';
 import { PlaceSubmissionService } from '../../../libs/modules/ingestion/application/place-submission.service';
@@ -25,6 +26,10 @@ let container: StartedPostgreSqlContainer;
 let pool: Pool;
 let db: ReturnType<typeof drizzle<typeof schema>>;
 let drafts: ContributionDraftsService;
+let photos: SubmissionPhotosService;
+let storage: FakeStorage;
+let uploads: UploadsService;
+let cleanup: MediaCleanupService;
 let owner: Actor;
 let other: Actor;
 const enrichment = {
@@ -107,7 +112,16 @@ beforeAll(async () => {
     .returning();
   owner = { type: 'user', id: users[0]!.id, sessionId: randomUUID() };
   other = { type: 'user', id: users[1]!.id, sessionId: randomUUID() };
-  drafts = new ContributionDraftsService(db);
+  storage = new FakeStorage();
+  uploads = new UploadsService(db, storage, new FakeStorage(), true, true, true);
+  cleanup = new MediaCleanupService(
+    db,
+    { private: storage, public: new FakeStorage() },
+    {} as never,
+    '',
+  );
+  photos = new SubmissionPhotosService(db, uploads, cleanup, storage);
+  drafts = new ContributionDraftsService(db, photos);
 });
 afterAll(async () => {
   await pool?.end();
@@ -140,7 +154,7 @@ describe('private contribution lifecycle against PostgreSQL (#796)', () => {
     expect(await drafts.delete(owner, id, 2)).toEqual({ deleted: true });
     await expect(drafts.get(owner, id)).rejects.toMatchObject({ httpStatus: 404 });
   });
-  it('rejects guest/admin, inactive users, bad taxonomy and raw receipts without writes', async () => {
+  it('rejects guest/admin, inactive users, bad taxonomy and invalid receipt references without writes', async () => {
     for (const type of ['guest', 'admin'] as const) {
       const actor = { ...owner, type };
       await expect(drafts.list(actor)).rejects.toMatchObject({ code: 'REGISTERED_USER_REQUIRED' });
@@ -158,9 +172,12 @@ describe('private contribution lifecycle against PostgreSQL (#796)', () => {
     await expect(
       drafts.save(owner, randomUUID(), {
         ...input,
-        enrichment: { photos: [{ kind: 'bill', mediaId: randomUUID() }] },
+        enrichment: {
+          billPhotoPublicConsent: true,
+          photos: [{ kind: 'bill', mediaId: randomUUID() }],
+        },
       }),
-    ).rejects.toMatchObject({ code: 'SUBMISSION_EVIDENCE_BLOCKED' });
+    ).rejects.toMatchObject({ code: 'INVALID_SUBMISSION_PHOTOS' });
     await db.update(schema.users).set({ status: 'suspended' }).where(eq(schema.users.id, other.id));
     await expect(drafts.save(other, randomUUID(), input)).rejects.toMatchObject({
       httpStatus: 403,
@@ -291,6 +308,10 @@ describe('private contribution lifecycle against PostgreSQL (#796)', () => {
       .from(schema.placeSubmissions)
       .where(eq(schema.placeSubmissions.id, id));
     expect(unchanged!.enrichment).toEqual(enrichment);
+    const shared = await submissions.getSubmission(other, id);
+    expect(shared.status).toBe('pending');
+    expect(shared).not.toHaveProperty('enrichment');
+    expect(shared).not.toHaveProperty('verificationStatus');
     await expect(
       submissions.submit(
         { ...owner, type: 'guest' },
@@ -336,6 +357,195 @@ describe('private contribution lifecycle against PostgreSQL (#796)', () => {
     ).rejects.toThrow('Approval failed');
     expect(await db.select().from(schema.assistantCreditLedger)).toHaveLength(2);
   });
+  async function photoUpload() {
+    const bytes = await sharp({ create: { width: 32, height: 32, channels: 3, background: 'red' } })
+      .png()
+      .toBuffer();
+    const [upload] = await db
+      .insert(schema.mediaUploads)
+      .values({
+        actorType: 'user',
+        actorId: owner.id,
+        purpose: 'place_photo',
+        contentType: 'image/png',
+        contentLength: bytes.length,
+        storageKey: `tmp/place-photos/${randomUUID()}.png`,
+        expiresAt: new Date(Date.now() + 900000),
+      })
+      .returning();
+    await storage.putObject(upload!.storageKey, bytes, 'image/png');
+    return upload!;
+  }
+  it('F-04 retains a draft past original expiry/lifecycle, transfers on submit, and deletion preserves submission bytes', async () => {
+    const upload = await photoUpload(),
+      id = randomUUID();
+    const saved = await drafts.save(owner, id, {
+      ...input,
+      enrichment: { photos: [{ mediaId: upload.id, kind: 'menu' }] },
+    });
+    const [retained] = await db
+      .select()
+      .from(schema.mediaUploads)
+      .where(eq(schema.mediaUploads.id, upload.id));
+    expect(retained!.attachedToType).toBe('contribution_draft');
+    expect(retained!.storageKey).not.toMatch(/^tmp\//);
+    expect(retained!.expiresAt.toISOString()).toBe(saved.expiresAt);
+    await storage.deleteObject(upload.storageKey); // Simulate original one-day lifecycle.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + 2 * 86400000);
+      const prepared = await photos.prepare(owner, [upload.id], null);
+      const [submission] = await db
+        .insert(schema.placeSubmissions)
+        .values({ googlePlaceId: `draft-transfer-${id}`, submittedByUserId: owner.id })
+        .returning();
+      await db.transaction((tx) => photos.attach(tx, owner, submission!.id, prepared));
+      await drafts.delete(owner, id, saved.version);
+      const [claimed] = await db
+        .select()
+        .from(schema.mediaUploads)
+        .where(eq(schema.mediaUploads.id, upload.id));
+      expect(claimed!.attachedToType).toBe('place_submission');
+      await cleanup.runDue();
+      expect(await storage.exists(prepared.photos[0]!.key)).toBe(true);
+      await db
+        .delete(schema.placeSubmissions)
+        .where(eq(schema.placeSubmissions.id, submission!.id));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('F-04 releases removed/deleted photos and cleans expired draft derivatives', async () => {
+    for (const action of ['remove', 'delete', 'expire'] as const) {
+      const upload = await photoUpload(),
+        id = randomUUID();
+      const saved = await drafts.save(owner, id, {
+        ...input,
+        enrichment: { photos: [{ mediaId: upload.id, kind: 'menu' }] },
+      });
+      const [retained] = await db
+        .select()
+        .from(schema.mediaUploads)
+        .where(eq(schema.mediaUploads.id, upload.id));
+      if (action === 'remove') {
+        await drafts.save(owner, id, { ...input, expectedVersion: saved.version, enrichment: {} });
+        await drafts.delete(owner, id, saved.version + 1);
+      } else if (action === 'delete') await drafts.delete(owner, id, saved.version);
+      else {
+        await db
+          .update(schema.placeContributionDrafts)
+          .set({ expiresAt: new Date(0) })
+          .where(eq(schema.placeContributionDrafts.id, id));
+        await db
+          .update(schema.mediaCleanupQueue)
+          .set({ nextAttemptAt: new Date(0) })
+          .where(eq(schema.mediaCleanupQueue.objectKey, retained!.storageKey));
+        await expect(photos.prepare(owner, [upload.id], null)).rejects.toMatchObject({
+          code: 'INVALID_SUBMISSION_PHOTOS',
+        });
+        await new PrivacyJobs(db).run(false);
+      }
+      await cleanup.runDue();
+      expect(await storage.exists(retained!.storageKey)).toBe(false);
+    }
+  });
+  it('consented bills stay private until approval, publish with uploader attribution and earn the bonus', async () => {
+    const upload = await photoUpload(),
+      id = randomUUID();
+    const bill = {
+      billPhotoPublicConsent: true,
+      photos: [{ mediaId: upload.id, kind: 'bill' as const }],
+    };
+    await expect(
+      drafts.save(owner, id, { ...input, enrichment: { photos: bill.photos } }),
+    ).rejects.toMatchObject({
+      httpStatus: 400,
+      options: { fieldErrors: [{ field: 'enrichment.billPhotoPublicConsent' }] },
+    });
+    const saved = await drafts.save(owner, id, { ...input, enrichment: bill });
+    const [submission] = await db
+      .insert(schema.placeSubmissions)
+      .values({ googlePlaceId: `bill-${id}`, submittedByUserId: owner.id, enrichment: bill })
+      .returning();
+    const prepared = await photos.prepare(owner, [upload.id], null, {
+      evidence: bill.photos,
+      billPhotoPublicConsent: true,
+    });
+    await db.transaction((tx) => photos.attach(tx, owner, submission!.id, prepared));
+    const [photo] = await db
+      .select()
+      .from(schema.placeSubmissionPhotos)
+      .where(eq(schema.placeSubmissionPhotos.submissionId, submission!.id));
+    expect(
+      (await sharp(await photos.readForReview(submission!.id, photo!.id)).metadata()).format,
+    ).toBe('webp');
+    const [admin] = await db
+      .insert(schema.adminUsers)
+      .values({
+        email: `bill-${id}@example.test`,
+        passwordHash: 'unused',
+        displayName: 'Moderator',
+        role: 'moderator',
+      })
+      .returning();
+    const [place] = await db
+      .insert(schema.places)
+      .values({
+        name: `Bill test ${id}`,
+        nameNormalized: 'set-by-trigger',
+        geom: { x: 106.7, y: 10.77 },
+        status: 'community_submitted',
+      })
+      .returning();
+    await db.transaction(async (tx) => {
+      await photos.decide(tx, submission!.id, place!.id, admin!.id, undefined, [photo!.id]);
+      await grantSubmissionCredits(tx, owner.id, submission!.id, `google:bill-${id}`, 1);
+      await grantSubmissionCredits(tx, owner.id, submission!.id, `google:bill-${id}`, 1);
+      await tx
+        .update(schema.placeSubmissions)
+        .set({ status: 'approved' })
+        .where(eq(schema.placeSubmissions.id, submission!.id));
+    });
+    const [published] = await db
+      .select()
+      .from(schema.placeSubmissionPhotos)
+      .where(eq(schema.placeSubmissionPhotos.mediaUploadId, upload.id));
+    expect(
+      await db
+        .select()
+        .from(schema.placeMedia)
+        .where(eq(schema.placeMedia.mediaUploadId, upload.id)),
+    ).toEqual([]);
+    expect(published).toMatchObject({
+      placeId: place!.id,
+      uploadedByUserId: owner.id,
+      status: 'approved',
+    });
+    expect((await sharp(await photos.readPublic(place!.id, published!.id)).metadata()).format).toBe(
+      'webp',
+    );
+    await expect(photos.readForReview(submission!.id, photo!.id)).rejects.toMatchObject({
+      httpStatus: 404,
+    });
+    expect(
+      (
+        await db
+          .select()
+          .from(schema.assistantCreditLedger)
+          .where(eq(schema.assistantCreditLedger.submissionId, submission!.id))
+      ).map((r) => r.delta),
+    ).toEqual([70]);
+    const queued = await db
+      .select()
+      .from(schema.mediaCleanupQueue)
+      .where(eq(schema.mediaCleanupQueue.objectKey, photo!.storageKey));
+    expect(queued).toEqual([]);
+    await cleanup.runDue();
+    expect(await storage.exists(photo!.storageKey)).toBe(true);
+    await drafts.delete(owner, id, saved.version);
+    await db.delete(schema.placeSubmissions).where(eq(schema.placeSubmissions.id, submission!.id));
+    await db.delete(schema.places).where(eq(schema.places.id, place!.id));
+  });
   it('exports own drafts then removes draft and proposal free text during erasure', async () => {
     const id = randomUUID();
     const [proposal] = await db
@@ -346,7 +556,15 @@ describe('private contribution lifecycle against PostgreSQL (#796)', () => {
         enrichment,
       })
       .returning();
-    await drafts.save(owner, id, input);
+    const upload = await photoUpload();
+    await drafts.save(owner, id, {
+      ...input,
+      enrichment: { ...enrichment, photos: [{ mediaId: upload.id, kind: 'menu' }] },
+    });
+    const [retained] = await db
+      .select()
+      .from(schema.mediaUploads)
+      .where(eq(schema.mediaUploads.id, upload.id));
     const exported = await collectUserExport(
       db,
       owner.id,
@@ -357,6 +575,8 @@ describe('private contribution lifecycle against PostgreSQL (#796)', () => {
     expect(JSON.stringify(exported)).toContain('Nhớ đặt bàn');
     await db.transaction((tx) => eraseAssistantDataForUser(tx, owner.id));
     expect(await db.select().from(schema.placeContributionDrafts)).toHaveLength(0);
+    await cleanup.runDue();
+    expect(await storage.exists(retained!.storageKey)).toBe(false);
     const [row] = await db
       .select()
       .from(schema.placeSubmissions)

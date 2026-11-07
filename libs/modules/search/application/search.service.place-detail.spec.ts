@@ -146,3 +146,46 @@ describe('Place Detail areaSummary (#784)', () => {
     expect(detail.areaKey).toBe('discovery-only');
   });
 });
+
+describe('wizard user photo set (#796)', () => {
+  it('separates approved credited user photos from the official gallery and strips private data', async () => {
+    const photo = {
+      id: 'user-photo',
+      storageKey: 'submission-photos/bills/safe.webp',
+      width: 20,
+      height: 30,
+      source: 'community',
+      moderation: 'approved',
+      contributor: { displayName: 'Mai' },
+    };
+    const { svc } = service(async () => ({
+      ...baseRow,
+      gogo_rating_count: 0,
+      gogo_rating_mean: null,
+      media: [],
+      user_photos: [photo, { ...photo, id: 'pending', moderation: 'pending' }],
+    }));
+    const detail = await svc.placeDetail(baseRow.id);
+    expect(detail.photos).toEqual([]);
+    expect(detail.userPhotos).toEqual([
+      {
+        id: photo.id,
+        url: `/v1/places/${baseRow.id}/photos/${photo.id}/content`,
+        width: 20,
+        height: 30,
+        source: 'community',
+        contributor: { displayName: 'Mai' },
+      },
+    ]);
+    expect(detail.userPhotos[0]).not.toHaveProperty('storageKey');
+    expect(detail.userPhotos[0]).not.toHaveProperty('isCover');
+  });
+  it('returns an empty user set for legacy place detail rows', async () => {
+    const { svc } = service(async () => ({
+      ...baseRow,
+      gogo_rating_count: 0,
+      gogo_rating_mean: null,
+    }));
+    expect((await svc.placeDetail(baseRow.id)).userPhotos).toEqual([]);
+  });
+});

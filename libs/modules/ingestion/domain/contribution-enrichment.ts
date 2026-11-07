@@ -28,8 +28,16 @@ export const enrichmentDraftSchema = z
       .record(z.string().min(1).max(64), z.boolean())
       .refine((v) => Object.keys(v).length <= 6, 'At most six amenities')
       .optional(),
+    billPhotoPublicConsent: z.boolean().optional(),
     photos: z
-      .array(z.object({ mediaId: z.string().uuid(), kind: z.enum(['menu', 'bill']) }).strict())
+      .array(
+        z
+          .object({
+            mediaId: z.string().uuid(),
+            kind: z.enum(['menu', 'bill']),
+          })
+          .strict(),
+      )
       .max(5)
       .refine((v) => new Set(v.map((p) => p.mediaId)).size === v.length, 'Duplicate photos')
       .optional(),
