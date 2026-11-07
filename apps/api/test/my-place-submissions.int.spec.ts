@@ -35,13 +35,13 @@ const list = (token = owner.token, query = '') =>
     headers: { authorization: `Bearer ${token}` },
   });
 
-const submit = (token: string, googlePlaceId: string, note?: string) =>
+const submit = (token: string, googlePlaceId: string, note?: string, resolutionToken?: string) =>
   api().inject({
     method: 'POST',
     url: '/v1/place-submissions',
     remoteAddress: ip(),
     headers: { authorization: `Bearer ${token}` },
-    payload: { googlePlaceId, note },
+    payload: { googlePlaceId, note, resolutionToken },
   });
 function seedProvider() {
   const googlePlaceId = `shared-${randomUUID()}`;
@@ -570,6 +570,7 @@ describe('#801 contribution cards and shared pending detail', () => {
   let config: Record<string, unknown>;
   let previous: Record<string, unknown>;
   const displayConfig = {
+    PLACE_RESOLUTION_ATTESTATION_SECRET: 'my-submissions-int-attestation-secret-0123456789',
     PLACE_DISPLAY_DAILY_MAX_CALLS: 1000,
     PLACE_DISPLAY_DAILY_MAX_LIST_COST_USD: 100,
     PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_DETAILS_QUALITY: 1000,
@@ -607,8 +608,6 @@ describe('#801 contribution cards and shared pending detail', () => {
       hours: [{ dayOfWeek: 1, openMinute: 480, closeMinute: 1320, isOvernight: false }],
     });
     const photos = app.get(PLACE_PHOTO_DISPLAY) as FakePlacePhotoDisplay;
-    const refsBefore = photos.refCalls.length;
-    const mediaBefore = photos.mediaCalls.length;
     photos.seed(googlePlaceId, [
       {
         reference: `places/${googlePlaceId}/photos/never-save-this`,
@@ -618,14 +617,27 @@ describe('#801 contribution cards and shared pending detail', () => {
         googleMapsUri: null,
       },
     ]);
-    const submitted = await submit(owner.token, googlePlaceId, 'My private tip');
+    const resolved = await api().inject({
+      method: 'POST',
+      url: '/v1/places/resolve-google-maps-link',
+      remoteAddress: ip(),
+      payload: { url: `https://www.google.com/maps?place_id=${googlePlaceId}` },
+    });
+    expect(resolved.statusCode, resolved.body).toBe(201);
+    const resolutionToken = resolved.json().resolutionToken as string;
+    expect(resolutionToken).toBeTruthy();
+    const provider = app.get(PLACE_PROVIDER) as FakePlaceProvider;
+    expect(provider.tiersRequested).toEqual(['quality']);
+    const refsBefore = photos.refCalls.length;
+    const mediaBefore = photos.mediaCalls.length;
+    const submitted = await submit(owner.token, googlePlaceId, 'My private tip', resolutionToken);
     expect(submitted.statusCode, submitted.body).toBe(201);
+    expect(provider.tiersRequested).toEqual(['quality']);
     const [row] = await db
       .select()
       .from(schema.placeSubmissions)
       .where(eq(schema.placeSubmissions.id, submitted.json().submissionId));
     expect(row!.displaySnapshot).toMatchObject({ name: 'Tên thật', googleRating: 4.6 });
-    const provider = app.get(PLACE_PROVIDER) as FakePlaceProvider;
     provider.tiersRequested.length = 0;
     const response = await list();
     expect(response.statusCode, response.body).toBe(200);
@@ -667,6 +679,38 @@ describe('#801 contribution cards and shared pending detail', () => {
     expect(photos.refCalls.length - refsBefore).toBe(0);
     expect(provider.tiersRequested).toEqual([]);
     expect(stored.displaySnapshot).not.toHaveProperty('photo');
+    expect(photos.mediaCalls.length).toBe(mediaBefore);
+  });
+
+  it('persists only core facts without a resolution token and reads them without provider calls', async () => {
+    const googlePlaceId = seedProvider();
+    const provider = app.get(PLACE_PROVIDER) as FakePlaceProvider;
+    const photos = app.get(PLACE_PHOTO_DISPLAY) as FakePlacePhotoDisplay;
+    const refsBefore = photos.refCalls.length;
+    const mediaBefore = photos.mediaCalls.length;
+    const submitted = await submit(owner.token, googlePlaceId);
+    expect(submitted.statusCode, submitted.body).toBe(201);
+    expect(provider.tiersRequested).toEqual(['core']);
+    const id = submitted.json().submissionId as string;
+    const [row] = await db
+      .select()
+      .from(schema.placeSubmissions)
+      .where(eq(schema.placeSubmissions.id, id));
+    const coreFacts = { googleRating: null, googleRatingCount: 0, openingHours: [] };
+    expect(row!.displaySnapshot).toMatchObject({ name: 'Shared café', ...coreFacts });
+    provider.tiersRequested.length = 0;
+    const response = await list();
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().items[0]).toMatchObject({
+      id,
+      providerStatus: 'ok',
+      providerDisplay: coreFacts,
+    });
+    const opened = await detail(id);
+    expect(opened.statusCode, opened.body).toBe(200);
+    expect(opened.json()).toMatchObject({ id, providerStatus: 'ok', providerDisplay: coreFacts });
+    expect(provider.tiersRequested).toEqual([]);
+    expect(photos.refCalls.length).toBe(refsBefore);
     expect(photos.mediaCalls.length).toBe(mediaBefore);
   });
 
