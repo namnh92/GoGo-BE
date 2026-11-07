@@ -500,6 +500,17 @@ describe('#337 — duplicate Google calls', () => {
     expect(submitted.statusCode).toBe(201);
     expect(submitted.json().status).toBe('PENDING');
     expect(billed(), 'the attested submit asks Google nothing').toEqual([]);
+    const [saved] = await db
+      .select()
+      .from(schema.placeSubmissions)
+      .where(eq(schema.placeSubmissions.id, submitted.json().submissionId));
+    expect(saved!.displaySnapshot).toMatchObject({
+      name: preview.json().candidate.name,
+      googleRating: 4.4,
+      googleRatingCount: 250,
+      attributions: preview.json().candidate.attributions,
+    });
+    expect(saved!.displaySnapshot).not.toHaveProperty('photo');
 
     resetBilling();
     const decided = await api().inject({
@@ -567,7 +578,7 @@ describe('#337 — duplicate Google calls', () => {
     // #338 — the rollback path still costs one Details, and it is now Pro
     // rather than Enterprise: this branch reads `businessStatus` and hands the
     // object to dedup, and neither wants a rating.
-    expect(billed(), 'the old path is the rollback, and it still pays once').toEqual(['core']);
+    expect(billed(), 'the old path is the rollback, and it still pays once').toEqual(['quality']);
   });
 
   it.each([
@@ -755,8 +766,8 @@ describe('#337 review — a stored fact may prove identity, never freshness', ()
 
     // Google still has it operational, so the reopened place is not refused on
     // a three-week-old fact — and the answer cost exactly one Details call,
-    // at the tier that answers it: `businessStatus` is a `core` field (#338).
-    expect(places.tiersRequested, 'stale closure is re-verified, not trusted').toEqual(['core']);
+    // quality now also supplies a display snapshot for a newly accepted submission (#801).
+    expect(places.tiersRequested, 'stale closure is re-verified, not trusted').toEqual(['quality']);
     expect(res.statusCode).toBe(201);
     expect(res.json()).toEqual({ status: 'ALREADY_EXISTS', placeId });
   });
@@ -800,7 +811,7 @@ describe('#337 review — a stored fact may prove identity, never freshness', ()
       await register('rev-new-1@gogo.id.vn'),
     );
     expect(live.json().status).toBe('PENDING');
-    expect(places.tiersRequested).toEqual(['core']);
+    expect(places.tiersRequested).toEqual(['quality']);
 
     // 2 · valid token → no Details, and the proposal still requires the token
     //     to have been minted from a live check moments ago.

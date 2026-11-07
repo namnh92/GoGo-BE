@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   RESOLUTION_ATTESTATION_VERSION,
+  MAX_RESOLUTION_TOKEN_LENGTH,
   signResolutionAttestation,
   verifyResolutionAttestation,
 } from './resolution-attestation';
@@ -43,12 +44,7 @@ describe('#337 — resolution attestation', () => {
     expect(verdict.attestation.expiresAt).toBe('2026-09-02T10:10:00.000Z');
   });
 
-  /**
-   * The point of the whole mechanism: it replaces a Google fetch without
-   * becoming a place to keep Google's answer (ADR-0006 §9.5). A field added
-   * here later would be a persisted provider snapshot travelling by another
-   * road, so the payload's shape is asserted exactly rather than loosely.
-   */
+  // #801 keeps legacy identity-only tokens valid during rollout.
   it('carries no Google content — only the id, and the window', () => {
     const token = signResolutionAttestation({
       googlePlaceId: PLACE,
@@ -160,7 +156,7 @@ describe('#337 — resolution attestation', () => {
     ['empty body', '.c2ln'],
     ['empty signature', 'YWJj.'],
     ['three parts', 'YWJj.c2ln.ZXh0cmE'],
-    ['oversized', `${'a'.repeat(1100)}.c2ln`],
+    ['oversized', `${'a'.repeat(MAX_RESOLUTION_TOKEN_LENGTH)}.c2ln`],
   ])('refuses a %s token as malformed', (_label, token) => {
     expect(verifyResolutionAttestation(token, { secret: SECRET, now: NOW })).toEqual({
       ok: false,
@@ -186,4 +182,55 @@ describe('#337 — resolution attestation', () => {
       reason: 'MALFORMED',
     });
   });
+});
+
+const displaySnapshot = {
+  source: 'google_places' as const,
+  fetchedAt: NOW.toISOString(),
+  name: 'Snapshot café',
+  addressShort: 'Hà Nội',
+  attributions: ['Google Maps'],
+  googleMapsUri: null,
+  googleRating: 4.6,
+  googleRatingCount: 980,
+  openingHours: [],
+};
+it('#801 signs only allowed display facts, preserving fetchedAt and no photo/raw fields', () => {
+  const token = signResolutionAttestation({
+    googlePlaceId: PLACE,
+    secret: SECRET,
+    ttlSeconds: 600,
+    now: NOW,
+    displaySnapshot: {
+      ...displaySnapshot,
+      photo: 'private',
+      raw: 'private',
+    } as typeof displaySnapshot,
+  });
+  const answer = verifyResolutionAttestation(token, { secret: SECRET, now: NOW });
+  expect(answer.ok && answer.attestation.displaySnapshot).toEqual(displaySnapshot);
+  expect(Buffer.from(token.split('.')[0]!, 'base64url').toString()).not.toContain('private');
+  const [body, signature] = token.split('.');
+  const forged = Buffer.from(
+    JSON.stringify({
+      ...JSON.parse(Buffer.from(body!, 'base64url').toString()),
+      displaySnapshot: { ...displaySnapshot, name: 'Forged' },
+    }),
+  ).toString('base64url');
+  expect(
+    verifyResolutionAttestation(`${forged}.${signature}`, { secret: SECRET, now: NOW }),
+  ).toEqual({ ok: false, reason: 'BAD_SIGNATURE' });
+});
+it('#801 rejects a signed snapshot with a fake fetch time or invalid rating', () => {
+  for (const snapshot of [
+    { ...displaySnapshot, fetchedAt: '2020-01-01T00:00:00.000Z' },
+    { ...displaySnapshot, googleRating: 99 },
+  ]) {
+    expect(
+      verifyResolutionAttestation(mint({ displaySnapshot: snapshot }), {
+        secret: SECRET,
+        now: NOW,
+      }),
+    ).toEqual({ ok: false, reason: 'MALFORMED' });
+  }
 });

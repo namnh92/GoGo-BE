@@ -83,7 +83,7 @@ describe('MyPlaceSubmissionsService', () => {
           {
             id: actor.id,
             status: 'rejected',
-            providerStatus: 'unavailable',
+            providerStatus: 'deferred',
             rejectionReason: key,
             createdAt: row.created_at,
             updatedAt: '2026-11-07T01:00:00.000Z',
@@ -237,106 +237,97 @@ describe('#801 account submission detail', () => {
   });
 });
 
-it('#801 projects only the selected page and deduplicates provider lookups within a request', async () => {
-  const row = {
-    id: actor.id,
-    status: 'pending',
-    google_place_id: 'same',
-    created_at: '2026-11-07T00:00:00Z',
-    updated_at: '2026-11-07T00:00:00Z',
-  };
-  const execute = vi.fn().mockResolvedValue({
-    rows: [row, { ...row, id: 'two' }, { ...row, id: 'extra', google_place_id: 'must-not-fetch' }],
-  });
-  const get = vi
-    .fn()
-    .mockResolvedValue({ providerStatus: 'unavailable', providerDisplay: undefined });
+const snapshot = {
+  source: 'google_places' as const,
+  fetchedAt: new Date().toISOString(),
+  attributions: ['Google Maps'],
+  googleMapsUri: null,
+  name: 'Tên thật',
+  addressShort: 'Bến Thành, TP.HCM',
+  categoryKey: 'cafe',
+  googleRating: 4.6,
+  googleRatingCount: 980,
+  openingHours: [],
+};
+const pending = {
+  id: actor.id,
+  status: 'pending',
+  google_place_id: 'provider',
+  display_snapshot: snapshot,
+  created_at: '2026-11-07T00:00:00Z',
+  updated_at: '2026-11-07T00:00:00Z',
+};
+function snapshotFixture(row = pending) {
+  const execute = vi.fn().mockResolvedValue({ rows: [row] });
+  const get = vi.fn().mockResolvedValue({ providerStatus: 'ok', providerDisplay: snapshot });
   const service = new MyPlaceSubmissionsService(
     { execute } as unknown as Db,
     { MEDIA_PUBLIC_BASE_URL: '' },
     { get } as unknown as SubmissionDisplayService,
   );
-  const page = await service.list(actor, { limit: 2 });
-  expect(page.items).toHaveLength(2);
-  expect(get).toHaveBeenCalledTimes(1);
-  expect(get).toHaveBeenCalledWith('same', expect.any(Number));
-  await service.list(actor, { limit: 2 });
-  expect(get).toHaveBeenCalledTimes(2); // No cache across requests.
-});
+  return { service, execute, get };
+}
 
-it('#801 bounds concurrent display lookups and defers unstarted rows after the page deadline', async () => {
-  vi.useFakeTimers();
-  try {
-    const rows = Array.from({ length: 12 }, (_, i) => ({
-      id: `${i}`,
-      status: 'pending',
-      google_place_id: `${i}`,
-      created_at: '2026-11-07T00:00:00Z',
-      updated_at: '2026-11-07T00:00:00Z',
-    }));
-    let active = 0;
-    let maximum = 0;
-    const get = vi.fn(async () => {
-      maximum = Math.max(maximum, ++active);
-      await new Promise((resolve) => setTimeout(resolve, 6001));
-      active--;
-      return { providerStatus: 'unavailable', providerDisplay: undefined };
-    });
-    const service = new MyPlaceSubmissionsService(
-      { execute: vi.fn().mockResolvedValue({ rows }) } as unknown as Db,
-      { MEDIA_PUBLIC_BASE_URL: '' },
-      { get } as unknown as SubmissionDisplayService,
-    );
-    const result = service.list(actor, { limit: 12 });
-    await vi.advanceTimersByTimeAsync(6002);
-    const page = await result;
-    expect(maximum).toBe(4);
-    expect(get).toHaveBeenCalledTimes(4);
-    expect(page.items.map((item) => item.id)).toEqual(rows.map((row) => row.id));
-    expect(page.items.slice(4).every((item) => item.providerStatus === 'deferred')).toBe(true);
-  } finally {
-    vi.useRealTimers();
-  }
-});
-
-it('#801 supplies a real pending name/address/category from live attributed facts', async () => {
-  const execute = vi.fn().mockResolvedValue({
-    rows: [
-      {
-        id: actor.id,
-        google_place_id: 'provider',
-        status: 'pending',
-        created_at: '2026-11-07T00:00:00Z',
-        updated_at: '2026-11-07T00:00:00Z',
-      },
-    ],
-  });
-  const providerDisplay = {
-    source: 'google_places',
-    fetchedAt: '2026-11-07T00:00:00Z',
-    attributions: ['Google Maps'],
-    googleMapsUri: null,
-    name: 'Tên thật',
-    addressShort: 'Bến Thành, TP.HCM',
-    categoryKey: 'cafe',
-    googleRating: 4.6,
-    googleRatingCount: 980,
-    openingHours: [],
-  };
-  const get = vi.fn().mockResolvedValue({ providerStatus: 'ok', providerDisplay });
-  const service = new MyPlaceSubmissionsService(
-    { execute } as unknown as Db,
-    { MEDIA_PUBLIC_BASE_URL: '' },
-    { get } as unknown as SubmissionDisplayService,
-  );
+it('#801 supplies pending facts and a local lazy photo reference from the stored snapshot', async () => {
+  const { service, get } = snapshotFixture();
   const { items } = await service.list(actor, { limit: 25 });
   expect(items[0]).toMatchObject({
-    id: actor.id,
-    status: 'pending',
-    name: 'Tên thật',
-    addressShort: 'Bến Thành, TP.HCM',
+    name: snapshot.name,
+    addressShort: snapshot.addressShort,
     categoryKey: 'cafe',
     providerStatus: 'ok',
-    providerDisplay,
+    providerDisplay: {
+      ...snapshot,
+      photo: {
+        url: '/v1/places/google-provider-photo/provider',
+        authorAttributions: [],
+      },
+    },
   });
+  expect(get).not.toHaveBeenCalled();
+});
+
+it('#801 shares a fresh snapshot between list/detail without provider calls or changing fetchedAt', async () => {
+  const { service, get, execute } = snapshotFixture();
+  await service.list(actor, { limit: 25 });
+  expect((await service.detail(actor, actor.id)).providerDisplay?.fetchedAt).toBe(
+    snapshot.fetchedAt,
+  );
+  expect(get).not.toHaveBeenCalled();
+  expect(execute).toHaveBeenCalledTimes(2); // reads only
+});
+
+it('#801 omits expired facts from LIST, then DETAIL refreshes and persists only allowlisted facts', async () => {
+  const expired = {
+    ...snapshot,
+    fetchedAt: new Date(Date.now() - 30 * 86400000 - 1000).toISOString(),
+  };
+  const { service, get, execute } = snapshotFixture({ ...pending, display_snapshot: expired });
+  expect((await service.list(actor, { limit: 25 })).items[0]?.providerStatus).toBe('deferred');
+  expect(get).not.toHaveBeenCalled();
+  expect((await service.detail(actor, actor.id)).providerDisplay).toEqual(snapshot);
+  expect(get).toHaveBeenCalledExactlyOnceWith('provider');
+  expect(execute).toHaveBeenCalledTimes(4); // list, detail, lease, snapshot write
+});
+
+it.each(['approved', 'merged'])(
+  '#801 reuses canonical facts for %s with no provider call',
+  async (status) => {
+    const { service, get } = snapshotFixture({ ...pending, status });
+    await service.list(actor, { limit: 25 });
+    expect((await service.detail(actor, actor.id)).providerDisplay).toBeUndefined();
+    expect(get).not.toHaveBeenCalled();
+  },
+);
+
+it('#801 a held refresh lease starts no second paid call', async () => {
+  const { service, get, execute } = snapshotFixture({
+    ...pending,
+    display_snapshot: { ...snapshot, fetchedAt: '2020-01-01T00:00:00.000Z' },
+  });
+  execute
+    .mockResolvedValueOnce({ rows: [{ ...pending, display_snapshot: null }] })
+    .mockResolvedValueOnce({ rows: [] });
+  expect((await service.detail(actor, actor.id)).providerStatus).toBe('deferred');
+  expect(get).not.toHaveBeenCalled();
 });

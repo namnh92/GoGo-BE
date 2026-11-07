@@ -1,118 +1,129 @@
-# ADR-0048: Facts hiển thị và chi tiết đóng góp của tôi
+# ADR-0048: Snapshot hiển thị và chi tiết đóng góp của tôi
 
 - Ngày: 2026-11-07
-- Trạng thái: Đề xuất cho GoGo-BE#801; cần review kiến trúc và CODEOWNER contract.
-- Cơ sở: owner 2026-11-07, FR-INGEST-010..015, ADR-0006, ADR-0030,
-  ADR-0043 (provider photo), ADR-0045 (#788).
+- Trạng thái: Owner chốt hướng snapshot ngày 2026-11-07 cho GoGo-BE#801;
+  contract/migration cần review trên patch cuối.
+- Cơ sở: owner “Lưu snapshot khi gửi”, FR-INGEST-010..015, ADR-0006,
+  ADR-0030, ADR-0043 (provider photo), ADR-0045 (#788).
 
 ## Bối cảnh và lựa chọn
 
-Card pending hiện không có tên/địa chỉ/ảnh vì submission chỉ giữ Google Place ID
-và dữ liệu người góp khai. App cần dùng cùng card và màn chi tiết, dịch `pending`
-thành “Đang chờ duyệt”; approved/merged chuyển qua place thật bằng `placeId`.
+Card pending cần tên/địa chỉ/category/rating/hours. Bản r1 lấy quality Details
+cho cả page: 25 identity × $0.02 = $0.50, hết ngân sách display DEV trước ảnh.
+Giới hạn concurrency/rate không giới hạn chi phí một phiên. Ngoài ra photoRefs
+chậm đã làm mất cả facts mà request vừa trả tiền.
 
-1. Snapshot tên/địa chỉ/rating/hours/photo ref lúc submit: loại; attribution không
-   tự cấp quyền lưu nội dung Google, và cũng vi phạm ranh giới pending ADR-0043.
-2. Chỉ trả catalogue/review draft: không đáp ứng card pending.
-3. Lấy facts Google sống sau kiểm quyền, giới hạn chi phí và thời gian, chỉ hiển
-   thị rồi bỏ: chọn. Đây là cập nhật có chủ đích đối với quyết định “không gọi
-   provider khi đọc history” trong ADR-0045; quyền và keyset pagination giữ nguyên.
+1. Enrich cả page: loại vì chi phí mỗi lần mở/refresh history.
+2. Chỉ fetch detail: rẻ hơn nhưng thiếu full card owner yêu cầu.
+3. Lưu snapshot giới hạn lúc gửi từ candidate đã xác minh, list chỉ đọc DB,
+   ảnh tải lười qua proxy hiện hữu: owner chọn. Không mở cache Google chung.
 
 ## Quyết định và contract
 
-- MINOR `7.5.0-alpha.1`. `GET /v1/me/place-submissions` thêm `addressShort`,
-  `categoryKey`, `providerStatus`, `providerDisplay`; `name` có fallback Google
-  sống. Category đã submit cũng chỉ trả ở top-level khi key còn active.
-  `providerDisplay` chứa tên, địa chỉ ngắn, category key đã đối chiếu taxonomy
-  active, rating Google/count riêng, weekly hours, source/fetchedAt/attributions,
-  Google Maps URI và tối đa một `photo` proxy reference của #786. Tên ưu tiên
-  catalogue/review draft, địa chỉ ưu tiên catalogue; fallback Google phải hiển
-  thị Google Maps attribution. Dùng `shortFormattedAddress` trong quality mask
-  (cùng tier hiện hữu), fallback formatted address nếu Google không có bản ngắn.
-- `GET /v1/me/place-submissions/{id}` trả cùng facts/trạng thái/rejectionReason và
-  placeId cho approved/merged khi place còn tồn tại. Không suy đoán reason lịch sử.
-  `contribution` là projection riêng, `verificationStatus=unverified`, chỉ có
-  dữ liệu của chính người gửi gốc: category, price min/max + VND + unit, vibe keys,
-  note và enrichment #796 khi có. Không nâng dữ kiện user khai thành place facts.
-- Cả hai chỉ cho user đã đăng ký: SQL bắt buộc submitted_by_user_id hoặc EXISTS
-  attribution của actor hiện tại; detail thêm id vào cùng query. Không nhận user
-  ID từ client. Unknown/không có quyền cùng trả 404 trước provider/budget call;
-  guest/admin 403. Không trả moderation description/note, reviewer, room, user
-  identity hay input của người khác. Contributor được ghi nhận xem được facts
-  chung, không xem note/enrichment của người gửi gốc; tránh lộ PII trong mẹo/hoá đơn.
-- Reader #796 dùng `to_jsonb(s)->'enrichment'` với điều kiện người gửi trong SQL:
-  trước cột tồn tại trả null, sau migration của #796 đọc được mà không phụ thuộc
-  số migration. Runtime allowlist cả nested object, không serialize JSON thô;
-  lỗi shape bỏ enrichment. Chỉ mediaId/kind của chính mình, không URL/private bytes.
-  Schema đã đối chiếu với worktree be-796 ngày 2026-11-07; cần reconcile khi #796
-  đổi model. Task này không triển khai writer/wizard/credit/ảnh hoá đơn của #796.
-- Cache-Control no-store cho cả hai response. Proxy photo là GET JSON, không phải
-  image src; proxy response author credit là authoritative. Không phát media call
-  khi mở history/detail, không tải hoặc lưu Google image bytes trước duyệt.
-  Flag/budget/no-photo lỗi thì bỏ reference; không làm hỏng quyết định/history.
-- Mỗi Google identity tối đa một quality Details/request, chỉ trên page đã chọn
-  (không trên dòng lấy dư cho cursor). Tối đa 4 lookup đồng thời, chung cửa sổ 6s;
-  các dòng chưa bắt đầu khi hết thời gian có `providerStatus=deferred`. Có thể mở
-  detail để retry. Adapter call đang chạy có thể kết thúc sau cửa sổ; không bắt
-  đầu photo lookup sau deadline, không giữ kết quả. No transaction across provider.
-- Trước mỗi Details phải reserve `google.details.quality` trong scope
-  `google.places.display` với ceiling calls/cost/units. Unset/zero/refused không
-  gọi Google; `providerStatus=budget_exhausted`. Ngân sách photo vẫn qua #786.
-  Rate limit list 10/min/IP+actor, detail 30/min/IP+actor. Không thêm cron/prefetch.
-  Provider not-found, đổi identity, outage/timeout chỉ trả trạng thái display riêng;
-  không đổi submission status hay trình bày unknown hours thành đóng cửa.
+- MINOR `7.5.0-alpha.1`. `GET /v1/me/place-submissions` trả snapshot còn mới
+  trong `providerDisplay`: name, short address (fallback full address), category
+  key đã đối chiếu taxonomy lúc fetch, Google rating/count, attribution,
+  weekly hours nếu có, googleMapsUri, source và fetchedAt. Unknown hours là
+  array rỗng, không phải đóng cửa. Không trộn rating Google với GoGo.
+- Resolve ký allowlist snapshot cùng Place ID vào `resolutionToken` hiện hữu.
+  Client gửi lại token opaque, không gửi facts tự khai. HMAC/expiry/identity
+  được kiểm trước khi persist lúc submit. Token tối đa 32768 ký tự; chứa facts
+  đã có trong candidate, không raw payload/coordinates/photo refs/bytes. Token
+  identity-only cũ vẫn hợp lệ, tạo row thiếu snapshot; detail có thể hydrate.
+  Không tạo DB/Redis cache ở resolve. Snapshot fetchedAt giữ thời điểm đã fetch,
+  không gán lại khi submit/list. Nếu không dùng token, submit lấy một quality
+  Details để xác minh và có đủ snapshot (thay core trong nhánh này).
+- Submission mới lưu snapshot cùng transaction/attribution/outbox. Dedup tăng
+  count như trước; snapshot còn mới không bị ghi đè bởi submit lần nữa. Snapshot
+  không thành canonical facts, không được dùng để approve, chấm credit hay xác
+  minh closure. Approve vẫn xác minh provider độc lập theo luồng hiện hữu.
+- **LIST: ZERO provider calls**, gồm Details, photoRefs và media; không reserve
+  display budget, không hydrate background/prefetch và không fetch dòng dư cursor.
+  Snapshot quá 30 × 24h bị bỏ khỏi response, `providerStatus=deferred`; không có
+  snapshot cũng deferred. Không đổi fetchedAt để che tuổi dữ liệu.
+- Approved/merged dùng canonical GoGo name/address/category/photo và placeId;
+  không dùng snapshot hoặc gọi provider, cả list lẫn detail. Rejected có thể dùng
+  snapshot còn mới mà không lookup khi đọc list. Không suy đoán rejection lịch sử.
+- **DETAIL:** kiểm quyền trước mọi call. Pending/rejected thiếu snapshot hoặc
+  snapshot quá 30 ngày mới được refresh quality Details trong budget display
+  hiện hữu. Một atomic DB lease 60s chặn các request đồng thời cùng mua refresh;
+  không giữ transaction/row lock qua provider call. Thành công lưu allowlist
+  snapshot mới, không ghi photo, không đổi updatedAt/review concurrency token.
+  Snapshot mới được tái dùng tối đa 30 ngày, không refresh sớm. Lỗi không phục vụ
+  snapshot hết hạn; cho phép retry sau lease 60s, vẫn phải reserve budget.
+- Cửa sổ refresh 6s. Facts đã nhận hợp lệ được giữ ngay trước taxonomy/photo
+  optional; photoRefs nhận remaining deadline và AbortSignal. Hết hạn abort
+  photo lookup, trả facts đã trả tiền với status ok, chỉ bỏ photo. Details chưa
+  xong thì unavailable; kết quả đến muộn không bắt đầu photo hay persist snapshot.
+- Snapshot list/detail kèm tối đa một photo reference BFF được dựng tại chỗ từ
+  Place ID, không lookup/persist Google photo name/ref/URL. Lazy URL là GET JSON,
+  không phải image src. Client chỉ resolve card đang nhìn thấy (hoặc detail);
+  response proxy quyết định availability và credit authoritative, reference
+  dựng tại chỗ có authorAttributions rỗng. Flag/budget giới hạn media như
+  ADR-0043. Không lưu bytes trước approval; Google photo sau approve theo ngoại
+  lệ ADR-0043, không mở rộng ngoại lệ đó.
+- Name ưu tiên catalogue/review draft, address ưu tiên catalogue; fallback
+  snapshot phải hiển thị Google Maps attribution. Category top-level ưu tiên
+  taxonomy đã submit còn active rồi đến snapshot. Cả response no-store; client
+  không được cache token/facts/photo ngoài flow. Rate list 10/min/IP+actor,
+  detail 30/min/IP+actor. Không thêm scheduler.
+- User đã đăng ký, submitted_by_user_id hoặc contributor EXISTS trong SQL;
+  unknown/không có quyền cùng 404 trước budget/provider; guest/admin 403.
+  `contribution.verificationStatus=unverified` chỉ chứa input người gửi gốc;
+  contributor khác chỉ thấy facts chung. Không lộ reviewer/decision note/user/
+  room/private bytes. Reader enrichment #796 dùng `to_jsonb(s)->'enrichment'`,
+  allowlist nested; mediaId/kind của chính mình, không private URL. Không đổi
+  writer/wizard/credit của #796.
 
-## Lưu gì và giữ bao lâu
+## Số call dự kiến mỗi phiên
 
-| Dữ liệu                                                                                               | Nơi và thời gian giữ                                                                                                                                                                                  |
-| ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Google Place ID                                                                                       | Bảng submission hiện hữu; định danh được phép giữ không giới hạn theo policy Google, vòng đời submission/account theo hệ thống hiện hữu. Không thêm bản sao.                                          |
-| Google name/address/rating/count/hours/types/category suy ra, Maps URI, attribution, photo ref/credit | RAM trong request đang hiển thị, tối đa thời gian xử lý; không lưu DB, Redis, R2, job, event, log payload, snapshot hay cache client. HTTP no-store. Không có TTL 30 ngày cho các facts này.          |
-| Google photo bytes/name/media URL trước duyệt                                                         | Không lưu; proxy #786 chỉ trả transient JSON no-store theo ADR-0043.                                                                                                                                  |
-| Một Google photo sau admin duyệt                                                                      | Ngoại lệ ứng dụng hiện hữu ADR-0043; giữ media + provenance/credit đến khi detach/xoá place, cleanup worker xoá bytes. Không mở rộng ngoại lệ hoặc tuyên bố owner approval thay thế giấy phép Google. |
-| User input/enrichment/attribution đóng góp                                                            | Không tạo dữ liệu lưu mới. Theo vòng đời submission và retention/delete/export của #788/#796; input không trở thành facts đã xác minh qua endpoint đọc.                                               |
-| Budget/telemetry                                                                                      | Chỉ counters/reservations/latency theo chính sách vận hành hiện hữu; không facts Google, user/submission ID hoặc ghi chú trong labels.                                                                |
+| Thao tác                                             | Details quality                              | photoRefs / media                                              |
+| ---------------------------------------------------- | -------------------------------------------- | -------------------------------------------------------------- |
+| Resolve một link rồi submit token                    | 1 ở resolve, 0 ở submit                      | Resolve tối đa 1 refs theo flag; 0 media tự động               |
+| Submit không token                                   | 1 ở submit                                   | 0 / 0                                                          |
+| Mở/refresh list 25 rows bất kỳ                       | **0**                                        | **0 / 0**                                                      |
+| Mở detail snapshot ≤30 ngày                          | 0                                            | 0 / 0 tự động                                                  |
+| Detail pending/rejected thiếu hoặc snapshot >30 ngày | Tối đa 1, phải reserve; lease chặn đồng thời | Tối đa 1 refs trong remaining deadline, 0 media                |
+| Client resolve một lazy card photo                   | 0                                            | 1 refs + tối đa 2 media (retry expired ref), mỗi media reserve |
+| Detail approved/merged                               | 0                                            | 0 / 0 tự động                                                  |
 
-Theo [Places API policies](https://developers.google.com/maps/documentation/places/web-service/policies)
-và [Service Specific Terms](https://cloud.google.com/maps-platform/terms/maps-service-terms)
-(đọc 2026-11-07), Place ID có ngoại lệ lưu; không mặc định được cache tên/địa chỉ
-hoặc nội dung Places chỉ vì kèm attribution. Chọn giữ facts 0 giây ngoài request.
-Client hiển thị Google Maps attribution và third-party/photo author credits cùng
-nội dung, không nhập vào catalogue/AI/search. Việc hiển thị không có Google Map
-vẫn phải theo hướng dẫn Google Maps branding; API trả attribution, client chịu
-trách nhiệm render đúng. Đây là quyết định kỹ thuật, không cấp ngoại lệ điều khoản.
+Ví dụ xem 25 submissions rồi mở 3 detail còn mới: 0 Details display. Nếu client
+chọn tải 3 ảnh đang nhìn thấy thì tối đa 3 media thường lệ, tối đa 6 khi ref hết
+hạn và retry. Ngân sách shared display vẫn bảo vệ photo/detail; history không
+còn tự tiêu cả $0.50. Không tuyên bố đây là estimate bill cố định của Google.
 
-## Hệ quả, vận hành và kiểm chứng
+## Lưu gì và giới hạn policy
 
-Có thêm Enterprise Details khi người dùng mở page/detail; số call tối đa theo
-limit (25 mặc định, 100 tối đa), concurrency/deadline và budget. Default deny đến
-khi cấu hình đủ `PLACE_DISPLAY_DAILY_MAX_CALLS`,
-`PLACE_DISPLAY_DAILY_MAX_LIST_COST_USD`,
-`PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_DETAILS_QUALITY`. Không tự bật ngân sách
-DEV/prod. Thiếu budget/provider thì vẫn thấy history/decision và stored facts.
+Place ID được giữ theo vòng đời hiện hữu (Google cho phép giữ ID không thời hạn).
+Snapshot ứng dụng nằm trong `place_submissions.display_snapshot`; chỉ phục vụ khi
+còn mới ≤30 ngày; row hết hạn không được trả facts, detail refresh theo budget.
+Không lưu photo/raw payload vào snapshot, event, log, job hay cache khác.
 
-Metric mới `my_place_submission_display_total{outcome}` với closed outcomes
-ok/budget_exhausted/not_found/identity_mismatch/unavailable; query duration hiện
-hữu dùng chung cho list/detail, không ID labels. Adapter metering vẫn đếm call
-thật. Deferred là tình trạng lịch xử lý page, không phải provider failure.
+**30 ngày là quyết định freshness của owner, không phải khẳng định Google cấp
+quyền cache mọi field trong 30 ngày.** [Places API policy](https://developers.google.com/maps/documentation/places/web-service/policies)
+chỉ miễn hạn chế cho Place ID và dẫn các ngoại lệ field-specific; không xác nhận
+blanket allowance cho name/address/rating/hours. Phạm vi snapshot này thay quyết
+định transient-only của ADR-0006/0045 cho riêng đóng góp #801 theo owner; cần xác
+nhận quyền sử dụng áp dụng trước rollout. Thay policy không đồng nghĩa tự có giấy
+phép. Không coi freshness TTL là cơ chế purge retention tự động: snapshot hết hạn
+vẫn nằm trên row cho tới refresh/xoá submission; nếu điều khoản áp dụng yêu cầu
+purge vật lý thì phải có quyết định retention tương ứng trước rollout.
 
-Unit: auth/cursor, projection, own enrichment allowlist, quota, identity mismatch,
-provider failure, timeout, taxonomy active, photo reference, concurrency/dedupe.
-Integration HTTP + Postgres: owner/contributor/stranger, pending facts, no-store,
-no persistence/bytes, approved/merged navigation, rejected key trong outage,
-reader trước/sau schema #796. Kết quả chạy cụ thể ghi trong báo cáo bàn giao.
+## Migration và rollback
 
-## Migration, rollout và rollback
+`0088_submission-display-snapshot` dùng journal idx 88, sau upstream
+`0086_place-submission-photos` và `0087_taxonomy-version`. ADR dùng 0048 vì
+upstream #800 đã dùng 0047; contract reconcile thành `7.5.0-alpha.1`.
+Hai cột nullable `display_snapshot` và `display_refresh_started_at`,
+không backfill/Google call khi migrate. Legacy rows list thiếu facts cho tới khi
+user mở detail. Chạy migration trước API; ảnh/attribution/input hiện hữu giữ nguyên.
 
-Không thêm cột/bảng/snapshot Google, không cần migration #801. Không chiếm 0086
-của #794/#796. ADR dùng 0048 vì upstream #800 đã dùng 0047; contract được
-reconcile thành 7.5.0-alpha.1. Không cherry-pick hoặc đổi PR song song.
-
-Deploy API trước client, xác minh ngân sách và attribution ở client. Rollback
-client ngừng dùng fields/route mới trước khi rollback API; xoá cấu hình units
-quality để dừng live display ngay, photo flag/budget vẫn theo ADR-0043. Giữ
-attribution/enrichment schema của PR khác. Không cần cleanup hoặc data rollback
-vì #801 không ghi facts hay bytes.
+Rollback API/client trước rồi drop hai cột bằng migration mới; không có bytes
+snapshot cần cleanup. Snapshot token chỉ thêm field trong payload v1 có chữ ký;
+verifier cũ bỏ qua field nhưng giới hạn 1024 cũ không nhận token dài, nên rollback
+client cần resolve token mới theo API cũ. Không downgrade schema trước reader.
+Tắt units quality dừng detail refresh, list fresh snapshot vẫn không gọi provider.
+No-store/rate/auth/photo budget và moderation không phụ thuộc rollback snapshot.
 
 ## Owner decision — 2026-11-07
 

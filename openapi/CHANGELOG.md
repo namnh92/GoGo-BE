@@ -10,17 +10,24 @@ withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
 ## 7.5.0-alpha.1 — Facts và chi tiết đóng góp (GoGo-BE#801)
 
-MINOR: list thêm facts Google sống, attribution, hours, rating/count và reference
-một ảnh JSON proxy #786, kể cả pending. Detail mới
-`GET /me/place-submissions/{id}` cho người gửi/đóng góp đã ghi nhận; trả cùng facts,
-status, rejectionReason và placeId sau approved/merged. Enrichment #796 và legacy
-user input chỉ trả cho chính người gửi gốc, đánh dấu unverified. Không trả note
-moderation hay PII/input người khác. Unknown/không có quyền cùng 404 trước billing.
+MINOR additive: list thêm `providerDisplay` từ snapshot còn mới được lưu lúc
+submit, attribution, hours, rating/count và lazy reference một ảnh JSON proxy
+#786. `GET /me/place-submissions/{id}` mới cho người gửi/đóng góp đã ghi nhận;
+trả cùng facts, status, rejectionReason và placeId sau approved/merged.
+Enrichment #796 và input chỉ trả cho chính người gửi gốc, đánh dấu unverified;
+không trả moderation note hay PII/input người khác. Unknown/không có quyền cùng
+404 trước billing; guest/admin 403. CMS vẫn bắt buộc rejectionReason theo #787.
 
-Cập nhật guarantee history không gọi provider của 7.1 theo owner #801: live display
-được giới hạn bởi ngân sách display, 4 lookup đồng thời/cửa sổ 6s và no-store;
-`providerStatus` cho degraded/deferred, không cache hoặc persist Google facts/ảnh
-trước duyệt. Chưa cấu hình budget quality thì không có paid calls. ADR-0048.
+LIST không gọi provider, không reserve display budget hoặc hydrate background.
+Resolve ký allowlist snapshot vào token; submit lưu cùng transaction, không ghi
+đè snapshot còn mới khi dedup. Pending/rejected detail thiếu snapshot hoặc quá
+30 ngày mới refresh trong budget quality hiện hữu, atomic lease 60s và cửa sổ
+6s; photo timeout không làm mất facts đã nhận. Approved/merged dùng canonical
+GoGo facts. Lazy photo reference dựng từ Place ID, không persist photo refs hay
+bytes; proxy thực thi flag/budget/credit. Cả response no-store. 30 ngày là quy
+tắc freshness nội bộ, không phải Google permission; owner chấp nhận storage risk
+và yêu cầu proceed/merge ngày 2026-11-07. ADR-0048; migration
+`0088_submission-display-snapshot` chạy trước API.
 
 ## 7.3.0-alpha.1 — taxonomy cache generation (GoGo-BE#799)
 

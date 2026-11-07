@@ -1,3 +1,4 @@
+import { MAX_RESOLUTION_TOKEN_LENGTH } from '../domain/resolution-attestation';
 import { Body, Controller, Get, Header, Param, Post, Put, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { contactProvenanceSchema } from '../../shared/place-contact-schema';
@@ -70,7 +71,7 @@ const submitSchema = z.object({
    * Optional: a client that does not send one gets the old behaviour, which is
    * one more Google Details call.
    */
-  resolutionToken: z.string().max(1024).optional(),
+  resolutionToken: z.string().max(MAX_RESOLUTION_TOKEN_LENGTH).optional(),
 });
 type SubmitDto = z.infer<typeof submitSchema>;
 

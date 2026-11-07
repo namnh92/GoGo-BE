@@ -1,22 +1,30 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
-import type { Db } from '@gogo/database';
+import type { Db, SubmissionDisplaySnapshot } from '@gogo/database';
 import { ProviderBudgetService, budgetLimitsFrom } from '@gogo/cost-observability';
 import { PLACE_PROVIDER, type PlaceProviderPort } from '@gogo/providers';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { APP_CONFIG } from '../../shared/config';
 import { DB } from '../../shared/tokens';
-import { normalizeGoogleAttribution } from '../../shared/attribution';
-import { ProviderPhotosService } from '../../search/application/provider-photos.service';
+import {
+  ProviderPhotosService,
+  type CandidatePhotoReference,
+} from '../../search/application/provider-photos.service';
 import { deriveCategory } from '../domain/google-types';
+import { snapshotFromDetails } from '../domain/submission-display-snapshot';
 
 export type SubmissionDisplayConfig = {
   PLACE_DISPLAY_DAILY_MAX_CALLS?: number;
   PLACE_DISPLAY_DAILY_MAX_LIST_COST_USD?: number;
   PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_DETAILS_QUALITY?: number;
 };
+type Display = SubmissionDisplaySnapshot & { photo?: CandidatePhotoReference };
+type Answer = {
+  providerStatus: 'ok' | 'budget_exhausted' | 'not_found' | 'identity_mismatch' | 'unavailable';
+  providerDisplay: Display | undefined;
+};
 
-/** Live Google display only. Authorize the submission BEFORE calling this service. */
+/** Budgeted detail refresh only. Authorize the submission BEFORE calling. */
 @Injectable()
 export class SubmissionDisplayService {
   private readonly budget: ProviderBudgetService;
@@ -31,15 +39,25 @@ export class SubmissionDisplayService {
     this.budget = budget ?? new ProviderBudgetService(db);
   }
 
-  async get(providerId: string, deadline = performance.now() + 6000) {
+  async get(providerId: string, deadline = performance.now() + 6000): Promise<Answer> {
     const expires = Math.min(deadline, performance.now() + 6000);
+    const controller = new AbortController();
+    // Paid facts are published before optional taxonomy/photo work can time out.
+    const bought: { display?: Display } = {};
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const result = await Promise.race([
-        this.fetch(providerId, expires),
-        new Promise<ReturnType<SubmissionDisplayService['unavailable']>>((resolve) => {
+        this.fetch(providerId, expires, controller.signal, bought),
+        new Promise<Answer>((resolve) => {
           timer = setTimeout(
-            () => resolve(this.unavailable('unavailable')),
+            () => {
+              controller.abort();
+              resolve(
+                bought.display
+                  ? { providerStatus: 'ok', providerDisplay: bought.display }
+                  : this.unavailable('unavailable'),
+              );
+            },
             Math.max(0, expires - performance.now()),
           );
         }),
@@ -50,61 +68,51 @@ export class SubmissionDisplayService {
       return result;
     } finally {
       clearTimeout(timer);
+      controller.abort();
     }
   }
 
-  private async fetch(providerId: string, expires: number) {
+  private async fetch(
+    providerId: string,
+    expires: number,
+    signal: AbortSignal,
+    bought: { display?: Display },
+  ): Promise<Answer> {
     try {
       const grant = await this.budget.reserve(
         { scope: 'google.places.display', operation: 'google.details.quality', calls: 1, units: 1 },
         budgetLimitsFrom('google.places.display', this.config),
       );
       if (!grant.ok) return this.unavailable('budget_exhausted');
-      if (performance.now() >= expires) return this.unavailable('unavailable');
+      if (signal.aborted || performance.now() >= expires) return this.unavailable('unavailable');
       const details = await this.provider.details(providerId, 'quality');
-      if (performance.now() >= expires) return this.unavailable('unavailable');
+      if (signal.aborted || performance.now() >= expires) return this.unavailable('unavailable');
       if (!details) return this.unavailable('not_found');
-      // A moved/merged Google identity must not silently change a pending proposal.
       if (details.providerPlaceId !== providerId) return this.unavailable('identity_mismatch');
+      bought.display = snapshotFromDetails(details, null);
       const category = deriveCategory(details);
       const active = category
         ? await this.db.execute(sql`select key from taxonomies
             where kind = 'category' and key = ${category.key} and is_active = true limit 1`)
         : undefined;
-      if (performance.now() >= expires) return this.unavailable('unavailable');
-      const photo = await this.photos.candidateReference(providerId);
-      return {
-        providerStatus: 'ok' as const,
-        providerDisplay: {
-          source: 'google_places' as const,
-          fetchedAt: new Date().toISOString(),
-          attributions: [normalizeGoogleAttribution(details.attribution)],
-          googleMapsUri: details.googleMapsUri,
-          name: details.name,
-          addressShort: details.shortAddress || details.addressText,
-          ...(active?.rows.length ? { categoryKey: category!.key } : {}),
-          googleRating: details.rating,
-          googleRatingCount: details.ratingCount,
-          openingHours: details.hours.map(
-            ({ dayOfWeek, openMinute, closeMinute, isOvernight }) => ({
-              dayOfWeek,
-              openMinute,
-              closeMinute,
-              isOvernight,
-            }),
-          ),
-          ...(photo ? { photo } : {}),
-        },
-      };
+      if (!signal.aborted && performance.now() < expires) {
+        if (active?.rows.length) bought.display = { ...bought.display, categoryKey: category!.key };
+        const photo = await this.photos.candidateReference(providerId, {
+          signal,
+          deadline: expires,
+        });
+        if (photo && !signal.aborted && performance.now() < expires)
+          bought.display = { ...bought.display, photo };
+      }
+      return { providerStatus: 'ok', providerDisplay: bought.display };
     } catch {
-      // Preserve history and decisions during an outage. Never log provider payloads.
-      return this.unavailable('unavailable');
+      return bought.display
+        ? { providerStatus: 'ok', providerDisplay: bought.display }
+        : this.unavailable('unavailable');
     }
   }
 
-  private unavailable(
-    outcome: 'budget_exhausted' | 'not_found' | 'identity_mismatch' | 'unavailable',
-  ) {
+  private unavailable(outcome: Exclude<Answer['providerStatus'], 'ok'>): Answer {
     return { providerStatus: outcome, providerDisplay: undefined };
   }
 }

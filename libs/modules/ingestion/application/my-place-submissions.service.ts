@@ -1,3 +1,8 @@
+import {
+  freshSnapshot,
+  lazySubmissionPhoto,
+  submissionDisplaySnapshotSchema,
+} from '../domain/submission-display-snapshot';
 import { submissionEnrichmentViewSchema } from '../domain/submission-enrichment-view';
 import { SubmissionDisplayService } from './submission-display.service';
 import { Inject, Injectable, Optional } from '@nestjs/common';
@@ -31,6 +36,7 @@ function decodeCursor(cursor: string): { at: string; id: string } {
 type SubmissionRow = {
   id: string;
   google_place_id: string;
+  display_snapshot: unknown;
   category_key: string | null;
   address_short: string | null;
   own_input: {
@@ -67,11 +73,35 @@ export class MyPlaceSubmissionsService {
     const rows = await this.query(actor, [sql`s.id = ${id}::uuid`], 1);
     const row = rows[0];
     if (!row) throw AppError.notFound('SUBMISSION_NOT_FOUND', 'Submission not found');
-    const [item] = await this.project([row]);
+    let live = this.storedDisplay(row);
+    if (!live.providerDisplay && row.status !== 'approved' && row.status !== 'merged') {
+      // Atomic lease prevents concurrent stale reads from all buying Details.
+      // No transaction/row lock is held while the provider runs. Failed attempts
+      // may retry after 60s; successful refreshes stay fresh for 30 days.
+      const claimed = await this.db.execute(sql`update place_submissions
+        set display_refresh_started_at = clock_timestamp()
+        where id = ${row.id}::uuid and status in ('pending', 'rejected')
+          and (display_snapshot is null or (display_snapshot->>'fetchedAt')::timestamptz < now() - interval '30 days')
+          and (display_refresh_started_at is null or display_refresh_started_at < now() - interval '60 seconds')
+        returning id`);
+      if (claimed.rows.length) {
+        live = await this.display.get(row.google_place_id);
+        if (live.providerDisplay) {
+          // Strip the transient photo before writing. Never bump submission's
+          // review concurrency token/updatedAt for a display-only refresh.
+          const snapshot = submissionDisplaySnapshotSchema.parse(live.providerDisplay);
+          await this.db
+            .execute(sql`update place_submissions set display_snapshot = ${JSON.stringify(snapshot)}::jsonb
+            where id = ${row.id}::uuid and google_place_id = ${row.google_place_id}
+              and status in ('pending', 'rejected')`);
+        }
+      }
+    }
+    const item = this.projectRow(row, live);
     const enrichment = submissionEnrichmentViewSchema.safeParse(row.own_enrichment);
     const input = row.own_input;
     return {
-      ...item!,
+      ...item,
       ...(input || enrichment.success
         ? {
             contribution: {
@@ -107,7 +137,7 @@ export class MyPlaceSubmissionsService {
     const page = rows.slice(0, options.limit);
     const last = page.at(-1);
     return {
-      items: await this.project(page),
+      items: page.map((row) => this.projectRow(row, this.storedDisplay(row))),
       // Keep Postgres microseconds; JS Date would skip rows within a millisecond.
       nextCursor:
         rows.length > options.limit && last ? encodeKeysetCursor(last.created_at, last.id) : null,
@@ -119,8 +149,9 @@ export class MyPlaceSubmissionsService {
     const result = await this.db
       .execute(
         sql`
-      select s.id, s.status, s.result_place_id, s.rejection_reason, s.google_place_id,
-             st.key as category_key, p.address_text as address_short,
+      select s.id, s.status, s.result_place_id, s.rejection_reason, s.google_place_id, s.display_snapshot,
+             case when p.id is not null then ct.key else st.key end as category_key,
+             p.address_text as address_short,
              case when s.submitted_by_user_id = ${actor.id}::uuid then
                jsonb_strip_nulls(jsonb_build_object('categoryKey', s.category_key,
                  'priceMin', s.price_min, 'priceMax', s.price_max, 'priceUnit', s.price_unit,
@@ -135,6 +166,11 @@ export class MyPlaceSubmissionsService {
       from place_submissions s
       left join places p on p.id = s.result_place_id
       left join taxonomies st on st.kind = 'category' and st.key = s.category_key and st.is_active = true
+      left join lateral (
+        select t.key from place_taxonomies pt join taxonomies t on t.id = pt.taxonomy_id
+        where pt.place_id = p.id and t.kind = 'category' and t.is_active = true
+        order by t.key limit 1
+      ) ct on true
       left join lateral (
         select storage_key from place_media
         where place_id = p.id and moderation = 'approved'
@@ -158,59 +194,46 @@ export class MyPlaceSubmissionsService {
     return rows;
   }
 
-  private async project(rows: SubmissionRow[]) {
-    const deadline = performance.now() + 6000;
-    const liveById = new Map<string, Promise<DisplayAnswer>>();
-    let next = 0;
-    const projected = new Array<ReturnType<typeof projectRow>>(rows.length);
-    const display = this.display;
-    const config = this.config;
-    function projectRow(row: SubmissionRow, live: DisplayAnswer) {
-      return {
-        id: row.id,
-        status: row.status,
-        ...(row.name || live.providerDisplay?.name
-          ? { name: row.name || live.providerDisplay!.name }
-          : {}),
-        ...(row.address_short || live.providerDisplay?.addressShort
-          ? { addressShort: row.address_short || live.providerDisplay!.addressShort }
-          : {}),
-        ...(row.category_key || live.providerDisplay?.categoryKey
-          ? { categoryKey: row.category_key || live.providerDisplay!.categoryKey }
-          : {}),
-        ...live,
-        ...(publicCatalogueUrl(config.MEDIA_PUBLIC_BASE_URL, row.photo_key)
-          ? { photoUrl: publicCatalogueUrl(config.MEDIA_PUBLIC_BASE_URL, row.photo_key)! }
-          : {}),
-        // Only the stored public key is safe; historical rows may not have one.
-        ...(row.status === 'rejected' && row.rejection_reason
-          ? { rejectionReason: row.rejection_reason }
-          : {}),
-        ...((row.status === 'approved' || row.status === 'merged') && row.result_place_id
-          ? { placeId: row.result_place_id }
-          : {}),
-        createdAt: row.created_at,
-        updatedAt: toIso(row.updated_at),
-        ...(row.decided_at ? { decidedAt: toIso(row.decided_at) } : {}),
-      };
-    }
-    await Promise.all(
-      Array.from({ length: Math.min(4, rows.length) }, async () => {
-        while (next < rows.length) {
-          const index = next++;
-          const row = rows[index]!;
-          let pending = liveById.get(row.google_place_id);
-          if (!pending) {
-            pending =
-              performance.now() < deadline
-                ? display.get(row.google_place_id, deadline)
-                : Promise.resolve({ providerStatus: 'deferred', providerDisplay: undefined });
-            liveById.set(row.google_place_id, pending);
-          }
-          projected[index] = projectRow(row, await pending);
+  private storedDisplay(row: SubmissionRow): DisplayAnswer {
+    // A decided catalogue place uses canonical GoGo facts, never another fetch.
+    if (row.status === 'approved' || row.status === 'merged')
+      return { providerStatus: 'deferred', providerDisplay: undefined };
+    const snapshot = freshSnapshot(row.display_snapshot);
+    return snapshot
+      ? {
+          providerStatus: 'ok',
+          providerDisplay: { ...snapshot, photo: lazySubmissionPhoto(row.google_place_id) },
         }
-      }),
-    );
-    return projected;
+      : { providerStatus: 'deferred', providerDisplay: undefined };
+  }
+
+  private projectRow(row: SubmissionRow, live: DisplayAnswer) {
+    return {
+      id: row.id,
+      status: row.status,
+      ...(row.name || live.providerDisplay?.name
+        ? { name: row.name || live.providerDisplay!.name }
+        : {}),
+      ...(row.address_short || live.providerDisplay?.addressShort
+        ? { addressShort: row.address_short || live.providerDisplay!.addressShort }
+        : {}),
+      ...(row.category_key || live.providerDisplay?.categoryKey
+        ? { categoryKey: row.category_key || live.providerDisplay!.categoryKey }
+        : {}),
+      ...live,
+      ...(publicCatalogueUrl(this.config.MEDIA_PUBLIC_BASE_URL, row.photo_key)
+        ? { photoUrl: publicCatalogueUrl(this.config.MEDIA_PUBLIC_BASE_URL, row.photo_key)! }
+        : {}),
+      // Only the stored public key is safe; historical rows may not have one.
+      ...(row.status === 'rejected' && row.rejection_reason
+        ? { rejectionReason: row.rejection_reason }
+        : {}),
+      ...((row.status === 'approved' || row.status === 'merged') && row.result_place_id
+        ? { placeId: row.result_place_id }
+        : {}),
+      createdAt: row.created_at,
+      updatedAt: toIso(row.updated_at),
+      ...(row.decided_at ? { decidedAt: toIso(row.decided_at) } : {}),
+    };
   }
 }

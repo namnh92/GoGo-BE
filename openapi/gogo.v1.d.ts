@@ -2301,16 +2301,15 @@ export interface paths {
          *     All registered contributors recorded on a deduplicated proposal see
          *     that same proposal and its current decision once per account. Original
          *     submitters remain included. Earlier deduplicated contributors whose
-         *     identities were never stored cannot be backfilled. After authorization,
-         *     fetch live Google display facts (quality Details) under the display budget;
-         *     at most four concurrent lookups, one per distinct provider identity in this
-         *     request. A six-second display window may defer remaining rows. No facts,
-         *     photo names, references or bytes are cached or persisted. Provider failure
-         *     preserves the history item with providerStatus and omits providerDisplay.
-         *     Names prefer result place/review draft, then live Google; addressShort
-         *     prefers the result place address, then Google's short formatted address
-         *     (full formatted address fallback). categoryKey prefers active submitted taxonomy,
-         *     then a live Google-derived key checked against active taxonomy.
+         *     identities were never stored cannot be backfilled. ZERO provider calls:
+         *     list reads only stored display snapshots, captured on submission from the
+         *     signed resolved candidate. Snapshots older than 30 days or missing are
+         *     omitted with providerStatus=deferred; open detail for a budgeted refresh.
+         *     Approved/merged rows use canonical GoGo data without provider calls.
+         *     Names prefer result place/review draft, then snapshot; addressShort prefers
+         *     result place address, then snapshot short address (full address fallback).
+         *     categoryKey prefers active submitted taxonomy, then the snapshot category
+         *     validated against taxonomy when fetched. No automatic photo lookup or bytes.
          *     Render attribution whenever Google display facts are used; never present
          *     them as GoGo verified facts. providerDisplay.photo is a JSON proxy URL,
          *     not an image src; proxy response credit is authoritative (ADR-0043).
@@ -2339,8 +2338,14 @@ export interface paths {
          * Read an account contribution for the shared pending-place detail screen
          * @description Registered original submitter or recorded contributor only. Unknown and
          *     inaccessible IDs return the same 404 SUBMISSION_NOT_FOUND, before any
-         *     provider call. Guest/admin actors receive 403. Same live facts, attribution,
-         *     degradation and photo proxy rules as the list. pending is the client i18n
+         *     provider call. Guest/admin actors receive 403. Fresh snapshots (at most 30
+         *     days old) require no provider calls. Only pending/rejected rows with missing
+         *     or expired snapshots may refresh quality Details within the shared display
+         *     budget. An atomic 60-second lease prevents concurrent refresh purchases;
+         *     successful refreshes are reused for 30 days. A six-second deadline preserves
+         *     completed facts even if optional photo lookup times out and is canceled.
+         *     Approved/merged use canonical GoGo data without provider calls. Same
+         *     attribution and lazy photo proxy rules as list. pending is the client i18n
          *     key for "Đang chờ duyệt". approved/merged carry placeId when the result
          *     still exists, allowing navigation to the canonical shared detail.
          *     contribution contains only the original submitter's own unverified input;
@@ -8639,7 +8644,7 @@ export interface components {
             reasonCodes?: string[];
             /** Format: uuid */
             existingPlaceId?: string;
-            /** @description Opaque, short-lived proof that this request verified the Google Place ID with the provider (#337). Present only when the answer came from a live provider check and the place is operational; send it back on `POST /place-submissions` to skip the duplicate verification fetch. It carries no provider content and authorises nothing — an expired or edited token is rejected with a retryable `RESOLUTION_TOKEN_INVALID` and the client resolves again. */
+            /** @description Opaque, short-lived proof that this request verified the Google Place ID with the provider (#337). Present only when the answer came from a live provider check and the place is operational; send it back on `POST /place-submissions` to skip the duplicate verification fetch. It carries a signed allowlisted display snapshot for persistence at submit (ADR-0048), never raw payload or photo references, and authorises nothing. An expired or edited token is rejected with a retryable `RESOLUTION_TOKEN_INVALID` and the client resolves again. */
             resolutionToken?: string;
             /**
              * @description ADM-017 — the two current administrative levels the candidate's coordinate falls in, so a create form can open on a real identity instead of two empty boxes.
@@ -9015,14 +9020,14 @@ export interface components {
         MyPlaceSubmission: {
             /** Format: uuid */
             id: string;
-            /** @description Stored GoGo name or live Google fallback; use providerDisplay attribution for the fallback. */
+            /** @description Stored GoGo name or fresh submission snapshot fallback; use providerDisplay attribution for the fallback. */
             name?: string;
-            /** @description Catalogue address or transient Google short address; omitted when unknown. */
+            /** @description Catalogue address or fresh snapshot short address; omitted when unknown. */
             addressShort?: string;
-            /** @description Active submitted key or transient active Google-derived category key. */
+            /** @description Active submitted key or Google-derived snapshot category validated when fetched. */
             categoryKey?: string;
             /**
-             * @description Display availability; never infer submission status or closure from provider failure. Deferred rows can be opened in detail.
+             * @description Display availability; never infer submission status or closure from provider failure. Deferred means no fresh provider projection; pending/rejected rows can be opened in detail for budgeted hydration. Approved/merged use canonical fields.
              * @enum {string}
              */
             providerStatus?: "ok" | "budget_exhausted" | "not_found" | "identity_mismatch" | "unavailable" | "deferred";
@@ -9054,14 +9059,14 @@ export interface components {
         MyPlaceSubmissionDetail: {
             /** Format: uuid */
             id: string;
-            /** @description Stored GoGo name or live Google fallback; use providerDisplay attribution for the fallback. */
+            /** @description Stored GoGo name or fresh submission snapshot fallback; use providerDisplay attribution for the fallback. */
             name?: string;
-            /** @description Catalogue address or transient Google short address; omitted when unknown. */
+            /** @description Catalogue address or fresh snapshot short address; omitted when unknown. */
             addressShort?: string;
-            /** @description Active submitted key or transient active Google-derived category key. */
+            /** @description Active submitted key or Google-derived snapshot category validated when fetched. */
             categoryKey?: string;
             /**
-             * @description Display availability; never infer submission status or closure from provider failure. Deferred rows can be opened in detail.
+             * @description Display availability; never infer submission status or closure from provider failure. Deferred means no fresh provider projection; pending/rejected rows can be opened in detail for budgeted hydration. Approved/merged use canonical fields.
              * @enum {string}
              */
             providerStatus?: "ok" | "budget_exhausted" | "not_found" | "identity_mismatch" | "unavailable" | "deferred";
@@ -9091,7 +9096,7 @@ export interface components {
             decidedAt?: string;
             contribution?: components["schemas"]["MySubmissionContribution"];
         };
-        /** @description Live Google facts for this response only. Render Google Maps attribution and author credits; do not cache, persist or promote to catalogue facts. */
+        /** @description Owner-approved submission display snapshot (ADR-0048), reused for at most 30 days. Render Google Maps attribution; never promote to catalogue facts or cache on clients. Photo is a locally constructed lazy BFF reference with empty author credits until the proxy responds; proxy credits are authoritative. No photo refs or bytes are persisted in the snapshot. */
         SubmissionProviderDisplay: {
             /** @constant */
             source: "google_places";
@@ -15591,7 +15596,7 @@ export interface operations {
                     note?: string;
                     /** @description Optional media ids from POST /uploads purpose place_photo, owned by this actor. JPEG/PNG/WebP only, at most 10 MiB each; actual bytes and size are verified. HEIC must be converted by the client. Originals are never served. Photos stay private until explicitly selected by staff at the submission decision. Deduplicated submissions retain each photo's actual uploader; at most five non-rejected photos per pending submission, including concurrent requests. */
                     mediaIds?: string[];
-                    /** @description The `resolutionToken` from the preceding `POST /places/resolve-google-maps-link` (#337). Optional — without it the server verifies the place with the provider again, which is the behaviour before this field existed. */
+                    /** @description The `resolutionToken` from the preceding `POST /places/resolve-google-maps-link` (#337). Optional — without it the server verifies the place with the provider again with quality Details to capture the display snapshot. A signed snapshot is persisted only on successful submission; legacy identity-only tokens remain valid without a snapshot. */
                     resolutionToken?: string;
                 };
             };

@@ -147,13 +147,15 @@ describe('GET /v1/me/place-submissions (#788)', () => {
         reopened.push(token);
         const pending = await list(token);
         expect(pending.statusCode, pending.body).toBe(200);
-        expect(pending.json().items).toContainEqual({
-          id,
-          status: 'pending',
-          providerStatus: 'budget_exhausted',
-          createdAt: expect.any(String),
-          updatedAt: expect.any(String),
-        });
+        expect(pending.json().items).toContainEqual(
+          expect.objectContaining({
+            id,
+            status: 'pending',
+            providerStatus: 'ok',
+            createdAt: expect.any(String),
+            updatedAt: expect.any(String),
+          }),
+        );
       }
       expect((await list(reopened[1]!)).json().items).toHaveLength(1);
       const [place] = await db
@@ -178,10 +180,10 @@ describe('GET /v1/me/place-submissions (#788)', () => {
       for (const token of reopened) {
         const response = await list(token);
         expect(response.statusCode, response.body).toBe(200);
-        expect(response.json().items.find((item: { id: string }) => item.id === id)).toEqual({
+        expect(response.json().items.find((item: { id: string }) => item.id === id)).toMatchObject({
           id,
           status,
-          providerStatus: 'budget_exhausted',
+          providerStatus: status === 'rejected' ? 'ok' : 'deferred',
           ...(status === 'rejected'
             ? { rejectionReason: 'incorrect_location' }
             : { placeId: place!.id, name: 'GoGo shared café' }),
@@ -376,7 +378,7 @@ describe('GET /v1/me/place-submissions (#788)', () => {
         {
           id: own.id,
           status: 'pending',
-          providerStatus: 'budget_exhausted',
+          providerStatus: 'deferred',
           createdAt: expect.any(String),
           updatedAt: expect.any(String),
         },
@@ -593,7 +595,7 @@ describe('#801 contribution cards and shared pending detail', () => {
     (app.get(PLACE_PROVIDER) as FakePlaceProvider).failing = false;
   });
 
-  it('renders real pending facts in list and detail, with proxy credit and no durable Google content', async () => {
+  it('persists submitted facts and renders list/detail with zero provider calls and a lazy proxy reference', async () => {
     const googlePlaceId = seedProvider();
     (app.get(PLACE_PROVIDER) as FakePlaceProvider).seed({
       providerPlaceId: googlePlaceId,
@@ -616,12 +618,20 @@ describe('#801 contribution cards and shared pending detail', () => {
         googleMapsUri: null,
       },
     ]);
-    const row = await submission({ googlePlaceId, note: 'My private tip' });
+    const submitted = await submit(owner.token, googlePlaceId, 'My private tip');
+    expect(submitted.statusCode, submitted.body).toBe(201);
+    const [row] = await db
+      .select()
+      .from(schema.placeSubmissions)
+      .where(eq(schema.placeSubmissions.id, submitted.json().submissionId));
+    expect(row!.displaySnapshot).toMatchObject({ name: 'Tên thật', googleRating: 4.6 });
+    const provider = app.get(PLACE_PROVIDER) as FakePlaceProvider;
+    provider.tiersRequested.length = 0;
     const response = await list();
     expect(response.statusCode, response.body).toBe(200);
     const card = response.json().items[0];
     expect(card).toMatchObject({
-      id: row.id,
+      id: row!.id,
       name: 'Tên thật',
       addressShort: 'Bến Thành, TP.HCM',
       categoryKey: 'cafe',
@@ -635,13 +645,13 @@ describe('#801 contribution cards and shared pending detail', () => {
         openingHours: [{ dayOfWeek: 1, openMinute: 480, closeMinute: 1320, isOvernight: false }],
         photo: {
           url: `/v1/places/google-provider-photo/${googlePlaceId}`,
-          authorAttributions: [{ displayName: 'Lan', uri: null, photoUri: null }],
+          authorAttributions: [],
         },
       },
     });
     expect(card).not.toHaveProperty('contribution');
     expect(card).not.toHaveProperty('photoUrl');
-    const opened = await detail(row.id);
+    const opened = await detail(row!.id);
     expect(opened.statusCode, opened.body).toBe(200);
     expect(opened.headers['cache-control']).toBe('no-store');
     expect(opened.json()).toMatchObject({
@@ -654,8 +664,81 @@ describe('#801 contribution cards and shared pending detail', () => {
     expect(await db.select().from(schema.places)).toEqual([]);
     const stored = (await db.select().from(schema.placeSubmissions))[0]!;
     expect(stored).toEqual(row);
-    expect(photos.refCalls.length - refsBefore).toBe(2);
+    expect(photos.refCalls.length - refsBefore).toBe(0);
+    expect(provider.tiersRequested).toEqual([]);
+    expect(stored.displaySnapshot).not.toHaveProperty('photo');
     expect(photos.mediaCalls.length).toBe(mediaBefore);
+  });
+
+  it('F-01: opening/refreshing 25 distinct stored cards makes zero Details, refs or media calls', async () => {
+    const provider = app.get(PLACE_PROVIDER) as FakePlaceProvider;
+    const photos = app.get(PLACE_PHOTO_DISPLAY) as FakePlacePhotoDisplay;
+    const refsBefore = photos.refCalls.length;
+    const mediaBefore = photos.mediaCalls.length;
+    await db.insert(schema.placeSubmissions).values(
+      Array.from({ length: 25 }, (_, i) => ({
+        googlePlaceId: `stored-${i}`,
+        submittedByUserId: owner.id,
+        displaySnapshot: {
+          source: 'google_places' as const,
+          fetchedAt: new Date().toISOString(),
+          name: `Stored café ${i}`,
+          addressShort: 'Hà Nội',
+          attributions: ['Google Maps'],
+          googleMapsUri: null,
+          googleRating: 4.6,
+          googleRatingCount: 980,
+          openingHours: [],
+        },
+      })),
+    );
+    provider.failing = true;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await list();
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json().items).toHaveLength(25);
+      expect(
+        response
+          .json()
+          .items.every((item: { providerStatus: string }) => item.providerStatus === 'ok'),
+      ).toBe(true);
+    }
+    expect(provider.tiersRequested).toEqual([]);
+    expect(photos.refCalls.length).toBe(refsBefore);
+    expect(photos.mediaCalls.length).toBe(mediaBefore);
+  });
+
+  it('refreshes an expired snapshot once under concurrent DETAIL reads, keeping photo transient', async () => {
+    const googlePlaceId = seedProvider();
+    const row = await submission({
+      googlePlaceId,
+      displaySnapshot: {
+        source: 'google_places',
+        fetchedAt: new Date(Date.now() - 31 * 86400000).toISOString(),
+        name: 'Old',
+        addressShort: 'Old',
+        attributions: ['Google Maps'],
+        googleMapsUri: null,
+        googleRating: 1,
+        googleRatingCount: 1,
+        openingHours: [],
+      },
+    });
+    expect((await list()).json().items[0].providerStatus).toBe('deferred');
+    const responses = await Promise.all(Array.from({ length: 4 }, () => detail(row.id)));
+    expect(responses.every((response) => response.statusCode === 200)).toBe(true);
+    expect(responses.some((response) => response.json().providerStatus === 'ok')).toBe(true);
+    const provider = app.get(PLACE_PROVIDER) as FakePlaceProvider;
+    expect(provider.tiersRequested).toEqual(['quality']);
+    const [stored] = await db
+      .select()
+      .from(schema.placeSubmissions)
+      .where(eq(schema.placeSubmissions.id, row.id));
+    expect(stored!.displaySnapshot).toMatchObject({ name: 'Shared café', googleRating: 4.4 });
+    expect(stored!.displaySnapshot).not.toHaveProperty('photo');
+    expect(stored!.updatedAt).toEqual(row.updatedAt);
+    expect((await detail(row.id)).json().providerStatus).toBe('ok');
+    expect(provider.tiersRequested).toEqual(['quality']);
   });
 
   it('checks identity/ownership before billing; recorded contributors see status but no original input or PII', async () => {
@@ -708,7 +791,7 @@ describe('#801 contribution cards and shared pending detail', () => {
       expect(response.statusCode, response.body).toBe(200);
       expect(response.json()).toMatchObject({
         status,
-        providerStatus: 'unavailable',
+        providerStatus: status === 'rejected' ? 'unavailable' : 'deferred',
         ...(status === 'rejected'
           ? { rejectionReason: 'incorrect_location' }
           : { placeId: place!.id, name: 'Verified café' }),
