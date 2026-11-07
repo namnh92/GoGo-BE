@@ -13,6 +13,22 @@ export const completeEnrichment = {
   space: { rating: 4, chipKeys: ['space_quiet'] },
 };
 describe('contribution wizard validation (#796)', () => {
+  it.each(['menu', 'bill'] as const)(
+    'F-07 canonicalizes %s UUIDs before duplicate validation',
+    (kind) => {
+      const mediaId = 'abcdefab-cdef-4abc-8def-abcdefabcdef';
+      for (const schema of [enrichmentDraftSchema, enrichmentSchema]) {
+        const value = { ...completeEnrichment, photos: [{ mediaId: mediaId.toUpperCase(), kind }] };
+        expect(schema.parse(value).photos).toEqual([{ mediaId, kind }]);
+        expect(
+          schema.safeParse({
+            ...value,
+            photos: [{ mediaId, kind }, ...value.photos],
+          }).success,
+        ).toBe(false);
+      }
+    },
+  );
   it('allows partial drafts but requires completed steps on submit', () => {
     expect(enrichmentDraftSchema.parse({})).toEqual({});
     expect(enrichmentSchema.safeParse({}).success).toBe(false);

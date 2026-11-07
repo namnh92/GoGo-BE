@@ -33,7 +33,7 @@ export const enrichmentDraftSchema = z
       .array(
         z
           .object({
-            mediaId: z.string().uuid(),
+            mediaId: z.string().uuid().toLowerCase(),
             kind: z.enum(['menu', 'bill']),
           })
           .strict(),

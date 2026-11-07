@@ -903,7 +903,7 @@ export class PlaceSubmissionService {
       .limit(1);
     const mediaIds = [
       ...new Set([
-        ...(input.mediaIds ?? []),
+        ...(input.mediaIds ?? []).map((id) => id.toLowerCase()),
         ...(input.enrichment?.photos ?? []).map((photo) => photo.mediaId),
       ]),
     ];

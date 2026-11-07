@@ -19,7 +19,7 @@ async function fixture(retained = false) {
   const raw = await bitmap('red');
   const storage = new FakeStorage();
   const upload = {
-    id: randomUUID(),
+    id: randomUUID() as string,
     actorId: actor.id,
     actorType: actor.type,
     purpose: 'place_photo',
@@ -101,6 +101,81 @@ async function fixture(retained = false) {
   };
 }
 
+it.each(['menu', 'bill'] as const)(
+  'F-07 classifies uppercase %s evidence before processing',
+  async (kind) => {
+    const h = await fixture();
+    const prepared = await h.service.prepare(actor, [h.upload.id.toUpperCase()], null, {
+      evidence: [{ mediaId: h.upload.id.toUpperCase(), kind }],
+      billPhotoPublicConsent: true,
+    });
+    expect(
+      prepared.photos[0]!.key.startsWith(
+        kind === 'bill' ? BILL_PHOTO_PREFIX : WIZARD_MENU_PHOTO_PREFIX,
+      ),
+    ).toBe(true);
+  },
+);
+
+it.each(['menu', 'bill'] as const)(
+  'F-07 resumes and transfers a legacy uppercase %s draft claim',
+  async (kind) => {
+    const h = await fixture(true);
+    h.draft.enrichment.photos = [{ mediaId: h.upload.id.toUpperCase(), kind }];
+    const prepared = await h.service.prepare(actor, [h.upload.id.toUpperCase()], null, {
+      draftId: h.draft.id!,
+      evidence: h.draft.enrichment.photos,
+      billPhotoPublicConsent: true,
+    });
+    expect(
+      prepared.photos[0]!.key.startsWith(
+        kind === 'bill' ? BILL_PHOTO_PREFIX : WIZARD_MENU_PHOTO_PREFIX,
+      ),
+    ).toBe(true);
+    const submissionId = randomUUID();
+    await h.service.attach(h.db as never, actor, submissionId, prepared);
+    expect(h.updates).toContainEqual({
+      table: schema.mediaUploads,
+      values: expect.objectContaining({
+        attachedToType: 'place_submission',
+        attachedToId: submissionId,
+      }),
+    });
+  },
+);
+
+it('F-07 recognizes case variants as duplicate upload ids before I/O', async () => {
+  const h = await fixture();
+  await expect(
+    h.service.prepare(actor, [h.upload.id, h.upload.id.toUpperCase()], null),
+  ).rejects.toMatchObject({
+    code: 'INVALID_SUBMISSION_PHOTOS',
+  });
+  expect(h.uploads.verifyUploaded).not.toHaveBeenCalled();
+});
+
+it('F-07 rejects uppercase bill relabelling of an attached submission menu', async () => {
+  const h = await fixture();
+  const submissionId = randomUUID();
+  h.upload.status = 'attached';
+  h.upload.attachedToType = 'place_submission';
+  h.upload.attachedToId = submissionId;
+  h.pending.push({
+    id: randomUUID(),
+    submissionId,
+    mediaUploadId: h.upload.id,
+    storageKey: `${WIZARD_MENU_PHOTO_PREFIX}existing.webp`,
+    status: 'pending',
+  });
+  await expect(
+    h.service.prepare(actor, [h.upload.id], submissionId, {
+      evidence: [{ mediaId: h.upload.id.toUpperCase(), kind: 'bill' }],
+      billPhotoPublicConsent: true,
+    }),
+  ).rejects.toMatchObject({ code: 'INVALID_SUBMISSION_PHOTOS' });
+  expect(h.cleanup.enqueueNow).not.toHaveBeenCalled();
+});
+
 it('stores consented bills as private metadata-free WebP without an external service', async () => {
   const h = await fixture();
   const prepared = await h.service.prepare(actor, [h.upload.id], null, {
@@ -151,27 +226,30 @@ it('retained bills keep their consent requirement when relabelled as menu and st
   expect(prepared.photos[0]!.key.startsWith(BILL_PHOTO_PREFIX)).toBe(true);
 });
 
-it('selected wizard menus join user photos without creating official gallery rows', async () => {
-  const h = await fixture();
-  const id = randomUUID(),
-    submissionId = randomUUID();
-  h.pending.push({
-    id,
-    submissionId,
-    storageKey: 'submission-photos/menu.webp',
-    mediaUploadId: h.upload.id,
-    status: 'pending',
-  });
-  h.draft.enrichment.photos = [{ mediaId: h.upload.id, kind: 'menu' }];
-  const placeId = randomUUID();
-  await h.service.decide(h.db as never, submissionId, placeId, randomUUID(), undefined, [id]);
-  expect(h.inserted.filter((i) => i.table === schema.placeMedia)).toHaveLength(0);
-  expect(h.updates).toContainEqual({
-    table: schema.placeSubmissionPhotos,
-    values: { status: 'approved', placeId },
-  });
-  expect(h.cleanup.enqueue).not.toHaveBeenCalled();
-});
+it.each(['menu', 'bill'] as const)(
+  'F-07 legacy uppercase %s evidence joins user photos without official gallery rows',
+  async (kind) => {
+    const h = await fixture();
+    const id = randomUUID(),
+      submissionId = randomUUID();
+    h.pending.push({
+      id,
+      submissionId,
+      storageKey: 'submission-photos/menu.webp',
+      mediaUploadId: h.upload.id,
+      status: 'pending',
+    });
+    h.draft.enrichment.photos = [{ mediaId: h.upload.id.toUpperCase(), kind }];
+    const placeId = randomUUID();
+    await h.service.decide(h.db as never, submissionId, placeId, randomUUID(), undefined, [id]);
+    expect(h.inserted.filter((i) => i.table === schema.placeMedia)).toHaveLength(0);
+    expect(h.updates).toContainEqual({
+      table: schema.placeSubmissionPhotos,
+      values: { status: 'approved', placeId },
+    });
+    expect(h.cleanup.enqueue).not.toHaveBeenCalled();
+  },
+);
 
 it('F-04 resumes a retained photo after the presigned upload has expired, and transfers its claim', async () => {
   const h = await fixture(true);

@@ -113,8 +113,14 @@ export class SubmissionPhotosService {
       billPhotoPublicConsent?: boolean | undefined;
     } = {},
   ): Promise<PreparedPhotos> {
+    // PostgreSQL UUID columns return lowercase; JSON evidence must use the same identity.
+    mediaIds = mediaIds.map((id) => id.toLowerCase());
+    const evidence = options.evidence?.map((photo) => ({
+      ...photo,
+      mediaId: photo.mediaId.toLowerCase(),
+    }));
     assertBillPhotoConsent(
-      options.evidence?.some((p) => p.kind === 'bill') ?? false,
+      evidence?.some((p) => p.kind === 'bill') ?? false,
       options.billPhotoPublicConsent,
     );
     if (mediaIds.length > 5 || new Set(mediaIds).size !== mediaIds.length) {
@@ -194,7 +200,7 @@ export class SubmissionPhotosService {
           const bill = isBill(previous.storageKey);
           assertBillPhotoConsent(bill, options.billPhotoPublicConsent);
           // Existing menu bytes cannot silently be reclassified as bill evidence.
-          if (!bill && options.evidence?.some((p) => p.mediaId === upload.id && p.kind === 'bill'))
+          if (!bill && evidence?.some((p) => p.mediaId === upload.id && p.kind === 'bill'))
             throw AppError.badRequest('INVALID_SUBMISSION_PHOTOS', 'Upload a new bill photo');
           result.reusedIds.push(previous.id);
           continue;
@@ -211,7 +217,7 @@ export class SubmissionPhotosService {
         const image = await sanitiseSubmissionPhoto(original.body, upload.contentType);
         const prefix = evidencePrefix(
           upload.storageKey,
-          options.evidence?.find((p) => p.mediaId === upload.id),
+          evidence?.find((p) => p.mediaId === upload.id),
         );
         const key = `${prefix}${randomUUID()}.webp`;
         // Durable before PUT: a process crash or uncertain PUT leaves a cleanup job.
@@ -373,7 +379,7 @@ export class SubmissionPhotosService {
       !draft ||
       draft.expiresAt <= new Date() ||
       upload.expiresAt <= new Date() ||
-      !draft.enrichment.photos?.some((p) => p.mediaId === upload.id)
+      !draft.enrichment.photos?.some((p) => p.mediaId.toLowerCase() === upload.id)
     )
       throw AppError.badRequest('INVALID_SUBMISSION_PHOTOS', 'Draft photo is unavailable');
   }
@@ -638,7 +644,9 @@ export class SubmissionPhotosService {
       .select({ enrichment: schema.placeSubmissions.enrichment })
       .from(schema.placeSubmissions)
       .where(eq(schema.placeSubmissions.id, submissionId));
-    const evidenceIds = new Set(submission?.enrichment?.photos?.map((p) => p.mediaId) ?? []);
+    const evidenceIds = new Set(
+      submission?.enrichment?.photos?.map((p) => p.mediaId.toLowerCase()) ?? [],
+    );
     const cleanupIds: string[] = [];
     const originalKeys: string[] = [];
     for (const photo of photos) {

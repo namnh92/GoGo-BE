@@ -4,47 +4,56 @@ import { schema } from '@gogo/database';
 import { ContributionDraftsService } from './contribution-drafts.service';
 import type { Actor } from '../../identity/domain/actor';
 
-it('F-04 claims private photos in the same transaction and retains them to draft expiry', async () => {
-  const actor: Actor = { type: 'user', id: randomUUID(), sessionId: randomUUID() };
-  const id = randomUUID(),
-    mediaId = randomUUID();
-  const prepared = { photos: [{ key: 'submission-photos/retained.webp' }] };
-  const photos = { prepare: vi.fn().mockResolvedValue(prepared), retainDraft: vi.fn() };
-  const db = {
-    select: () => ({
-      from: (table: unknown) => ({
-        where: () => (table === schema.taxonomies ? Promise.resolve([]) : { for: async () => [] }),
-      }),
-    }),
-    execute: vi.fn().mockResolvedValue({ rows: [{ id: actor.id, n: 0 }] }),
-    insert: () => ({
-      values: (values: object) => ({
-        onConflictDoNothing: () => ({
-          returning: async () => [{ ...values, version: 1, updatedAt: new Date() }],
+it.each(['menu', 'bill'] as const)(
+  'F-07 persists canonical %s references and retains photos to draft expiry',
+  async (kind) => {
+    const actor: Actor = { type: 'user', id: randomUUID(), sessionId: randomUUID() };
+    const id = randomUUID(),
+      mediaId = randomUUID();
+    const prepared = { photos: [{ key: 'submission-photos/retained.webp' }] };
+    const photos = { prepare: vi.fn().mockResolvedValue(prepared), retainDraft: vi.fn() };
+    const db = {
+      select: () => ({
+        from: (table: unknown) => ({
+          where: () =>
+            table === schema.taxonomies ? Promise.resolve([]) : { for: async () => [] },
         }),
       }),
-    }),
-    transaction: async (work: (tx: unknown) => Promise<unknown>) => work(db),
-  };
-  const service = new ContributionDraftsService(db as never, photos as never);
-  const saved = await service.save(actor, id, {
-    googlePlaceId: 'draft-place',
-    expectedVersion: 0,
-    enrichment: { photos: [{ mediaId, kind: 'menu' }] },
-  });
-  expect(photos.prepare).toHaveBeenCalledWith(actor, [mediaId], null, {
-    draftId: id,
-    evidence: [{ mediaId, kind: 'menu' }],
-  });
-  expect(photos.retainDraft).toHaveBeenCalledWith(
-    db,
-    actor,
-    id,
-    prepared,
-    new Date(saved.expiresAt),
-  );
-  expect(new Date(saved.expiresAt).getTime() - Date.now()).toBeGreaterThan(29 * 86400000);
-});
+      execute: vi.fn().mockResolvedValue({ rows: [{ id: actor.id, n: 0 }] }),
+      insert: () => ({
+        values: (values: object) => ({
+          onConflictDoNothing: () => ({
+            returning: async () => [{ ...values, version: 1, updatedAt: new Date() }],
+          }),
+        }),
+      }),
+      transaction: async (work: (tx: unknown) => Promise<unknown>) => work(db),
+    };
+    const service = new ContributionDraftsService(db as never, photos as never);
+    const saved = await service.save(actor, id, {
+      googlePlaceId: 'draft-place',
+      expectedVersion: 0,
+      enrichment: {
+        billPhotoPublicConsent: true,
+        photos: [{ mediaId: mediaId.toUpperCase(), kind }],
+      },
+    });
+    expect(saved.enrichment.photos).toEqual([{ mediaId, kind }]);
+    expect(photos.prepare).toHaveBeenCalledWith(actor, [mediaId], null, {
+      draftId: id,
+      evidence: [{ mediaId, kind }],
+      billPhotoPublicConsent: true,
+    });
+    expect(photos.retainDraft).toHaveBeenCalledWith(
+      db,
+      actor,
+      id,
+      prepared,
+      new Date(saved.expiresAt),
+    );
+    expect(new Date(saved.expiresAt).getTime() - Date.now()).toBeGreaterThan(29 * 86400000);
+  },
+);
 
 describe('draft deletion cleanup', () => {
   it('releases claims only after successful versioned deletion in the same transaction', async () => {

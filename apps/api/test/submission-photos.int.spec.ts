@@ -293,6 +293,102 @@ describe('wizard menu evidence and approval credits (#796)', () => {
       .select()
       .from(schema.assistantCreditLedger)
       .where(eq(schema.assistantCreditLedger.submissionId, id));
+  it.each([
+    ['menu', false],
+    ['bill', false],
+    ['menu', true],
+    ['bill', true],
+  ] as const)(
+    'F-07 publishes uppercase %s references as user photos (draft=%s)',
+    async (kind, retained) => {
+      await db
+        .insert(schema.taxonomies)
+        .values([
+          { kind: 'suitability', key: 'work_reading' },
+          { kind: 'mood', key: 'chill' },
+          { kind: 'checkin_tag', key: 'friendly_staff' },
+          { kind: 'checkin_tag', key: 'quiet_private' },
+        ])
+        .onConflictDoNothing();
+      const item = await upload();
+      const id = identity();
+      const evidence = {
+        ...enrichment(item.id.toUpperCase()),
+        billPhotoPublicConsent: true,
+        photos: [{ mediaId: item.id.toUpperCase(), kind }],
+      };
+      if (retained) {
+        const draftId = randomUUID();
+        const url = `/v1/place-contribution-drafts/${draftId}`;
+        const save = (expectedVersion: number) =>
+          api().inject({
+            method: 'PUT',
+            url,
+            remoteAddress: ip(),
+            headers: auth(user),
+            payload: { googlePlaceId: id, expectedVersion, enrichment: evidence },
+          });
+        const saved = await save(0);
+        expect(saved.statusCode, saved.body).toBe(200);
+        expect(saved.json().enrichment.photos).toEqual([{ mediaId: item.id, kind }]);
+        const resumed = await api().inject({
+          method: 'GET',
+          url,
+          remoteAddress: ip(),
+          headers: auth(user),
+        });
+        expect(resumed.statusCode, resumed.body).toBe(200);
+        expect(resumed.json().enrichment.photos).toEqual([{ mediaId: item.id, kind }]);
+        const updated = await save(saved.json().version);
+        expect(updated.statusCode, updated.body).toBe(200);
+        expect(updated.json().version).toBe(2);
+        const [draft] = await db
+          .select()
+          .from(schema.placeContributionDrafts)
+          .where(eq(schema.placeContributionDrafts.id, draftId));
+        expect(draft!.enrichment.photos).toEqual([{ mediaId: item.id, kind }]);
+      }
+      // Mixed casing across the two fields must still claim a single upload.
+      const sent = await send(id, evidence, user, [item.id]);
+      expect(sent.statusCode, sent.body).toBe(201);
+      const submissionId = sent.json().submissionId;
+      const [submission] = await db
+        .select()
+        .from(schema.placeSubmissions)
+        .where(eq(schema.placeSubmissions.id, submissionId));
+      expect(submission!.enrichment!.photos).toEqual([{ mediaId: item.id, kind }]);
+      const photos = (await detail(submissionId)).json().photos;
+      expect(photos).toHaveLength(1);
+      expect(photos[0]).toMatchObject({ mediaId: item.id, kind });
+      const retried = await send(id, evidence, user, [item.id.toUpperCase()]);
+      expect(retried.statusCode, retried.body).toBe(201);
+      expect(retried.json().submissionId).toBe(submissionId);
+      expect((await detail(submissionId)).json().photos).toHaveLength(1);
+      const [photo] = await db
+        .select()
+        .from(schema.placeSubmissionPhotos)
+        .where(eq(schema.placeSubmissionPhotos.id, photos[0].id));
+      expect(photo!.storageKey).toMatch(
+        kind === 'bill' ? /^submission-photos\/bills\// : /^submission-photos\/menus\//,
+      );
+      const approved = await decide(submissionId, 'approved', [photos[0].id]);
+      expect(approved.statusCode, approved.body).toBe(201);
+      expect(
+        await db
+          .select()
+          .from(schema.placeMedia)
+          .where(eq(schema.placeMedia.mediaUploadId, item.id)),
+      ).toHaveLength(0);
+      const place = await api().inject({
+        method: 'GET',
+        url: `/v1/places/${approved.json().placeId}`,
+      });
+      expect(place.statusCode, place.body).toBe(200);
+      expect(place.json().photos).toEqual([]);
+      expect(place.json().userPhotos).toHaveLength(1);
+      expect(place.json().userPhotos[0].id).toBe(photos[0].id);
+    },
+  );
   it('claims only owned evidence, keeps it private, and grants 70 exactly once only after explicit approval', async () => {
     await db
       .insert(schema.taxonomies)
