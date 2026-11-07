@@ -69,15 +69,15 @@ Các tên bảng/DTO/route dưới đây là đề xuất cho bước BE sau Ast
 phải OpenAPI đã phát hành. Reviews module sở hữu entry công khai; ingestion sở
 hữu proposal và moderation đầu vào; dùng application port/outbox để nối hai bên.
 
-| Thực thể đề xuất | Dữ liệu và bất biến |
-| --- | --- |
-| `community_entries` | id, place_id, author_user_id nullable sau ẩn danh, source_kind, source_id, created_at, updated_at, version, trạng thái; một tác giả thật cho mỗi entry |
-| `community_entry_revisions` | snapshot input tác giả theo revision, text/tips, enrichment có schema version, moderation verdict/reason nội bộ; chỉ revision published được đọc công khai |
-| Liên kết review | review_id unique nullable; rating tổng thể lấy từ review hiện hữu, không sao chép thành rating thứ hai; review về plan không tự xuất hiện ở place |
-| `community_entry_photos` | entry/revision, photo_id ổn định, uploader thật, kind photo/menu/bill, moderation, derivative reference, consent record cho bill; không có visibility input/nhánh private cho menu/bill mới; legacy private evidence tách riêng, không vào projection public |
-| `community_observations` | entry/revision, author, place, attribute key/value chuẩn hóa, observed_at; chỉ từ input có tác giả và đã duyệt, không từ provider snapshot |
-| `community_trend_aggregates` | place/attribute/value, support_count, respondent_count, window_start/end, computed_at, policy_version, policy_generation, source_revision, dirty/required_revision, next_expiry_at; projection có thể dựng lại, không lưu quyết định chiếm slot bootstrap |
-| `community_promotions` | đích photo hoặc attribute/value, trạng thái, version, actor CMS, reason, evidence revision, timestamps; quyết định và audit riêng |
+| Thực thể đề xuất             | Dữ liệu và bất biến                                                                                                                                                                                                                                          |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `community_entries`          | id, place_id, author_user_id nullable sau ẩn danh, source_kind, source_id, created_at, updated_at, version, trạng thái; một tác giả thật cho mỗi entry                                                                                                       |
+| `community_entry_revisions`  | snapshot input tác giả theo revision, text/tips, enrichment có schema version, moderation verdict/reason nội bộ; chỉ revision published được đọc công khai                                                                                                   |
+| Liên kết review              | review_id unique nullable; rating tổng thể lấy từ review hiện hữu, không sao chép thành rating thứ hai; review về plan không tự xuất hiện ở place                                                                                                            |
+| `community_entry_photos`     | entry/revision, photo_id ổn định, uploader thật, kind photo/menu/bill, moderation, derivative reference, consent record cho bill; không có visibility input/nhánh private cho menu/bill mới; legacy private evidence tách riêng, không vào projection public |
+| `community_observations`     | entry/revision, author, place, attribute key/value chuẩn hóa, observed_at; chỉ từ input có tác giả và đã duyệt, không từ provider snapshot                                                                                                                   |
+| `community_trend_aggregates` | place/attribute/value, support_count, respondent_count, window_start/end, computed_at, policy_version, policy_generation, source_revision, dirty/required_revision, next_expiry_at; projection có thể dựng lại, không lưu quyết định chiếm slot bootstrap    |
+| `community_promotions`       | đích photo hoặc attribute/value, trạng thái, version, actor CMS, reason, evidence revision, timestamps; quyết định và audit riêng                                                                                                                            |
 
 Entry có thể chỉ có ảnh hoặc enrichment, không ép thêm sao giả. Service/space
 ratings của wizard là chiều đánh giá riêng, không tự trở thành sao tổng thể.
@@ -110,12 +110,12 @@ allowlist bởi API; không dùng AI/free text để tự tạo thuộc tính. T
 
 Quyết định **FINAL của owner ngày 2026-11-07**:
 
-| # | Case | Condition | Trigger | Default (config) |
-| --- | --- | --- | --- | --- |
-| 1 | Manual promote | editor/moderator promotes an attribute | editor/moderator, audited, reversible | none |
-| 2 | Auto, any place | distinct users proposing the attribute > x | system recompute | x = 1000 |
-| 3 | Bootstrap (few trends) | place has < 5 trends (counting rows 1 and 2) AND attribute has ≥3 proposals from 3 distinct users | system fills empty slots up to 5 | 3 users |
-| 4 | Place already has 5 trends | row 3 no longer applies; only rows 1 or 2 | — | — |
+| #   | Case                       | Condition                                                                                         | Trigger                               | Default (config) |
+| --- | -------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------- | ---------------- |
+| 1   | Manual promote             | editor/moderator promotes an attribute                                                            | editor/moderator, audited, reversible | none             |
+| 2   | Auto, any place            | distinct users proposing the attribute > x                                                        | system recompute                      | x = 1000         |
+| 3   | Bootstrap (few trends)     | place has < 5 trends (counting rows 1 and 2) AND attribute has ≥3 proposals from 3 distinct users | system fills empty slots up to 5      | 3 users          |
+| 4   | Place already has 5 trends | row 3 no longer applies; only rows 1 or 2                                                         | —                                     | —                |
 
 Mỗi người chỉ được tính một lần cho mỗi thuộc tính tại một place; chỉ đóng góp
 đã duyệt mới được tính. `support_count` là số người dùng khác nhau đề xuất cùng
@@ -300,14 +300,14 @@ thêm projection có namespace, không nhét trend vào `prices/hours/taxonomies
 Place facts có provenance/verifiedAt; không gắn nhãn verified cho field cũ thiếu
 bằng chứng. Mâu thuẫn giữa fact và trend được giữ nguồn riêng, không âm thầm hợp nhất.
 
-| Projection đề xuất | Facts trả về |
-| --- | --- |
-| `communityEntries` | page `items/nextCursor`; entryId, version, timestamps, sourceKind, author.displayName nullable, optional overallRating, text/tips, enrichment, photo preview |
-| `communityTrends` | key/value, source=community, selection, supportCount bắt buộc, respondentCount khi có, windowStart/end, computedAt, policyVersion, freshness/status |
-| `userPhotos` | giữ array `PlacePhoto[]` trên place detail theo #802; required `id`, `url`, `source`; optional `width`, `height`, `contributor.displayName`, `attribution`, `authorAttributions`, `googleMapsUri` giữ nguyên tên/kiểu/semantics |
-| `userPhotosPagination` (optional, mới) | metadata sibling của array detail: `nextCursor` nullable để đọc tiếp tại `/v1/places/{id}/user-photos`; không bọc/đổi kiểu `userPhotos` |
-| Page `/v1/places/{id}/user-photos` (mới) | `{items: PlacePhoto[], nextCursor: string \| null}`; cùng item contract/ID/URL/credit với detail; metadata entry/kind/timestamps/promotion nếu thêm vào item đều optional |
-| `photos` và cover hiện hữu | editorial/provider hiện hữu và ảnh user có promotion còn hiệu lực; mỗi ảnh giữ source/credit riêng |
+| Projection đề xuất                       | Facts trả về                                                                                                                                                                                                                    |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `communityEntries`                       | page `items/nextCursor`; entryId, version, timestamps, sourceKind, author.displayName nullable, optional overallRating, text/tips, enrichment, photo preview                                                                    |
+| `communityTrends`                        | key/value, source=community, selection, supportCount bắt buộc, respondentCount khi có, windowStart/end, computedAt, policyVersion, freshness/status                                                                             |
+| `userPhotos`                             | giữ array `PlacePhoto[]` trên place detail theo #802; required `id`, `url`, `source`; optional `width`, `height`, `contributor.displayName`, `attribution`, `authorAttributions`, `googleMapsUri` giữ nguyên tên/kiểu/semantics |
+| `userPhotosPagination` (optional, mới)   | metadata sibling của array detail: `nextCursor` nullable để đọc tiếp tại `/v1/places/{id}/user-photos`; không bọc/đổi kiểu `userPhotos`                                                                                         |
+| Page `/v1/places/{id}/user-photos` (mới) | `{items: PlacePhoto[], nextCursor: string \| null}`; cùng item contract/ID/URL/credit với detail; metadata entry/kind/timestamps/promotion nếu thêm vào item đều optional                                                       |
+| `photos` và cover hiện hữu               | editorial/provider hiện hữu và ảnh user có promotion còn hiệu lực; mỗi ảnh giữ source/credit riêng                                                                                                                              |
 
 Giữ nguyên `PlacePhoto`: không đổi `id` thành `photoId`, `width/height` thành
 `dimensions`, hoặc `contributor` thành `author`. `contributor` khi có vẫn bắt buộc
