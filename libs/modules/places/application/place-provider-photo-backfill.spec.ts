@@ -16,6 +16,7 @@ function setup() {
   };
   const store = {
     scan: vi.fn(async (after: string | null) => (after ? [] : [candidate])),
+    claimIfEligible: vi.fn(async () => true),
     attachIfEligible: vi.fn(async () => true),
   };
   const photos = {
@@ -49,6 +50,7 @@ describe('#797 photo backfill orchestration', () => {
     expect(f.photos.probeForProvider).not.toHaveBeenCalled();
     expect(f.persistence.prepare).not.toHaveBeenCalled();
     expect(f.store.attachIfEligible).not.toHaveBeenCalled();
+    expect(f.store.claimIfEligible).not.toHaveBeenCalled();
   });
   it('probe calls references only and reports with/without/error separately', async () => {
     const f = setup();
@@ -78,6 +80,47 @@ describe('#797 photo backfill orchestration', () => {
     f.store.attachIfEligible.mockRejectedValue(new Error('PII'));
     expect(await f.run()).toMatchObject({ errors: 1, written: 0 });
     expect(f.persistence.discard).toHaveBeenCalledTimes(2);
+  });
+  it.each(['prepare', 'attach', 'discard'])(
+    'does not purchase again on rerun after %s failure',
+    async (stage) => {
+      const f = setup();
+      f.options.dryRun = false;
+      // Models the durable reservation surviving both failure and a fresh run.
+      f.store.claimIfEligible.mockResolvedValueOnce(true).mockResolvedValue(false);
+      if (stage === 'prepare') f.persistence.prepare.mockRejectedValue(new Error('upload'));
+      else f.store.attachIfEligible.mockRejectedValue(new Error('DB'));
+      if (stage === 'discard') f.persistence.discard.mockRejectedValue(new Error('storage'));
+      expect(await f.run()).toMatchObject({ errors: 1, written: 0 });
+      expect(await f.run()).toMatchObject({ skipped: 1, errors: 0, written: 0 });
+      expect(f.persistence.prepare).toHaveBeenCalledTimes(1);
+      expect(f.store.claimIfEligible.mock.invocationCallOrder[0]).toBeLessThan(
+        f.persistence.prepare.mock.invocationCallOrder[0]!,
+      );
+    },
+  );
+  it('does not purchase when the reservation cannot be persisted', async () => {
+    const f = setup();
+    f.options.dryRun = false;
+    f.store.claimIfEligible.mockRejectedValue(new Error('DB'));
+    expect(await f.run()).toMatchObject({ errors: 1, written: 0 });
+    expect(f.persistence.prepare).not.toHaveBeenCalled();
+  });
+  it('does not purchase if stopped while waiting for the reservation', async () => {
+    const f = setup();
+    const stop = new AbortController();
+    f.store.claimIfEligible.mockImplementation(async () => {
+      stop.abort();
+      return true;
+    });
+    expect(
+      await backfillProviderPhotos(f.store, f.photos, f.persistence, {
+        ...f.options,
+        dryRun: false,
+        signal: stop.signal,
+      }),
+    ).toMatchObject({ stopped: 'signal', written: 0 });
+    expect(f.persistence.prepare).not.toHaveBeenCalled();
   });
   it('stops on disabled flag before any call and compensates if disabled during upload', async () => {
     const f = setup();

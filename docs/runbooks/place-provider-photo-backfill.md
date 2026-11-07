@@ -48,14 +48,16 @@ pnpm places:backfill-provider-photos --apply --limit 100
 `--limit` bắt buộc là số nguyên dương an toàn. Không chấp nhận mode lặp,
 `--probe --apply`, hoặc argument lạ. `--dry-run` **không lấy/lưu bytes ảnh**;
 muốn lưu ảnh phải dùng `--apply`. Chạy lại lệnh apply để tiếp tục; không có cursor
-persist giữa các lần chạy. Những nơi Google trả không có ảnh vẫn đủ điều kiện
-cho lần chạy sau, nên có thể chiếm giới hạn đầu danh sách.
+persist giữa các lần chạy. Mỗi địa điểm chỉ được reserve một lần cho apply;
+chạy lại không tự mua lại ảnh cho các attempt trước, kể cả attempt lỗi/không có ảnh.
 
 ## Phạm vi và chi phí
 
 Chỉ `published`, có Google Place ID hợp lệ theo provenance reader, không có bất
-kỳ `place_media` approved nào (kể cả ảnh editorial/community). Pending/rejected
-media không loại địa điểm. Canonical identity ưu tiên legacy; bỏ canonical moved.
+kỳ `place_media` pending/approved nào (kể cả ảnh editorial/community), không có
+cover ở bất kỳ moderation state nào, và chưa có audit reservation
+`place.provider_photo_backfill_attempt`. Rejected media không phải cover vẫn
+được phép. Không xoá/hạ cover đang chờ duyệt. Canonical identity ưu tiên legacy; bỏ canonical moved.
 Scan theo UUID, phân trang tối đa 100, dừng ở `--limit` hoặc flag tắt/signal.
 
 Dry-run/probe in mỗi `candidateId` nội bộ và JSON cuối: `total`, `withPhoto`,
@@ -89,11 +91,22 @@ name hoặc media retrieval URL. Moderation actor null (system), reason
 `Provider photo backfill #797`; audit `place.provider_photo_backfill`.
 
 Trước upload có cleanup intent delay một giờ; attach và xoá intent cùng transaction.
-Recheck dưới row lock: published, cùng identity, vẫn chưa có approved media.
-Hai run đồng thời chỉ attach được một ảnh; ảnh upload của run thua được discard.
-Nên chạy tuần tự để tránh mua thêm media cho run thua.
+Trước provider/storage I/O, recheck dưới row lock: published, cùng identity,
+không có pending/approved media hoặc cover bất kỳ state nào và chưa reserve.
+Ghi audit `place.provider_photo_backfill_attempt` trong transaction riêng, commit
+trước `prepare()`. Audit append-only này là durable reservation, không chứa
+provider ID/credit. Hai run đồng thời chỉ một run được reserve/mua ảnh; run thua
+skip trước provider I/O. Attach recheck lại status/identity/media dưới row lock.
 Nếu status/identity/media đổi trước attach thì skip và discard. Lỗi DB/storage
-hoặc crash giữ intent cho cleanup worker. Khi kiểm tra sau apply, xem media có
+hoặc crash giữ intent cho cleanup worker. Reservation vẫn giữ khi upload/DB/audit
+completion/discard lỗi, bị kill, mất eligibility hoặc không có ảnh. Đây là
+at-most-once attempt, không phải tự retry đến khi attach thành công: crash sau
+reservation nhưng trước purchase cũng không tự thử lại. Cleanup worker không
+xoá reservation. Không xoá audit để retry; attempt chưa hoàn tất cần ops kiểm tra
+và owner cho phép chi phí mới bằng quy trình riêng, CLI này không có reset/retry.
+Khi kiểm tra sau apply, đối chiếu audit attempt với audit completion
+`place.provider_photo_backfill`; dry-run `total=0` có thể còn attempt chưa attach.
+Xem media có
 attribution/author credits, object đúng prefix, audit và không còn intent cho ảnh
 đã commit. Kiểm tra UI attribution riêng từng ảnh theo ADR-0043.
 

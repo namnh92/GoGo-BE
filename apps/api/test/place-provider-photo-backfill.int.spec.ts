@@ -54,7 +54,10 @@ afterAll(async () => {
 beforeEach(async () => {
   await db.execute(sql`truncate places cascade`);
   await db.execute(sql`delete from media_cleanup_queue`);
-  vi.clearAllMocks();
+  vi.resetAllMocks();
+  photos.enabled.mockResolvedValue(true);
+  photos.firstForProvider.mockResolvedValue(answer);
+  photos.probeForProvider.mockResolvedValue({ status: 'ok', hasPhoto: true });
 });
 async function place(status: 'published' | 'draft' = 'published', canonical = true) {
   const [row] = await db
@@ -83,6 +86,160 @@ const media = (id: string) =>
   db.select().from(schema.placeMedia).where(eq(schema.placeMedia.placeId, id));
 
 describe('#797 real SQL + shared #786 persistence', () => {
+  it.each([
+    ['pending', true],
+    ['pending', false],
+    ['approved', true],
+    ['approved', false],
+    ['rejected', true],
+  ] as const)(
+    'excludes %s media (cover=%s) before purchase and under lock',
+    async (moderation, isCover) => {
+      const p = await place();
+      const [existing] = await db
+        .insert(schema.placeMedia)
+        .values({
+          placeId: p.id,
+          storageKey: 'existing.jpg',
+          moderation,
+          isCover,
+        })
+        .returning();
+      // Pending cover has zero approved media, the original F-01 trigger.
+      expect(await store.scan(null, 100)).toEqual([]);
+      expect(await store.claimIfEligible(p)).toBe(false);
+      for (let run = 0; run < 2; run++)
+        expect(await backfillProviderPhotos(store, photos, persistence, options)).toMatchObject({
+          total: 0,
+          errors: 0,
+          written: 0,
+        });
+      expect(photos.firstForProvider).not.toHaveBeenCalled();
+      expect(storage.putObject).not.toHaveBeenCalled();
+      expect(await media(p.id)).toEqual([existing]);
+      const prepared = await persistence.prepare(p.externalId);
+      expect(await store.attachIfEligible(p, prepared!)).toBe(false);
+      await persistence.discard(prepared!);
+      expect(await media(p.id)).toEqual([existing]);
+    },
+  );
+  it('allows rejected non-cover media', async () => {
+    const p = await place();
+    await db.insert(schema.placeMedia).values({
+      placeId: p.id,
+      storageKey: 'rejected.jpg',
+      moderation: 'rejected',
+      isCover: false,
+    });
+    expect(await backfillProviderPhotos(store, photos, persistence, options)).toMatchObject({
+      written: 1,
+      errors: 0,
+    });
+  });
+  it('reserves once across concurrent runs before purchasing', async () => {
+    const p = await place();
+    const results = await Promise.all([
+      backfillProviderPhotos(store, photos, persistence, options),
+      backfillProviderPhotos(
+        new DbPhotoBackfillStore(db, persistence),
+        photos,
+        persistence,
+        options,
+      ),
+    ]);
+    expect(results.reduce((sum, r) => sum + r.written, 0)).toBe(1);
+    expect(results.every((r) => r.errors === 0)).toBe(true);
+    expect(photos.firstForProvider).toHaveBeenCalledTimes(1);
+    expect(storage.putObject).toHaveBeenCalledTimes(1);
+    expect(await media(p.id)).toHaveLength(1);
+  });
+  it('keeps an interrupted reservation when no media or cleanup intent exists', async () => {
+    const p = await place();
+    expect(await store.claimIfEligible(p)).toBe(true);
+    expect(await db.select().from(schema.mediaCleanupQueue)).toHaveLength(0);
+    expect(
+      await backfillProviderPhotos(
+        new DbPhotoBackfillStore(db, persistence),
+        photos,
+        persistence,
+        options,
+      ),
+    ).toMatchObject({
+      total: 0,
+      written: 0,
+      errors: 0,
+    });
+    expect(photos.firstForProvider).not.toHaveBeenCalled();
+  });
+  it('does not retry a no-photo attempt automatically', async () => {
+    await place();
+    photos.firstForProvider.mockResolvedValueOnce({ status: 'ok', photos: [] });
+    expect(await backfillProviderPhotos(store, photos, persistence, options)).toMatchObject({
+      withoutPhoto: 1,
+      errors: 0,
+    });
+    expect(
+      await backfillProviderPhotos(
+        new DbPhotoBackfillStore(db, persistence),
+        photos,
+        persistence,
+        options,
+      ),
+    ).toMatchObject({
+      total: 0,
+      written: 0,
+    });
+    expect(photos.firstForProvider).toHaveBeenCalledTimes(1);
+    expect(storage.putObject).not.toHaveBeenCalled();
+  });
+  it.each(['upload', 'audit'])(
+    'persists a reservation across %s failure and a fresh store rerun',
+    async (stage) => {
+      const p = await place();
+      if (stage === 'upload') storage.putObject.mockRejectedValueOnce(new Error('synthetic'));
+      else {
+        // Fail the completion audit only, after the reservation and purchase.
+        await db.execute(sql`create function fail_backfill_completion() returns trigger language plpgsql as $$
+          begin if NEW.action = 'place.provider_photo_backfill' then raise exception 'synthetic'; end if; return NEW; end $$`);
+        await db.execute(sql`create trigger fail_backfill_completion before insert on audit_logs
+          for each row execute function fail_backfill_completion()`);
+      }
+      try {
+        expect(await backfillProviderPhotos(store, photos, persistence, options)).toMatchObject({
+          written: 0,
+          errors: 1,
+        });
+        expect(await media(p.id)).toHaveLength(0);
+        expect(
+          await backfillProviderPhotos(
+            new DbPhotoBackfillStore(db, persistence),
+            photos,
+            persistence,
+            options,
+          ),
+        ).toMatchObject({
+          total: 0,
+          written: 0,
+          errors: 0,
+        });
+        expect(photos.firstForProvider).toHaveBeenCalledTimes(1);
+        expect(storage.putObject).toHaveBeenCalledTimes(1);
+        expect(storage.deleteObject).toHaveBeenCalledTimes(1);
+        expect(await db.select().from(schema.mediaCleanupQueue)).toHaveLength(0);
+        expect(
+          (await db.select().from(schema.auditLogs)).filter(
+            (row) =>
+              row.resourceId === p.id && row.action === 'place.provider_photo_backfill_attempt',
+          ),
+        ).toHaveLength(1);
+      } finally {
+        if (stage === 'audit') {
+          await db.execute(sql`drop trigger fail_backfill_completion on audit_logs`);
+          await db.execute(sql`drop function fail_backfill_completion()`);
+        }
+      }
+    },
+  );
   it('filters publication/identity/approved media; dry-run/probe do not persist', async () => {
     const canonical = await place();
     const legacy = await place('published', false);

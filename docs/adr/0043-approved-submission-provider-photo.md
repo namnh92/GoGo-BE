@@ -73,6 +73,10 @@ Place ID và chưa có media approved, chấp nhận chi phí một ảnh/địa
 storage, cleanup intent, metadata/credit); không mở rộng sang nội dung khác.
 Dry-run mặc định chỉ đọc; probe chỉ Details; persist chỉ với `--apply` rõ ràng.
 Recheck eligibility/identity dưới row lock trước attach, system moderation và
-audit riêng. Không đổi contract/schema. Xem
+audit riêng. F-01 r1: loại mọi media pending/approved và mọi cover (kể cả rejected)
+trước purchase và attach. Reserve at-most-once bằng audit append-only
+`place.provider_photo_backfill_attempt`, commit dưới row lock trước provider I/O;
+giữ reservation khi lỗi/crash/không có ảnh để rerun không mua lại. Không tự retry
+attempt đã reserve; không đổi hành vi retry approval của #786. Không đổi contract/schema. Xem
 [runbook #797](../runbooks/place-provider-photo-backfill.md) cho giới hạn, chi phí,
 kill switch, cleanup và rollback.

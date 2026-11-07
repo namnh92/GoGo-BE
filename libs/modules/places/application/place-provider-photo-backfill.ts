@@ -10,6 +10,8 @@ type Candidate = { id: string; externalId: string };
 type Prepared = NonNullable<Awaited<ReturnType<SubmissionPhotoService['prepare']>>>;
 export interface PhotoBackfillStore {
   scan(after: string | null, limit: number): Promise<Candidate[]>;
+  /** Durable at-most-once reservation, committed before any provider/storage I/O. */
+  claimIfEligible(place: Candidate): Promise<boolean>;
   attachIfEligible(place: Candidate, photo: Prepared): Promise<boolean>;
 }
 export type PhotoBackfillOptions = {
@@ -72,6 +74,14 @@ export async function backfillProviderPhotos(
             else if (result.hasPhoto) counts.withPhoto++;
             else counts.withoutPhoto++;
           } else {
+            if (!(await store.claimIfEligible(place))) {
+              counts.skipped++;
+              continue;
+            }
+            if (options.signal?.aborted || !(await photos.enabled())) {
+              counts.stopped = options.signal?.aborted ? 'signal' : 'disabled';
+              break;
+            }
             const prepared = await persistence.prepare(place.externalId);
             if (!prepared) {
               if (!(await photos.enabled())) {
@@ -136,7 +146,14 @@ function identity(unified: boolean) {
 }
 function eligible() {
   return sql`p.status = 'published' and not exists
-    (select 1 from place_media m where m.place_id = p.id and m.moderation = 'approved')`;
+    (select 1 from place_media m where m.place_id = p.id
+      and (m.moderation in ('pending', 'approved') or m.is_cover))`;
+}
+const attemptAction = 'place.provider_photo_backfill_attempt';
+function unattempted() {
+  return sql`not exists (select 1 from audit_logs a
+    where a.resource_type = 'place' and a.resource_id = p.id::text
+      and a.action = ${attemptAction})`;
 }
 
 export class DbPhotoBackfillStore implements PhotoBackfillStore {
@@ -150,9 +167,35 @@ export class DbPhotoBackfillStore implements PhotoBackfillStore {
     const result = await this.db.execute(sql`
       select p.id, src.external_id as "externalId" from places p
       join lateral (${identity(this.unified)}) src on true
-      where ${eligible()} ${after === null ? sql`` : sql`and p.id > ${after}::uuid`}
+      where ${eligible()} and ${unattempted()}
+        ${after === null ? sql`` : sql`and p.id > ${after}::uuid`}
       order by p.id limit ${limit}`);
     return result.rows as Candidate[];
+  }
+
+  async claimIfEligible(place: Candidate): Promise<boolean> {
+    // Append-only audit is also the durable purchase reservation. Keep it on
+    // every outcome (including no-photo and crashes): prepare can fail after a
+    // paid call, so automatic retries cannot safely infer that no purchase ran.
+    return this.db.transaction(
+      async (tx) => {
+        await tx.execute(sql`select id from places where id = ${place.id}::uuid for update`);
+        const current = await tx.execute(sql`
+          select p.id from places p join lateral (${identity(this.unified)}) src on true
+          where p.id = ${place.id}::uuid and ${eligible()} and ${unattempted()}
+            and src.external_id = ${place.externalId}`);
+        if (!current.rows.length) return false;
+        await writeAudit(tx, {
+          actorType: 'system',
+          action: attemptAction,
+          resourceType: 'place',
+          resourceId: place.id,
+          diff: { sourceType: 'google_derived' },
+        });
+        return true;
+      },
+      { isolationLevel: 'read committed' },
+    );
   }
 
   async attachIfEligible(place: Candidate, photo: Prepared): Promise<boolean> {
