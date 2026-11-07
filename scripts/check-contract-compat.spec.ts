@@ -324,6 +324,50 @@ describe('evaluate', () => {
   });
 });
 
+describe('BE-793 exception location (PR #794 F-03)', () => {
+  // Recorded with CI's base .oasdiff-base.yaml and revision openapi/gogo.v1.yaml.
+  const report = [
+    '1 changes: 1 error, 0 warning, 0 info',
+    'error\t[request-body-one-of-removed] at openapi/gogo.v1.yaml',
+    '\tin API POST /cms/place-submissions/{id}/decide',
+    '\t\tremoved `subschema #1, subschema #2` from the request body `oneOf` list',
+  ].join('\n');
+  const replay = (reportText = report) =>
+    evaluate({
+      report: reportText,
+      baseSha256: 'dfa9f14fd0a98b23c0cc6c31f1cf236f460d30c2379ef137774a5139620a4d99',
+      revisionSha256: '02ccaa48426bc0c41b97271eeef3dfb80be92252db26caeb91d930e1e2472737',
+      exceptions: parseExceptions(
+        readFileSync(path.resolve(__dirname, '../.github/oasdiff-exceptions.json'), 'utf8'),
+      ),
+      oasdiffOutcome: 'success',
+      expect: 'BE-793-submission-photos-decide-oneof',
+    });
+
+  it('admits the CI finding exactly once using the recorded contract hashes', () => {
+    const verdict = replay();
+    expect(verdict.ok).toBe(true);
+    expect(
+      verdict.lines.filter((line) => line.includes('BE-793-submission-photos-decide-oneof')),
+    ).toHaveLength(1);
+  });
+
+  it('refuses the local container location on the same contract hashes', () => {
+    expect(replay(report.replace('openapi/gogo.v1.yaml', '/w/head.yaml'))).toMatchObject({
+      ok: false,
+      code: 1,
+    });
+  });
+
+  it('refuses a second identical CI finding', () => {
+    const finding = report.slice(report.indexOf('error\t'));
+    expect(replay(`2 changes: 2 error, 0 warning, 0 info\n${finding}\n${finding}`)).toMatchObject({
+      ok: false,
+      code: 1,
+    });
+  });
+});
+
 describe('parseArgs (#703 F-02)', () => {
   const FOUR = ['base.yaml', 'rev.yaml', 'report.txt', 'success'];
 
