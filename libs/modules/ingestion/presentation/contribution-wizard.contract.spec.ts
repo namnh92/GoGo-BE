@@ -25,6 +25,19 @@ describe('contribution wizard additive contract (#796)', () => {
     expect(s.ContributionEnrichmentDraft.description.toLowerCase()).toContain('unverified');
     expect(s.ContributionDraft.properties.verificationStatus.enum).toEqual(['unverified']);
   });
+  it('keeps CMS taxonomy keys open for every wizard kind', () => {
+    const enrichment = doc.components.schemas.ContributionEnrichmentDraft.properties;
+    for (const field of ['purposeKeys', 'vibeKeys']) {
+      expect(enrichment[field].items.type).toBe('string');
+      expect(enrichment[field].items).not.toHaveProperty('enum');
+      expect(enrichment[field].items['x-extensible']).toBe(true);
+    }
+    expect(enrichment.amenities.additionalProperties).toEqual({ type: 'boolean' });
+    expect(enrichment.amenities).not.toHaveProperty('properties');
+    expect(doc.components.schemas.ContributionRating.properties.chipKeys.items).not.toHaveProperty(
+      'enum',
+    );
+  });
   it('allows bonus approval credits and keeps CMS ledger deltas extensible', () => {
     const delta = doc.components.schemas.CmsAssistantCreditEntry.properties.delta;
     expect(delta.type).toBe('integer');

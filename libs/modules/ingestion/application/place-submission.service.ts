@@ -901,7 +901,13 @@ export class PlaceSubmissionService {
       .from(schema.placeSubmissions)
       .where(sql`google_place_id = ${input.googlePlaceId} and status = 'pending'`)
       .limit(1);
-    const prepared = await this.photos.prepare(actor, input.mediaIds ?? [], pending?.id ?? null);
+    const mediaIds = [
+      ...new Set([
+        ...(input.mediaIds ?? []),
+        ...(input.enrichment?.photos ?? []).map((photo) => photo.mediaId),
+      ]),
+    ];
+    const prepared = await this.photos.prepare(actor, mediaIds, pending?.id ?? null);
     const result = await this.db
       .transaction(async (tx) => {
         if (actor.type === 'user') {
@@ -1468,11 +1474,24 @@ export class PlaceSubmissionService {
         })
         .where(eq(schema.placeSubmissions.id, id));
       if (decision === 'approved' && row.submittedByUserId) {
+        // Count only server-approved evidence from the original contributor's proposal.
+        // Dedupe uploads and ordinary place photos cannot earn this bonus.
+        const evidenceIds = (row.enrichment?.photos ?? []).map((photo) => photo.mediaId);
+        const approvedEvidence = evidenceIds.length
+          ? await tx.execute(sql`select count(*)::int as n from place_submission_photos
+              where submission_id = ${id} and status = 'approved'
+                and uploaded_by_user_id = ${row.submittedByUserId}
+                and media_upload_id in (${sql.join(
+                  evidenceIds.map((id) => sql`${id}::uuid`),
+                  sql`, `,
+                )})`)
+          : null;
         await grantSubmissionCredits(
           tx,
           row.submittedByUserId,
           row.id,
           `google:${row.googlePlaceId}`,
+          Number((approvedEvidence?.rows[0] as { n: number } | undefined)?.n ?? 0),
         );
       }
       await writeAudit(tx, {

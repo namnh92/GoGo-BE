@@ -19,8 +19,9 @@ không được đọc/ghi/xóa nháp; response 404 không xác nhận nháp có
 (mood active), service/space `{rating:1..5, chipKeys:[]}`. Nháp cho phép bỏ các
 trường chưa xong; trường đã có vẫn phải hợp lệ. Nhãn lấy `GET /taxonomies`.
 Amenity dùng map key → boolean: bỏ key là chưa biết; false là user khai không có.
-Sáu key và key mới xem ADR. service chip thuộc checkin_tag, prefix service_;
-space chip prefix space_. Không dùng id hoặc label hiển thị làm key.
+Mọi key amenity active do CMS quản lý đều hợp lệ; cả service và space nhận
+checkin_tag active, không ép prefix. Kiểm tra kind/enabled ở mỗi request.
+Không dùng id hoặc label hiển thị làm key.
 
 Giá tùy chọn: `{min:20000,max:50000,currency:"VND",unit:"per_item"}`,
 integer minor units, max >= min. `free` chỉ hợp lệ với min=max=0. Giá không biết
@@ -43,21 +44,22 @@ privacy mỗi 6 giờ xóa vật lý, dry-run chỉ đếm. Account erasure xóa
 xóa enrichment trước anonymize submission; export có contributionDrafts và
 contributionEnrichments, được tính vào giới hạn byte export hiện có.
 
-## Ảnh BLOCKED trên #794
+## Ảnh private và phần receipt còn thiếu
 
-Tối đa năm `{mediaId:UUID,kind:"menu"|"bill"}`. Nonempty photos ở draft/submit
-hiện trả 503 SUBMISSION_EVIDENCE_BLOCKED, retryable false. Không có signed URL,
-raw receipt, OCR hay pipeline giả. Chỉ mở khi nối private upload owner claim,
-sanitise + strip EXIF, OCR/mask PII và đảm bảo CMS chỉ xem derivative đã che;
-phải test cross-user claim, upload replay, transaction rollback, cleanup,
-export/erasure. Pipeline ảnh Google ADR-0043 không thay thế pipeline private.
+Tối đa năm `{mediaId:UUID,kind:"menu"|"bill"}`. Menu refs được gộp với mediaIds
+và đi qua pipeline private #794: verify/claim owner, sanitize, strip EXIF,
+cleanup và chỉ CMS đọc derivative pending. Tổng số ảnh gộp vẫn tối đa năm;
+reference trùng giữa hai trường chỉ claim một lần. Approval/merge cần chọn ảnh.
 
-Credit helper hỗ trợ +50/+70 trong cùng transaction; production approval chưa
-truyền approved photo count và vẫn +50. #794 phải cung cấp count menu/bill đã
-duyệt trong transaction approval trước bật ảnh. Một row ledger/source/venue,
-không cộng thêm khi retry, không retroactive upgrade 50→70, tổng tối đa 70.
-Không thưởng draft/submit/merged/rejected. Không emit metric mới; limiter dùng
-action cố định `places.draft_save`. Không log note/tips/receipt/ảnh/payload.
+Bill refs vẫn trả 503 SUBMISSION_EVIDENCE_BLOCKED, retryable false, vì repo chưa
+có OCR/mask PII server-side theo ADR-0048. Không bật receipt hoặc thay bằng OCR
+giả. Đây là blocker hoàn tất #796, độc lập với Docker/integration.
+
+Credit +50 khi approved; +20 nếu ít nhất một menu/bill ref trong proposal gốc
+có ảnh server-approved, do contributor gốc upload. Count đọc trong transaction
+sau photo decision. Không thưởng ảnh thường, dedupe contributor, draft/submit,
+merged/rejected hoặc evidence bị bỏ. Một row ledger/source/venue, không cộng
+lại khi retry và không retroactive upgrade 50→70. Không log payload.
 
 ## Migration và vận hành
 
@@ -95,38 +97,28 @@ phải nằm trong cơ chế retention/privacy của môi trường.
 
 ## Gate và phụ thuộc
 
-Astra + CODEOWNER OpenAPI/migration chưa được thực hiện. #794 còn BLOCKED như
-trên; #795 (migration 0085/ADR 0045) đang song song và chưa được nhập. Chưa truy
-cập được Stitch MCP trong phiên này, không tuyên bố visual acceptance.
-CMS/mobile regenerate client, dựng state lỗi/nháp và QA trên build có SHA sau
-merge; local unit/integration không thay DEV acceptance. Không commit/push.
+Astra + CODEOWNER OpenAPI/migration chưa được thực hiện. #794/#795/#798/#800
+đã nằm trong base rebase `45d9d082`; #794 chưa có receipt OCR/mask PII.
+Chưa tuyên bố visual acceptance hoặc DEV acceptance. Không install/commit/push.
 
-## Kết quả kiểm tra local 2026-11-07
+## Kết quả kiểm tra local sau rebase 2026-11-07
 
-Base `1ee7544`, branch `feature/GOGO-796-place-wizard`, working tree chưa commit.
-Không install/commit/push. PostgreSQL/PostGIS chạy bằng Testcontainers; provider
-và storage trong integration là test adapters hiện có, không phải DEV acceptance.
+Base `origin/re-design` = `45d9d082`, tree trên HEAD `58371ffc`, chưa commit.
+Output đầy đủ và command replay:
+[artifacts/be-796-gates/README.md](../artifacts/be-796-gates/README.md).
 
-| Check                                                                                                                                  | Kết quả                                                   |
-| -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| `pnpm exec vitest run --project unit`                                                                                                  | PASS: 256 files, 3443 tests                               |
-| Unit enrichment sau sửa extension import cho NodeNext                                                                                  | PASS: 22 tests                                            |
-| `pnpm exec vitest run --project integration apps/api/test/contribution-wizard.int.spec.ts apps/api/test/submission-review.int.spec.ts` | PASS: 2 files, 58 tests                                   |
-| `pnpm exec turbo run typecheck --cache-dir=/tmp/gogo-796-turbo-cache`                                                                  | PASS: 8 packages                                          |
-| `pnpm lint` + ESLint các file thay đổi sau lượt cuối                                                                                   | PASS                                                      |
-| Prettier các file TS/YAML/JSON/docs thay đổi                                                                                           | PASS                                                      |
-| `pnpm api:types` / `pnpm api:check`                                                                                                    | PASS, generated types khớp spec                           |
-| `pnpm api:routes`                                                                                                                      | PASS: 310 served / 310 documented, zero missing/duplicate |
-| `pnpm api:version /tmp/gogo-796-base.yaml openapi/gogo.v1.yaml`                                                                        | PASS: 7.0.0-alpha.1 → 7.1.0-alpha.1                       |
-| `git diff --check`                                                                                                                     | PASS                                                      |
+- Typecheck: 8/8 tasks pass; lint, prettier, api:types, diff check pass.
+- Focused wizard/photo/identity/contract unit: 4 files, 62 tests pass.
+- Full unit: 262 files pass, 3 fail. `sentry-request` bị sandbox chặn listen;
+  hai lỗi timing ở grounding và room-subscription pass khi chạy lại riêng
+  (55 tests), không sửa test/tăng timeout. Full gate vẫn chưa xanh.
+- Full integration đã thử: 103 suites không khởi tạo được container runtime,
+  1 suite skipped; 15 tests pass, 2137 skipped. Docker socket permission denied.
+  Không tuyên bố DB/HTTP regressions mới đã pass.
+- Oasdiff Docker bị từ chối; checker actual outcome=failure trả exit 2.
+  Exception owner cho credit delta đã ghi exact-byte hash. Fixture replay nhận
+  đúng một exception nhưng live measurement/replay vẫn UNVERIFIED.
 
-Lượt integration đầu phát hiện test double thiếu knownProviderPlace; fixture đã
-sửa. Lượt HTTP đầu thiếu seed của photo adapter khi flag đã bật bởi test trước;
-đã seed rõ ràng và chạy lại toàn bộ hai suite. Approval với ảnh Google vẫn chỉ
-+50; ảnh này không phải evidence menu/bill. Các lỗi fixture không phải bằng chứng
-FAIL-before của một defect production.
-
-Local tests không thay Astra/CODEOWNER, oasdiff CI, đo lock trên snapshot gần
-production, đối chiếu Stitch hoặc CMS/mobile acceptance. Không chạy cả bộ
-integration toàn repository. Cần owner chốt các lựa chọn mới: taxonomy/chip ở
-ADR, retention 30 ngày/cap 20 nháp, và quy trình mask/duyệt receipt của #794.
+Receipt masking thật còn thiếu để hoàn tất #796. Local gates không thay
+Astra/CODEOWNER, đo lock trên snapshot gần production, đối chiếu Stitch hoặc
+CMS/mobile acceptance. CMS/mobile cần regenerate client trước rollout credit 70.

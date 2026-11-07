@@ -8757,21 +8757,16 @@ export interface components {
             rating: number;
             chipKeys: string[];
         };
-        /** @description Unverified user claims. Stable active taxonomy keys only: purposes use suitability, vibes mood, amenities amenity, chips checkin_tag (service_ or space_ prefix respectively). Unknown price/amenities omitted. Never automatically copied to catalogue, including on approval. Photo support remains BLOCKED on #794; nonempty photos return 503 retryable false. */
+        /** @description Unverified user claims. Stable active taxonomy keys only: purposes use suitability, vibes mood, amenities amenity, service/space chips checkin_tag. Keys are managed by CMS and checked against enabled taxonomy rows at request time. Unknown price/amenities omitted. Never automatically copied to catalogue, including on approval. Menu photos use private submission-photo processing; bills return 503 retryable false until server-side PII masking is available. */
         ContributionEnrichmentDraft: {
             price?: components["schemas"]["ContributionPrice"];
             purposeKeys?: string[];
             vibeKeys?: string[];
-            /** @description False is explicit absence; omitted is unknown. Only the six named keys are accepted. */
+            /** @description Keys are active amenity taxonomy keys managed by CMS. False is explicit absence; omitted is unknown. No closed key enum. */
             amenities?: {
-                car_parking?: boolean;
-                power_at_each_table?: boolean;
-                pets_allowed?: boolean;
-                separate_smoking_area?: boolean;
-                open_after_23?: boolean;
-                tables_over_six?: boolean;
+                [key: string]: boolean;
             };
-            /** @description Unique mediaId; private owner claim and receipt masking required before CMS access. Currently BLOCKED on */
+            /** @description Unique mediaId; menu evidence uses private owner claim and sanitisation before CMS access. Bill evidence is blocked pending server-side PII masking. */
             photos?: {
                 /** Format: uuid */
                 mediaId: string;

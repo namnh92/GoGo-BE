@@ -15,15 +15,21 @@ proposal facts remain unverified and never automatically become place facts.
 Add registered-user-only `/place-contribution-drafts` list and `/{id}`
 GET/PUT/DELETE, version checks and 30-day retention. Taxonomy keys, price unit
 and currency, 1–3 vibes, amenity yes/no, service/space ratings and chips.
-Menu/bill refs capped at five; nonempty photos return
-`503 SUBMISSION_EVIDENCE_BLOCKED` until #794 private claim/sanitise/masking is
-connected. Approval credit is +50, +20 only with approved menu/bill evidence
-(max +70; bonus activation blocked on #794). No old required fields change.
+Menu/bill refs capped at five including ordinary mediaIds; menu refs use #794's
+private owner claim/sanitisation pipeline and explicit CMS photo selection.
+Bills still return `503 SUBMISSION_EVIDENCE_BLOCKED` pending real server-side
+PII masking (ADR-0048; incomplete #796 requirement). Approval credit is +50,
++20 only with server-approved original-contributor menu/bill evidence (max +70).
+No old required fields change. All active taxonomy keys of each relevant kind
+are accepted without fixed amenity lists or service/space prefixes.
 CMS credit history `CmsAssistantCreditEntry.delta` documents +50, +70 and -1
 with `x-extensible-enum`; generated clients accept integer deltas. Consumers
 must tolerate unknown integer deltas. Clients generated from the previous
 closed enum must regenerate before receiving +70; making the schema extensible
-does not make existing closed-enum readers tolerant.
+does not make existing closed-enum readers tolerant. Owner decision 2026-11-07:
+keep MINOR and record `BE-796-credit-delta-extensible` for the exact-byte
+`response-property-became-not-enum` finding; see ADR-0048. Docker-denied fallback
+uses the supplied known finding; fresh oasdiff replay remains unverified.
 Consumers regenerate clients; CMS/mobile integration and Astra/CODEOWNER review
 remain required. ADR-0048 and migration 0089.
 

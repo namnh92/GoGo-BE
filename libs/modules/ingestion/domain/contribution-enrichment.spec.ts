@@ -29,7 +29,7 @@ describe('contribution wizard validation (#796)', () => {
     { vibeKeys: [] },
     { vibeKeys: ['a', 'b', 'c', 'd'] },
     { vibeKeys: ['chill', 'chill'] },
-    { purposeKeys: ['Đi chơi'] },
+    { purposeKeys: [''] },
     { service: { rating: 6, chipKeys: [] } },
     { space: { rating: 0, chipKeys: [] } },
     { space: { rating: 2.5, chipKeys: [] } },
@@ -55,7 +55,7 @@ describe('contribution wizard validation (#796)', () => {
     });
     expect(db.select).not.toHaveBeenCalled();
   });
-  it('checks active taxonomy kind and service/space grouping', async () => {
+  it('checks taxonomy kind without imposing a service/space prefix', async () => {
     const rows = [
       ['suitability', 'work_reading'],
       ['mood', 'chill'],
@@ -63,9 +63,43 @@ describe('contribution wizard validation (#796)', () => {
       ['amenity', 'power_at_each_table'],
       ['checkin_tag', 'service_friendly'],
       ['checkin_tag', 'space_quiet'],
+      ['amenity', 'cms_new_amenity'],
+      ['amenity', '24_hour'],
+      ...[
+        'friendly_staff',
+        'fast_service',
+        'pleasant_music',
+        'quiet_private',
+        'acoustic_music',
+        'airy_garden',
+        'cool_indoor',
+        'rooftop_view',
+        'photo_spot',
+      ].map((key) => ['checkin_tag', key]),
     ].map(([kind, key]) => ({ kind, key }));
     const db = { select: () => ({ from: () => ({ where: async () => rows }) }) };
     await expect(validateEnrichment(db as never, completeEnrichment)).resolves.toBeUndefined();
+    for (const key of [
+      'friendly_staff',
+      'fast_service',
+      'pleasant_music',
+      'quiet_private',
+      'acoustic_music',
+      'airy_garden',
+      'cool_indoor',
+      'rooftop_view',
+      'photo_spot',
+    ]) {
+      await expect(
+        validateEnrichment(db as never, {
+          ...completeEnrichment,
+          amenities: { cms_new_amenity: false, '24_hour': true },
+          service: { rating: 5, chipKeys: [key] },
+          space: { rating: 3, chipKeys: [key] },
+          photos: [{ kind: 'menu', mediaId: randomUUID() }],
+        }),
+      ).resolves.toBeUndefined();
+    }
     await expect(
       validateEnrichment(db as never, { ...completeEnrichment, vibeKeys: ['not_active'] }),
     ).rejects.toMatchObject({ code: 'INVALID_TAXONOMY_KEYS' });
@@ -74,7 +108,7 @@ describe('contribution wizard validation (#796)', () => {
         ...completeEnrichment,
         service: { rating: 5, chipKeys: ['space_quiet'] },
       }),
-    ).rejects.toMatchObject({ code: 'INVALID_TAXONOMY_KEYS' });
+    ).resolves.toBeUndefined();
     await expect(
       validateEnrichment(db as never, {
         ...completeEnrichment,

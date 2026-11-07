@@ -8,34 +8,18 @@ export function assertContributor(actor: Actor): void {
     throw AppError.forbidden('REGISTERED_USER_REQUIRED', 'Registered user required');
 }
 
-/** #794 must replace this fail-closed gate with transactional owner claim + sanitise.
- * Never accept raw URLs, client masking flags or client approval state. */
+/** Menu references use #794; receipts remain closed until server-side PII masking exists. */
 export async function validateEnrichment(
   db: Pick<Db, 'select'>,
   value: SubmissionEnrichment,
 ): Promise<void> {
-  if (value.photos?.length)
+  if (value.photos?.some((photo) => photo.kind === 'bill'))
     throw AppError.serviceUnavailable(
       'SUBMISSION_EVIDENCE_BLOCKED',
-      'Private sanitised evidence requires #794',
+      'Receipt evidence requires server-side PII masking',
       false,
     );
   const amenities = Object.keys(value.amenities ?? {});
-  const supported = [
-    'car_parking',
-    'power_at_each_table',
-    'pets_allowed',
-    'separate_smoking_area',
-    'open_after_23',
-    'tables_over_six',
-  ];
-  if (
-    amenities.some((k) => !supported.includes(k)) ||
-    value.service?.chipKeys.some((k) => !k.startsWith('service_')) ||
-    value.space?.chipKeys.some((k) => !k.startsWith('space_'))
-  ) {
-    throw AppError.badRequest('INVALID_TAXONOMY_KEYS', 'Unsupported wizard taxonomy group');
-  }
   await assertValidSelections(db, {
     suitability: value.purposeKeys ?? [],
     mood: value.vibeKeys ?? [],

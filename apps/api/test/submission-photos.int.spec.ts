@@ -261,6 +261,96 @@ describe('approved submission derivative detach (#793 F-02)', () => {
   });
 });
 
+describe('wizard menu evidence and approval credits (#796)', () => {
+  const enrichment = (mediaId: string) => ({
+    purposeKeys: ['work_reading'],
+    vibeKeys: ['chill'],
+    service: { rating: 5, chipKeys: ['friendly_staff'] },
+    space: { rating: 4, chipKeys: ['quiet_private'] },
+    photos: [{ mediaId, kind: 'menu' }],
+  });
+  const send = (
+    id: string,
+    evidence: ReturnType<typeof enrichment>,
+    token = user,
+    mediaIds: string[] = [],
+  ) =>
+    api().inject({
+      method: 'POST',
+      url: '/v1/place-submissions',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { googlePlaceId: id, enrichment: evidence, mediaIds },
+    });
+  const ledger = (id: string) =>
+    db
+      .select()
+      .from(schema.assistantCreditLedger)
+      .where(eq(schema.assistantCreditLedger.submissionId, id));
+  it('claims only owned evidence, keeps it private, and grants 70 exactly once only after explicit approval', async () => {
+    await db
+      .insert(schema.taxonomies)
+      .values([
+        { kind: 'mood', key: 'chill' },
+        { kind: 'checkin_tag', key: 'friendly_staff' },
+        { kind: 'checkin_tag', key: 'quiet_private' },
+      ])
+      .onConflictDoNothing();
+    const foreign = await upload(other);
+    const invalid = await send(identity(), enrichment(foreign.id));
+    expect(invalid.statusCode, invalid.body).toBe(400);
+    expect(invalid.json().code).toBe('INVALID_SUBMISSION_PHOTOS');
+    const item = await upload();
+    const id = identity();
+    // The same reference in both fields still claims exactly one photo.
+    const sent = await send(id, enrichment(item.id), user, [item.id]);
+    expect(sent.statusCode, sent.body).toBe(201);
+    const submissionId = sent.json().submissionId;
+    expect(await ledger(submissionId)).toEqual([]);
+    const photos = (await detail(submissionId)).json().photos;
+    expect(photos).toHaveLength(1);
+    expect(
+      (await api().inject({ method: 'GET', url: photos[0].url, headers: auth(user) })).statusCode,
+    ).toBe(403);
+    const preview = await api().inject({
+      method: 'GET',
+      url: photos[0].url,
+      headers: auth(moderator),
+    });
+    expect(preview.statusCode, preview.body).toBe(200);
+    expect((await sharp(preview.rawPayload).metadata()).exif).toBeUndefined();
+    expect((await send(id, enrichment(item.id))).statusCode).toBe(201);
+    expect((await detail(submissionId)).json().photos).toHaveLength(1);
+    expect((await decide(submissionId, 'approved')).statusCode).toBe(409);
+    expect(await ledger(submissionId)).toEqual([]);
+    const approved = await decide(submissionId, 'approved', [photos[0].id]);
+    expect(approved.statusCode, approved.body).toBe(201);
+    expect((await ledger(submissionId)).map((row) => row.delta)).toEqual([70]);
+    expect((await decide(submissionId, 'approved', [photos[0].id])).statusCode).toBe(409);
+    expect((await ledger(submissionId)).map((row) => row.delta)).toEqual([70]);
+  });
+  it('does not award the bonus for discarded evidence or a dedup contributor photo', async () => {
+    for (const keepEvidence of [false, true]) {
+      const id = identity();
+      const item = await upload();
+      const sent = await send(id, enrichment(item.id));
+      expect(sent.statusCode, sent.body).toBe(201);
+      const submissionId = sent.json().submissionId;
+      const extra = await upload(other);
+      expect((await send(id, enrichment(extra.id), other)).statusCode).toBe(201);
+      const photos = (await detail(submissionId)).json().photos;
+      const selection = keepEvidence
+        ? photos
+            .filter((p: { mediaId: string }) => p.mediaId === extra.id)
+            .map((p: { id: string }) => p.id)
+        : [];
+      const result = await decide(submissionId, 'approved', selection);
+      expect(result.statusCode, result.body).toBe(201);
+      expect((await ledger(submissionId)).map((row) => row.delta)).toEqual([50]);
+    }
+  });
+});
+
 describe('submission photo lifecycle (#793)', () => {
   it('accepts zero photos without changing the old approval flow', async () => {
     const sent = await submit(identity(), []);

@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 const keys = (max: number, min = 0) =>
   z
-    .array(z.string().regex(/^[a-z][a-z0-9_]{0,63}$/))
+    .array(z.string().min(1).max(64))
     .min(min)
     .max(max)
     .refine((v) => new Set(v).size === v.length, 'Duplicate keys');
@@ -25,7 +25,7 @@ export const enrichmentDraftSchema = z
     purposeKeys: keys(10).optional(),
     vibeKeys: keys(3).optional(),
     amenities: z
-      .record(z.string().regex(/^[a-z][a-z0-9_]{0,63}$/), z.boolean())
+      .record(z.string().min(1).max(64), z.boolean())
       .refine((v) => Object.keys(v).length <= 6, 'At most six amenities')
       .optional(),
     photos: z

@@ -17324,44 +17324,61 @@ components:
           type: array
           maxItems: 5
           uniqueItems: true
-          items: { type: string, pattern: '^[a-z][a-z0-9_]{0,63}$' }
+          items:
+            {
+              type: string,
+              minLength: 1,
+              maxLength: 64,
+              description: Active taxonomy key managed by CMS,
+              x-extensible: true,
+            }
     ContributionEnrichmentDraft:
       type: object
       additionalProperties: false
       description: >
         Unverified user claims. Stable active taxonomy keys only: purposes use
-        suitability, vibes mood, amenities amenity, chips checkin_tag (service_
-        or space_ prefix respectively). Unknown price/amenities omitted. Never
-        automatically copied to catalogue, including on approval. Photo support
-        remains BLOCKED on #794; nonempty photos return 503 retryable false.
+        suitability, vibes mood, amenities amenity, service/space chips checkin_tag.
+        Keys are managed by CMS and checked against enabled taxonomy rows at request time.
+        Unknown price/amenities omitted. Never automatically copied to catalogue,
+        including on approval. Menu photos use private submission-photo processing;
+        bills return 503 retryable false until server-side PII masking is available.
       properties:
         price: { $ref: '#/components/schemas/ContributionPrice' }
         purposeKeys:
           type: array
           maxItems: 10
           uniqueItems: true
-          items: { type: string, pattern: '^[a-z][a-z0-9_]{0,63}$' }
+          items:
+            {
+              type: string,
+              minLength: 1,
+              maxLength: 64,
+              description: Active taxonomy key managed by CMS,
+              x-extensible: true,
+            }
         vibeKeys:
           type: array
           maxItems: 3
           uniqueItems: true
-          items: { type: string, pattern: '^[a-z][a-z0-9_]{0,63}$' }
+          items:
+            {
+              type: string,
+              minLength: 1,
+              maxLength: 64,
+              description: Active taxonomy key managed by CMS,
+              x-extensible: true,
+            }
         amenities:
           type: object
           maxProperties: 6
-          description: False is explicit absence; omitted is unknown. Only the six named keys are accepted.
-          additionalProperties: false
-          properties:
-            car_parking: { type: boolean }
-            power_at_each_table: { type: boolean }
-            pets_allowed: { type: boolean }
-            separate_smoking_area: { type: boolean }
-            open_after_23: { type: boolean }
-            tables_over_six: { type: boolean }
+          description: >
+            Keys are active amenity taxonomy keys managed by CMS. False is explicit
+            absence; omitted is unknown. No closed key enum.
+          additionalProperties: { type: boolean }
         photos:
           type: array
           maxItems: 5
-          description: Unique mediaId; private owner claim and receipt masking required before CMS access. Currently BLOCKED on #794.
+          description: Unique mediaId; menu evidence uses private owner claim and sanitisation before CMS access. Bill evidence is blocked pending server-side PII masking.
           items:
             type: object
             additionalProperties: false

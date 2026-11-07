@@ -11,6 +11,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { schema } from '@gogo/database';
 import { ContributionDraftsService } from '../../../libs/modules/ingestion/application/contribution-drafts.service';
 import { PlaceSubmissionService } from '../../../libs/modules/ingestion/application/place-submission.service';
+import { SubmissionPhotosService } from '../../../libs/modules/ingestion/application/submission-photos.service';
+import { UploadsService } from '../../../libs/modules/uploads/application/uploads.service';
+import { MediaCleanupService } from '../../../libs/modules/profile/application/media-cleanup.service';
+import { FakeStorage } from '@gogo/providers';
 import { grantSubmissionCredits } from '../../../libs/modules/shared/assistant-credits';
 import { eraseAssistantDataForUser } from '../../../libs/modules/assistant/application/assistant-privacy';
 import { PrivacyJobs } from '../../../libs/modules/shared/privacy-jobs';
@@ -164,6 +168,41 @@ describe('private contribution lifecycle against PostgreSQL (#796)', () => {
     await db.update(schema.users).set({ status: 'active' }).where(eq(schema.users.id, other.id));
     expect((await drafts.list(owner)).items).toEqual([]);
   });
+  it('accepts CMS-managed keys of the right kind and rechecks enabled state per request', async () => {
+    await db
+      .insert(schema.taxonomies)
+      .values([
+        { kind: 'amenity', key: 'cms_new_amenity' },
+        { kind: 'checkin_tag', key: 'friendly_staff' },
+        { kind: 'checkin_tag', key: 'quiet_private' },
+      ])
+      .onConflictDoNothing();
+    const id = randomUUID();
+    const dynamic = {
+      ...enrichment,
+      amenities: { cms_new_amenity: false },
+      service: { rating: 5, chipKeys: ['friendly_staff'] },
+      space: { rating: 3, chipKeys: ['quiet_private'] },
+    };
+    expect((await drafts.save(owner, id, { ...input, enrichment: dynamic })).enrichment).toEqual(
+      dynamic,
+    );
+    await db
+      .update(schema.taxonomies)
+      .set({ isActive: false })
+      .where(eq(schema.taxonomies.key, 'friendly_staff'));
+    await expect(
+      drafts.save(owner, id, { ...input, expectedVersion: 1, enrichment: dynamic }),
+    ).rejects.toMatchObject({ code: 'INVALID_TAXONOMY_KEYS' });
+    await expect(
+      drafts.save(owner, id, {
+        ...input,
+        expectedVersion: 1,
+        enrichment: { vibeKeys: ['quiet_private'] },
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_TAXONOMY_KEYS' });
+    await drafts.delete(owner, id, 1);
+  });
   it('serialises concurrent updates and enforces the owner draft cap', async () => {
     const id = randomUUID();
     await drafts.save(owner, id, input);
@@ -212,6 +251,17 @@ describe('private contribution lifecycle against PostgreSQL (#796)', () => {
       dedup as never,
       {} as never,
       { PLACE_RESOLVE_DBFIRST_ENABLED: false } as never,
+      new SubmissionPhotosService(
+        db,
+        new UploadsService(db, new FakeStorage(), new FakeStorage(), true, true, true),
+        new MediaCleanupService(
+          db,
+          { private: new FakeStorage(), public: new FakeStorage() },
+          {} as never,
+          '',
+        ),
+        new FakeStorage(),
+      ),
     );
     const result = await submissions.submit(owner, {
       googlePlaceId: input.googlePlaceId,
@@ -288,6 +338,14 @@ describe('private contribution lifecycle against PostgreSQL (#796)', () => {
   });
   it('exports own drafts then removes draft and proposal free text during erasure', async () => {
     const id = randomUUID();
+    const [proposal] = await db
+      .insert(schema.placeSubmissions)
+      .values({
+        googlePlaceId: 'wizard-erasure-independent',
+        submittedByUserId: owner.id,
+        enrichment,
+      })
+      .returning();
     await drafts.save(owner, id, input);
     const exported = await collectUserExport(
       db,
@@ -299,7 +357,10 @@ describe('private contribution lifecycle against PostgreSQL (#796)', () => {
     expect(JSON.stringify(exported)).toContain('Nhớ đặt bàn');
     await db.transaction((tx) => eraseAssistantDataForUser(tx, owner.id));
     expect(await db.select().from(schema.placeContributionDrafts)).toHaveLength(0);
-    const [row] = await db.select().from(schema.placeSubmissions);
+    const [row] = await db
+      .select()
+      .from(schema.placeSubmissions)
+      .where(eq(schema.placeSubmissions.id, proposal!.id));
     expect(row!.enrichment).toBeNull();
     expect(row!.submittedByUserId).toBeNull();
   });
