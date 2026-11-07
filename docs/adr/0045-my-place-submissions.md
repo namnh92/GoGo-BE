@@ -21,9 +21,9 @@ places; dùng helper URL catalogue chung, không trả URL khi host chưa cấu 
 
 CMS lưu ghi chú quyết định dạng tự do và reason key theo ADR-0044 (#787).
 Endpoint danh sách này không trả ghi chú vì có thể chứa thông tin người khác;
-rejected nhận key chung `MODERATION_REJECTED` cho client dịch, kể cả dữ liệu
-lịch sử thiếu reason key. Polling và CMS giữ taxonomy `SubmissionRejectionReason`
-của #787; validation vẫn bắt buộc reason key khi từ chối. Không suy đoán lý do
+rejected trả key đã lưu theo taxonomy `SubmissionRejectionReason` của #787
+cho client dịch, bỏ field khi dữ liệu lịch sử thiếu reason key. Polling và CMS
+cùng dùng taxonomy này; validation vẫn bắt buộc reason key khi từ chối. Không suy đoán lý do
 cũ. Không trả note, reviewer, người gửi, room hoặc provider ID.
 
 Phân trang keyset `(created_at, id)` giảm dần, lấy dư một dòng; cursor giữ

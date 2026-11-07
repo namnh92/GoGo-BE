@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Db } from '@gogo/database';
 import type { Actor } from '../../identity/domain/actor';
 import { NoopMetrics } from '@gogo/observability';
+import { SUBMISSION_REJECTION_REASONS } from '../domain/submission-rejection';
 import { MyPlaceSubmissionsService } from './my-place-submissions.service';
 
 const actor: Actor = {
@@ -49,37 +50,41 @@ describe('MyPlaceSubmissionsService', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it('projects only safe fields and returns a microsecond-precise cursor', async () => {
-    const { execute, service } = fixture();
-    const row = {
-      id: actor.id,
-      status: 'rejected',
-      name: null,
-      photo_key: null,
-      result_place_id: null,
-      created_at: '2026-11-07T00:00:00.123456Z',
-      updated_at: new Date('2026-11-07T01:00:00Z'),
-      decided_at: '2026-11-07 01:00:00+00',
-      decision_reason: 'PII@example.test',
-      note: 'private note',
-      submitted_by_user_id: actor.id,
-    };
-    execute.mockResolvedValue({ rows: [row, { ...row, id: 'another-row' }] });
-    const result = await service.list(actor, { limit: 1 });
-    expect(result).toEqual({
-      items: [
-        {
-          id: actor.id,
-          status: 'rejected',
-          rejectionReason: 'MODERATION_REJECTED',
-          createdAt: row.created_at,
-          updatedAt: '2026-11-07T01:00:00.000Z',
-          decidedAt: '2026-11-07T01:00:00.000Z',
-        },
-      ],
-      nextCursor: cursor([row.created_at, actor.id]),
-    });
-  });
+  it.each(SUBMISSION_REJECTION_REASONS)(
+    'projects stored key %s and a microsecond-precise cursor',
+    async (key) => {
+      const { execute, service } = fixture();
+      const row = {
+        id: actor.id,
+        status: 'rejected',
+        rejection_reason: key,
+        name: null,
+        photo_key: null,
+        result_place_id: null,
+        created_at: '2026-11-07T00:00:00.123456Z',
+        updated_at: new Date('2026-11-07T01:00:00Z'),
+        decided_at: '2026-11-07 01:00:00+00',
+        decision_reason: 'PII@example.test',
+        note: 'private note',
+        submitted_by_user_id: actor.id,
+      };
+      execute.mockResolvedValue({ rows: [row, { ...row, id: 'another-row' }] });
+      const result = await service.list(actor, { limit: 1 });
+      expect(result).toEqual({
+        items: [
+          {
+            id: actor.id,
+            status: 'rejected',
+            rejectionReason: key,
+            createdAt: row.created_at,
+            updatedAt: '2026-11-07T01:00:00.000Z',
+            decidedAt: '2026-11-07T01:00:00.000Z',
+          },
+        ],
+        nextCursor: cursor([row.created_at, actor.id]),
+      });
+    },
+  );
 
   it('omits deleted place links and unavailable media, with null at the end', async () => {
     const { execute, service } = fixture();
@@ -103,6 +108,30 @@ describe('MyPlaceSubmissionsService', () => {
     expect(result.items[0]).not.toHaveProperty('photoUrl');
     expect(result.items[0]).not.toHaveProperty('rejectionReason');
     expect(result.items[0]).not.toHaveProperty('name');
+  });
+
+  it.each([
+    ['rejected', null],
+    ['pending', 'other'],
+    ['approved', 'other'],
+    ['merged', 'other'],
+  ])('omits a public reason for status %s and stored key %s', async (status, key) => {
+    const { execute, service } = fixture();
+    execute.mockResolvedValue({
+      rows: [
+        {
+          id: actor.id,
+          status,
+          rejection_reason: key,
+          created_at: '2026-11-07T00:00:00Z',
+          updated_at: '2026-11-07T00:00:00Z',
+          decision_reason: 'PRIVATE',
+        },
+      ],
+    });
+    const result = await service.list(actor, { limit: 25 });
+    expect(result.items[0]).not.toHaveProperty('rejectionReason');
+    expect(JSON.stringify(result)).not.toContain('PRIVATE');
   });
 
   it('records query duration on a database failure without swallowing the error', async () => {

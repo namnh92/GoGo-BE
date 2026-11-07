@@ -157,6 +157,7 @@ describe('GET /v1/me/place-submissions (#788)', () => {
         .update(schema.placeSubmissions)
         .set({
           status,
+          rejectionReason: status === 'rejected' ? 'incorrect_location' : null,
           resultPlaceId: status === 'rejected' ? null : place!.id,
           decisionReason: 'Moderator private@example.test',
           decidedAt: new Date(),
@@ -170,7 +171,7 @@ describe('GET /v1/me/place-submissions (#788)', () => {
           id,
           status,
           ...(status === 'rejected'
-            ? { rejectionReason: 'MODERATION_REJECTED' }
+            ? { rejectionReason: 'incorrect_location' }
             : { placeId: place!.id, name: 'GoGo shared café' }),
           createdAt: expect.any(String),
           updatedAt: expect.any(String),
@@ -228,6 +229,14 @@ describe('GET /v1/me/place-submissions (#788)', () => {
       ]);
       expect(await db.select().from(schema.placeSubmissionContributors)).toHaveLength(1);
       expect((await list(other.token)).json()).toEqual({ items: [], nextCursor: null });
+      const poll = await api().inject({
+        method: 'GET',
+        url: `/v1/place-submissions/${first.json().submissionId}`,
+        remoteAddress: ip(),
+        headers: { authorization: `Bearer ${other.token}` },
+      });
+      expect(poll.statusCode, poll.body).toBe(403);
+      expect(poll.json().code).toBe('FORBIDDEN');
     } finally {
       await db.execute(sql`drop trigger test_reject_attribution on place_submission_contributors;
         drop function test_reject_attribution()`);
@@ -362,6 +371,14 @@ describe('GET /v1/me/place-submissions (#788)', () => {
       nextCursor: null,
     });
     expect((await list(other.token)).json()).toEqual({ items: [], nextCursor: null });
+    const poll = await api().inject({
+      method: 'GET',
+      url: `/v1/place-submissions/${own.id}`,
+      remoteAddress: ip(),
+      headers: { authorization: `Bearer ${other.token}` },
+    });
+    expect(poll.statusCode, poll.body).toBe(403);
+    expect(poll.json().code).toBe('FORBIDDEN');
   });
 
   it('paginates exact timestamp ties and microseconds while new rows arrive', async () => {
@@ -425,6 +442,7 @@ describe('GET /v1/me/place-submissions (#788)', () => {
     for (const status of ['pending', 'approved', 'rejected', 'merged'] as const) {
       await submission({
         status,
+        rejectionReason: status === 'rejected' ? 'incorrect_location' : null,
         resultPlaceId: status === 'approved' || status === 'merged' ? place!.id : null,
         reviewDraft: { name: 'Reviewed name' },
         decidedAt: status === 'pending' ? null : new Date('2026-11-07T01:00:00Z'),
@@ -463,9 +481,18 @@ describe('GET /v1/me/place-submissions (#788)', () => {
         expect(item.name).toBe('GoGo Café');
         expect(item.photoUrl).toBe('https://assets.example.test/places/approved.jpg');
       } else expect(item.name).toBe('Reviewed name');
-      if (item.status === 'rejected') expect(item.rejectionReason).toBe('MODERATION_REJECTED');
+      if (item.status === 'rejected') expect(item.rejectionReason).toBe('incorrect_location');
     }
     expect(provider.tiersRequested).toEqual([]);
+  });
+
+  it('omits the public reason for a historical rejection with only a private note', async () => {
+    const row = await submission({ status: 'rejected', decisionReason: 'private@example.test' });
+    const response = await list();
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().items[0]).toMatchObject({ id: row.id, status: 'rejected' });
+    expect(response.json().items[0]).not.toHaveProperty('rejectionReason');
+    expect(response.body).not.toContain('private@example.test');
   });
 
   it('reads a later decision on reopening with a new login session', async () => {
@@ -475,6 +502,7 @@ describe('GET /v1/me/place-submissions (#788)', () => {
       .update(schema.placeSubmissions)
       .set({
         status: 'rejected',
+        rejectionReason: 'incorrect_location',
         decisionReason: 'internal text',
         decidedAt: new Date(),
         updatedAt: new Date(),
@@ -490,7 +518,7 @@ describe('GET /v1/me/place-submissions (#788)', () => {
     expect((await list(login.json().accessToken)).json().items[0]).toMatchObject({
       id: row.id,
       status: 'rejected',
-      rejectionReason: 'MODERATION_REJECTED',
+      rejectionReason: 'incorrect_location',
       decidedAt: expect.any(String),
     });
   });

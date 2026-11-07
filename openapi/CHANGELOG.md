@@ -17,7 +17,8 @@ cursor giảm dần `(createdAt, id)` với độ chính xác microsecond, `limi
 
 Mỗi mục có `id`, `status`, `createdAt`, `updatedAt`; bổ sung `name`, `photoUrl`,
 `decidedAt` khi có. `placeId` chỉ có cho approved/merged khi place còn tồn tại.
-Rejected trả key `rejectionReason: MODERATION_REJECTED` để client dịch; không
+Rejected trả `rejectionReason` đã lưu theo taxonomy `SubmissionRejectionReason`
+của #787 để client dịch; bỏ field khi dữ liệu lịch sử chưa có key. Không
 trả lý do CMS dạng tự do, ghi chú hoặc định danh người khác. Chỉ dùng ảnh
 catalogue editorial/community đã duyệt; không gọi provider hoặc lưu thêm dữ liệu Google.
 

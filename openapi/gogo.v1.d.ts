@@ -8871,11 +8871,8 @@ export interface components {
             photoUrl?: string;
             /** @enum {string} */
             status: "pending" | "approved" | "rejected" | "merged";
-            /**
-             * @description Translation key present only for rejected submissions. Raw CMS reasons are private.
-             * @enum {string}
-             */
-            rejectionReason?: "MODERATION_REJECTED";
+            /** @description Stored public key for rejected submissions; omitted for historical rows without a key. Raw CMS reasons are private. */
+            rejectionReason?: components["schemas"]["SubmissionRejectionReason"];
             /**
              * Format: uuid
              * @description Result place for approved or merged submissions, omitted if the place has been deleted.

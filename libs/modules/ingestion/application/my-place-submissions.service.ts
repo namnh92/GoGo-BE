@@ -9,6 +9,7 @@ import { APP_CONFIG, type MediaConfig } from '../../shared/config';
 import { encodeKeysetCursor, toIso } from '../../shared/cursor';
 import { publicCatalogueUrl } from '../../shared/media-url';
 import { DB } from '../../shared/tokens';
+import type { SubmissionRejectionReason } from '../domain/submission-rejection';
 
 const cursorTuple = z.tuple([z.string().datetime({ offset: true }), z.string().uuid()]);
 
@@ -24,6 +25,7 @@ function decodeCursor(cursor: string): { at: string; id: string } {
 type SubmissionRow = {
   id: string;
   status: 'pending' | 'approved' | 'rejected' | 'merged';
+  rejection_reason: SubmissionRejectionReason | null;
   name: string | null;
   photo_key: string | null;
   result_place_id: string | null;
@@ -57,7 +59,7 @@ export class MyPlaceSubmissionsService {
     const result = await this.db
       .execute(
         sql`
-      select s.id, s.status, s.result_place_id,
+      select s.id, s.status, s.result_place_id, s.rejection_reason,
              coalesce(p.name, nullif(s.review_draft->>'name', '')) as name,
              m.storage_key as photo_key,
              to_char(s.created_at at time zone 'UTC',
@@ -92,8 +94,10 @@ export class MyPlaceSubmissionsService {
         ...(publicCatalogueUrl(this.config.MEDIA_PUBLIC_BASE_URL, row.photo_key)
           ? { photoUrl: publicCatalogueUrl(this.config.MEDIA_PUBLIC_BASE_URL, row.photo_key)! }
           : {}),
-        // CMS reasons are free text and may contain PII. Clients translate this key.
-        ...(row.status === 'rejected' ? { rejectionReason: 'MODERATION_REJECTED' as const } : {}),
+        // Only the stored public key is safe; historical rows may not have one.
+        ...(row.status === 'rejected' && row.rejection_reason
+          ? { rejectionReason: row.rejection_reason }
+          : {}),
         ...((row.status === 'approved' || row.status === 'merged') && row.result_place_id
           ? { placeId: row.result_place_id }
           : {}),

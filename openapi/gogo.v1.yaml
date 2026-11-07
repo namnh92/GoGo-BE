@@ -17521,9 +17521,8 @@ components:
           description: Approved GoGo catalogue photo, omitted when unavailable or hosting is unconfigured.
         status: { type: string, enum: [pending, approved, rejected, merged] }
         rejectionReason:
-          type: string
-          enum: [MODERATION_REJECTED]
-          description: Translation key present only for rejected submissions. Raw CMS reasons are private.
+          $ref: '#/components/schemas/SubmissionRejectionReason'
+          description: Stored public key for rejected submissions; omitted for historical rows without a key. Raw CMS reasons are private.
         placeId:
           type: string
           format: uuid
