@@ -2519,6 +2519,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/place-submissions/{id}/credit-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Moderator/editor: server credit facts for an explicit wizard selection
+         * @description Read-only, no provider request or award. Only pending submissions; rejects unavailable selected photos. Shares the award formula and ledger eligibility with approval. No replay cache.
+         */
+        post: operations["previewPlaceSubmissionCredit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/place-submissions/{id}/decide": {
         parameters: {
             query?: never;
@@ -2537,6 +2557,8 @@ export interface paths {
          *     #786 / ADR-0043: with provider photos enabled, approval retains at most one current first Google photo with provider provenance and per-photo credits. No image or references were stored while pending. Disabled or confirmed no-photo results permit approval without imagery; photo budget, provider or storage failures return retryable `503 SUBMISSION_PHOTO_UNAVAILABLE` and leave the submission pending. Google may change photo order since preview.
          *
          *     `rejected` creates no place. `merged` points the proposal at an existing one and attaches the explicitly selected photos to it. Every approved menu/bill photo is public in userPhotos with uploader credit, never in the official gallery or cover. Unselected menu photos are rejected and cleaned after seven days; rejected bills and their derivatives are queued for immediate cleanup. These menu/bill rules take precedence over the general cleanup description on approvedPhotoIds. Accepted menu/bill evidence adds 20 credits once; approval also grants the 50-credit base.
+         *
+         *     #806: optional enrichmentSelection explicitly keeps wizard facts and photos; everything else in that proposal is dropped. With selection present, approvedPhotoIds may select only additional ordinary photos, never wizard references. Empty arrays drop every wizard item. Omission preserves #802: no wizard facts applied, photos selected by approvedPhotoIds, approve +50 base, merge no base. Explicit selection grants +50 base for approve or merge, plus +20 for at least one kept original-contributor menu/bill photo, subject to existing unique venue/submission ledger constraints. Detail/credit-preview provide the formula as facts. Audit records kept/dropped stable keys and media ids, without their content. Send Idempotency-Key to replay the same response; changing the payload under the same key is rejected by the existing idempotency policy.
          *
          *     Approval is not verification and not publication: the administrative mapping is resolved from the new place's own coordinate and is never `VERIFIED`, and the publication blocker stays until somebody confirms it (ADM-017, GoGo-BE#525).
          */
@@ -8339,6 +8361,7 @@ export interface components {
             locale: "vi" | "en";
         };
         PlaceDetail: {
+            contributionFacts?: components["schemas"]["KeptContributionFacts"];
             verification?: components["schemas"]["VenueVerification"];
             /** Format: uuid */
             id?: string;
@@ -9347,6 +9370,20 @@ export interface components {
             /** @description GoGo-BE#280 — evidence for `addressText`, `phone` and `website`, under the same rule as `cmsUpdatePlace`: a non-null value needs its entry, `null` needs none. Values and evidence are stored normalized (E.164, `https://`, `collectedAt` in UTC) and returned that way. */
             provenance?: components["schemas"]["PlaceContactProvenanceInput"];
         };
+        /** @description Explicit wizard selection. Stable fact keys: price (atomic range/unit), purposeKeys:<key>, vibeKeys:<key>, amenities:<key> (false is a fact), recommendedDishes, visitTips, service.rating, space.rating, service.chipKeys:<key>, space.chipKeys:<key>. Keys come from detail.enrichmentItems; photos use the proposal's mediaId, never array indexes or photo-row ids. Consent is evidence for upload, never a selectable place fact. */
+        EnrichmentSelection: {
+            keptFactKeys: string[];
+            keptPhotoMediaIds: string[];
+        };
+        SubmissionCreditFacts: {
+            base: number;
+            photoBonus: number;
+            total: number;
+        };
+        /** @description Explicitly moderated wizard facts keyed by the stable keys in EnrichmentSelection. Scalar strings, booleans, integer ratings or an atomic price object with min/max/currency/unit. Only kept items, no photos, consent, user ids or unmoderated content. Service/space ratings remain individual contribution facts, never provider/community rating aggregates. Per-group/free prices retain their original unit here; the legacy prices table only receives units it can represent. Later kept values replace the same key; absent keys remain. */
+        KeptContributionFacts: {
+            [key: string]: unknown;
+        };
         SubmissionPhoto: {
             /** Format: uuid */
             id: string;
@@ -9366,6 +9403,12 @@ export interface components {
         };
         /** @description PI-BE-031 (GoGo-BE#528) — everything a decision needs that GoGo already holds. No provider request: this endpoint costs nothing to open, and `POST /cms/place-submissions/{id}/provider-preview` is the explicit, separately-counted way to ask Google. */
         PlaceSubmissionDetail: {
+            /** @description Potential explicit-selection approval credit with all still-pending original evidence kept. Zero if contributor/ledger/state ineligible. Use credit-preview after changing selection; no client arithmetic. */
+            expectedCredit?: components["schemas"]["SubmissionCreditFacts"];
+            enrichmentItems?: {
+                factKeys: string[];
+                photoMediaIds: string[];
+            };
             /** Format: uuid */
             id: string;
             googlePlaceId: string;
@@ -16125,7 +16168,7 @@ export interface operations {
             };
         };
     };
-    decidePlaceSubmission: {
+    previewPlaceSubmissionCredit: {
         parameters: {
             query?: never;
             header?: never;
@@ -16137,6 +16180,51 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    enrichmentSelection: components["schemas"]["EnrichmentSelection"];
+                };
+            };
+        };
+        responses: {
+            /** @description Preview only; no award */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        expectedCredit: components["schemas"]["SubmissionCreditFacts"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description ALREADY_DECIDED */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    decidePlaceSubmission: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    enrichmentSelection?: components["schemas"]["EnrichmentSelection"];
+                } & ({
                     /** @enum {string} */
                     decision: "rejected";
                     rejectionReason: components["schemas"]["SubmissionRejectionReason"];
@@ -16158,7 +16246,7 @@ export interface operations {
                      * @description Required for `merged`, and the place must exist — `404 MERGE_TARGET_NOT_FOUND` otherwise (GoGo-BE#528). Merging records where this proposal went and attaches only explicitly approved photos to the target, retaining their uploader credits.
                      */
                     mergeIntoPlaceId?: string;
-                };
+                });
             };
         };
         responses: {

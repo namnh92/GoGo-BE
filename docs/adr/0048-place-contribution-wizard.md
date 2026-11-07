@@ -134,3 +134,24 @@ Replay policy với riêng finding credit được giữ lại PASS; đây khôn
 Docker socket vẫn bị từ chối nên chưa xác minh tập finding cuối bằng oasdiff.
 Không miễn finding nào khác. Output và command replay:
 `docs/verification/be-802-owner-visibility.md`.
+
+## Amendment #806 — Giữ/bỏ từng mục (2026-11-07)
+
+Task PLACES-WIZ-BE-2 bổ sung lựa chọn explicit của moderator/editor, không tự
+promote proposal. Quyết định giữ là xác nhận từng fact, độc lập với quyết định
+chỉ chấp nhận danh tính địa điểm. Chọn các stable keys và photo mediaIds, bỏ
+các mục còn lại; lưu nguyên proposal gốc. `places.contribution_facts` nullable
+JSONB giữ facts đã chọn, không user id/ảnh/consent. Price/taxonomy dùng đường
+catalogue hiện có khi biểu diễn được; per_group/free giữ đúng unit trong facts,
+không chuyển đơn vị giả định. Service/space không thành aggregate rating.
+
+Chọn giữ/bỏ là additive contract 7.6.0-alpha.1. Không chọn field bắt buộc vì sẽ
+phá CMS cũ; omission giữ đúng #802 (no facts, merge bonus-only). CMS mới phải
+explicit selection trong flow wizard. Đường mới approve/merge +50 base và +20
+khi giữ ít nhất một menu/bill gốc, vẫn bị ràng buộc unique ledger hiện có.
+Preview và award dùng chung công thức BE; không client math.
+
+Migration 0090 schema-first, không backfill. Giữ cột khi rollback binary; không
+xóa lịch sử ledger/audit. Runbook/mapping/rollback đầy đủ:
+[place-contribution-keep-drop.md](../place-contribution-keep-drop.md).
+Astra/CODEOWNER và fresh oasdiff/integration vẫn là cổng riêng trước merge.

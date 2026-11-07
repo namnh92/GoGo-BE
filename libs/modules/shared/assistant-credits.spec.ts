@@ -1,6 +1,6 @@
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { describe, expect, it, vi } from 'vitest';
-import { grantSubmissionCredits } from './assistant-credits';
+import { grantSubmissionCredits, submissionCreditFacts } from './assistant-credits';
 
 const dialect = new PgDialect();
 describe('moderator accepted evidence credit grants', () => {
@@ -30,6 +30,7 @@ describe('moderator accepted evidence credit grants', () => {
     await grantSubmissionCredits(tx, 'user', 'submission', 'venue', count, base);
     expect(balances).toHaveLength(1);
     expect(balances[0]).toContain(delta);
+    expect(submissionCreditFacts(count, base).total).toBe(delta);
   });
   it('merge without accepted evidence creates no ledger or account write', async () => {
     const execute = vi.fn();

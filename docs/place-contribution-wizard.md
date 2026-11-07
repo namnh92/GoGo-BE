@@ -1,6 +1,7 @@
 # Wizard đóng góp địa điểm — GoGo-BE#796
 
-ADR: [0048](adr/0048-place-contribution-wizard.md). Contract 7.5.0-alpha.1.
+ADR: [0048](adr/0048-place-contribution-wizard.md). Contract hiện tại 7.6.0-alpha.1.
+Chọn giữ/bỏ #806: [runbook](place-contribution-keep-drop.md); đường omission #802 vẫn giữ hành vi cũ.
 Các API ở dưới `/v1`. Cần registered user; guest/admin không có quyền dùng nháp
 hoặc gửi enrichment. Auth guard hiện có kiểm tra session/account. Owner khác
 không được đọc/ghi/xóa nháp; response 404 không xác nhận nháp có tồn tại.

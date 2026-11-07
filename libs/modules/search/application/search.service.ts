@@ -449,6 +449,7 @@ export class SearchService {
       checkedInGroupCount: (row['checked_in_group_count'] as number | null) ?? null,
       priceLevel: num(row['price_level']),
       avgVisitMinutes: num(row['avg_visit_minutes']),
+      contributionFacts: row['contribution_facts'] ?? undefined,
       suitability: (row['suitability'] as Record<string, number> | null) ?? undefined,
       isLodging: Boolean(row['is_lodging']),
       confidence: num(row['confidence']),

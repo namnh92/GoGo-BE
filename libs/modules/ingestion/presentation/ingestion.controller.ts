@@ -1,5 +1,6 @@
 import { MAX_RESOLUTION_TOKEN_LENGTH } from '../domain/resolution-attestation';
 import { Body, Controller, Get, Header, Param, Post, Put, Query } from '@nestjs/common';
+import { enrichmentSelectionSchema } from '../domain/enrichment-selection';
 import { enrichmentSchema } from '../domain/contribution-enrichment';
 import { z } from 'zod';
 import { contactProvenanceSchema } from '../../shared/place-contact-schema';
@@ -121,6 +122,7 @@ export class IngestionController {
 
 const decisionSchema = z
   .object({
+    enrichmentSelection: enrichmentSelectionSchema.optional(),
     decision: z.enum(['approved', 'rejected', 'merged']),
     reason: z.string().trim().min(3).max(500).optional(),
     rejectionReason: z.enum(SUBMISSION_REJECTION_REASONS).optional(),
@@ -267,6 +269,18 @@ export class CmsSubmissionController {
     return this.submissions.saveReview(actor.id, id, body.draft, body.expectedUpdatedAt);
   }
 
+  @Post(':id/credit-preview')
+  @NoIdempotencyReplay()
+  creditPreview(
+    @Param('id', Uuid) id: string,
+    @Body(
+      new ZodValidationPipe(z.object({ enrichmentSelection: enrichmentSelectionSchema }).strict()),
+    )
+    body: { enrichmentSelection: z.infer<typeof enrichmentSelectionSchema> },
+  ) {
+    return this.submissions.previewEnrichmentCredit(id, body.enrichmentSelection);
+  }
+
   @Post(':id/decide')
   decide(
     @CurrentActor() actor: Actor,
@@ -281,6 +295,7 @@ export class CmsSubmissionController {
       body.mergeIntoPlaceId,
       body.rejectionReason,
       body.approvedPhotoIds,
+      body.enrichmentSelection,
     );
   }
 }

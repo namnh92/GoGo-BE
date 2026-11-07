@@ -18,6 +18,13 @@ export async function creditBalance(exec: Exec, userId: string): Promise<number>
   return Number((result.rows[0] as { balance: number } | undefined)?.balance ?? 0);
 }
 
+/** The sole award formula, also used by CMS previews. */
+export function submissionCreditFacts(approvedMenuBillPhotoCount = 0, grantBase = true) {
+  const base = grantBase ? 50 : 0;
+  const photoBonus = approvedMenuBillPhotoCount > 0 ? 20 : 0;
+  return { base, photoBonus, total: base + photoBonus };
+}
+
 /** Caller holds account lock; source uniqueness survives source deletion. */
 export async function grantSubmissionCredits(
   tx: Exec,
@@ -27,7 +34,7 @@ export async function grantSubmissionCredits(
   approvedMenuBillPhotoCount = 0,
   grantBase = true,
 ): Promise<void> {
-  const delta = (grantBase ? 50 : 0) + (approvedMenuBillPhotoCount > 0 ? 20 : 0);
+  const { total: delta } = submissionCreditFacts(approvedMenuBillPhotoCount, grantBase);
   if (!delta) return;
   await lockAssistantAccount(tx, userId);
   const active = await tx.execute(

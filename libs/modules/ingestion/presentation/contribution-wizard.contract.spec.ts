@@ -24,7 +24,7 @@ describe('contribution wizard additive contract (#796)', () => {
     >();
   });
   it('keeps legacy submission valid and pins additive version', () => {
-    expect(doc.info.version).toBe('7.5.0-alpha.1');
+    expect(doc.info.version).toBe('7.6.0-alpha.1');
     const submit =
       doc.paths['/place-submissions'].post.requestBody.content['application/json'].schema;
     expect(submit.required).toEqual(['googlePlaceId']);
@@ -85,5 +85,32 @@ describe('contribution wizard additive contract (#796)', () => {
     expectTypeOf<
       components['schemas']['CmsAssistantCreditEntry']['delta']
     >().toEqualTypeOf<number>();
+  });
+  it('adds optional selection beside unchanged legacy decision branches and server credit facts', () => {
+    const request =
+      doc.paths['/cms/place-submissions/{id}/decide'].post.requestBody.content['application/json']
+        .schema;
+    expect(request.properties.enrichmentSelection.$ref).toBe(
+      '#/components/schemas/EnrichmentSelection',
+    );
+    expect(request.required ?? []).not.toContain('enrichmentSelection');
+    expect(request.oneOf.map((branch: { required: string[] }) => branch.required)).toEqual([
+      ['decision', 'rejectionReason'],
+      ['decision', 'reason'],
+    ]);
+    expect(doc.components.schemas.EnrichmentSelection.required).toEqual([
+      'keptFactKeys',
+      'keptPhotoMediaIds',
+    ]);
+    expect(doc.components.schemas.SubmissionCreditFacts.required).toEqual([
+      'base',
+      'photoBonus',
+      'total',
+    ]);
+    expect(doc.components.schemas.PlaceSubmissionDetail.properties.expectedCredit).toBeDefined();
+    expect(doc.components.schemas.PlaceDetail.required).not.toContain('contributionFacts');
+    expect(doc.paths['/cms/place-submissions/{id}/credit-preview'].post).toBeDefined();
+    type Decision = components['schemas']['EnrichmentSelection'];
+    expectTypeOf<Decision['keptPhotoMediaIds']>().toEqualTypeOf<string[]>();
   });
 });

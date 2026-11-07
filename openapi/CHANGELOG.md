@@ -8,6 +8,24 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 7.6.0-alpha.1 — Wizard keep/drop moderation (GoGo-BE#806)
+
+Add optional `enrichmentSelection` to CMS decide, `enrichmentItems` and
+`expectedCredit {base, photoBonus, total}` to CMS detail, a read-only
+`POST /cms/place-submissions/{id}/credit-preview`, and public PlaceDetail
+`contributionFacts`. Existing decide oneOf branches remain byte-identical.
+Explicit selection applies only kept facts and wizard photos; empty arrays drop
+all. Wizard photos are public userPhotos for the review section, never gallery.
+Stable fact keys and photo mediaIds are returned by the server. Old clients may
+omit selection: #802 behavior is preserved (no facts, existing photo selection,
+merge bonus-only). New CMS must send an explicit selection when enrichment exists.
+Explicit-selection approve/merge: +50 base, +20 if at least one original menu/bill
+photo is kept; venue/submission uniqueness still prevents duplicate grants.
+Credit preview is conditional on pending state, contributor and ledger eligibility;
+concurrent changes may require reloading. No client credit math.
+Regenerate consumer clients. Deploy migration 0090 before the binary; no backfill.
+See docs/place-contribution-keep-drop.md for mapping, audit and rollback.
+
 ## 7.5.0-alpha.1 — Contribution wizard and private drafts (GoGo-BE#796)
 
 MINOR additive: add optional `enrichment` to place submission and owner/CMS detail responses;

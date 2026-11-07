@@ -486,7 +486,7 @@ export class SearchRepository {
         ST_Y(p.geom) as lat, ST_X(p.geom) as lng,
         p.phone, p.website, p.rating, p.rating_count, p.price_level,
         p.avg_visit_minutes, p.suitability, p.is_lodging, p.confidence,
-        p.freshness_checked_at, p.curated_rank,
+        p.freshness_checked_at, p.curated_rank, p.contribution_facts,
         (select json_agg(json_build_object(
             'kind', t.kind, 'key', t.key) order by t.kind, t.key)
           from place_taxonomies pt join taxonomies t on t.id = pt.taxonomy_id
