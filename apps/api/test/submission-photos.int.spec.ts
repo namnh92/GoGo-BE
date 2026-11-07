@@ -2,7 +2,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import argon2 from 'argon2';
 import sharp from 'sharp';
 import path from 'node:path';
@@ -24,6 +24,7 @@ let pool: Pool;
 let db: ReturnType<typeof drizzle<typeof schema>>;
 let app: NestFastifyApplication;
 let moderator: string;
+let editor: string;
 let user: string;
 let other: string;
 let original: Buffer;
@@ -119,22 +120,25 @@ beforeAll(async () => {
   app = await createApp();
   await app.init();
   await api().ready();
-  const email = 'photo-moderator@gogo.local';
-  await db.insert(schema.adminUsers).values({
-    email,
-    displayName: 'Moderator',
-    role: 'moderator',
-    passwordHash: await argon2.hash('admin-password-123'),
-  });
-  const logged = await api().inject({
-    method: 'POST',
-    url: '/v1/cms/auth/login',
-    remoteAddress: ip(),
-    headers: cmsAccessHeaders(email),
-    payload: { email, password: 'admin-password-123' },
-  });
-  expect(logged.statusCode, logged.body).toBe(201);
-  moderator = logged.json().accessToken;
+  for (const role of ['moderator', 'editor'] as const) {
+    const email = `photo-${role}@gogo.local`;
+    await db.insert(schema.adminUsers).values({
+      email,
+      displayName: role,
+      role,
+      passwordHash: await argon2.hash('admin-password-123'),
+    });
+    const logged = await api().inject({
+      method: 'POST',
+      url: '/v1/cms/auth/login',
+      remoteAddress: ip(),
+      headers: cmsAccessHeaders(email),
+      payload: { email, password: 'admin-password-123' },
+    });
+    expect(logged.statusCode, logged.body).toBe(201);
+    if (role === 'moderator') moderator = logged.json().accessToken;
+    else editor = logged.json().accessToken;
+  }
   user = await register('photo-user@gogo.local');
   other = await register('other-photo-user@gogo.local');
   original = await sharp({ create: { width: 80, height: 60, channels: 3, background: '#ff0000' } })
@@ -146,6 +150,115 @@ afterAll(async () => {
   await app?.close();
   await pool?.end();
   await container?.stop();
+});
+
+describe('approved submission derivative detach (#793 F-02)', () => {
+  const queued = (key: string) =>
+    db.select().from(schema.mediaCleanupQueue).where(eq(schema.mediaCleanupQueue.objectKey, key));
+  const detach = (placeId: string, mediaId: string) =>
+    api().inject({
+      method: 'DELETE',
+      url: `/v1/cms/places/${placeId}/media/${mediaId}`,
+      headers: auth(editor),
+    });
+
+  async function approvedPhoto() {
+    const item = await upload();
+    const sent = await submit(identity(), [item.id]);
+    expect(sent.statusCode, sent.body).toBe(201);
+    const submissionId = sent.json().submissionId;
+    const photos = (await detail(submissionId)).json().photos;
+    const approved = await decide(submissionId, 'approved', [photos[0].id]);
+    expect(approved.statusCode, approved.body).toBe(201);
+    const [media] = await db
+      .select()
+      .from(schema.placeMedia)
+      .where(eq(schema.placeMedia.placeId, approved.json().placeId));
+    expect(media!.storageKey).toMatch(/^submission-photos\//);
+    const [uploadRow] = await db
+      .select()
+      .from(schema.mediaUploads)
+      .where(eq(schema.mediaUploads.id, item.id));
+    expect(uploadRow!.storageKey).toBe(item.key);
+    expect(media!.storageKey).not.toBe(item.key);
+    expect(await queued(media!.storageKey)).toHaveLength(0);
+    expect(storage().objects.has(media!.storageKey)).toBe(true);
+    return media!;
+  }
+
+  async function sharedPhoto() {
+    const first = await approvedPhoto();
+    const sent = await submit(identity(), []);
+    const approved = await decide(sent.json().submissionId, 'approved');
+    expect(approved.statusCode, approved.body).toBe(201);
+    const [second] = await db
+      .insert(schema.placeMedia)
+      .values({
+        placeId: approved.json().placeId,
+        storageKey: first.storageKey,
+        sourceType: 'community',
+        moderation: 'approved',
+        mediaUploadId: first.mediaUploadId,
+        uploadedByUserId: first.uploadedByUserId,
+      })
+      .returning();
+    return [first, second!] as const;
+  }
+
+  it('approves, detaches, and cleans private bytes while revoking the public read immediately', async () => {
+    const media = await approvedPhoto();
+    const url = `/v1/places/${media.placeId}/photos/${media.id}/content`;
+    expect((await api().inject({ method: 'GET', url })).statusCode).toBe(200);
+    expect((await detach(media.placeId, media.id)).statusCode).toBe(200);
+    expect((await api().inject({ method: 'GET', url })).statusCode).toBe(404);
+    expect(await queued(media.storageKey)).toEqual([
+      expect.objectContaining({ bucket: 'private', reason: 'submission_photo_detached' }),
+    ]);
+    expect(storage().objects.has(media.storageKey)).toBe(true);
+    await app.get(MediaCleanupService).runDue(1000);
+    expect(storage().objects.has(media.storageKey)).toBe(false);
+    expect(await queued(media.storageKey)).toHaveLength(0);
+  });
+
+  it('keeps shared private bytes until the final place-media reference is detached', async () => {
+    const [first, second] = await sharedPhoto();
+    expect((await detach(first.placeId, first.id)).statusCode).toBe(200);
+    expect(await queued(first.storageKey)).toHaveLength(0);
+    await app.get(MediaCleanupService).runDue(1000);
+    expect(storage().objects.has(first.storageKey)).toBe(true);
+    expect((await detach(second.placeId, second.id)).statusCode).toBe(200);
+    expect(await queued(first.storageKey)).toHaveLength(1);
+    await app.get(MediaCleanupService).runDue(1000);
+    expect(storage().objects.has(first.storageKey)).toBe(false);
+  });
+
+  it('queues one private cleanup when shared references are detached concurrently', async () => {
+    const media = await sharedPhoto();
+    const results = await Promise.all(media.map((m) => detach(m.placeId, m.id)));
+    expect(results.map((r) => r.statusCode)).toEqual([200, 200]);
+    expect(await queued(media[0].storageKey)).toHaveLength(1);
+    await app.get(MediaCleanupService).runDue(1000);
+    expect(storage().objects.has(media[0].storageKey)).toBe(false);
+  });
+
+  it('rolls back detach if the private cleanup job cannot be recorded', async () => {
+    const media = await approvedPhoto();
+    await db.execute(sql`create function fail_submission_cleanup_793() returns trigger language plpgsql as $$
+      begin raise exception 'cleanup unavailable'; end; $$`);
+    await db.execute(sql`create trigger fail_submission_cleanup_793 before insert on media_cleanup_queue
+      for each row execute function fail_submission_cleanup_793()`);
+    try {
+      expect((await detach(media.placeId, media.id)).statusCode).toBe(500);
+      expect(
+        await db.select().from(schema.placeMedia).where(eq(schema.placeMedia.id, media.id)),
+      ).toHaveLength(1);
+      expect(await queued(media.storageKey)).toHaveLength(0);
+      expect(storage().objects.has(media.storageKey)).toBe(true);
+    } finally {
+      await db.execute(sql`drop trigger fail_submission_cleanup_793 on media_cleanup_queue`);
+      await db.execute(sql`drop function fail_submission_cleanup_793()`);
+    }
+  });
 });
 
 describe('submission photo lifecycle (#793)', () => {

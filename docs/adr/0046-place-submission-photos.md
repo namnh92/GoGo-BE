@@ -79,6 +79,9 @@ nên file chưa submit cũng có hạn lưu. Original chỉ được đọc serv
 nhất 15 phút và sau expiry của PUT URL, tránh xoá rồi bị upload lại bằng URL
 còn hiệu lực. Ảnh bị bỏ hoặc submission bị từ chối không đọc được ngay, bản
 xử lý bị dọn sau bảy ngày qua `MediaCleanupService` và retry/dead letter sẵn có.
+Khi CMS gỡ ảnh đã duyệt, transaction gỡ tham chiếu cuối trong `place_media`
+đồng thời lập job cleanup bucket private cho derivative. Khoá theo storage key
+tuần tự hoá các lần gỡ đồng thời; còn tham chiếu từ place khác thì chưa dọn.
 
 `submission_photo_processing_total{outcome}` và
 `submission_photo_processing_duration_ms` đo xử lý; metric quyết định submission

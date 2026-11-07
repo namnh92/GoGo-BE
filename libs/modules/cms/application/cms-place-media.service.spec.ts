@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { schema } from '@gogo/database';
+import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { parse } from 'yaml';
 import { describe, expect, it, vi } from 'vitest';
@@ -38,7 +39,7 @@ function mediaSetup(refs = 0, provider = true) {
   const queueValues = vi.fn(() => ({ onConflictDoNothing: vi.fn(async () => undefined) }));
   const tx = {
     delete: vi.fn(() => ({ where: vi.fn(async () => undefined) })),
-    execute: vi.fn(async () => ({ rows: [{ refs }] })),
+    execute: vi.fn(async (_query: SQL) => ({ rows: [{ refs }] })),
     update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => undefined) })) })),
     insert: vi.fn(() => ({ values: queueValues })),
   };
@@ -115,6 +116,53 @@ describe('provider media detach (#786 F-02)', () => {
     await service.detach({ id: 'editor' } as never, 'place', 'media');
     expect(tx.insert).not.toHaveBeenCalled();
     expect(tx.update).toHaveBeenCalledWith(schema.mediaUploads);
+  });
+});
+
+describe('submission derivative detach (#793 F-02)', () => {
+  function setup(refs = 0) {
+    const h = mediaSetup(refs, false);
+    h.row.storageKey = 'submission-photos/approved.webp';
+    h.row.sourceType = 'community';
+    return h;
+  }
+
+  it('queues the final derivative reference for private cleanup in the detach transaction', async () => {
+    const { service, tx, db, queueValues, row } = setup();
+    await service.detach({ id: 'editor' } as never, 'place', 'media');
+    expect(tx.insert).toHaveBeenCalledWith(schema.mediaCleanupQueue);
+    expect(queueValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bucket: 'private',
+        objectKey: row.storageKey,
+        reason: 'submission_photo_detached',
+      }),
+    );
+    expect(db.insert).not.toHaveBeenCalledWith(schema.mediaCleanupQueue);
+    const lock = new PgDialect().sqlToQuery(tx.execute.mock.calls[0]![0]);
+    expect(lock.sql).toContain('pg_advisory_xact_lock');
+    expect(lock.params).toEqual([row.storageKey]);
+    expect(tx.execute.mock.invocationCallOrder[0]).toBeLessThan(
+      tx.delete.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('preserves the derivative while another place-media reference remains', async () => {
+    const { service, tx } = setup(1);
+    await service.detach({ id: 'editor' } as never, 'place', 'media');
+    expect(tx.insert).not.toHaveBeenCalled();
+    expect(tx.update).not.toHaveBeenCalled();
+  });
+
+  it('propagates enqueue failure instead of committing a detach without cleanup', async () => {
+    const { service, queueValues, db } = setup();
+    queueValues.mockImplementation(() => {
+      throw new Error('queue unavailable');
+    });
+    await expect(service.detach({ id: 'editor' } as never, 'place', 'media')).rejects.toThrow(
+      'queue unavailable',
+    );
+    expect(db.insert).not.toHaveBeenCalled();
   });
 });
 
