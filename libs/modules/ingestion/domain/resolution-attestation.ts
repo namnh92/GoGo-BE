@@ -1,44 +1,18 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 /**
- * COST-BE-004 (#337) / plan §2.8 — proof that GoGo recently verified a Google
- * Place ID, and nothing else.
- *
- * The mobile flow used to pay for the same Enterprise `details` twice: once so
- * the user could see what they were about to add, once so the server could
- * believe them. The obvious fix — keep the resolve result and read it back on
- * submit — is the one ADR-0006 §9.5 forbids, because a provider response held
- * across requests is a cached Google snapshot however short-lived it is.
- *
- * So nothing is kept. The server signs a statement about its own past action
- * and hands it to the client, which hands it back. The statement carries the
- * Place ID (SST §3 permits storing that indefinitely), when the check happened
- * and when the proof stops counting — no name, address, coordinates, rating,
- * hours, business status, photos or raw payload. There is no server-side store
- * to purge, because there is no server-side store.
- *
- * **Closure rides in the issuing decision, not in the payload.** `businessStatus`
- * is Google content, so it cannot travel here; instead a token is only ever
- * minted for a place Google called `OPERATIONAL` at resolve time. Holding one
- * therefore *is* the closure check the submit path used to re-fetch for, and a
- * closed place simply gets no token and takes the old route.
- *
- * What it deliberately does not do:
- *
- * - **It does not authorise anybody.** No actor binding in v1 (plan §2.8): the
- *   submit endpoint still authenticates, still scopes guests to their room and
- *   still dedups. Replaying someone else's token buys the replayer one skipped
- *   Google call on a place they could have resolved themselves for free.
- * - **It is not a session.** Past `expiresAt` it is refused and the client is
- *   told to resolve again, which costs one `details` — the thing this exists to
- *   avoid, so the TTL is a cost/replay trade, not a UX one.
+ * #337 identity attestation, extended by #801 owner decision (ADR-0048).
+ * A signed resolution ID references a short-lived server-side display snapshot;
+ * only submit persists it on the submission. No display facts travel in the token.
+ * Legacy identity-only tokens remain valid. Signature, expiry and Place ID checks
+ * still gate submission; the snapshot never bypasses authorization or moderation.
  */
 
 export const RESOLUTION_ATTESTATION_VERSION = 1;
 export const RESOLUTION_PURPOSE = 'place_submission';
 
 /** Long enough for any Place ID, short enough that no parser is a DoS target. */
-const MAX_TOKEN_LENGTH = 1024;
+export const MAX_RESOLUTION_TOKEN_LENGTH = 1024;
 
 export type ResolutionAttestation = {
   version: typeof RESOLUTION_ATTESTATION_VERSION;
@@ -48,6 +22,7 @@ export type ResolutionAttestation = {
   verifiedAt: string;
   /** ISO-8601 UTC — `verifiedAt` + PLACE_RESOLUTION_TTL_S. */
   expiresAt: string;
+  resolutionId?: string;
 };
 
 /**
@@ -85,9 +60,11 @@ export function signResolutionAttestation(input: {
   secret: string;
   ttlSeconds: number;
   now?: Date;
+  resolutionId?: string;
 }): string {
   const now = input.now ?? new Date();
   const attestation: ResolutionAttestation = {
+    ...(input.resolutionId ? { resolutionId: input.resolutionId } : {}),
     version: RESOLUTION_ATTESTATION_VERSION,
     purpose: RESOLUTION_PURPOSE,
     googlePlaceId: input.googlePlaceId,
@@ -95,7 +72,9 @@ export function signResolutionAttestation(input: {
     expiresAt: new Date(now.getTime() + input.ttlSeconds * 1000).toISOString(),
   };
   const body = b64url(Buffer.from(JSON.stringify(attestation)));
-  return `${body}.${b64url(sign(body, input.secret))}`;
+  const token = `${body}.${b64url(sign(body, input.secret))}`;
+  if (token.length > MAX_RESOLUTION_TOKEN_LENGTH) throw new Error('Resolution token too long');
+  return token;
 }
 
 /**
@@ -111,7 +90,11 @@ export function verifyResolutionAttestation(
   input: { secret: string; expectedPurpose?: string; now?: Date },
 ): AttestationVerdict {
   if (!input.secret) return { ok: false, reason: 'MALFORMED' };
-  if (typeof token !== 'string' || token.length === 0 || token.length > MAX_TOKEN_LENGTH) {
+  if (
+    typeof token !== 'string' ||
+    token.length === 0 ||
+    token.length > MAX_RESOLUTION_TOKEN_LENGTH
+  ) {
     return { ok: false, reason: 'MALFORMED' };
   }
 
@@ -154,5 +137,14 @@ export function verifyResolutionAttestation(
   if (Number.isNaN(expiresAt)) return { ok: false, reason: 'MALFORMED' };
   if ((input.now ?? new Date()).getTime() >= expiresAt) return { ok: false, reason: 'EXPIRED' };
 
+  if (claim.resolutionId !== undefined) {
+    if (
+      typeof claim.resolutionId !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+        claim.resolutionId,
+      )
+    )
+      return { ok: false, reason: 'MALFORMED' };
+  }
   return { ok: true, attestation: claim as ResolutionAttestation };
 }

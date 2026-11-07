@@ -486,6 +486,10 @@ describe('#337 — duplicate Google calls', () => {
     expect(preview.json().status).toBe('RESOLVED');
     const resolutionToken = preview.json().resolutionToken as string;
     expect(resolutionToken, 'an operational place gets a token').toBeTruthy();
+    expect(resolutionToken.length).toBeLessThanOrEqual(1024);
+    const claim = JSON.parse(Buffer.from(resolutionToken.split('.')[0]!, 'base64url').toString());
+    expect(claim.resolutionId).toBeTruthy();
+    expect(claim).not.toHaveProperty('displaySnapshot');
     // #338 — the one preview that stays Enterprise, and the assertion below is
     // why: the candidate the client renders carries Google's rating, and the
     // mobile card drops the whole rating row when it is absent. A `core`
@@ -500,6 +504,18 @@ describe('#337 — duplicate Google calls', () => {
     expect(submitted.statusCode).toBe(201);
     expect(submitted.json().status).toBe('PENDING');
     expect(billed(), 'the attested submit asks Google nothing').toEqual([]);
+    const [saved] = await db
+      .select()
+      .from(schema.placeSubmissions)
+      .where(eq(schema.placeSubmissions.id, submitted.json().submissionId));
+    expect(saved!.displaySnapshot).toMatchObject({
+      name: preview.json().candidate.name,
+      googleRating: 4.4,
+      googleRatingCount: 250,
+      attributions: preview.json().candidate.attributions,
+      fetchedAt: preview.json().candidate.fetchedAt,
+    });
+    expect(saved!.displaySnapshot).not.toHaveProperty('photo');
 
     resetBilling();
     const decided = await api().inject({
@@ -568,6 +584,16 @@ describe('#337 — duplicate Google calls', () => {
     // rather than Enterprise: this branch reads `businessStatus` and hands the
     // object to dedup, and neither wants a rating.
     expect(billed(), 'the old path is the rollback, and it still pays once').toEqual(['core']);
+    const [saved] = await db
+      .select()
+      .from(schema.placeSubmissions)
+      .where(eq(schema.placeSubmissions.id, submitted.json().submissionId));
+    expect(saved!.displaySnapshot).toMatchObject({
+      name: 'Quán PR4 Không Token',
+      googleRating: null,
+      googleRatingCount: 0,
+      openingHours: [],
+    });
   });
 
   it.each([

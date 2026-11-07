@@ -378,6 +378,25 @@ export type SubmissionReviewDraft = {
     | undefined;
 };
 
+/** #801 owner-approved display projection; never a catalogue source or photo cache. */
+export type SubmissionDisplaySnapshot = {
+  source: 'google_places';
+  fetchedAt: string;
+  attributions: string[];
+  googleMapsUri: string | null;
+  name: string;
+  addressShort: string;
+  categoryKey?: string | undefined;
+  googleRating: number | null;
+  googleRatingCount: number;
+  openingHours: {
+    dayOfWeek: number;
+    openMinute: number;
+    closeMinute: number;
+    isOvernight: boolean;
+  }[];
+};
+
 export const placeSubmissions = pgTable(
   'place_submissions',
   {
@@ -394,6 +413,8 @@ export const placeSubmissions = pgTable(
     priceUnit: text('price_unit'),
     vibeKeys: jsonb('vibe_keys').$type<string[]>().notNull().default([]),
     note: text('note'),
+    displaySnapshot: jsonb('display_snapshot').$type<SubmissionDisplaySnapshot>(),
+    displayRefreshStartedAt: timestamp('display_refresh_started_at', { withTimezone: true }),
     status: submissionStatus('status').notNull().default('pending'),
     /** Same link from many users bumps this instead of creating drafts. */
     submissionCount: integer('submission_count').notNull().default(1),

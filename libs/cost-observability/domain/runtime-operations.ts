@@ -36,6 +36,9 @@ export const UPSTASH_REDIS_OPERATIONS = {
    * not a request-path one; `rate_limit.hit` stays the request-path signal.
    */
   rateLimitConnect: { ...UPSTASH, operation: 'upstash.redis.rate_limit.connect' },
+  /** #801 — short-lived, per-resolution snapshot records. */
+  resolutionSnapshotPut: { ...UPSTASH, operation: 'upstash.redis.place_resolution.put' },
+  resolutionSnapshotGet: { ...UPSTASH, operation: 'upstash.redis.place_resolution.get' },
 } as const satisfies Record<string, RuntimeOperation>;
 
 const NEON = { provider: 'neon', service: 'neon.postgres' } as const;

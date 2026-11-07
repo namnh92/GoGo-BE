@@ -486,7 +486,8 @@ describe('#381 — the overview keeps the legacy payload and adds the Cost Cente
       runtime: {
         coverage: 'FULL',
         services: { full: 1 },
-        operations: { instrumented: 6, total: 6 },
+        // #801 adds the measured resolution snapshot SET/GET operations.
+        operations: { instrumented: 8, total: 8 },
       },
       cost: { kind: 'AUTO', freshness: 'UNKNOWN' },
     });

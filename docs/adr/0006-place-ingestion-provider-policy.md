@@ -40,7 +40,7 @@ parsing, resolution, scoring, dedup and enrichment; the provider sits behind
 | ---------- | ----------------------------------------- | --------------------------- | ---- | ----------------------------------------------------------------------------------------- |
 | `liveness` | refresh; id/moved-place verification only | Details Essentials IDs-Only | 0    | `id,movedPlaceId`                                                                         |
 | `core`     | every resolve                             | Details Pro                 | 17   | `id,displayName,formattedAddress,location,businessStatus,primaryType,types,googleMapsUri` |
-| `quality`  | row accepted / preview shown / publish    | Details Enterprise          | 20   | `+ rating,userRatingCount,regularOpeningHours,priceLevel`                                 |
+| `quality`  | row accepted / preview shown / publish    | Details Enterprise          | 20   | `+ rating,userRatingCount,regularOpeningHours,priceLevel,shortFormattedAddress`           |
 | `detail`   | explicit open by admin/user               | Details E + Atmosphere      | 25   | `+ reviews`                                                                               |
 
 GoGo-BE#509 (ADR-0030) removed `photos` from `core` and `priceRange` from

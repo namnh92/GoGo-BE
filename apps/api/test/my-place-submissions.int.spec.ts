@@ -7,10 +7,16 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Pool } from 'pg';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { schema } from '@gogo/database';
 import { TokenService, UserContentService } from '@gogo/modules';
-import { PLACE_PROVIDER, type FakePlaceProvider } from '@gogo/providers';
+import { APP_CONFIG } from '../../../libs/modules/shared/config';
+import {
+  PLACE_PHOTO_DISPLAY,
+  type FakePlacePhotoDisplay,
+  PLACE_PROVIDER,
+  type FakePlaceProvider,
+} from '@gogo/providers';
 
 let container: StartedPostgreSqlContainer;
 let pool: Pool;
@@ -29,13 +35,13 @@ const list = (token = owner.token, query = '') =>
     headers: { authorization: `Bearer ${token}` },
   });
 
-const submit = (token: string, googlePlaceId: string, note?: string) =>
+const submit = (token: string, googlePlaceId: string, note?: string, resolutionToken?: string) =>
   api().inject({
     method: 'POST',
     url: '/v1/place-submissions',
     remoteAddress: ip(),
     headers: { authorization: `Bearer ${token}` },
-    payload: { googlePlaceId, note },
+    payload: { googlePlaceId, note, resolutionToken },
   });
 function seedProvider() {
   const googlePlaceId = `shared-${randomUUID()}`;
@@ -60,6 +66,10 @@ beforeAll(async () => {
   process.env.METRICS_TOKEN = 'metrics-token-int-tests';
   process.env.MEDIA_PUBLIC_BASE_URL = 'https://assets.example.test';
   process.env.GOOGLE_PLACES_API_KEY = '';
+  process.env.PLACE_DISPLAY_DAILY_MAX_CALLS = '1000';
+  process.env.PLACE_DISPLAY_DAILY_MAX_LIST_COST_USD = '100';
+  process.env.PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_PHOTOMEDIA = '1000';
+  delete process.env.PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_DETAILS_QUALITY;
   pool = new Pool({ connectionString: container.getConnectionUri(), max: 4 });
   db = drizzle(pool, { schema });
   await migrate(db, { migrationsFolder: path.resolve(__dirname, '../../../migrations') });
@@ -137,12 +147,15 @@ describe('GET /v1/me/place-submissions (#788)', () => {
         reopened.push(token);
         const pending = await list(token);
         expect(pending.statusCode, pending.body).toBe(200);
-        expect(pending.json().items).toContainEqual({
-          id,
-          status: 'pending',
-          createdAt: expect.any(String),
-          updatedAt: expect.any(String),
-        });
+        expect(pending.json().items).toContainEqual(
+          expect.objectContaining({
+            id,
+            status: 'pending',
+            providerStatus: 'ok',
+            createdAt: expect.any(String),
+            updatedAt: expect.any(String),
+          }),
+        );
       }
       expect((await list(reopened[1]!)).json().items).toHaveLength(1);
       const [place] = await db
@@ -167,9 +180,10 @@ describe('GET /v1/me/place-submissions (#788)', () => {
       for (const token of reopened) {
         const response = await list(token);
         expect(response.statusCode, response.body).toBe(200);
-        expect(response.json().items.find((item: { id: string }) => item.id === id)).toEqual({
+        expect(response.json().items.find((item: { id: string }) => item.id === id)).toMatchObject({
           id,
           status,
+          providerStatus: status === 'rejected' ? 'ok' : 'deferred',
           ...(status === 'rejected'
             ? { rejectionReason: 'incorrect_location' }
             : { placeId: place!.id, name: 'GoGo shared café' }),
@@ -364,6 +378,7 @@ describe('GET /v1/me/place-submissions (#788)', () => {
         {
           id: own.id,
           status: 'pending',
+          providerStatus: 'deferred',
           createdAt: expect.any(String),
           updatedAt: expect.any(String),
         },
@@ -466,6 +481,7 @@ describe('GET /v1/me/place-submissions (#788)', () => {
         [
           'id',
           'status',
+          'providerStatus',
           'name',
           'createdAt',
           'updatedAt',
@@ -539,5 +555,325 @@ describe('GET /v1/me/place-submissions (#788)', () => {
       request_id: expect.any(String),
       retryable: false,
     });
+  });
+});
+
+const detail = (id: string, token = owner.token) =>
+  api().inject({
+    method: 'GET',
+    url: `/v1/me/place-submissions/${id}`,
+    remoteAddress: ip(),
+    headers: { authorization: `Bearer ${token}` },
+  });
+
+describe('#801 contribution cards and shared pending detail', () => {
+  let config: Record<string, unknown>;
+  let previous: Record<string, unknown>;
+  const displayConfig = {
+    PLACE_RESOLUTION_ATTESTATION_SECRET: 'my-submissions-int-attestation-secret-0123456789',
+    PLACE_DISPLAY_DAILY_MAX_CALLS: 1000,
+    PLACE_DISPLAY_DAILY_MAX_LIST_COST_USD: 100,
+    PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_DETAILS_QUALITY: 1000,
+    PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_PHOTOMEDIA: 1000,
+    FLAG_PLACE_PROVIDER_PHOTOS: true,
+  };
+  beforeEach(async () => {
+    config = app.get(APP_CONFIG);
+    previous = {};
+    for (const [key, value] of Object.entries(displayConfig)) {
+      previous[key] = config[key];
+      config[key] = value;
+    }
+    await db
+      .insert(schema.taxonomies)
+      .values({ kind: 'category', key: 'cafe' })
+      .onConflictDoNothing();
+    await db.execute(sql`delete from feature_flags where key = 'place_provider_photos.enabled'`);
+    (app.get(PLACE_PROVIDER) as FakePlaceProvider).tiersRequested.length = 0;
+  });
+  afterEach(() => {
+    Object.assign(config, previous);
+    (app.get(PLACE_PROVIDER) as FakePlaceProvider).failing = false;
+  });
+
+  it('persists submitted facts and renders list/detail with zero provider calls and a lazy proxy reference', async () => {
+    const googlePlaceId = seedProvider();
+    (app.get(PLACE_PROVIDER) as FakePlaceProvider).seed({
+      providerPlaceId: googlePlaceId,
+      name: 'Tên thật',
+      shortAddress: 'Bến Thành, TP.HCM',
+      rating: 4.6,
+      ratingCount: 980,
+      attribution: 'Google Maps',
+      hours: [{ dayOfWeek: 1, openMinute: 480, closeMinute: 1320, isOvernight: false }],
+    });
+    const photos = app.get(PLACE_PHOTO_DISPLAY) as FakePlacePhotoDisplay;
+    photos.seed(googlePlaceId, [
+      {
+        reference: `places/${googlePlaceId}/photos/never-save-this`,
+        widthPx: 800,
+        heightPx: 600,
+        authorAttributions: [{ displayName: 'Lan', uri: null, photoUri: null }],
+        googleMapsUri: null,
+      },
+    ]);
+    const resolved = await api().inject({
+      method: 'POST',
+      url: '/v1/places/resolve-google-maps-link',
+      remoteAddress: ip(),
+      payload: { url: `https://www.google.com/maps?place_id=${googlePlaceId}` },
+    });
+    expect(resolved.statusCode, resolved.body).toBe(201);
+    const resolutionToken = resolved.json().resolutionToken as string;
+    expect(resolutionToken).toBeTruthy();
+    const provider = app.get(PLACE_PROVIDER) as FakePlaceProvider;
+    expect(provider.tiersRequested).toEqual(['quality']);
+    const refsBefore = photos.refCalls.length;
+    const mediaBefore = photos.mediaCalls.length;
+    const submitted = await submit(owner.token, googlePlaceId, 'My private tip', resolutionToken);
+    expect(submitted.statusCode, submitted.body).toBe(201);
+    expect(provider.tiersRequested).toEqual(['quality']);
+    const [row] = await db
+      .select()
+      .from(schema.placeSubmissions)
+      .where(eq(schema.placeSubmissions.id, submitted.json().submissionId));
+    expect(row!.displaySnapshot).toMatchObject({ name: 'Tên thật', googleRating: 4.6 });
+    provider.tiersRequested.length = 0;
+    const response = await list();
+    expect(response.statusCode, response.body).toBe(200);
+    const card = response.json().items[0];
+    expect(card).toMatchObject({
+      id: row!.id,
+      name: 'Tên thật',
+      addressShort: 'Bến Thành, TP.HCM',
+      categoryKey: 'cafe',
+      status: 'pending',
+      providerStatus: 'ok',
+      providerDisplay: {
+        source: 'google_places',
+        attributions: ['Google Maps'],
+        googleRating: 4.6,
+        googleRatingCount: 980,
+        openingHours: [{ dayOfWeek: 1, openMinute: 480, closeMinute: 1320, isOvernight: false }],
+        photo: {
+          url: `/v1/places/google-provider-photo/${googlePlaceId}`,
+          authorAttributions: [],
+        },
+      },
+    });
+    expect(card).not.toHaveProperty('contribution');
+    expect(card).not.toHaveProperty('photoUrl');
+    const opened = await detail(row!.id);
+    expect(opened.statusCode, opened.body).toBe(200);
+    expect(opened.headers['cache-control']).toBe('no-store');
+    expect(opened.json()).toMatchObject({
+      status: 'pending',
+      name: 'Tên thật',
+      contribution: { verificationStatus: 'unverified', note: 'My private tip' },
+    });
+    expect(opened.body).not.toMatch(/never-save-this|dataBase64|submittedBy|decidedBy|reviewDraft/);
+    expect(await db.select().from(schema.placeMedia)).toEqual([]);
+    expect(await db.select().from(schema.places)).toEqual([]);
+    const stored = (await db.select().from(schema.placeSubmissions))[0]!;
+    expect(stored).toEqual(row);
+    expect(photos.refCalls.length - refsBefore).toBe(0);
+    expect(provider.tiersRequested).toEqual([]);
+    expect(stored.displaySnapshot).not.toHaveProperty('photo');
+    expect(photos.mediaCalls.length).toBe(mediaBefore);
+  });
+
+  it('persists only core facts without a resolution token and reads them without provider calls', async () => {
+    const googlePlaceId = seedProvider();
+    const provider = app.get(PLACE_PROVIDER) as FakePlaceProvider;
+    const photos = app.get(PLACE_PHOTO_DISPLAY) as FakePlacePhotoDisplay;
+    const refsBefore = photos.refCalls.length;
+    const mediaBefore = photos.mediaCalls.length;
+    const submitted = await submit(owner.token, googlePlaceId);
+    expect(submitted.statusCode, submitted.body).toBe(201);
+    expect(provider.tiersRequested).toEqual(['core']);
+    const id = submitted.json().submissionId as string;
+    const [row] = await db
+      .select()
+      .from(schema.placeSubmissions)
+      .where(eq(schema.placeSubmissions.id, id));
+    const coreFacts = { googleRating: null, googleRatingCount: 0, openingHours: [] };
+    expect(row!.displaySnapshot).toMatchObject({ name: 'Shared café', ...coreFacts });
+    provider.tiersRequested.length = 0;
+    const response = await list();
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().items[0]).toMatchObject({
+      id,
+      providerStatus: 'ok',
+      providerDisplay: coreFacts,
+    });
+    const opened = await detail(id);
+    expect(opened.statusCode, opened.body).toBe(200);
+    expect(opened.json()).toMatchObject({ id, providerStatus: 'ok', providerDisplay: coreFacts });
+    expect(provider.tiersRequested).toEqual([]);
+    expect(photos.refCalls.length).toBe(refsBefore);
+    expect(photos.mediaCalls.length).toBe(mediaBefore);
+  });
+
+  it('F-01: opening/refreshing 25 distinct stored cards makes zero Details, refs or media calls', async () => {
+    const provider = app.get(PLACE_PROVIDER) as FakePlaceProvider;
+    const photos = app.get(PLACE_PHOTO_DISPLAY) as FakePlacePhotoDisplay;
+    const refsBefore = photos.refCalls.length;
+    const mediaBefore = photos.mediaCalls.length;
+    await db.insert(schema.placeSubmissions).values(
+      Array.from({ length: 25 }, (_, i) => ({
+        googlePlaceId: `stored-${i}`,
+        submittedByUserId: owner.id,
+        displaySnapshot: {
+          source: 'google_places' as const,
+          fetchedAt: new Date().toISOString(),
+          name: `Stored café ${i}`,
+          addressShort: 'Hà Nội',
+          attributions: ['Google Maps'],
+          googleMapsUri: null,
+          googleRating: 4.6,
+          googleRatingCount: 980,
+          openingHours: [],
+        },
+      })),
+    );
+    provider.failing = true;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await list();
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json().items).toHaveLength(25);
+      expect(
+        response
+          .json()
+          .items.every((item: { providerStatus: string }) => item.providerStatus === 'ok'),
+      ).toBe(true);
+    }
+    expect(provider.tiersRequested).toEqual([]);
+    expect(photos.refCalls.length).toBe(refsBefore);
+    expect(photos.mediaCalls.length).toBe(mediaBefore);
+  });
+
+  it('refreshes an expired snapshot once under concurrent DETAIL reads, keeping photo transient', async () => {
+    const googlePlaceId = seedProvider();
+    const row = await submission({
+      googlePlaceId,
+      displaySnapshot: {
+        source: 'google_places',
+        fetchedAt: new Date(Date.now() - 31 * 86400000).toISOString(),
+        name: 'Old',
+        addressShort: 'Old',
+        attributions: ['Google Maps'],
+        googleMapsUri: null,
+        googleRating: 1,
+        googleRatingCount: 1,
+        openingHours: [],
+      },
+    });
+    expect((await list()).json().items[0].providerStatus).toBe('deferred');
+    const responses = await Promise.all(Array.from({ length: 4 }, () => detail(row.id)));
+    expect(responses.every((response) => response.statusCode === 200)).toBe(true);
+    expect(responses.some((response) => response.json().providerStatus === 'ok')).toBe(true);
+    const provider = app.get(PLACE_PROVIDER) as FakePlaceProvider;
+    expect(provider.tiersRequested).toEqual(['quality']);
+    const [stored] = await db
+      .select()
+      .from(schema.placeSubmissions)
+      .where(eq(schema.placeSubmissions.id, row.id));
+    expect(stored!.displaySnapshot).toMatchObject({ name: 'Shared café', googleRating: 4.4 });
+    expect(stored!.displaySnapshot).not.toHaveProperty('photo');
+    expect(stored!.updatedAt).toEqual(row.updatedAt);
+    expect((await detail(row.id)).json().providerStatus).toBe('ok');
+    expect(provider.tiersRequested).toEqual(['quality']);
+  });
+
+  it('checks identity/ownership before billing; recorded contributors see status but no original input or PII', async () => {
+    const googlePlaceId = seedProvider();
+    const row = await submission({
+      googlePlaceId,
+      note: 'owner-private@example.test',
+      decisionReason: 'moderator-private@example.test',
+    });
+    const provider = app.get(PLACE_PROVIDER) as FakePlaceProvider;
+    for (const id of [row.id, randomUUID()]) {
+      const response = await detail(id, other.token);
+      expect(response.statusCode, response.body).toBe(404);
+      expect(response.json().code).toBe('SUBMISSION_NOT_FOUND');
+    }
+    expect(provider.tiersRequested).toEqual([]);
+    await db
+      .insert(schema.placeSubmissionContributors)
+      .values({ userId: other.id, submissionId: row.id });
+    const response = await detail(row.id, other.token);
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({ id: row.id, status: 'pending', providerStatus: 'ok' });
+    expect(response.json()).not.toHaveProperty('contribution');
+    expect(response.body).not.toMatch(/private@example|reviewDraft|submitted_by/);
+    expect(provider.tiersRequested).toEqual(['quality']);
+    const invalid = await detail('bad-uuid');
+    expect(invalid.statusCode).toBe(400);
+  });
+
+  it('keeps approved navigation and rejected reason readable during provider failure', async () => {
+    const [place] = await db
+      .insert(schema.places)
+      .values({
+        name: 'Verified café',
+        nameNormalized: 'verified cafe',
+        geom: { x: 106.7, y: 10.77 },
+      })
+      .returning();
+    const provider = app.get(PLACE_PROVIDER) as FakePlaceProvider;
+    provider.failing = true;
+    for (const status of ['approved', 'merged', 'rejected'] as const) {
+      const row = await submission({
+        status,
+        resultPlaceId: status === 'rejected' ? null : place!.id,
+        rejectionReason: status === 'rejected' ? 'incorrect_location' : null,
+        decisionReason: 'NEVER EXPOSE',
+        decidedAt: new Date(),
+      });
+      const response = await detail(row.id);
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({
+        status,
+        providerStatus: status === 'rejected' ? 'unavailable' : 'deferred',
+        ...(status === 'rejected'
+          ? { rejectionReason: 'incorrect_location' }
+          : { placeId: place!.id, name: 'Verified café' }),
+      });
+      expect(response.json()).not.toHaveProperty('providerDisplay');
+      expect(response.body).not.toContain('NEVER EXPOSE');
+    }
+  });
+
+  it('reads only allowlisted #796 enrichment after additive schema rollout and hides it from co-contributors', async () => {
+    const row = await submission();
+    expect((await detail(row.id)).json().contribution).not.toHaveProperty('enrichment');
+    // Compatibility proof: #801 deploys before or after the independent #796 migration.
+    const existingColumn = await db.execute(sql`select 1 from information_schema.columns
+      where table_schema = 'public' and table_name = 'place_submissions' and column_name = 'enrichment'`);
+    if (!existingColumn.rows.length)
+      await db.execute(sql`alter table place_submissions add column enrichment jsonb`);
+    try {
+      await db.execute(
+        sql`update place_submissions set enrichment = ${JSON.stringify({ visitTips: 'Own tips', photos: [{ mediaId: randomUUID(), kind: 'bill' }], internalNote: 'PRIVATE' })}::jsonb where id = ${row.id}`,
+      );
+      const response = await detail(row.id);
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json().contribution).toMatchObject({
+        verificationStatus: 'unverified',
+        enrichment: {
+          visitTips: 'Own tips',
+          photos: [{ kind: 'bill', mediaId: expect.any(String) }],
+        },
+      });
+      expect(response.body).not.toContain('PRIVATE');
+      await db
+        .insert(schema.placeSubmissionContributors)
+        .values({ userId: other.id, submissionId: row.id });
+      expect((await detail(row.id, other.token)).json()).not.toHaveProperty('contribution');
+    } finally {
+      if (!existingColumn.rows.length)
+        await db.execute(sql`alter table place_submissions drop column enrichment`);
+    }
   });
 });

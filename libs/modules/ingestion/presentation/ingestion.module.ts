@@ -1,3 +1,4 @@
+import { SubmissionDisplayService } from '../application/submission-display.service';
 import { SearchModule } from '../../search/presentation/search.module';
 import { SubmissionPhotoService } from '../application/submission-photo.service';
 import { ProfileModule } from '../../profile/presentation/profile.module';
@@ -7,6 +8,12 @@ import {
   CommunityPhotoController,
 } from './submission-photos.controller';
 import { Module } from '@nestjs/common';
+import { NoopMetrics, RUNTIME_METRICS, type MetricsPort } from '@gogo/observability';
+import {
+  ResolutionSnapshotStore,
+  type ResolutionRedis,
+} from '../application/resolution-snapshot.store';
+import { RATE_LIMIT_REDIS } from '../../identity/presentation/rate-limit-redis';
 import { IdentityModule } from '../../identity/presentation/identity.module';
 // ADM-017 — both import doors classify their geometry through the one resolver:
 // the bulk job when it creates a place, and `resolveLink` when it previews one.
@@ -38,9 +45,16 @@ import { PlaceImportController } from './place-import.controller';
     SubmissionPhotoService,
     SubmissionPhotosService,
     MyPlaceSubmissionsService,
+    SubmissionDisplayService,
     PlaceResolverService,
     PlaceDedupService,
     PlaceSubmissionService,
+    {
+      provide: ResolutionSnapshotStore,
+      useFactory: (redis: ResolutionRedis | null, metrics?: MetricsPort) =>
+        new ResolutionSnapshotStore(redis, metrics ?? new NoopMetrics()),
+      inject: [RATE_LIMIT_REDIS, { token: RUNTIME_METRICS, optional: true }],
+    },
     PlaceImportJobService,
   ],
   exports: [PlaceResolverService, PlaceDedupService, PlaceSubmissionService, PlaceImportJobService],

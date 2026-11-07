@@ -432,3 +432,40 @@ describe('#797 reference-only probe', () => {
     }
   });
 });
+
+it('#801 cancels candidate photoRefs at the remaining parent deadline', async () => {
+  vi.useFakeTimers();
+  try {
+    let signal: AbortSignal | undefined;
+    const photoRefs = vi.fn((_id: string, options?: { signal?: AbortSignal }) => {
+      signal = options?.signal;
+      return new Promise<never>(() => {});
+    });
+    const service = new ProviderPhotosService(
+      {
+        execute: vi.fn().mockResolvedValue({
+          rows: [{ environment: 'all', platform: 'all', enabled: true, payload: null }],
+        }),
+      } as never,
+      { photoRefs, photoMedia: vi.fn() } as never,
+      CONFIG,
+    );
+    const controller = new AbortController();
+    const work = service.candidateReference(GOOGLE_ID, {
+      signal: controller.signal,
+      deadline: performance.now() + 250,
+    });
+    await vi.advanceTimersByTimeAsync(251);
+    expect(await work).toBeUndefined();
+    expect(photoRefs).toHaveBeenCalledTimes(1);
+    expect(signal?.aborted).toBe(true);
+    const canceled = new AbortController();
+    canceled.abort();
+    expect(
+      await service.candidateReference(GOOGLE_ID, { signal: canceled.signal }),
+    ).toBeUndefined();
+    expect(photoRefs).toHaveBeenCalledTimes(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});

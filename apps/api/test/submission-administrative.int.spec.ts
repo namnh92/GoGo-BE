@@ -333,8 +333,7 @@ describe('approving a Mobile contribution maps the place it creates', () => {
     // Submitting verifies the id, approving re-verifies at `quality` because
     // that fetch becomes the catalogue row. Resolving the mapping adds nothing:
     // it reads the coordinate already stored.
-    expect(places.tiersRequested.filter((t) => t === 'detail')).toHaveLength(0);
-    expect(places.tiersRequested.filter((t) => t === 'quality')).toHaveLength(1);
+    expect(places.tiersRequested).toEqual(['core', 'quality']);
   });
 
   it('creates no place at all when the mapping write fails', async () => {

@@ -910,6 +910,14 @@ const UPSTASH: ProviderDefinition = {
       capabilities: ['USAGE_COLLECTOR', 'ESTIMATED_COST'],
       operations: [
         runtimeOperation(UPSTASH_REDIS_OPERATIONS.rateLimitHit, 'Rate limit hit (INCR/EXPIRE)'),
+        runtimeOperation(
+          UPSTASH_REDIS_OPERATIONS.resolutionSnapshotPut,
+          'Resolution snapshot (SET PXAT)',
+        ),
+        runtimeOperation(
+          UPSTASH_REDIS_OPERATIONS.resolutionSnapshotGet,
+          'Resolution snapshot (GET)',
+        ),
         runtimeOperation(UPSTASH_REDIS_OPERATIONS.sessionRevoke, 'Session revoke (SET EX)'),
         runtimeOperation(UPSTASH_REDIS_OPERATIONS.sessionIsRevoked, 'Session revoked? (GET)'),
         runtimeOperation(

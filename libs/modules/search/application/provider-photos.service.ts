@@ -144,10 +144,22 @@ export class ProviderPhotosService {
   }
 
   /** #786: references only; no billed media and nothing retained between requests. */
-  async candidateReference(providerPlaceId: string): Promise<CandidatePhotoReference | undefined> {
+  async candidateReference(
+    providerPlaceId: string,
+    options: { signal?: AbortSignal; deadline?: number } = {},
+  ): Promise<CandidatePhotoReference | undefined> {
+    if (
+      options.signal?.aborted ||
+      (options.deadline !== undefined && performance.now() >= options.deadline)
+    )
+      return undefined;
     if (!(await this.enabled()) || !this.mediaBudgetConfigured()) return undefined;
+    const remaining = Math.min(this.deadlineMs, (options.deadline ?? Infinity) - performance.now());
+    if (options.signal?.aborted || remaining <= 0) return undefined;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.deadlineMs);
+    const abort = () => controller.abort();
+    options.signal?.addEventListener('abort', abort, { once: true });
+    const timer = setTimeout(abort, remaining);
     try {
       const refs = await Promise.race([
         this.refsFor(providerPlaceId, controller.signal),
@@ -168,6 +180,7 @@ export class ProviderPhotosService {
       return undefined;
     } finally {
       clearTimeout(timer);
+      options.signal?.removeEventListener('abort', abort);
       controller.abort();
     }
   }

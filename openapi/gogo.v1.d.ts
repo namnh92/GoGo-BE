@@ -2301,13 +2301,60 @@ export interface paths {
          *     All registered contributors recorded on a deduplicated proposal see
          *     that same proposal and its current decision once per account. Original
          *     submitters remain included. Earlier deduplicated contributors whose
-         *     identities were never stored cannot be backfilled. No provider calls.
-         *     Names come from the result place or review draft when available;
-         *     missing names and photos are omitted. Photos are approved editorial
-         *     or community catalogue media only. Raw moderator reasons, contributor
-         *     notes, reviewer identities, room IDs and other users' PII are excluded.
+         *     identities were never stored cannot be backfilled. ZERO provider calls:
+         *     list reads only stored display snapshots, captured on submission from the
+         *     signed resolved candidate. Snapshots older than 30 days or missing are
+         *     omitted with providerStatus=deferred; open detail for a budgeted refresh.
+         *     Approved/merged rows use canonical GoGo data without provider calls.
+         *     Names prefer result place/review draft, then snapshot; addressShort prefers
+         *     result place address, then snapshot short address (full address fallback).
+         *     categoryKey prefers active submitted taxonomy, then the snapshot category
+         *     validated against taxonomy when fetched. No automatic photo lookup or bytes.
+         *     Render attribution whenever Google display facts are used; never present
+         *     them as GoGo verified facts. providerDisplay.photo is a JSON proxy URL,
+         *     not an image src; proxy response credit is authoritative (ADR-0043).
+         *     Missing facts are omitted. photoUrl remains approved editorial/community
+         *     catalogue media only. No moderator notes, reviewer identities, room IDs,
+         *     contributor inputs or other users' PII. Cache-Control: no-store.
+         *     Rate limit: 10/minute/IP+actor.
          */
         get: operations["listMyPlaceSubmissions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/place-submissions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read an account contribution for the shared pending-place detail screen
+         * @description Registered original submitter or recorded contributor only. Unknown and
+         *     inaccessible IDs return the same 404 SUBMISSION_NOT_FOUND, before any
+         *     provider call. Guest/admin actors receive 403. Fresh snapshots (at most 30
+         *     days old) require no provider calls. Only pending/rejected rows with missing
+         *     or expired snapshots may refresh quality Details within the shared display
+         *     budget. An atomic 60-second lease prevents concurrent refresh purchases;
+         *     successful refreshes are reused for 30 days. A six-second deadline preserves
+         *     completed facts even if optional photo lookup times out and is canceled.
+         *     Approved/merged use canonical GoGo data without provider calls. Same
+         *     attribution and lazy photo proxy rules as list. pending is the client i18n
+         *     key for "Đang chờ duyệt". approved/merged carry placeId when the result
+         *     still exists, allowing navigation to the canonical shared detail.
+         *     contribution contains only the original submitter's own unverified input;
+         *     omitted for other contributors. Enrichment follows #796 when deployed;
+         *     historical rows without enrichment omit it. No moderator draft, decision
+         *     note, reviewer, room, contributor identity, upload URL or private bytes.
+         *     Rate limit: 30/minute/IP+actor. Cache-Control: no-store.
+         */
+        get: operations["getMyPlaceSubmission"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3678,7 +3725,7 @@ export interface paths {
          *
          *     It is a separate route from `resolveGoogleMapsLink` for two reasons, neither of them the response shape. **Who pays:** the public route is unauthenticated and rate-limited on IP without an edge-client-IP hop, so behind Cloudflare every caller in the world shares one bucket of 10/minute, and an editor entering a morning's worth of places would be throttled by strangers. This route keys on `ip+actor`, 20/minute. **Who is asking:** a resolution that misses cache costs a provider request, and a request that costs money should name the person who spent it.
          *
-         *     Requires `place.write`. Nothing is written — this is a preview, and the place is created by `cmsCreatePlace` carrying the `googlePlaceId` this returned.
+         *     Requires `place.write`. The catalogue is unchanged by this preview; a short-lived server-side resolution snapshot may be retained until its token expires (ADR-0048). The place is created by `cmsCreatePlace` carrying the `googlePlaceId` this returned.
          *
          *     Takes either a link or a Place ID; see the request body. A `CANDIDATE_SELECTION` answer is meant to be resolved by sending one of its `candidates[].googlePlaceId` straight back here.
          */
@@ -8597,7 +8644,7 @@ export interface components {
             reasonCodes?: string[];
             /** Format: uuid */
             existingPlaceId?: string;
-            /** @description Opaque, short-lived proof that this request verified the Google Place ID with the provider (#337). Present only when the answer came from a live provider check and the place is operational; send it back on `POST /place-submissions` to skip the duplicate verification fetch. It carries no provider content and authorises nothing — an expired or edited token is rejected with a retryable `RESOLUTION_TOKEN_INVALID` and the client resolves again. */
+            /** @description Opaque, short-lived proof that this request verified the Google Place ID with the provider (#337). Present only when the answer came from a live provider check and the place is operational; send it back on `POST /place-submissions` to skip the duplicate verification fetch. It carries a signed resolution id referencing a short-lived server-side display snapshot for persistence at submit (ADR-0048), never display facts, raw payload or photo references, and authorises nothing. An expired or edited token, or an unavailable resolution record, is rejected with a retryable `RESOLUTION_TOKEN_INVALID` and the client resolves again. */
             resolutionToken?: string;
             /**
              * @description ADM-017 — the two current administrative levels the candidate's coordinate falls in, so a create form can open on a real identity instead of two empty boxes.
@@ -8973,8 +9020,18 @@ export interface components {
         MyPlaceSubmission: {
             /** Format: uuid */
             id: string;
-            /** @description Available stored name, omitted when unknown. */
+            /** @description Stored GoGo name or fresh submission snapshot fallback; use providerDisplay attribution for the fallback. */
             name?: string;
+            /** @description Catalogue address or fresh snapshot short address; omitted when unknown. */
+            addressShort?: string;
+            /** @description Active submitted key or Google-derived snapshot category validated when fetched. */
+            categoryKey?: string;
+            /**
+             * @description Display availability; never infer submission status or closure from provider failure. Deferred means no fresh provider projection; pending/rejected rows can be opened in detail for budgeted hydration. Approved/merged use canonical fields.
+             * @enum {string}
+             */
+            providerStatus?: "ok" | "budget_exhausted" | "not_found" | "identity_mismatch" | "unavailable" | "deferred";
+            providerDisplay?: components["schemas"]["SubmissionProviderDisplay"];
             /**
              * Format: uri
              * @description Approved GoGo catalogue photo, omitted when unavailable or hosting is unconfigured.
@@ -8998,6 +9055,114 @@ export interface components {
              * @description Decision timestamp, omitted before a decision.
              */
             decidedAt?: string;
+        };
+        MyPlaceSubmissionDetail: {
+            /** Format: uuid */
+            id: string;
+            /** @description Stored GoGo name or fresh submission snapshot fallback; use providerDisplay attribution for the fallback. */
+            name?: string;
+            /** @description Catalogue address or fresh snapshot short address; omitted when unknown. */
+            addressShort?: string;
+            /** @description Active submitted key or Google-derived snapshot category validated when fetched. */
+            categoryKey?: string;
+            /**
+             * @description Display availability; never infer submission status or closure from provider failure. Deferred means no fresh provider projection; pending/rejected rows can be opened in detail for budgeted hydration. Approved/merged use canonical fields.
+             * @enum {string}
+             */
+            providerStatus?: "ok" | "budget_exhausted" | "not_found" | "identity_mismatch" | "unavailable" | "deferred";
+            providerDisplay?: components["schemas"]["SubmissionProviderDisplay"];
+            /**
+             * Format: uri
+             * @description Approved GoGo catalogue photo, omitted when unavailable or hosting is unconfigured.
+             */
+            photoUrl?: string;
+            /** @enum {string} */
+            status: "pending" | "approved" | "rejected" | "merged";
+            /** @description Stored public key for rejected submissions; omitted for historical rows without a key. Raw CMS reasons are private. */
+            rejectionReason?: components["schemas"]["SubmissionRejectionReason"];
+            /**
+             * Format: uuid
+             * @description Result place for approved or merged submissions, omitted if the place has been deleted.
+             */
+            placeId?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /**
+             * Format: date-time
+             * @description Decision timestamp, omitted before a decision.
+             */
+            decidedAt?: string;
+            contribution?: components["schemas"]["MySubmissionContribution"];
+        };
+        /** @description Owner-approved submission display snapshot (ADR-0048), reused for at most 30 days. Render Google Maps attribution; never promote to catalogue facts or cache on clients. Photo is a locally constructed lazy BFF reference with empty author credits until the proxy responds; proxy credits are authoritative. No photo refs or bytes are persisted in the snapshot. */
+        SubmissionProviderDisplay: {
+            /** @constant */
+            source: "google_places";
+            /** Format: date-time */
+            fetchedAt: string;
+            attributions: string[];
+            /** Format: uri */
+            googleMapsUri: string | null;
+            name: string;
+            addressShort: string;
+            categoryKey?: string;
+            googleRating: number | null;
+            googleRatingCount: number;
+            /** @description Weekly local hours; an empty array means unknown, never closed. */
+            openingHours: {
+                dayOfWeek: number;
+                openMinute: number;
+                closeMinute: number;
+                isOvernight: boolean;
+            }[];
+            photo?: components["schemas"]["CandidateProviderPhotoReference"];
+        };
+        MySubmissionContribution: {
+            /** @constant */
+            verificationStatus: "unverified";
+            categoryKey?: string;
+            estimatedPrice?: {
+                min: number;
+                max: number;
+                /** @constant */
+                currency: "VND";
+                unit: string;
+            };
+            vibeKeys?: string[];
+            note?: string;
+            enrichment?: components["schemas"]["MySubmissionEnrichment"];
+        };
+        /** @description Original submitter's own */
+        MySubmissionEnrichment: {
+            price?: {
+                min: number;
+                max: number;
+                /** @constant */
+                currency: "VND";
+                /** @enum {string} */
+                unit: "per_person" | "per_group" | "per_item" | "per_hour" | "per_night" | "free";
+            };
+            purposeKeys?: string[];
+            vibeKeys?: string[];
+            amenities?: {
+                [key: string]: boolean;
+            };
+            photos?: {
+                /** Format: uuid */
+                mediaId: string;
+                /** @enum {string} */
+                kind: "menu" | "bill";
+            }[];
+            recommendedDishes?: string;
+            visitTips?: string;
+            service?: components["schemas"]["MySubmissionExperienceRating"];
+            space?: components["schemas"]["MySubmissionExperienceRating"];
+        };
+        MySubmissionExperienceRating: {
+            rating: number;
+            chipKeys: string[];
         };
         PlaceSubmissionSummary: {
             /** Format: uuid */
@@ -15396,7 +15561,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             429: components["responses"]["RateLimited"];
-            /** @description PLACE_PROVIDER_UNAVAILABLE — GoGo cannot verify places right now: no working provider credential, an API not enabled, quota exhausted, or the provider is down. A statement about this deployment, not about the link, so the client must not present it as "địa điểm không tồn tại" (GoGo-BE#279). `retryable` is true; the envelope deliberately names neither the provider nor the fault. */
+            /** @description PLACE_PROVIDER_UNAVAILABLE — GoGo cannot verify places right now: no working provider credential, an API not enabled, quota exhausted, or the provider is down, or the short-lived resolution record cannot be stored. A statement about this deployment, not about the link, so the client must not present it as "địa điểm không tồn tại" (GoGo-BE#279). `retryable` is true; the envelope deliberately names neither the provider nor the fault. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -15431,7 +15596,7 @@ export interface operations {
                     note?: string;
                     /** @description Optional media ids from POST /uploads purpose place_photo, owned by this actor. JPEG/PNG/WebP only, at most 10 MiB each; actual bytes and size are verified. HEIC must be converted by the client. Originals are never served. Photos stay private until explicitly selected by staff at the submission decision. Deduplicated submissions retain each photo's actual uploader; at most five non-rejected photos per pending submission, including concurrent requests. */
                     mediaIds?: string[];
-                    /** @description The `resolutionToken` from the preceding `POST /places/resolve-google-maps-link` (#337). Optional — without it the server verifies the place with the provider again, which is the behaviour before this field existed. */
+                    /** @description The `resolutionToken` from the preceding `POST /places/resolve-google-maps-link` (#337). Optional — without it the server verifies the place with the provider again with core Details and snapshots only those fetched facts; it does not buy rating or opening hours for the snapshot. A signed resolution id references an allowlisted server-side snapshot with the same expiry as the token. The snapshot is persisted on the submission only on successful submission; legacy identity-only tokens remain valid without a snapshot. */
                     resolutionToken?: string;
                 };
             };
@@ -15504,6 +15669,35 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    getMyPlaceSubmission: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current authorized contribution detail. */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyPlaceSubmissionDetail"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
         };
     };
     getPlaceSubmission: {
@@ -18197,7 +18391,7 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             429: components["responses"]["RateLimited"];
-            /** @description PLACE_PROVIDER_UNAVAILABLE — GoGo cannot verify places right now. A statement about this deployment, not about the link, so the console must not present it as "không tìm thấy địa điểm" (GoGo-BE#279). `retryable` is true. */
+            /** @description PLACE_PROVIDER_UNAVAILABLE — GoGo cannot verify places right now. A statement about this deployment, not about the link, so the console must not present it as "không tìm thấy địa điểm" (GoGo-BE#279). This also covers failure to store the short-lived resolution record. `retryable` is true. */
             503: {
                 headers: {
                     [name: string]: unknown;

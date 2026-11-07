@@ -514,7 +514,7 @@ describe('ADR-0014 — the four dimensions on a row are independent', () => {
     expect(upstash.runtime).toEqual({
       coverage: 'FULL',
       services: { full: 1, partial: 0, notInstrumented: 0 },
-      operations: { instrumented: 6, total: 6 },
+      operations: { instrumented: 8, total: 8 },
     });
     expect(upstash.cost.kind).toBe('AUTO');
 

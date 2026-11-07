@@ -4,6 +4,10 @@ import { defer, firstValueFrom } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
 import { IdempotencyInterceptor } from '../../shared/idempotency.interceptor';
 import { IngestionController } from './ingestion.controller';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { parse } from 'yaml';
+import type { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 
 describe('resolve preview replay boundary (#786 F-01)', () => {
   it('executes keyed resolves afresh without touching replay storage or retaining photo credits', async () => {
@@ -53,5 +57,42 @@ describe('resolve preview replay boundary (#786 F-01)', () => {
     expect(submissions.resolveLink).toHaveBeenCalledTimes(2);
     expect(db.insert).not.toHaveBeenCalled();
     expect(db.select).not.toHaveBeenCalled();
+  });
+});
+
+describe('#801 resolution token contract compatibility', () => {
+  const contract = parse(readFileSync(path.resolve('openapi/gogo.v1.yaml'), 'utf8'));
+  it.each([
+    '/cms/place-submissions/{id}/provider-preview',
+    '/cms/places/resolve-link',
+    '/places/resolve-google-maps-link',
+  ])('keeps POST %s response resolutionToken at 1024 characters', (endpoint) => {
+    const ref = contract.paths[endpoint].post.responses['201'].content['application/json'].schema
+      .$ref as string;
+    const schema = ref
+      .slice(2)
+      .split('/')
+      .reduce((node, key) => node[key], contract);
+    expect(schema.properties.resolutionToken).toMatchObject({ type: 'string', maxLength: 1024 });
+  });
+
+  it('enforces the same unchanged limit in the submit HTTP validation pipe', () => {
+    const args = Reflect.getMetadata('__routeArguments__', IngestionController, 'submit') as Record<
+      string,
+      { pipes: ZodValidationPipe<unknown>[] }
+    >;
+    const pipe = Object.values(args)
+      .flatMap((arg) => arg.pipes)
+      .find((pipe) => typeof pipe === 'object' && 'transform' in pipe)!;
+    expect(
+      pipe.transform({ googlePlaceId: 'resolved-place', resolutionToken: 'a'.repeat(1024) }),
+    ).toMatchObject({ resolutionToken: 'a'.repeat(1024) });
+    expect(() =>
+      pipe.transform({ googlePlaceId: 'resolved-place', resolutionToken: 'a'.repeat(1025) }),
+    ).toThrow(expect.objectContaining({ code: 'VALIDATION_FAILED' }));
+    expect(
+      contract.paths['/place-submissions'].post.requestBody.content['application/json'].schema
+        .properties.resolutionToken.maxLength,
+    ).toBe(1024);
   });
 });

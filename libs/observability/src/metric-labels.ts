@@ -29,6 +29,7 @@
 export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // #788: owned-history query duration, including failures, without identity labels.
   my_place_submissions_query_duration_ms: [],
+  my_place_submission_display_total: ['outcome'],
   // #774: whole counted-query duration; no query, place or location labels.
   search_count_duration_ms: [],
 

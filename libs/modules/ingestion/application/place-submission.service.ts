@@ -1,3 +1,7 @@
+import { freshSnapshot, snapshotFromDetails } from '../domain/submission-display-snapshot';
+import type { SubmissionDisplaySnapshot } from '@gogo/database';
+import { randomUUID } from 'node:crypto';
+import { ResolutionSnapshotStore } from './resolution-snapshot.store';
 import {
   ProviderPhotosService,
   type CandidatePhotoReference,
@@ -60,8 +64,8 @@ export type ResolveLinkResponse = {
   existingPlaceId?: string | undefined;
   /**
    * #337 — proof that this request verified the Place ID with Google, for the
-   * submit that usually follows. Opaque, short-lived, carries no Google
-   * content, and is minted only for a place Google called `OPERATIONAL`.
+   * submit that usually follows. Opaque, short-lived, references a server-side
+   * display snapshot (#801), and is minted only for an `OPERATIONAL` place.
    * Absent whenever the answer did not come from a live provider check.
    */
   resolutionToken?: string | undefined;
@@ -259,6 +263,7 @@ export class PlaceSubmissionService {
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
     @Optional() private readonly providerPhotos?: ProviderPhotosService,
     @Optional() private readonly submissionPhotos?: SubmissionPhotoService,
+    @Optional() private readonly resolutionSnapshots?: ResolutionSnapshotStore,
   ) {}
 
   private async dbFirstEnabled(): Promise<boolean> {
@@ -412,7 +417,10 @@ export class PlaceSubmissionService {
       candidate,
       ...(await this.administrativePreview(details)),
       ...(verdict.kind === 'MERGE_CANDIDATE' ? { existingPlaceId: verdict.placeId } : {}),
-      ...(await this.mintAttestation(details)),
+      ...(await this.mintAttestation(details, {
+        ...snapshotFromDetails(details, candidate.categoryKey),
+        fetchedAt: candidate.fetchedAt,
+      })),
     };
   }
 
@@ -547,11 +555,12 @@ export class PlaceSubmissionService {
    * That condition is the whole design. `businessStatus` is Google content and
    * may not travel in the token, so the token's *existence* has to carry it: a
    * closed place gets none, its submit takes the old route, and the 409
-   * `PLACE_CLOSED` still comes from a live provider answer. Nothing about
-   * closure is inferred from a stored row, and nothing about it is stored.
+   * `PLACE_CLOSED` still comes from a live provider answer. The #801 display
+   * snapshot contains no closure status and never becomes verification evidence.
    */
   private async mintAttestation(
     details: ResolvedProviderPlace,
+    displaySnapshot: SubmissionDisplaySnapshot,
   ): Promise<{ resolutionToken?: string }> {
     if (!this.config.PLACE_RESOLUTION_ATTESTATION_SECRET) {
       this.metrics.increment('place_resolution_attestation_total', { result: 'unconfigured' });
@@ -562,14 +571,33 @@ export class PlaceSubmissionService {
       return {};
     }
     if (details.businessStatus !== 'OPERATIONAL') return {};
-    this.metrics.increment('place_resolution_attestation_total', { result: 'issued' });
-    return {
-      resolutionToken: signResolutionAttestation({
+    const resolutionId = randomUUID();
+    const verifiedAt = new Date(displaySnapshot.fetchedAt);
+    try {
+      if (!this.resolutionSnapshots) throw new Error('Resolution store unavailable');
+      const resolutionToken = signResolutionAttestation({
+        resolutionId,
+        now: verifiedAt,
         googlePlaceId: details.providerPlaceId,
         secret: this.config.PLACE_RESOLUTION_ATTESTATION_SECRET,
         ttlSeconds: this.config.PLACE_RESOLUTION_TTL_S,
-      }),
-    };
+      });
+      await this.resolutionSnapshots.put(resolutionId, {
+        googlePlaceId: details.providerPlaceId,
+        expiresAt: new Date(
+          verifiedAt.getTime() + this.config.PLACE_RESOLUTION_TTL_S * 1000,
+        ).toISOString(),
+        snapshot: displaySnapshot,
+      });
+      this.metrics.increment('place_resolution_attestation_total', { result: 'issued' });
+      return { resolutionToken };
+    } catch {
+      // Never return proof that would lose its snapshot or silently cost another fetch.
+      this.metrics.increment('place_resolution_attestation_total', { result: 'store_unavailable' });
+      throw new AppError('PLACE_PROVIDER_UNAVAILABLE', 'Không thể xác minh địa điểm lúc này', 503, {
+        retryable: true,
+      });
+    }
   }
 
   private toCandidate(details: ResolvedProviderPlace, score: number, categoryKey: string | null) {
@@ -645,7 +673,7 @@ export class PlaceSubmissionService {
   private async acceptAttestation(
     token: string | undefined,
     googlePlaceId: string,
-  ): Promise<boolean> {
+  ): Promise<{ displaySnapshot?: SubmissionDisplaySnapshot } | false> {
     if (!token) return false;
     if (!this.config.PLACE_RESOLUTION_ATTESTATION_SECRET) {
       this.metrics.increment('place_resolution_attestation_total', { result: 'unconfigured' });
@@ -682,8 +710,30 @@ export class PlaceSubmissionService {
       );
     }
 
+    let displaySnapshot: SubmissionDisplaySnapshot | undefined;
+    if (verdict.attestation.resolutionId) {
+      try {
+        displaySnapshot = await this.resolutionSnapshots?.get(
+          verdict.attestation.resolutionId,
+          verdict.attestation,
+        );
+      } catch {
+        // Fail closed: an outage must not silently trigger another paid provider fetch.
+      }
+      if (!displaySnapshot) {
+        this.metrics.increment('place_resolution_attestation_total', {
+          result: 'snapshot_unavailable',
+        });
+        throw new AppError(
+          'RESOLUTION_TOKEN_INVALID',
+          'Cần mở lại liên kết để xác minh địa điểm rồi thử lại',
+          400,
+          { retryable: true },
+        );
+      }
+    }
     this.metrics.increment('place_resolution_attestation_total', { result: 'accepted' });
-    return true;
+    return displaySnapshot ? { displaySnapshot } : {};
   }
 
   /** FR-INGEST-011/012 — proposal only; publishing stays with CMS. */
@@ -747,6 +797,9 @@ export class PlaceSubmissionService {
     const attested = await this.acceptAttestation(input.resolutionToken, input.googlePlaceId);
 
     let verdict: DedupVerdict;
+    let displaySnapshot: SubmissionDisplaySnapshot | undefined = attested
+      ? attested.displaySnapshot
+      : undefined;
     /**
      * What we are standing on if this request ends up creating a proposal.
      *
@@ -778,12 +831,9 @@ export class PlaceSubmissionService {
             ? { kind: 'LINKED_EXISTING', placeId: identity.placeId }
             : { kind: 'NEW' };
     } else {
-      // `core` (#338). This branch is the un-attested submit: it reads
-      // `businessStatus` to refuse a closed place, and hands the object to
-      // `dedup.check`, which needs a name and a coordinate. Every one of those
-      // is a Pro field. Nothing here reads a rating, an opening hour or a price
-      // level — the catalogue row is written at approve, and that fetch is
-      // still Enterprise.
+      // #801 reuses this verification for the display snapshot without changing
+      // its SKU. Core supplies identity/closure/dedup facts; rating and hours
+      // remain unknown unless resolve already fetched them for a signed candidate.
       const details = await this.resolver
         .resolveByProviderId(input.googlePlaceId, 'core')
         // #339 — `catch(() => null)` turned every provider fault into
@@ -815,6 +865,10 @@ export class PlaceSubmissionService {
       this.dedup.reportIdMismatch(details.details, 'submission');
       verdict = await this.dedup.check(details.details);
       verifiedBy = 'provider';
+      displaySnapshot = snapshotFromDetails(
+        details.details,
+        await this.offeredCategoryKey(details.details),
+      );
     }
     if (verdict.kind === 'IDENTITY_CONFLICT') throw identityConflict(this.metrics);
     if (verdict.kind === 'LINKED_EXISTING') {
@@ -859,6 +913,8 @@ export class PlaceSubmissionService {
           .update(schema.placeSubmissions)
           .set({
             submissionCount: sql`submission_count + 1`,
+            // The pending row is locked above; retain a snapshot while it is fresh.
+            ...(displaySnapshot && !freshSnapshot(row.displaySnapshot) ? { displaySnapshot } : {}),
             ...(prepared.photos.length
               ? {
                   updatedAt: sql`clock_timestamp()`,
@@ -872,6 +928,7 @@ export class PlaceSubmissionService {
           .insert(schema.placeSubmissions)
           .values({
             googlePlaceId: input.googlePlaceId,
+            displaySnapshot: displaySnapshot ?? null,
             ...(actor.type === 'user'
               ? { submittedByUserId: actor.id }
               : { submittedByGuestSessionId: actor.id }),
