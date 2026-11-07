@@ -149,8 +149,17 @@ khoá bí mật.
 ## 3b. Metrics & alert cho ingestion (PI-SRE-001)
 
 GoGo-BE#788: `my_place_submissions_query_duration_ms` là histogram milliseconds
-cho query danh sách đóng góp của account, đo cả khi query lỗi; không có label,
+cho query list/detail đóng góp của account, đo cả khi query lỗi; không có label,
 không chứa user ID, submission ID, cursor hoặc nội dung đóng góp.
+
+GoGo-BE#801: `my_place_submission_display_total` là counter với label `outcome`
+chỉ nhận `ok`, `budget_exhausted`, `not_found`, `identity_mismatch`, `unavailable`.
+Không gắn user/submission/provider ID, ghi chú hoặc payload. Live display reserve
+`google.details.quality` trong scope `google.places.display` trước call; cấu hình
+`PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_DETAILS_QUALITY` cùng calls/cost ceiling,
+không cấu hình = không gọi. Bốn lookup đồng thời/request, chung cửa sổ 6 giây;
+`deferred` là row chưa bắt đầu, không đếm thành provider failure. Chi tiết
+retention/rollback: ADR-0048. Ảnh tiếp tục dùng flag/budget/proxy #786.
 
 MVP không chạy Prometheus/OTLP collector. Metric đi ra **theo log**, mỗi dòng
 một shape cố định (`LogMetrics` trong `@gogo/observability`):

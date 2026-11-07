@@ -8,6 +8,20 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 7.5.0-alpha.1 — Facts và chi tiết đóng góp (GoGo-BE#801)
+
+MINOR: list thêm facts Google sống, attribution, hours, rating/count và reference
+một ảnh JSON proxy #786, kể cả pending. Detail mới
+`GET /me/place-submissions/{id}` cho người gửi/đóng góp đã ghi nhận; trả cùng facts,
+status, rejectionReason và placeId sau approved/merged. Enrichment #796 và legacy
+user input chỉ trả cho chính người gửi gốc, đánh dấu unverified. Không trả note
+moderation hay PII/input người khác. Unknown/không có quyền cùng 404 trước billing.
+
+Cập nhật guarantee history không gọi provider của 7.1 theo owner #801: live display
+được giới hạn bởi ngân sách display, 4 lookup đồng thời/cửa sổ 6s và no-store;
+`providerStatus` cho degraded/deferred, không cache hoặc persist Google facts/ảnh
+trước duyệt. Chưa cấu hình budget quality thì không có paid calls. ADR-0048.
+
 ## 7.3.0-alpha.1 — taxonomy cache generation (GoGo-BE#799)
 
 MINOR additive: `/taxonomies` gains `version`, optional exact `locale`, weak

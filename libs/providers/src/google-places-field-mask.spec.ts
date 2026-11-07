@@ -40,7 +40,13 @@ const ADR_CORE = [
   'types',
   'googleMapsUri',
 ];
-const ADR_QUALITY = ['rating', 'userRatingCount', 'regularOpeningHours', 'priceLevel'];
+const ADR_QUALITY = [
+  'rating',
+  'userRatingCount',
+  'regularOpeningHours',
+  'priceLevel',
+  'shortFormattedAddress',
+];
 const ADR_DETAIL = ['reviews'];
 
 describe('ADR-0006 §2 field-mask tiers', () => {
@@ -120,6 +126,7 @@ describe('GooglePlacesAdapter.details', () => {
     id: 'ChIJ-lacaph',
     displayName: { text: 'Lacàph Coffee Experiences Space' },
     formattedAddress: '76 Nguyễn Thị Minh Khai, Quận 3, TP.HCM',
+    shortFormattedAddress: '76 Nguyễn Thị Minh Khai, TP.HCM',
     location: { latitude: 10.7845, longitude: 106.6912 },
     businessStatus: 'OPERATIONAL',
     primaryType: 'coffee_shop',
@@ -160,6 +167,13 @@ describe('GooglePlacesAdapter.details', () => {
   it.each(['core', 'quality', 'detail'] as const)('sends the %s mask verbatim', async (tier) => {
     await new GooglePlacesAdapter('key').details('ChIJ-lacaph', tier);
     expect(maskSent()).toBe(PLACE_FIELD_MASKS[tier]);
+  });
+
+  it('#801 carries the live short formatted address in quality Details', async () => {
+    const place = await new GooglePlacesAdapter('key').details('ChIJ-lacaph', 'quality');
+    expect(place?.shortAddress).toBe('76 Nguyễn Thị Minh Khai, TP.HCM');
+    expect(maskSent()!.split(',')).toContain('shortFormattedAddress');
+    expect(PLACE_FIELD_MASKS.core.split(',')).not.toContain('shortFormattedAddress');
   });
 
   it('sends the liveness mask verbatim', async () => {

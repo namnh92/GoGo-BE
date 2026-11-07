@@ -511,6 +511,7 @@ const envSchema = z
      */
     PLACE_DISPLAY_DAILY_MAX_CALLS: z.coerce.number().int().min(0).optional(),
     PLACE_DISPLAY_DAILY_MAX_LIST_COST_USD: z.coerce.number().min(0).optional(),
+    PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_DETAILS_QUALITY: z.coerce.number().int().min(0).optional(),
     PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_PHOTOMEDIA: z.coerce.number().int().min(0).optional(),
     /**
      * GoGo-BE#509 — the deploy-time default of the `place_provider_photos.enabled`

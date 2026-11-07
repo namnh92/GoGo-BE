@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 7.3.0-alpha.1
+  version: 7.5.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -4923,11 +4923,23 @@ paths:
         All registered contributors recorded on a deduplicated proposal see
         that same proposal and its current decision once per account. Original
         submitters remain included. Earlier deduplicated contributors whose
-        identities were never stored cannot be backfilled. No provider calls.
-        Names come from the result place or review draft when available;
-        missing names and photos are omitted. Photos are approved editorial
-        or community catalogue media only. Raw moderator reasons, contributor
-        notes, reviewer identities, room IDs and other users' PII are excluded.
+        identities were never stored cannot be backfilled. After authorization,
+        fetch live Google display facts (quality Details) under the display budget;
+        at most four concurrent lookups, one per distinct provider identity in this
+        request. A six-second display window may defer remaining rows. No facts,
+        photo names, references or bytes are cached or persisted. Provider failure
+        preserves the history item with providerStatus and omits providerDisplay.
+        Names prefer result place/review draft, then live Google; addressShort
+        prefers the result place address, then Google's short formatted address
+        (full formatted address fallback). categoryKey prefers active submitted taxonomy,
+        then a live Google-derived key checked against active taxonomy.
+        Render attribution whenever Google display facts are used; never present
+        them as GoGo verified facts. providerDisplay.photo is a JSON proxy URL,
+        not an image src; proxy response credit is authoritative (ADR-0043).
+        Missing facts are omitted. photoUrl remains approved editorial/community
+        catalogue media only. No moderator notes, reviewer identities, room IDs,
+        contributor inputs or other users' PII. Cache-Control: no-store.
+        Rate limit: 10/minute/IP+actor.
       security: [{ bearerAuth: [] }]
       parameters:
         - name: limit
@@ -4949,6 +4961,42 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /me/place-submissions/{id}:
+    get:
+      operationId: getMyPlaceSubmission
+      tags: [places]
+      summary: Read an account contribution for the shared pending-place detail screen
+      description: |
+        Registered original submitter or recorded contributor only. Unknown and
+        inaccessible IDs return the same 404 SUBMISSION_NOT_FOUND, before any
+        provider call. Guest/admin actors receive 403. Same live facts, attribution,
+        degradation and photo proxy rules as the list. pending is the client i18n
+        key for "Đang chờ duyệt". approved/merged carry placeId when the result
+        still exists, allowing navigation to the canonical shared detail.
+        contribution contains only the original submitter's own unverified input;
+        omitted for other contributors. Enrichment follows #796 when deployed;
+        historical rows without enrichment omit it. No moderator draft, decision
+        note, reviewer, room, contributor identity, upload URL or private bytes.
+        Rate limit: 30/minute/IP+actor. Cache-Control: no-store.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Current authorized contribution detail.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MyPlaceSubmissionDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /place-submissions/{id}:
     get:
@@ -17764,7 +17812,19 @@ components:
         id: { type: string, format: uuid }
         name:
           type: string
-          description: Available stored name, omitted when unknown.
+          description: Stored GoGo name or live Google fallback; use providerDisplay attribution for the fallback.
+        addressShort:
+          type: string
+          description: Catalogue address or transient Google short address; omitted when unknown.
+        categoryKey:
+          type: string
+          description: Active submitted key or transient active Google-derived category key.
+        providerStatus:
+          type: string
+          enum: [ok, budget_exhausted, not_found, identity_mismatch, unavailable, deferred]
+          description: Display availability; never infer submission status or closure from provider failure. Deferred rows can be opened in detail.
+        providerDisplay:
+          $ref: '#/components/schemas/SubmissionProviderDisplay'
         photoUrl:
           type: string
           format: uri
@@ -17783,6 +17843,165 @@ components:
           type: string
           format: date-time
           description: Decision timestamp, omitted before a decision.
+
+    MyPlaceSubmissionDetail:
+      type: object
+      additionalProperties: false
+      required: [id, status, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        name:
+          type: string
+          description: Stored GoGo name or live Google fallback; use providerDisplay attribution for the fallback.
+        addressShort:
+          type: string
+          description: Catalogue address or transient Google short address; omitted when unknown.
+        categoryKey:
+          type: string
+          description: Active submitted key or transient active Google-derived category key.
+        providerStatus:
+          type: string
+          enum: [ok, budget_exhausted, not_found, identity_mismatch, unavailable, deferred]
+          description: Display availability; never infer submission status or closure from provider failure. Deferred rows can be opened in detail.
+        providerDisplay:
+          $ref: '#/components/schemas/SubmissionProviderDisplay'
+        photoUrl:
+          type: string
+          format: uri
+          description: Approved GoGo catalogue photo, omitted when unavailable or hosting is unconfigured.
+        status: { type: string, enum: [pending, approved, rejected, merged] }
+        rejectionReason:
+          $ref: '#/components/schemas/SubmissionRejectionReason'
+          description: Stored public key for rejected submissions; omitted for historical rows without a key. Raw CMS reasons are private.
+        placeId:
+          type: string
+          format: uuid
+          description: Result place for approved or merged submissions, omitted if the place has been deleted.
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        decidedAt:
+          type: string
+          format: date-time
+          description: Decision timestamp, omitted before a decision.
+
+        contribution:
+          $ref: '#/components/schemas/MySubmissionContribution'
+
+    SubmissionProviderDisplay:
+      type: object
+      additionalProperties: false
+      description: Live Google facts for this response only. Render Google Maps attribution and author credits; do not cache, persist or promote to catalogue facts.
+      required:
+        [
+          source,
+          fetchedAt,
+          attributions,
+          googleMapsUri,
+          name,
+          addressShort,
+          googleRating,
+          googleRatingCount,
+          openingHours,
+        ]
+      properties:
+        source: { type: string, const: google_places }
+        fetchedAt: { type: string, format: date-time }
+        attributions:
+          type: array
+          items: { type: string }
+        googleMapsUri: { type: [string, 'null'], format: uri }
+        name: { type: string }
+        addressShort: { type: string }
+        categoryKey: { type: string }
+        googleRating: { type: [number, 'null'], minimum: 0, maximum: 5 }
+        googleRatingCount: { type: integer, minimum: 0 }
+        openingHours:
+          type: array
+          description: Weekly local hours; an empty array means unknown, never closed.
+          items:
+            type: object
+            additionalProperties: false
+            required: [dayOfWeek, openMinute, closeMinute, isOvernight]
+            properties:
+              dayOfWeek: { type: integer, minimum: 0, maximum: 6 }
+              openMinute: { type: integer, minimum: 0, maximum: 1440 }
+              closeMinute: { type: integer, minimum: 0, maximum: 1440 }
+              isOvernight: { type: boolean }
+        photo: { $ref: '#/components/schemas/CandidateProviderPhotoReference' }
+
+    MySubmissionContribution:
+      type: object
+      additionalProperties: false
+      required: [verificationStatus]
+      properties:
+        verificationStatus: { type: string, const: unverified }
+        categoryKey: { type: string }
+        estimatedPrice:
+          type: object
+          additionalProperties: false
+          required: [min, max, currency, unit]
+          properties:
+            min: { type: integer, minimum: 0 }
+            max: { type: integer, minimum: 0 }
+            currency: { type: string, const: VND }
+            unit: { type: string }
+        vibeKeys:
+          type: array
+          items: { type: string }
+        note: { type: string }
+        enrichment: { $ref: '#/components/schemas/MySubmissionEnrichment' }
+
+    MySubmissionEnrichment:
+      type: object
+      additionalProperties: false
+      description: Original submitter's own #796 input, unverified. Media IDs only; no private URL or image bytes. Omitted before the #796 writer/schema is deployed.
+      properties:
+        price:
+          type: object
+          additionalProperties: false
+          required: [min, max, currency, unit]
+          properties:
+            min: { type: integer, minimum: 0 }
+            max: { type: integer, minimum: 0 }
+            currency: { type: string, const: VND }
+            unit:
+              { type: string, enum: [per_person, per_group, per_item, per_hour, per_night, free] }
+        purposeKeys:
+          type: array
+          items: { type: string }
+        vibeKeys:
+          type: array
+          maxItems: 3
+          items: { type: string }
+        amenities:
+          type: object
+          maxProperties: 6
+          additionalProperties: { type: boolean }
+        photos:
+          type: array
+          maxItems: 5
+          items:
+            type: object
+            additionalProperties: false
+            required: [mediaId, kind]
+            properties:
+              mediaId: { type: string, format: uuid }
+              kind: { type: string, enum: [menu, bill] }
+        recommendedDishes: { type: string, maxLength: 1000 }
+        visitTips: { type: string, maxLength: 2000 }
+        service: { $ref: '#/components/schemas/MySubmissionExperienceRating' }
+        space: { $ref: '#/components/schemas/MySubmissionExperienceRating' }
+
+    MySubmissionExperienceRating:
+      type: object
+      additionalProperties: false
+      required: [rating, chipKeys]
+      properties:
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        chipKeys:
+          type: array
+          maxItems: 5
+          items: { type: string }
 
     PlaceSubmissionSummary:
       type: object

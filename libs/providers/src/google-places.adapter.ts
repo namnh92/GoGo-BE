@@ -206,7 +206,13 @@ const CORE_FIELDS = [
   'googleMapsUri',
 ] as const;
 
-const QUALITY_FIELDS = ['rating', 'userRatingCount', 'regularOpeningHours', 'priceLevel'] as const;
+const QUALITY_FIELDS = [
+  'rating',
+  'userRatingCount',
+  'regularOpeningHours',
+  'priceLevel',
+  'shortFormattedAddress',
+] as const;
 
 const DETAIL_FIELDS = ['reviews'] as const;
 
@@ -423,6 +429,7 @@ export class GooglePlacesAdapter
       id: string;
       displayName?: { text: string };
       formattedAddress?: string;
+      shortFormattedAddress?: string;
       location?: { latitude: number; longitude: number };
       rating?: number;
       userRatingCount?: number;
@@ -522,6 +529,7 @@ export class GooglePlacesAdapter
       ...(data.id !== providerPlaceId ? { requestedProviderPlaceId: providerPlaceId } : {}),
       name: data.displayName?.text ?? 'Unknown',
       addressText: data.formattedAddress ?? '',
+      ...(data.shortFormattedAddress ? { shortAddress: data.shortFormattedAddress } : {}),
       lat: data.location.latitude,
       lng: data.location.longitude,
       rating: data.rating ?? null,

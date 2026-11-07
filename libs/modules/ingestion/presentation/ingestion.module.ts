@@ -1,3 +1,4 @@
+import { SubmissionDisplayService } from '../application/submission-display.service';
 import { SearchModule } from '../../search/presentation/search.module';
 import { SubmissionPhotoService } from '../application/submission-photo.service';
 import { ProfileModule } from '../../profile/presentation/profile.module';
@@ -38,6 +39,7 @@ import { PlaceImportController } from './place-import.controller';
     SubmissionPhotoService,
     SubmissionPhotosService,
     MyPlaceSubmissionsService,
+    SubmissionDisplayService,
     PlaceResolverService,
     PlaceDedupService,
     PlaceSubmissionService,

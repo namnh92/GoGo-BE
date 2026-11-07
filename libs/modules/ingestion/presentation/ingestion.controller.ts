@@ -21,7 +21,15 @@ const mySubmissionsQuery = z.object({
 export class MyPlaceSubmissionsController {
   constructor(private readonly submissions: MyPlaceSubmissionsService) {}
 
+  @Get(':id')
+  @Header('Cache-Control', 'no-store')
+  @RateLimit({ action: 'my_submission_detail', limit: 30, windowSeconds: 60, keyBy: 'ip+actor' })
+  detail(@CurrentActor() actor: Actor, @Param('id', Uuid) id: string) {
+    return this.submissions.detail(actor, id);
+  }
+
   @Get()
+  @RateLimit({ action: 'my_submissions_list', limit: 10, windowSeconds: 60, keyBy: 'ip+actor' })
   @Header('Cache-Control', 'no-store')
   list(
     @CurrentActor() actor: Actor,

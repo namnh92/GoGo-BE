@@ -170,6 +170,8 @@ export type ResolvedProviderPlace = {
   requestedProviderPlaceId?: string;
   name: string;
   addressText: string;
+  /** Live display only; never persisted with a submission. */
+  shortAddress?: string;
   lat: number;
   lng: number;
   rating: number | null;

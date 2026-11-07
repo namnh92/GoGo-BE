@@ -2301,13 +2301,55 @@ export interface paths {
          *     All registered contributors recorded on a deduplicated proposal see
          *     that same proposal and its current decision once per account. Original
          *     submitters remain included. Earlier deduplicated contributors whose
-         *     identities were never stored cannot be backfilled. No provider calls.
-         *     Names come from the result place or review draft when available;
-         *     missing names and photos are omitted. Photos are approved editorial
-         *     or community catalogue media only. Raw moderator reasons, contributor
-         *     notes, reviewer identities, room IDs and other users' PII are excluded.
+         *     identities were never stored cannot be backfilled. After authorization,
+         *     fetch live Google display facts (quality Details) under the display budget;
+         *     at most four concurrent lookups, one per distinct provider identity in this
+         *     request. A six-second display window may defer remaining rows. No facts,
+         *     photo names, references or bytes are cached or persisted. Provider failure
+         *     preserves the history item with providerStatus and omits providerDisplay.
+         *     Names prefer result place/review draft, then live Google; addressShort
+         *     prefers the result place address, then Google's short formatted address
+         *     (full formatted address fallback). categoryKey prefers active submitted taxonomy,
+         *     then a live Google-derived key checked against active taxonomy.
+         *     Render attribution whenever Google display facts are used; never present
+         *     them as GoGo verified facts. providerDisplay.photo is a JSON proxy URL,
+         *     not an image src; proxy response credit is authoritative (ADR-0043).
+         *     Missing facts are omitted. photoUrl remains approved editorial/community
+         *     catalogue media only. No moderator notes, reviewer identities, room IDs,
+         *     contributor inputs or other users' PII. Cache-Control: no-store.
+         *     Rate limit: 10/minute/IP+actor.
          */
         get: operations["listMyPlaceSubmissions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/place-submissions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read an account contribution for the shared pending-place detail screen
+         * @description Registered original submitter or recorded contributor only. Unknown and
+         *     inaccessible IDs return the same 404 SUBMISSION_NOT_FOUND, before any
+         *     provider call. Guest/admin actors receive 403. Same live facts, attribution,
+         *     degradation and photo proxy rules as the list. pending is the client i18n
+         *     key for "Đang chờ duyệt". approved/merged carry placeId when the result
+         *     still exists, allowing navigation to the canonical shared detail.
+         *     contribution contains only the original submitter's own unverified input;
+         *     omitted for other contributors. Enrichment follows #796 when deployed;
+         *     historical rows without enrichment omit it. No moderator draft, decision
+         *     note, reviewer, room, contributor identity, upload URL or private bytes.
+         *     Rate limit: 30/minute/IP+actor. Cache-Control: no-store.
+         */
+        get: operations["getMyPlaceSubmission"];
         put?: never;
         post?: never;
         delete?: never;
@@ -8973,8 +9015,18 @@ export interface components {
         MyPlaceSubmission: {
             /** Format: uuid */
             id: string;
-            /** @description Available stored name, omitted when unknown. */
+            /** @description Stored GoGo name or live Google fallback; use providerDisplay attribution for the fallback. */
             name?: string;
+            /** @description Catalogue address or transient Google short address; omitted when unknown. */
+            addressShort?: string;
+            /** @description Active submitted key or transient active Google-derived category key. */
+            categoryKey?: string;
+            /**
+             * @description Display availability; never infer submission status or closure from provider failure. Deferred rows can be opened in detail.
+             * @enum {string}
+             */
+            providerStatus?: "ok" | "budget_exhausted" | "not_found" | "identity_mismatch" | "unavailable" | "deferred";
+            providerDisplay?: components["schemas"]["SubmissionProviderDisplay"];
             /**
              * Format: uri
              * @description Approved GoGo catalogue photo, omitted when unavailable or hosting is unconfigured.
@@ -8998,6 +9050,114 @@ export interface components {
              * @description Decision timestamp, omitted before a decision.
              */
             decidedAt?: string;
+        };
+        MyPlaceSubmissionDetail: {
+            /** Format: uuid */
+            id: string;
+            /** @description Stored GoGo name or live Google fallback; use providerDisplay attribution for the fallback. */
+            name?: string;
+            /** @description Catalogue address or transient Google short address; omitted when unknown. */
+            addressShort?: string;
+            /** @description Active submitted key or transient active Google-derived category key. */
+            categoryKey?: string;
+            /**
+             * @description Display availability; never infer submission status or closure from provider failure. Deferred rows can be opened in detail.
+             * @enum {string}
+             */
+            providerStatus?: "ok" | "budget_exhausted" | "not_found" | "identity_mismatch" | "unavailable" | "deferred";
+            providerDisplay?: components["schemas"]["SubmissionProviderDisplay"];
+            /**
+             * Format: uri
+             * @description Approved GoGo catalogue photo, omitted when unavailable or hosting is unconfigured.
+             */
+            photoUrl?: string;
+            /** @enum {string} */
+            status: "pending" | "approved" | "rejected" | "merged";
+            /** @description Stored public key for rejected submissions; omitted for historical rows without a key. Raw CMS reasons are private. */
+            rejectionReason?: components["schemas"]["SubmissionRejectionReason"];
+            /**
+             * Format: uuid
+             * @description Result place for approved or merged submissions, omitted if the place has been deleted.
+             */
+            placeId?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /**
+             * Format: date-time
+             * @description Decision timestamp, omitted before a decision.
+             */
+            decidedAt?: string;
+            contribution?: components["schemas"]["MySubmissionContribution"];
+        };
+        /** @description Live Google facts for this response only. Render Google Maps attribution and author credits; do not cache, persist or promote to catalogue facts. */
+        SubmissionProviderDisplay: {
+            /** @constant */
+            source: "google_places";
+            /** Format: date-time */
+            fetchedAt: string;
+            attributions: string[];
+            /** Format: uri */
+            googleMapsUri: string | null;
+            name: string;
+            addressShort: string;
+            categoryKey?: string;
+            googleRating: number | null;
+            googleRatingCount: number;
+            /** @description Weekly local hours; an empty array means unknown, never closed. */
+            openingHours: {
+                dayOfWeek: number;
+                openMinute: number;
+                closeMinute: number;
+                isOvernight: boolean;
+            }[];
+            photo?: components["schemas"]["CandidateProviderPhotoReference"];
+        };
+        MySubmissionContribution: {
+            /** @constant */
+            verificationStatus: "unverified";
+            categoryKey?: string;
+            estimatedPrice?: {
+                min: number;
+                max: number;
+                /** @constant */
+                currency: "VND";
+                unit: string;
+            };
+            vibeKeys?: string[];
+            note?: string;
+            enrichment?: components["schemas"]["MySubmissionEnrichment"];
+        };
+        /** @description Original submitter's own */
+        MySubmissionEnrichment: {
+            price?: {
+                min: number;
+                max: number;
+                /** @constant */
+                currency: "VND";
+                /** @enum {string} */
+                unit: "per_person" | "per_group" | "per_item" | "per_hour" | "per_night" | "free";
+            };
+            purposeKeys?: string[];
+            vibeKeys?: string[];
+            amenities?: {
+                [key: string]: boolean;
+            };
+            photos?: {
+                /** Format: uuid */
+                mediaId: string;
+                /** @enum {string} */
+                kind: "menu" | "bill";
+            }[];
+            recommendedDishes?: string;
+            visitTips?: string;
+            service?: components["schemas"]["MySubmissionExperienceRating"];
+            space?: components["schemas"]["MySubmissionExperienceRating"];
+        };
+        MySubmissionExperienceRating: {
+            rating: number;
+            chipKeys: string[];
         };
         PlaceSubmissionSummary: {
             /** Format: uuid */
@@ -15504,6 +15664,35 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    getMyPlaceSubmission: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current authorized contribution detail. */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyPlaceSubmissionDetail"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
         };
     };
     getPlaceSubmission: {
