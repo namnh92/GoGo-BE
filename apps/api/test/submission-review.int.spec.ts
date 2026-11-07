@@ -957,35 +957,35 @@ describe('provider spend, per stage of the journey (#505/#528)', () => {
   });
 });
 
-describe('#786 approved submission provider photo', () => {
-  async function enablePhotos() {
-    await db.execute(sql`delete from feature_flags where key = 'place_provider_photos.enabled'`);
-    await db.execute(
-      sql`insert into feature_flags (key, environment, platform, enabled) values ('place_provider_photos.enabled', 'all', 'all', true)`,
-    );
-  }
-  function seedPhoto(id: string) {
-    const fake = app.get(PLACE_PHOTO_DISPLAY) as FakePlacePhotoDisplay;
-    fake.seed(
-      id,
-      [0, 1].map((n) => ({
-        reference: `places/${id}/photos/private-photo-${n}`,
-        widthPx: 1600,
-        heightPx: 900,
-        authorAttributions: [
-          { displayName: 'Lan', uri: 'https://maps.google.com/contrib/lan', photoUri: null },
-        ],
-        googleMapsUri: 'https://www.google.com/maps/photo/one',
-      })),
-    );
-    for (const n of [0, 1])
-      fake.seedMedia(`places/${id}/photos/private-photo-${n}`, {
-        contentType: 'image/jpeg',
-        bytes: new Uint8Array([255, 216, 255, 1]),
-      });
-    return fake;
-  }
+async function enablePhotos() {
+  await db.execute(sql`delete from feature_flags where key = 'place_provider_photos.enabled'`);
+  await db.execute(
+    sql`insert into feature_flags (key, environment, platform, enabled) values ('place_provider_photos.enabled', 'all', 'all', true)`,
+  );
+}
+function seedPhoto(id: string) {
+  const fake = app.get(PLACE_PHOTO_DISPLAY) as FakePlacePhotoDisplay;
+  fake.seed(
+    id,
+    [0, 1].map((n) => ({
+      reference: `places/${id}/photos/private-photo-${n}`,
+      widthPx: 1600,
+      heightPx: 900,
+      authorAttributions: [
+        { displayName: 'Lan', uri: 'https://maps.google.com/contrib/lan', photoUri: null },
+      ],
+      googleMapsUri: 'https://www.google.com/maps/photo/one',
+    })),
+  );
+  for (const n of [0, 1])
+    fake.seedMedia(`places/${id}/photos/private-photo-${n}`, {
+      contentType: 'image/jpeg',
+      bytes: new Uint8Array([255, 216, 255, 1]),
+    });
+  return fake;
+}
 
+describe('#786 approved submission provider photo', () => {
   it('resolve/preview/pending store no photo, approve retains exactly one attributed provider image', async () => {
     await enablePhotos();
     const { submissionId, googlePlaceId } = await contribute();
@@ -1214,7 +1214,9 @@ describe('public rejection keys (#787)', () => {
   });
 
   it('approval keeps its note requirement and never exposes a rejection key', async () => {
-    const { submissionId, token } = await contribute();
+    await enablePhotos();
+    const { submissionId, googlePlaceId, token } = await contribute();
+    seedPhoto(googlePlaceId);
     expect((await decide(submissionId, { decision: 'approved' })).statusCode).toBe(400);
     const res = await decide(submissionId, { decision: 'approved', reason: 'PRIVATE approved' });
     expect(res.statusCode, res.body).toBe(201);

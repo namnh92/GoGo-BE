@@ -149,13 +149,13 @@
       "issue": "https://github.com/namnh92/GoGo-BE/issues/787",
       "decidedAt": "2026-11-07",
       "decidedBy": "product owner (CODEOWNER for openapi/gogo.v1.yaml), in session on PR #790: keep rejectionReason required at the API and declare MAJOR 7.0.0-alpha.1 per BE-BFF-012",
-      "baseCommit": "3bbaeacb0214910582b28b6b66d9fea4d4e9df02",
-      "baseSha256": "9a882d3df511cf99fde5e2a39c557c8667e06651a5d16cb938e50946e43b34ab",
-      "revisionBasis": "7b5e8b8e6071de04aeb32951e2c2c4157ce6ca7e with info.version changed from 6.4.0-alpha.1 to 7.0.0-alpha.1",
-      "revisionSha256": "90555e53da561594cd64ec41e2d04073fd96ae3a48b634c5aff094408b512d1b",
+      "baseCommit": "7afe6ace4746f3b17a77fb9eb531201ffd8ba693",
+      "baseSha256": "caacf156d3646c9c16138ab82c11a92b99a4b0dd6636c292be1d1f323af05e34",
+      "revisionBasis": "4731506848a94f180b96d29c1a51a605985466be:openapi/gogo.v1.yaml (unchanged in this working tree)",
+      "revisionSha256": "35fe6ab0ad03d2e93ae7c6fc56226c0495302dfc63928c1eec2f538d63cf127e",
       "diagnostic": "error [request-body-wrapped-in-one-of] at openapi/gogo.v1.yaml in API POST /cms/place-submissions/{id}/decide the request body was restructured into a oneOf, so a payload that was previously valid may no longer be accepted",
       "reason": "ADR-0044: every new rejection must carry a public reason key; old CMS rejection requests without rejectionReason now return 400 VALIDATION_FAILED. The owner keeps the stricter API and declares MAJOR 7.0.0-alpha.1 per BE-BFF-012, with a consumer note in openapi/CHANGELOG.md. GoGo-CMS must sync its contract, regenerate its client and require key selection, then deploy together with BE. Internal reason remains optional for rejection and required for approval/merge.",
-      "note": "The base is PR #790's re-design base from CI run 42305813256; the revision hash identifies the final YAML bytes. No revisionCommit is claimed because this session forbids commit/push. Only info.version differs from the measured PR head, so local policy verification replays that CI report; fresh oasdiff measurement is blocked by unavailable local oasdiff/Docker access. Changing either contract or adding another finding still fails."
+      "note": "The base is origin/re-design at 7afe6ace4746f3b17a77fb9eb531201ffd8ba693 after PRs #791/#792. Both SHA-256 values use the raw YAML bytes, exactly as scripts/check-contract-compat.ts does. The diagnostic is retained from CI run 42305813256; the request-body oneOf transition is unchanged by the rebase. Local replay checks this historical diagnostic against the refreshed pair, not a fresh oasdiff measurement: Docker socket access is denied in this sandbox and no local oasdiff binary is available. Fresh measurement and integration verification remain required outside the sandbox. ADR-0044 and migration 0084 apply; rollback is documented in docs/submission-rejection-reasons.md. Changing either contract or adding another finding still fails."
     }
   ]
 }
