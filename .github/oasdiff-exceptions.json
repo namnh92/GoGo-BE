@@ -143,6 +143,19 @@
       "diagnostic": "in API GET /cms/taxonomies added the new `amenity` enum value to the `items/kind` response property for the response status `200`",
       "reason": "ADR-0040: discovery introduces the amenity taxonomy kind. The closed response enum excluded it, so existing GoGo-CMS Zod readers reject the whole list. Follow BE#747 / PR #749: MAJOR 6.0.0-alpha.1, consumer migration note in openapi/CHANGELOG.md, and one exact-byte exception. CMS must sync its contract/generated client, runtime enum, selector and labels before rollout.",
       "note": "The revision hash identifies the final YAML bytes; no revisionCommit is claimed because this session forbids git writes. Changing either contract or adding any unrecorded finding still fails."
+    },
+    {
+      "id": "BE-787-submission-rejection-required-oneof",
+      "issue": "https://github.com/namnh92/GoGo-BE/issues/787",
+      "decidedAt": "2026-11-07",
+      "decidedBy": "product owner (CODEOWNER for openapi/gogo.v1.yaml), in session on PR #790: keep rejectionReason required at the API and declare MAJOR 7.0.0-alpha.1 per BE-BFF-012",
+      "baseCommit": "3bbaeacb0214910582b28b6b66d9fea4d4e9df02",
+      "baseSha256": "9a882d3df511cf99fde5e2a39c557c8667e06651a5d16cb938e50946e43b34ab",
+      "revisionBasis": "7b5e8b8e6071de04aeb32951e2c2c4157ce6ca7e with info.version changed from 6.4.0-alpha.1 to 7.0.0-alpha.1",
+      "revisionSha256": "90555e53da561594cd64ec41e2d04073fd96ae3a48b634c5aff094408b512d1b",
+      "diagnostic": "error [request-body-wrapped-in-one-of] at openapi/gogo.v1.yaml in API POST /cms/place-submissions/{id}/decide the request body was restructured into a oneOf, so a payload that was previously valid may no longer be accepted",
+      "reason": "ADR-0044: every new rejection must carry a public reason key; old CMS rejection requests without rejectionReason now return 400 VALIDATION_FAILED. The owner keeps the stricter API and declares MAJOR 7.0.0-alpha.1 per BE-BFF-012, with a consumer note in openapi/CHANGELOG.md. GoGo-CMS must sync its contract, regenerate its client and require key selection, then deploy together with BE. Internal reason remains optional for rejection and required for approval/merge.",
+      "note": "The base is PR #790's re-design base from CI run 42305813256; the revision hash identifies the final YAML bytes. No revisionCommit is claimed because this session forbids commit/push. Only info.version differs from the measured PR head, so local policy verification replays that CI report; fresh oasdiff measurement is blocked by unavailable local oasdiff/Docker access. Changing either contract or adding another finding still fails."
     }
   ]
 }

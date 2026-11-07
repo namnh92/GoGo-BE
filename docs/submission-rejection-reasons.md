@@ -39,18 +39,20 @@ không thay đổi; việc trả kết quả cho người gửi phụ thứ hai 
 
 OpenAPI **7.0.0-alpha.1 tăng MAJOR** từ 6.5.0-alpha.1 theo BE-BFF-012 và quyết
 định owner/CODEOWNER ngày 07/11/2026; [ADR-0044](adr/0044-required-submission-rejection-reason.md)
-ghi nhận giữ key bắt buộc tại API. Đây là breaking change: CMS cũ reject chỉ có
-ghi chú, thiếu `rejectionReason`, nay nhận 400 `VALIDATION_FAILED`.
-**CMS phải deploy cùng BE**, cập nhật action reject, đồng bộ contract và
-regenerate client. Các consumer khác regenerate client và chấp nhận response
-thiếu key ở bản ghi lịch sử. Xem `openapi/CHANGELOG.md`.
+ghi nhận giữ key bắt buộc tại API.
+Exception chỉ nhận finding `request-body-wrapped-in-one-of` trên đúng cặp SHA-256
+của contract trong `.github/oasdiff-exceptions.json`. Đây là breaking change:
+CMS cũ reject chỉ có ghi chú, thiếu `rejectionReason`, nay nhận 400
+`VALIDATION_FAILED`. **CMS phải deploy cùng BE**, cập nhật action reject, đồng bộ
+contract và regenerate client. Các consumer khác regenerate client và chấp nhận
+response thiếu key ở bản ghi lịch sử. Xem `openapi/CHANGELOG.md`.
 
 ## Migration và đường lùi
 
 0084 thêm cột text nullable, không default/backfill/rewrite dữ liệu cũ.
 CHECK chỉ cho sáu key trên trạng thái rejected, cho phép null để giữ lịch sử và
 hỗ trợ binary cũ khi rollback. App bắt buộc key cho mọi rejection mới.
-0082 chỉ ADD COLUMN và ADD CHECK NOT VALID, không scan dữ liệu cũ. CHECK NOT VALID
+0084 chỉ ADD COLUMN và ADD CHECK NOT VALID, không scan dữ liệu cũ. CHECK NOT VALID
 vẫn kiểm tra mọi INSERT/UPDATE mới. Drizzle gom **mọi migration đang pending vào
 một transaction**, giữ ACCESS EXCLUSIVE của ADD COLUMN tới COMMIT. Vì vậy tách
 VALIDATE sang file migration khác vẫn giữ khóa mạnh suốt scan và không giải quyết
@@ -82,7 +84,7 @@ tự chạy DEV):
 
 Nếu validation lỗi/timeout, giữ schema additive và CHECK NOT VALID đang enforce
 write mới; kiểm tra nguyên nhân rồi chạy lại bước 2. Script có thể chạy lại cả
-sau thành công. Nếu 0082 đã được áp dụng từ bản cũ có VALIDATE, không sửa journal
+sau thành công. Nếu 0084 đã được áp dụng từ bản cũ có VALIDATE, không sửa journal
 hay chạy lại DDL; kiểm tra trạng thái constraint, bước 2 là an toàn khi chạy lại.
 
 Ưu tiên rollback binary trước, **giữ cột additive** để không mất key đã ghi.
