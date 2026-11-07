@@ -1372,6 +1372,11 @@ export class CmsContentController {
     return this.content.addSynonym(actor.id, id, body);
   }
 
+  @Get('taxonomies/version')
+  taxonomyVersion() {
+    return this.content.taxonomyVersion();
+  }
+
   @Get('taxonomies')
   listTaxonomies(
     @Query(new ZodValidationPipe(taxonomyListQuery)) query: z.infer<typeof taxonomyListQuery>,

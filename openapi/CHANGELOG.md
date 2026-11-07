@@ -8,6 +8,19 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 7.3.0-alpha.1 — taxonomy cache generation (GoGo-BE#799)
+
+MINOR additive: `/taxonomies` gains `version`, optional exact `locale`, weak
+ETag / If-None-Match (304), and public caching (60s + 300s stale revalidation).
+New `/taxonomies/version` is a cheap revalidated singleton read; authenticated
+`/cms/taxonomies/version` also exposes the last write time. CMS create/update/
+synonym responses retain existing fields and add `version` and `updatedAt`.
+Every successful CMS taxonomy write (including synonyms, no-op updates and
+duplicate synonym adds) increments once with an atomic audit. Failed writes
+roll back entirely. Consumers persist lists by locale/kinds, use offline cache,
+and compare the generation or revalidate the list ETag before refetching.
+See ADR-0047. CMS and Mobile implementation ship separately.
+
 ## 7.2.0-alpha.1 — Optional submission photos (GoGo-BE#793)
 
 Owner/CODEOWNER decision 2026-11-07 on PR #794: **"Ghi exception, giữ MINOR"**.

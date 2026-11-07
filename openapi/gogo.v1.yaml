@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 7.2.0-alpha.1
+  version: 7.3.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -3527,23 +3527,71 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
+  /taxonomies/version:
+    get:
+      operationId: getTaxonomyVersion
+      tags: [preferences]
+      summary: Cheap global taxonomy generation check
+      description: One singleton-row read. Compare version before downloading lists; locale independent.
+      security: []
+      parameters:
+        - { name: If-None-Match, in: header, schema: { type: string } }
+      responses:
+        '200':
+          description: Current global version and last successful CMS write time
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control:
+              { schema: { type: string }, description: 'public, max-age=0, must-revalidate' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaxonomyVersion' }
+        '304':
+          description: Unchanged; empty body
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+
   /taxonomies:
     get:
       operationId: listTaxonomies
       tags: [preferences]
       summary: Stable taxonomy keys + i18n labels (clients never hard-code ids)
+      description: >
+        Version and rows share a database snapshot. Persist by locale and kinds;
+        use cached data immediately, including offline, then revalidate. Weak
+        ETag includes global version, canonical kinds and locale. Validators
+        support lists, weak comparison and wildcard. A version change invalidates
+        every locale/kinds variant, including search synonym changes.
       security: []
       parameters:
         - name: kinds
           in: query
           schema: { type: string }
           description: Comma-separated kind filter (mood,category,setting,dietary,accessibility,spending_style,suitability,checkin_tag,amenity)
+        - name: locale
+          in: query
+          schema: { type: string }
+          description: Optional exact label locale; omitted returns all locales as before. No fallback; a missing translation is omitted.
+        - { name: If-None-Match, in: header, schema: { type: string } }
       responses:
         '200':
           description: Taxonomy keys with i18n labels
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control:
+              {
+                schema: { type: string },
+                description: 'public, max-age=60, stale-while-revalidate=300',
+              }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TaxonomyList' }
+        '304':
+          description: Unchanged; empty body
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
 
   /places/search:
     get:
@@ -8817,6 +8865,18 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/CmsSearchAnalytics' }
 
+  /cms/taxonomies/version:
+    get:
+      operationId: cmsGetTaxonomyVersion
+      tags: [cms]
+      summary: 'Editor/Ops: current taxonomy version and last successful write time'
+      responses:
+        '200':
+          description: Global taxonomy generation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaxonomyVersion' }
+
   /cms/taxonomies:
     get:
       operationId: cmsListTaxonomies
@@ -8895,7 +8955,16 @@ paths:
                     pattern: "^[\\p{L}\\p{M}\\p{N}\\p{Zs}'\"‘’“”()&+,./\\-–—]*$"
                 sortOrder: { type: integer }
       responses:
-        '201': { description: Created }
+        '201':
+          description: Created atomically with version increment and audit
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: '#/components/schemas/TaxonomyVersion' }
+                  - type: object
+                    properties:
+                      id: { type: string, format: uuid }
 
   /cms/taxonomies/{id}:
     patch:
@@ -8928,7 +8997,16 @@ paths:
                 sortOrder: { type: integer }
                 isActive: { type: boolean }
       responses:
-        '200': { description: Updated }
+        '200':
+          description: Updated atomically with version increment and audit
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: '#/components/schemas/TaxonomyVersion' }
+                  - type: object
+                    properties:
+                      updated: { type: boolean }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /cms/taxonomies/{id}/synonyms:
@@ -8949,7 +9027,16 @@ paths:
                 term: { type: string }
                 locale: { type: string, default: vi }
       responses:
-        '201': { description: Synonym added (feeds query expansion) }
+        '201':
+          description: Synonym added atomically with version increment and audit (feeds query expansion)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: '#/components/schemas/TaxonomyVersion' }
+                  - type: object
+                    properties:
+                      added: { type: boolean }
 
   /cms/collections:
     get:
@@ -16834,9 +16921,27 @@ components:
           type: integer
           description: Rounded display value; `billTotal` is the canonical number.
         moderation: { type: string, enum: [pending, approved, rejected] }
+    TaxonomyVersion:
+      type: object
+      required: [version, updatedAt]
+      properties:
+        version:
+          {
+            type: integer,
+            minimum: 1,
+            description: Global monotonically increasing taxonomy generation.,
+          }
+        updatedAt:
+          {
+            type: string,
+            format: date-time,
+            description: Last successful CMS write; initial migration time before any write.,
+          }
     TaxonomyList:
       type: object
       properties:
+        version:
+          { type: integer, minimum: 1, description: Global taxonomy generation of this snapshot. }
         kinds:
           type: object
           description: Kind → entries. Store the stable `key`, resolve labels via `labels[locale]`.

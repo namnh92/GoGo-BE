@@ -3,6 +3,7 @@ import { and, asc, eq, sql, type SQL } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
+import { readTaxonomyVersion } from '../../shared/taxonomy-version';
 import { writeAudit } from '../../shared/audit';
 
 type TaxonomyKind = (typeof schema.taxonomies.$inferSelect)['kind'];
@@ -49,6 +50,38 @@ export class CmsContentService {
     });
   }
 
+  taxonomyVersion() {
+    return readTaxonomyVersion(this.db);
+  }
+
+  private async taxonomyWrite<T>(
+    adminId: string,
+    action: string,
+    write: (tx: Parameters<Parameters<Db['transaction']>[0]>[0]) => Promise<{
+      resourceId: string;
+      diff: Record<string, unknown>;
+      result: T;
+    }>,
+  ) {
+    return this.db.transaction(async (tx) => {
+      // Acquire before touching taxonomy rows: one lock order for all writers.
+      await tx.execute(sql`select id from taxonomy_version where id = 1 for update`);
+      const change = await write(tx);
+      await tx.execute(sql`update taxonomy_version set version = version + 1,
+        updated_at = clock_timestamp() where id = 1`);
+      const state = await readTaxonomyVersion(tx);
+      await writeAudit(tx, {
+        actorType: 'admin',
+        actorId: adminId,
+        action,
+        resourceType: action === 'taxonomy.synonym_removed' ? 'taxonomy_synonym' : 'taxonomy',
+        resourceId: change.resourceId,
+        diff: { ...change.diff, ...state },
+      });
+      return { ...change.result, ...state };
+    });
+  }
+
   async createTaxonomy(
     adminId: string,
     input: {
@@ -58,18 +91,21 @@ export class CmsContentService {
       sortOrder?: number | undefined;
     },
   ) {
-    const [row] = await this.db
-      .insert(schema.taxonomies)
-      .values({ kind: input.kind, key: input.key, sortOrder: input.sortOrder ?? 0 })
-      .returning();
-    for (const [locale, label] of Object.entries(input.labels)) {
-      await this.db.insert(schema.taxonomyLabels).values({ taxonomyId: row!.id, locale, label });
-    }
-    await this.audit(adminId, 'taxonomy.created', 'taxonomy', row!.id, {
-      kind: input.kind,
-      key: input.key,
+    return this.taxonomyWrite(adminId, 'taxonomy.created', async (tx) => {
+      const [row] = await tx
+        .insert(schema.taxonomies)
+        .values({ kind: input.kind, key: input.key, sortOrder: input.sortOrder ?? 0 })
+        .returning();
+      for (const [locale, label] of Object.entries(input.labels)) {
+        await tx.insert(schema.taxonomyLabels).values({ taxonomyId: row!.id, locale, label });
+      }
+
+      return {
+        resourceId: row!.id,
+        diff: { kind: input.kind, key: input.key },
+        result: { id: row!.id },
+      };
     });
-    return { id: row!.id };
   }
 
   async updateTaxonomy(
@@ -81,43 +117,54 @@ export class CmsContentService {
       isActive?: boolean | undefined;
     },
   ) {
-    const [existing] = await this.db
-      .select()
-      .from(schema.taxonomies)
-      .where(eq(schema.taxonomies.id, taxonomyId))
-      .limit(1);
-    if (!existing) throw AppError.notFound('TAXONOMY_NOT_FOUND', 'Taxonomy not found');
+    return this.taxonomyWrite(
+      adminId,
+      input.isActive === false ? 'taxonomy.deactivated' : 'taxonomy.updated',
+      async (tx) => {
+        const [existing] = await tx
+          .select()
+          .from(schema.taxonomies)
+          .where(eq(schema.taxonomies.id, taxonomyId))
+          .limit(1);
+        if (!existing) throw AppError.notFound('TAXONOMY_NOT_FOUND', 'Taxonomy not found');
 
-    // CMS-005 acceptance: cannot hard-deactivate a referenced key unsafely —
-    // deactivation is allowed (hides from pickers) but deletion never happens.
-    if (input.isActive === false) {
-      const [{ n }] = (await this.db
-        .select({ n: sql<number>`count(*)::int` })
-        .from(schema.placeTaxonomies)
-        .where(eq(schema.placeTaxonomies.taxonomyId, taxonomyId))) as [{ n: number }];
-      await this.audit(adminId, 'taxonomy.deactivated', 'taxonomy', taxonomyId, { references: n });
-    }
+        let references: number | undefined;
+        // CMS-005 acceptance: cannot hard-deactivate a referenced key unsafely —
+        // deactivation is allowed (hides from pickers) but deletion never happens.
+        if (input.isActive === false) {
+          const [{ n }] = (await tx
+            .select({ n: sql<number>`count(*)::int` })
+            .from(schema.placeTaxonomies)
+            .where(eq(schema.placeTaxonomies.taxonomyId, taxonomyId))) as [{ n: number }];
+          references = n;
+        }
 
-    await this.db
-      .update(schema.taxonomies)
-      .set({
-        ...(input.sortOrder !== undefined ? { sortOrder: input.sortOrder } : {}),
-        ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
-        updatedAt: sql`now()`,
-      })
-      .where(eq(schema.taxonomies.id, taxonomyId));
-    if (input.labels) {
-      for (const [locale, label] of Object.entries(input.labels)) {
-        await this.db
-          .insert(schema.taxonomyLabels)
-          .values({ taxonomyId, locale, label })
-          .onConflictDoUpdate({
-            target: [schema.taxonomyLabels.taxonomyId, schema.taxonomyLabels.locale],
-            set: { label },
-          });
-      }
-    }
-    return { updated: true };
+        await tx
+          .update(schema.taxonomies)
+          .set({
+            ...(input.sortOrder !== undefined ? { sortOrder: input.sortOrder } : {}),
+            ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+            updatedAt: sql`now()`,
+          })
+          .where(eq(schema.taxonomies.id, taxonomyId));
+        if (input.labels) {
+          for (const [locale, label] of Object.entries(input.labels)) {
+            await tx
+              .insert(schema.taxonomyLabels)
+              .values({ taxonomyId, locale, label })
+              .onConflictDoUpdate({
+                target: [schema.taxonomyLabels.taxonomyId, schema.taxonomyLabels.locale],
+                set: { label },
+              });
+          }
+        }
+        return {
+          resourceId: taxonomyId,
+          diff: { ...input, references },
+          result: { updated: true },
+        };
+      },
+    );
   }
 
   async addSynonym(
@@ -125,20 +172,22 @@ export class CmsContentService {
     taxonomyId: string,
     input: { term: string; locale?: string | undefined },
   ) {
-    await this.db
-      .insert(schema.taxonomySynonyms)
-      .values({ taxonomyId, term: input.term, locale: input.locale ?? 'vi' })
-      .onConflictDoNothing();
-    await this.audit(adminId, 'taxonomy.synonym_added', 'taxonomy', taxonomyId, {
-      term: input.term,
+    return this.taxonomyWrite(adminId, 'taxonomy.synonym_added', async (tx) => {
+      await tx
+        .insert(schema.taxonomySynonyms)
+        .values({ taxonomyId, term: input.term, locale: input.locale ?? 'vi' })
+        .onConflictDoNothing();
+
+      return { resourceId: taxonomyId, diff: input, result: { added: true } };
     });
-    return { added: true };
   }
 
   async removeSynonym(adminId: string, synonymId: string) {
-    await this.db.delete(schema.taxonomySynonyms).where(eq(schema.taxonomySynonyms.id, synonymId));
-    await this.audit(adminId, 'taxonomy.synonym_removed', 'taxonomy_synonym', synonymId);
-    return { removed: true };
+    return this.taxonomyWrite(adminId, 'taxonomy.synonym_removed', async (tx) => {
+      await tx.delete(schema.taxonomySynonyms).where(eq(schema.taxonomySynonyms.id, synonymId));
+
+      return { resourceId: synonymId, diff: {}, result: { removed: true } };
+    });
   }
 
   // --- collections (CMS-006) -----------------------------------------------
