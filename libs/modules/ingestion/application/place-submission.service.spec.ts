@@ -1,0 +1,181 @@
+import { randomUUID } from 'node:crypto';
+import { describe, expect, it, vi } from 'vitest';
+import { schema, type Db } from '@gogo/database';
+import { PlaceSubmissionService } from './place-submission.service';
+import { SUBMISSION_REJECTION_REASONS } from '../domain/submission-rejection';
+import type { Actor } from '../../identity/domain/actor';
+import { CmsSubmissionController } from '../presentation/ingestion.controller';
+import type { ZodValidationPipe } from '../../shared/zod-validation.pipe';
+
+function fixture(over: Record<string, unknown> = {}) {
+  const row = {
+    id: randomUUID(),
+    googlePlaceId: 'submission-key-test',
+    submittedByUserId: randomUUID(),
+    submittedByGuestSessionId: null,
+    status: 'pending',
+    submissionRevision: 1,
+    submissionCount: 1,
+    resultPlaceId: null,
+    rejectionReason: null,
+    decisionReason: 'PRIVATE',
+    createdAt: new Date(),
+    decidedAt: null,
+    ...over,
+  };
+  const query = {
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn().mockReturnThis(),
+    for: vi.fn().mockReturnThis(),
+    limit: vi.fn(async () => [row]),
+  };
+  const written: { table: unknown; value: Record<string, unknown> }[] = [];
+  const update = vi.fn((table: unknown) => ({
+    set: (value: Record<string, unknown>) => ({
+      where: async () => {
+        written.push({ table, value });
+        Object.assign(row, value);
+      },
+    }),
+  }));
+  const tx = {
+    select: vi.fn(() => query),
+    update,
+    insert: (table: unknown) => ({
+      values: async (value: Record<string, unknown>) => {
+        written.push({ table, value });
+      },
+    }),
+  };
+  const db = {
+    select: vi.fn(() => query),
+    transaction: vi.fn(async (work: (transaction: typeof tx) => Promise<unknown>) => work(tx)),
+  };
+  const service = new PlaceSubmissionService(db as unknown as Db, null!, null!, null!, null!);
+  const owner = { id: row.submittedByUserId, type: 'user' } as Actor;
+  return { row, owner, db, service, written };
+}
+
+// Exercise the actual HTTP body pipe; do not copy its Zod rules into the test.
+const routeArgs = Reflect.getMetadata(
+  '__routeArguments__',
+  CmsSubmissionController,
+  'decide',
+) as Record<string, { pipes: ZodValidationPipe<unknown>[] }>;
+const decisionPipe = Object.values(routeArgs)
+  .flatMap((arg) => arg.pipes)
+  .find((pipe) => typeof pipe === 'object' && 'transform' in pipe)!;
+
+describe('submission rejection validation (#787)', () => {
+  it.each([undefined, null, '', 'duplicate', 'PRIVATE', 'DUPLICATE_PLACE', 42])(
+    'HTTP rejects missing/invalid key %s',
+    (rejectionReason) => {
+      expect(() =>
+        decisionPipe.transform({ decision: 'rejected', reason: 'PRIVATE', rejectionReason }),
+      ).toThrow(
+        expect.objectContaining({
+          code: 'VALIDATION_FAILED',
+          options: {
+            fieldErrors: [expect.objectContaining({ field: 'rejectionReason' })],
+          },
+        }),
+      );
+    },
+  );
+
+  it.each([undefined, '', 'unknown', 'PRIVATE'])(
+    'service rejects %s before DB access',
+    async (key) => {
+      const { service, db } = fixture();
+      await expect(
+        service.decide(randomUUID(), randomUUID(), 'rejected', 'PRIVATE', undefined, key),
+      ).rejects.toMatchObject({
+        code: 'VALIDATION_FAILED',
+        options: {
+          fieldErrors: [expect.objectContaining({ field: 'rejectionReason' })],
+        },
+      });
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(SUBMISSION_REJECTION_REASONS)('HTTP accepts key %s without an internal note', (key) => {
+    expect(decisionPipe.transform({ decision: 'rejected', rejectionReason: key })).toEqual({
+      decision: 'rejected',
+      rejectionReason: key,
+    });
+  });
+
+  it.each(['approved', 'merged'])('%s still requires an internal reason', (decision) => {
+    expect(() => decisionPipe.transform({ decision })).toThrow();
+    expect(decisionPipe.transform({ decision, reason: 'Checked' })).toMatchObject({
+      decision,
+      reason: 'Checked',
+    });
+  });
+});
+
+describe('submission public response (#787)', () => {
+  it.each(SUBMISSION_REJECTION_REASONS)(
+    'stores %s with the decision/audit and polls it',
+    async (key) => {
+      const { row, service, owner, db, written } = fixture();
+      await service.decide(randomUUID(), row.id, 'rejected', 'PRIVATE', undefined, key);
+      expect(db.transaction).toHaveBeenCalledOnce();
+      expect(written.find((entry) => entry.table === schema.placeSubmissions)?.value).toMatchObject(
+        { status: 'rejected', rejectionReason: key, decisionReason: 'PRIVATE' },
+      );
+      expect(written.find((entry) => entry.table === schema.auditLogs)?.value.diff).toMatchObject({
+        decision: 'rejected',
+        rejectionReason: key,
+      });
+      expect(written.find((entry) => entry.table === schema.outboxEvents)?.value.payload).toEqual({
+        decision: 'rejected',
+        resultPlaceId: null,
+      });
+      // Model the timestamp returned by Postgres rather than the SQL expression.
+      row.decidedAt = null;
+      const result = await service.getSubmission(owner, row.id);
+      expect(result.rejectionReason).toBe(key);
+      expect(result).not.toHaveProperty('decisionReason');
+      expect(result).not.toHaveProperty('reason');
+      expect(JSON.stringify(result)).not.toContain('PRIVATE');
+    },
+  );
+
+  it.each(['pending', 'approved', 'merged'])('omits rejectionReason for %s', async (status) => {
+    const { service, owner, row } = fixture({ status, rejectionReason: 'other' });
+    expect(JSON.stringify(await service.getSubmission(owner, row.id))).not.toContain(
+      'rejectionReason',
+    );
+  });
+
+  it('keeps legacy private notes private and leaves their public key absent', async () => {
+    const { service, owner, row } = fixture({ status: 'rejected' });
+    const result = await service.getSubmission(owner, row.id);
+    expect(result.rejectionReason).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain('PRIVATE');
+  });
+
+  it.each(['user', 'guest'])('denies a different %s actor', async (type) => {
+    const { service, row } = fixture({ status: 'rejected', rejectionReason: 'other' });
+    await expect(
+      service.getSubmission({ id: randomUUID(), type } as Actor, row.id),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('allows the owning guest to read the public key', async () => {
+    const guestId = randomUUID();
+    const { service, row } = fixture({
+      status: 'rejected',
+      rejectionReason: 'other',
+      submittedByUserId: null,
+      submittedByGuestSessionId: guestId,
+    });
+    expect(
+      (await service.getSubmission({ id: guestId, type: 'guest' } as Actor, row.id))
+        .rejectionReason,
+    ).toBe('other');
+  });
+});

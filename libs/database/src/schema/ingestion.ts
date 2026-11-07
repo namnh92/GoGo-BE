@@ -398,6 +398,8 @@ export const placeSubmissions = pgTable(
     resultPlaceId: uuid('result_place_id').references(() => places.id, { onDelete: 'set null' }),
     decidedByAdminId: uuid('decided_by_admin_id'),
     decisionReason: text('decision_reason'),
+    /** Public key only; legacy rejections without a key stay null. */
+    rejectionReason: text('rejection_reason'),
     /**
      * PI-BE-031 — the reviewer's edits to the GoGo-owned fields, kept apart
      * from the contributor's own input above so neither erases the other.
@@ -419,5 +421,11 @@ export const placeSubmissions = pgTable(
       .on(t.googlePlaceId)
       .where(sql`${t.status} = 'pending'`),
     index('place_submissions_status_idx').on(t.status, t.createdAt),
+    check(
+      'place_submissions_rejection_reason_check',
+      sql`${t.rejectionReason} IS NULL OR
+      (${t.status} = 'rejected' AND ${t.rejectionReason} IN
+      ('duplicate_place', 'incorrect_location', 'permanently_closed', 'not_public_place', 'inappropriate_content', 'other'))`,
+    ),
   ],
 );

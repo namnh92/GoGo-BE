@@ -2267,7 +2267,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Poll a submission (owner only) */
+        /**
+         * Poll a submission (owner only)
+         * @description Owner only (registered user or guest). `rejectionReason` is a stable public key when rejected; absent for historical decisions without a key and for other statuses. Internal moderation notes are never returned.
+         */
         get: operations["getPlaceSubmission"];
         put?: never;
         post?: never;
@@ -2380,7 +2383,7 @@ export interface paths {
         put?: never;
         /**
          * Moderator/editor: approve, reject or merge a submission (PI-CMS-007)
-         * @description `approved` creates the catalogue place and applies whatever a reviewer supplemented through `PUT /cms/place-submissions/{id}/review` over the provider's answer (GoGo-BE#528). Fields the reviewer typed are recorded `editorial` in `place_field_provenance` and carry their id; fields left as Google answered them are `google_derived` and carry the Place ID — so a later provider refresh can tell what it may overwrite.
+         * @description GoGo-BE#787: `rejected` requires `rejectionReason` from the fixed key list. Missing/unknown keys return 400 VALIDATION_FAILED with field_errors on rejectionReason. This key is public; `reason` remains internal. `approved` creates the catalogue place and applies whatever a reviewer supplemented through `PUT /cms/place-submissions/{id}/review` over the provider's answer (GoGo-BE#528). Fields the reviewer typed are recorded `editorial` in `place_field_provenance` and carry their id; fields left as Google answered them are `google_derived` and carry the Place ID — so a later provider refresh can tell what it may overwrite.
          *
          *     **Address, phone and website (GoGo-BE#280)** are GoGo-owned and come only from the review draft, each with the evidence in its `provenance`. The provider's formatted address is no longer a fallback: a place approved with no reviewer address has none. A draft saved before #280 that carries one of these values without evidence is refused `409 REVIEW_EVIDENCE_REQUIRED`, naming the fields in `field_errors`; re-save the draft with its sources and approve again.
          *
@@ -8813,6 +8816,11 @@ export interface components {
             /** @description #248. True when a `super_admin` issued a temporary password that has not been replaced. The console must route to the change screen; the obligation itself is enforced server-side — every other CMS route answers 403 `PASSWORD_CHANGE_REQUIRED` until it is cleared. */
             mustChangePassword?: boolean;
         };
+        /**
+         * @description Public reason key (GoGo-BE#787); clients translate labels. In order: trùng địa điểm, sai vị trí, đã đóng cửa, không phải địa điểm công khai, nội dung không phù hợp, khác. No free-text note, including for other.
+         * @enum {string}
+         */
+        SubmissionRejectionReason: "duplicate_place" | "incorrect_location" | "permanently_closed" | "not_public_place" | "inappropriate_content" | "other";
         PlaceSubmissionSummary: {
             /** Format: uuid */
             id: string;
@@ -8846,6 +8854,7 @@ export interface components {
             /** Format: date-time */
             decidedAt?: string;
             decisionReason?: string;
+            rejectionReason?: components["schemas"]["SubmissionRejectionReason"];
             /**
              * @description A human-readable name for the row, when GoGo has one (GoGo-BE#528).
              *
@@ -8919,6 +8928,7 @@ export interface components {
             /** Format: date-time */
             decidedAt?: string;
             decisionReason?: string;
+            rejectionReason?: components["schemas"]["SubmissionRejectionReason"];
             /** @description What the contributor sent, untouched by any review. */
             contribution: {
                 categoryKey?: string;
@@ -15223,6 +15233,7 @@ export interface operations {
                         submissionCount?: number;
                         /** Format: date-time */
                         createdAt?: string;
+                        rejectionReason?: components["schemas"]["SubmissionRejectionReason"];
                         /** Format: date-time */
                         decidedAt?: string;
                     };
@@ -15384,8 +15395,17 @@ export interface operations {
             content: {
                 "application/json": {
                     /** @enum {string} */
-                    decision: "approved" | "rejected" | "merged";
+                    decision: "rejected";
+                    rejectionReason: components["schemas"]["SubmissionRejectionReason"];
+                    /** @description Optional internal note. Never returned by public polling. */
+                    reason?: string;
+                    /** Format: uuid */
+                    mergeIntoPlaceId?: string;
+                } | {
+                    /** @enum {string} */
+                    decision: "approved" | "merged";
                     reason: string;
+                    rejectionReason?: components["schemas"]["SubmissionRejectionReason"];
                     /**
                      * Format: uuid
                      * @description Required for `merged`, and the place must exist — `404 MERGE_TARGET_NOT_FOUND` otherwise (GoGo-BE#528). Merging records where this proposal went; nothing about the target place is written.

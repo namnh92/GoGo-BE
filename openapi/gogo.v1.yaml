@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 6.5.0-alpha.1
+  version: 7.0.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -4838,6 +4838,10 @@ paths:
       operationId: getPlaceSubmission
       tags: [places]
       summary: Poll a submission (owner only)
+      description: >
+        Owner only (registered user or guest). `rejectionReason` is a stable
+        public key when rejected; absent for historical decisions without a key
+        and for other statuses. Internal moderation notes are never returned.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -4855,6 +4859,7 @@ paths:
                   placeId: { type: string, format: uuid }
                   submissionCount: { type: integer }
                   createdAt: { type: string, format: date-time }
+                  rejectionReason: { $ref: '#/components/schemas/SubmissionRejectionReason' }
                   decidedAt: { type: string, format: date-time }
         '403': { $ref: '#/components/responses/Forbidden' }
 
@@ -5044,20 +5049,37 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [decision, reason]
-              properties:
-                decision: { type: string, enum: [approved, rejected, merged] }
-                reason: { type: string, minLength: 3, maxLength: 500 }
-                mergeIntoPlaceId:
-                  type: string
-                  format: uuid
-                  description: >
-                    Required for `merged`, and the place must exist —
-                    `404 MERGE_TARGET_NOT_FOUND` otherwise (GoGo-BE#528).
-                    Merging records where this proposal went; nothing about the
-                    target place is written.
+              oneOf:
+                - type: object
+                  required: [decision, rejectionReason]
+                  properties:
+                    decision: { type: string, enum: [rejected] }
+                    rejectionReason: { $ref: '#/components/schemas/SubmissionRejectionReason' }
+                    reason:
+                      type: string
+                      minLength: 3
+                      maxLength: 500
+                      description: Optional internal note. Never returned by public polling.
+                    mergeIntoPlaceId: { type: string, format: uuid }
+                - type: object
+                  required: [decision, reason]
+                  properties:
+                    decision: { type: string, enum: [approved, merged] }
+                    reason: { type: string, minLength: 3, maxLength: 500 }
+                    rejectionReason: { $ref: '#/components/schemas/SubmissionRejectionReason' }
+                    mergeIntoPlaceId:
+                      type: string
+                      format: uuid
+                      description: >
+                        Required for `merged`, and the place must exist —
+                        `404 MERGE_TARGET_NOT_FOUND` otherwise (GoGo-BE#528).
+                        Merging records where this proposal went; nothing about the
+                        target place is written.
+
       description: >
+        GoGo-BE#787: `rejected` requires `rejectionReason` from the fixed key
+        list. Missing/unknown keys return 400 VALIDATION_FAILED with field_errors
+        on rejectionReason. This key is public; `reason` remains internal.
         `approved` creates the catalogue place and applies whatever a reviewer
         supplemented through `PUT /cms/place-submissions/{id}/review` over the
         provider's answer (GoGo-BE#528). Fields the reviewer typed are recorded
@@ -17415,6 +17437,21 @@ components:
             has not been replaced. The console must route to the change screen;
             the obligation itself is enforced server-side — every other CMS
             route answers 403 `PASSWORD_CHANGE_REQUIRED` until it is cleared.
+    SubmissionRejectionReason:
+      type: string
+      description: >
+        Public reason key (GoGo-BE#787); clients translate labels. In order:
+        trùng địa điểm, sai vị trí, đã đóng cửa, không phải địa điểm công khai,
+        nội dung không phù hợp, khác. No free-text note, including for other.
+      enum:
+        [
+          duplicate_place,
+          incorrect_location,
+          permanently_closed,
+          not_public_place,
+          inappropriate_content,
+          other,
+        ]
     PlaceSubmissionSummary:
       type: object
       required: [id, googlePlaceId, status, submissionCount, createdAt]
@@ -17451,6 +17488,7 @@ components:
             `expectedUpdatedAt` when saving a review (GoGo-BE#528).
         decidedAt: { type: string, format: date-time }
         decisionReason: { type: string }
+        rejectionReason: { $ref: '#/components/schemas/SubmissionRejectionReason' }
         displayName:
           type: string
           description: >
@@ -17568,6 +17606,7 @@ components:
         updatedAt: { type: string, format: date-time }
         decidedAt: { type: string, format: date-time }
         decisionReason: { type: string }
+        rejectionReason: { $ref: '#/components/schemas/SubmissionRejectionReason' }
         contribution:
           type: object
           description: What the contributor sent, untouched by any review.

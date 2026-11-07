@@ -274,7 +274,7 @@ describe('submission dedupe + moderation (PI-BE-019, FR-INGEST-012)', () => {
       url: `/v1/cms/place-submissions/${sub!.id}/decide`,
       remoteAddress: ip(),
       headers: auth(modToken),
-      payload: { decision: 'rejected', reason: 'thử lại' },
+      payload: { decision: 'rejected', rejectionReason: 'duplicate_place', reason: 'thử lại' },
     });
     expect(again.statusCode).toBe(409);
   });
@@ -410,7 +410,11 @@ describe('PI-CMS-007 — submission queue (list)', () => {
       url: `/v1/cms/place-submissions/${submitted.json().submissionId}/decide`,
       remoteAddress: ip(),
       headers: auth(moderator.token),
-      payload: { decision: 'rejected', reason: 'trùng địa điểm đã có' },
+      payload: {
+        decision: 'rejected',
+        rejectionReason: 'duplicate_place',
+        reason: 'trùng địa điểm đã có',
+      },
     });
 
     const pending = await api().inject({
