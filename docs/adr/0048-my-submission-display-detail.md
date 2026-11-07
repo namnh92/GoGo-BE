@@ -39,8 +39,10 @@ chậm đã làm mất cả facts mà request vừa trả tiền.
   không phát token thiếu snapshot. Không consume record khi submit để hỗ trợ retry.
   Token identity-only cũ vẫn hợp lệ, tạo row thiếu snapshot; detail có thể hydrate.
   Snapshot fetchedAt giữ thời điểm đã fetch,
-  không gán lại khi submit/list. Nếu không dùng token, submit lấy một quality
-  Details để xác minh và có đủ snapshot (thay core trong nhánh này).
+  không gán lại khi submit/list. Nếu không dùng token, submit giữ nguyên một
+  core Details để xác minh và lưu snapshot từ dữ liệu đó: rating/count/hours
+  chưa biết là null/0/array rỗng. Snapshot không thêm call hay nâng SKU của
+  resolve/submit/approve; snapshot đầy đủ lấy từ resolution record đã fetch.
 - Submission mới lưu snapshot cùng transaction/attribution/outbox. Dedup tăng
   count như trước; snapshot còn mới không bị ghi đè bởi submit lần nữa. Snapshot
   không thành canonical facts, không được dùng để approve, chấm credit hay xác
@@ -88,7 +90,7 @@ chậm đã làm mất cả facts mà request vừa trả tiền.
 | Thao tác                                             | Details quality                              | photoRefs / media                                              |
 | ---------------------------------------------------- | -------------------------------------------- | -------------------------------------------------------------- |
 | Resolve một link rồi submit token                    | 1 ở resolve, 0 ở submit                      | Resolve tối đa 1 refs theo flag; 0 media tự động               |
-| Submit không token                                   | 1 ở submit                                   | 0 / 0                                                          |
+| Submit không token                                   | 0 (1 core Details ở submit)                  | 0 / 0                                                          |
 | Mở/refresh list 25 rows bất kỳ                       | **0**                                        | **0 / 0**                                                      |
 | Mở detail snapshot ≤30 ngày                          | 0                                            | 0 / 0 tự động                                                  |
 | Detail pending/rejected thiếu hoặc snapshot >30 ngày | Tối đa 1, phải reserve; lease chặn đồng thời | Tối đa 1 refs trong remaining deadline, 0 media                |

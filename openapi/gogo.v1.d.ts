@@ -15596,7 +15596,7 @@ export interface operations {
                     note?: string;
                     /** @description Optional media ids from POST /uploads purpose place_photo, owned by this actor. JPEG/PNG/WebP only, at most 10 MiB each; actual bytes and size are verified. HEIC must be converted by the client. Originals are never served. Photos stay private until explicitly selected by staff at the submission decision. Deduplicated submissions retain each photo's actual uploader; at most five non-rejected photos per pending submission, including concurrent requests. */
                     mediaIds?: string[];
-                    /** @description The `resolutionToken` from the preceding `POST /places/resolve-google-maps-link` (#337). Optional — without it the server verifies the place with the provider again with quality Details to capture the display snapshot. A signed resolution id references an allowlisted server-side snapshot with the same expiry as the token. The snapshot is persisted on the submission only on successful submission; legacy identity-only tokens remain valid without a snapshot. */
+                    /** @description The `resolutionToken` from the preceding `POST /places/resolve-google-maps-link` (#337). Optional — without it the server verifies the place with the provider again with core Details and snapshots only those fetched facts; it does not buy rating or opening hours for the snapshot. A signed resolution id references an allowlisted server-side snapshot with the same expiry as the token. The snapshot is persisted on the submission only on successful submission; legacy identity-only tokens remain valid without a snapshot. */
                     resolutionToken?: string;
                 };
             };

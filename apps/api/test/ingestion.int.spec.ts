@@ -583,7 +583,17 @@ describe('#337 — duplicate Google calls', () => {
     // #338 — the rollback path still costs one Details, and it is now Pro
     // rather than Enterprise: this branch reads `businessStatus` and hands the
     // object to dedup, and neither wants a rating.
-    expect(billed(), 'the old path is the rollback, and it still pays once').toEqual(['quality']);
+    expect(billed(), 'the old path is the rollback, and it still pays once').toEqual(['core']);
+    const [saved] = await db
+      .select()
+      .from(schema.placeSubmissions)
+      .where(eq(schema.placeSubmissions.id, submitted.json().submissionId));
+    expect(saved!.displaySnapshot).toMatchObject({
+      name: 'Quán PR4 Không Token',
+      googleRating: null,
+      googleRatingCount: 0,
+      openingHours: [],
+    });
   });
 
   it.each([
@@ -771,8 +781,8 @@ describe('#337 review — a stored fact may prove identity, never freshness', ()
 
     // Google still has it operational, so the reopened place is not refused on
     // a three-week-old fact — and the answer cost exactly one Details call,
-    // quality now also supplies a display snapshot for a newly accepted submission (#801).
-    expect(places.tiersRequested, 'stale closure is re-verified, not trusted').toEqual(['quality']);
+    // at the tier that answers it: `businessStatus` is a `core` field (#338).
+    expect(places.tiersRequested, 'stale closure is re-verified, not trusted').toEqual(['core']);
     expect(res.statusCode).toBe(201);
     expect(res.json()).toEqual({ status: 'ALREADY_EXISTS', placeId });
   });
@@ -816,7 +826,7 @@ describe('#337 review — a stored fact may prove identity, never freshness', ()
       await register('rev-new-1@gogo.id.vn'),
     );
     expect(live.json().status).toBe('PENDING');
-    expect(places.tiersRequested).toEqual(['quality']);
+    expect(places.tiersRequested).toEqual(['core']);
 
     // 2 · valid token → no Details, and the proposal still requires the token
     //     to have been minted from a live check moments ago.

@@ -831,10 +831,11 @@ export class PlaceSubmissionService {
             ? { kind: 'LINKED_EXISTING', placeId: identity.placeId }
             : { kind: 'NEW' };
     } else {
-      // #801: without a signed candidate this verification also supplies the
-      // submission's display snapshot, so request quality exactly once.
+      // #801 reuses this verification for the display snapshot without changing
+      // its SKU. Core supplies identity/closure/dedup facts; rating and hours
+      // remain unknown unless resolve already fetched them for a signed candidate.
       const details = await this.resolver
-        .resolveByProviderId(input.googlePlaceId, 'quality')
+        .resolveByProviderId(input.googlePlaceId, 'core')
         // #339 — `catch(() => null)` turned every provider fault into
         // `400 PLACE_NOT_FOUND`: a disabled API, an exhausted quota and an
         // upstream outage all reached the submitter as "that place does not

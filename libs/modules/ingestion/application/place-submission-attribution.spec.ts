@@ -1,6 +1,6 @@
 import { getTableName } from 'drizzle-orm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { FakePlaceProvider } from '@gogo/providers';
+import { FakePlaceProvider, type PlaceDescriptionTier } from '@gogo/providers';
 import type { Db } from '@gogo/database';
 import type { Actor } from '../../identity/domain/actor';
 import { PlaceSubmissionService } from './place-submission.service';
@@ -79,10 +79,10 @@ function fixture() {
   };
   const provider = new FakePlaceProvider();
   provider.seed({ providerPlaceId: proposal.googlePlaceId });
-  const resolveByProviderId = vi.fn(async () => ({
+  const resolveByProviderId = vi.fn(async (id: string, tier: PlaceDescriptionTier) => ({
     status: 'RESOLVED',
     decision: { reasons: ['EXACT_PROVIDER_ID'] },
-    details: provider.registry.get(proposal.googlePlaceId)!,
+    details: (await provider.details(id, tier))!,
   }));
   const snapshots = new ResolutionSnapshotStore(null);
   const service = new PlaceSubmissionService(
@@ -213,10 +213,13 @@ it('#801 resolves and submits a large snapshot using only the original quality f
     resolutionToken: preview.resolutionToken,
   });
   expect(resolveByProviderId).toHaveBeenCalledExactlyOnceWith(proposal.googlePlaceId, 'quality');
+  expect(provider.tiersRequested).toEqual(['quality']);
   expect(submissions[0]?.displaySnapshot).toMatchObject({
     name: details.name,
     addressShort: 'Hà Nội',
     openingHours: details.hours,
+    googleRating: details.rating,
+    googleRatingCount: details.ratingCount,
     fetchedAt: preview.candidate!.fetchedAt,
   });
   snapshots.onModuleDestroy();
@@ -289,14 +292,22 @@ it('#801 refuses resolve when its snapshot cannot be stored', async () => {
   });
 });
 
-it('#801 captures the quality verification snapshot when no candidate token is provided', async () => {
-  const { service, submissions, resolveByProviderId } = fixture();
-  await service.submit(actor, { googlePlaceId: proposal.googlePlaceId });
-  expect(resolveByProviderId).toHaveBeenCalledExactlyOnceWith(proposal.googlePlaceId, 'quality');
-  expect(submissions[0]?.displaySnapshot).toMatchObject({
-    source: 'google_places',
-    googleRating: 4.4,
-    googleRatingCount: 250,
-  });
-  expect(submissions[0]?.displaySnapshot).not.toHaveProperty('photo');
-});
+it.each([false, true])(
+  '#801 snapshots only the existing core fetch without a token (attestation enabled: %s)',
+  async (enabled) => {
+    flags.attestation = enabled;
+    const { service, submissions, resolveByProviderId, provider } = fixture();
+    await service.submit(actor, { googlePlaceId: proposal.googlePlaceId });
+    expect(resolveByProviderId).toHaveBeenCalledExactlyOnceWith(proposal.googlePlaceId, 'core');
+    expect(provider.tiersRequested).toEqual(['core']);
+    expect(submissions[0]?.displaySnapshot).toMatchObject({
+      source: 'google_places',
+      name: 'Fake Place',
+      addressShort: '1 Fake St, HCMC',
+      googleRating: null,
+      googleRatingCount: 0,
+      openingHours: [],
+    });
+    expect(submissions[0]?.displaySnapshot).not.toHaveProperty('photo');
+  },
+);
