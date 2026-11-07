@@ -48,7 +48,8 @@ afterAll(async () => {
 });
 
 it('versions every write, retains response fields, and audits the same committed generation', async () => {
-  expect((await get('/v1/taxonomies/version')).json().version).toBe(1);
+  const initial = await cms.taxonomyVersion();
+  expect((await get('/v1/taxonomies/version')).json()).toEqual(initial);
   const created = await cms.createTaxonomy(actor, {
     kind: 'mood',
     key: 'cache799',
@@ -56,7 +57,7 @@ it('versions every write, retains response fields, and audits the same committed
   });
   expect(created).toMatchObject({
     id: expect.any(String),
-    version: 2,
+    version: initial.version + 1,
     updatedAt: expect.any(String),
   });
   for (const input of [

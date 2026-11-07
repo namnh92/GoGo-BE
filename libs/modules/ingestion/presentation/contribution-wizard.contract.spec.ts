@@ -3,10 +3,26 @@ import path from 'node:path';
 import { parse } from 'yaml';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { components } from '../../../../openapi/gogo.v1';
+import { enrichmentSchema } from '../domain/contribution-enrichment';
 const doc = parse(
   readFileSync(path.resolve(__dirname, '../../../../openapi/gogo.v1.yaml'), 'utf8'),
 );
 describe('contribution wizard additive contract (#796)', () => {
+  it('F-06 keeps omitted service/space valid in the contract, generated types and runtime', () => {
+    const required = doc.components.schemas.ContributionEnrichment.allOf[1].required;
+    expect(required).toEqual(['purposeKeys', 'vibeKeys']);
+    const value: components['schemas']['ContributionEnrichment'] = {
+      purposeKeys: ['work_reading'],
+      vibeKeys: ['chill'],
+    };
+    expect(enrichmentSchema.parse(value)).toEqual(value);
+    expectTypeOf<typeof value.service>().toEqualTypeOf<
+      components['schemas']['ContributionRating'] | undefined
+    >();
+    expectTypeOf<typeof value.space>().toEqualTypeOf<
+      components['schemas']['ContributionRating'] | undefined
+    >();
+  });
   it('keeps legacy submission valid and pins additive version', () => {
     expect(doc.info.version).toBe('7.5.0-alpha.1');
     const submit =

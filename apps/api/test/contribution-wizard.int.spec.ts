@@ -9,7 +9,7 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { eq, sql } from 'drizzle-orm';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { schema } from '@gogo/database';
+import { schema, type SubmissionEnrichment } from '@gogo/database';
 import { ContributionDraftsService } from '../../../libs/modules/ingestion/application/contribution-drafts.service';
 import { PlaceSubmissionService } from '../../../libs/modules/ingestion/application/place-submission.service';
 import { SubmissionPhotosService } from '../../../libs/modules/ingestion/application/submission-photos.service';
@@ -249,87 +249,98 @@ describe('private contribution lifecycle against PostgreSQL (#796)', () => {
     expect((await new PrivacyJobs(db).run(false)).contributionDraftsPurged).toBe(1);
     expect(await db.select().from(schema.placeContributionDrafts)).toHaveLength(0);
   });
-  it('submits proposal only; dedup never replaces the first contributor claims', async () => {
-    const resolver = {
-      resolveByProviderId: async () => ({
-        status: 'RESOLVED',
-        details: { providerPlaceId: 'wizard-provider-id', businessStatus: 'OPERATIONAL' },
-      }),
-    };
-    const dedup = {
-      knownProviderPlace: async () => ({ kind: 'MISS', reason: 'absent' }),
-      check: async () => ({ kind: 'NEW' }),
-      reportIdMismatch: () => {},
-      resolveGoogleIdentity: async () => ({ kind: 'UNRESOLVED' }),
-    };
-    const submissions = new PlaceSubmissionService(
-      db,
-      resolver as never,
-      dedup as never,
-      {} as never,
-      { PLACE_RESOLVE_DBFIRST_ENABLED: false } as never,
-      new SubmissionPhotosService(
+  it.each<{ omitted: ('service' | 'space')[] }>([
+    { omitted: [] },
+    { omitted: ['service'] },
+    { omitted: ['space'] },
+    { omitted: ['service', 'space'] },
+  ])(
+    'F-06 submits optional ratings ($omitted); dedup preserves first claims',
+    async ({ omitted }) => {
+      const proposal: SubmissionEnrichment = { ...enrichment };
+      for (const key of omitted) delete proposal[key];
+      const providerId = `wizard-provider-id-${omitted.join('-') || 'complete'}`;
+      const resolver = {
+        resolveByProviderId: async () => ({
+          status: 'RESOLVED',
+          details: { providerPlaceId: providerId, businessStatus: 'OPERATIONAL' },
+        }),
+      };
+      const dedup = {
+        knownProviderPlace: async () => ({ kind: 'MISS', reason: 'absent' }),
+        check: async () => ({ kind: 'NEW' }),
+        reportIdMismatch: () => {},
+        resolveGoogleIdentity: async () => ({ kind: 'UNRESOLVED' }),
+      };
+      const submissions = new PlaceSubmissionService(
         db,
-        new UploadsService(db, new FakeStorage(), new FakeStorage(), true, true, true),
-        new MediaCleanupService(
+        resolver as never,
+        dedup as never,
+        {} as never,
+        { PLACE_RESOLVE_DBFIRST_ENABLED: false } as never,
+        new SubmissionPhotosService(
           db,
-          { private: new FakeStorage(), public: new FakeStorage() },
-          {} as never,
-          '',
+          new UploadsService(db, new FakeStorage(), new FakeStorage(), true, true, true),
+          new MediaCleanupService(
+            db,
+            { private: new FakeStorage(), public: new FakeStorage() },
+            {} as never,
+            '',
+          ),
+          new FakeStorage(),
         ),
-        new FakeStorage(),
-      ),
-    );
-    const result = await submissions.submit(owner, {
-      googlePlaceId: input.googlePlaceId,
-      enrichment,
-    });
-    expect(result).toMatchObject({ status: 'PENDING', deduped: false });
-    const id = 'submissionId' in result ? result.submissionId! : '';
-    const [row] = await db
-      .select()
-      .from(schema.placeSubmissions)
-      .where(eq(schema.placeSubmissions.id, id));
-    expect(row!.enrichment).toEqual(enrichment);
-    expect(await db.select().from(schema.places)).toHaveLength(0);
-    expect(await db.select().from(schema.assistantCreditLedger)).toHaveLength(0);
-    expect(await submissions.getSubmission(owner, id)).toMatchObject({
-      enrichment,
-      verificationStatus: 'unverified',
-    });
-    expect(
-      await submissions.submit(other, {
-        googlePlaceId: input.googlePlaceId,
-        enrichment: { ...enrichment, visitTips: 'Other' },
-      }),
-    ).toMatchObject({ deduped: true });
-    const [unchanged] = await db
-      .select()
-      .from(schema.placeSubmissions)
-      .where(eq(schema.placeSubmissions.id, id));
-    expect(unchanged!.enrichment).toEqual(enrichment);
-    const shared = await submissions.getSubmission(other, id);
-    expect(shared.status).toBe('pending');
-    expect(shared).not.toHaveProperty('enrichment');
-    expect(shared).not.toHaveProperty('verificationStatus');
-    await expect(
-      submissions.submit(
-        { ...owner, type: 'guest' },
-        { googlePlaceId: input.googlePlaceId, enrichment },
-      ),
-    ).rejects.toMatchObject({ httpStatus: 403 });
-    const exported = await collectUserExport(
-      db,
-      owner.id,
-      { actorType: 'user', actorId: owner.id },
-      { mediaPublicBaseUrl: '' },
-    );
-    expect(exported.contributionEnrichments).toContainEqual({
-      submissionId: id,
-      enrichment,
-      verificationStatus: 'unverified',
-    });
-  });
+      );
+      const result = await submissions.submit(owner, {
+        googlePlaceId: providerId,
+        enrichment: proposal,
+      });
+      expect(result).toMatchObject({ status: 'PENDING', deduped: false });
+      const id = 'submissionId' in result ? result.submissionId! : '';
+      const [row] = await db
+        .select()
+        .from(schema.placeSubmissions)
+        .where(eq(schema.placeSubmissions.id, id));
+      expect(row!.enrichment).toEqual(proposal);
+      expect(await db.select().from(schema.places)).toHaveLength(0);
+      expect(await db.select().from(schema.assistantCreditLedger)).toHaveLength(0);
+      expect(await submissions.getSubmission(owner, id)).toMatchObject({
+        enrichment: proposal,
+        verificationStatus: 'unverified',
+      });
+      expect(
+        await submissions.submit(other, {
+          googlePlaceId: providerId,
+          enrichment: { ...proposal, visitTips: 'Other' },
+        }),
+      ).toMatchObject({ deduped: true });
+      const [unchanged] = await db
+        .select()
+        .from(schema.placeSubmissions)
+        .where(eq(schema.placeSubmissions.id, id));
+      expect(unchanged!.enrichment).toEqual(proposal);
+      const shared = await submissions.getSubmission(other, id);
+      expect(shared.status).toBe('pending');
+      expect(shared).not.toHaveProperty('enrichment');
+      expect(shared).not.toHaveProperty('verificationStatus');
+      await expect(
+        submissions.submit(
+          { ...owner, type: 'guest' },
+          { googlePlaceId: providerId, enrichment: proposal },
+        ),
+      ).rejects.toMatchObject({ httpStatus: 403 });
+      const exported = await collectUserExport(
+        db,
+        owner.id,
+        { actorType: 'user', actorId: owner.id },
+        { mediaPublicBaseUrl: '' },
+      );
+      expect(exported.contributionEnrichments).toContainEqual({
+        submissionId: id,
+        enrichment: proposal,
+        verificationStatus: 'unverified',
+      });
+    },
+  );
   it('grants 50 or at most 70 once per approved source/venue and rolls back with approval failure', async () => {
     const a = randomUUID(),
       b = randomUUID();

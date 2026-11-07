@@ -16,12 +16,16 @@ không được đọc/ghi/xóa nháp; response 404 không xác nhận nháp có
 | GET /cms/place-submissions/{id}                  | Contribution chứa enrichment để CMS xem; chưa phải place facts                                           |
 
 `enrichment` khi submit cần purposeKeys (suitability active), 1–3 vibeKeys
-(mood active), service/space `{rating:1..5, chipKeys:[]}`. Nháp cho phép bỏ các
+(mood active). Service/space tùy chọn; bỏ trường nghĩa là chưa cung cấp, không
+tự tạo rating. Nếu có, dùng `{rating:1..5, chipKeys:[]}` với rating integer.
+Nháp cho phép bỏ các
 trường chưa xong; trường đã có vẫn phải hợp lệ. Nhãn lấy `GET /taxonomies`.
 Amenity dùng map key → boolean: bỏ key là chưa biết; false là user khai không có.
 Mọi key amenity active do CMS quản lý đều hợp lệ; cả service và space nhận
 checkin_tag active, không ép prefix. Kiểm tra kind/enabled ở mỗi request.
 Không dùng id hoặc label hiển thị làm key.
+Migration seed khóa và tăng taxonomy_version cùng transaction với keys/labels;
+ETag cache trước migration phải revalidate thành 200 với vocabulary mới.
 
 Giá tùy chọn: `{min:20000,max:50000,currency:"VND",unit:"per_item"}`,
 integer minor units, max >= min. `free` chỉ hợp lệ với min=max=0. Giá không biết
@@ -165,12 +169,14 @@ Local gates không thay
 Astra/CODEOWNER, đo lock trên snapshot gần production, đối chiếu Stitch hoặc
 CMS/mobile acceptance. CMS/mobile cần regenerate client trước rollout credit 70.
 
-## Astra r2: F-06 tương thích request
+## F-06: tương thích request (r2/r3)
 
 `estimatedPrice.min/max` của request cũ không required trong OpenAPI. Runtime
-chấp nhận field bị bỏ qua thay vì siết contract (breaking). Enrichment mới vẫn
-required purposeKeys/vibeKeys/service/space; ContributionPrice và ContributionRating
-đã khai báo đầy đủ required fields trong contract. Client cũ không phải gửi field mới.
+chấp nhận field bị bỏ qua thay vì siết contract (breaking). Đây là mismatch riêng
+với F-06 của service/space. Enrichment chỉ required purposeKeys/vibeKeys;
+service/space tùy chọn cả trong OpenAPI, generated types và runtime, không tự tạo
+rating khi bỏ qua. ContributionPrice và ContributionRating vẫn kiểm tra đầy đủ
+required fields khi object được cung cấp. Client cũ không phải gửi field mới.
 
 ## Payload consent và kiểm chứng owner decision
 

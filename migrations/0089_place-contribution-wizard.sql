@@ -20,6 +20,10 @@ ALTER TABLE assistant_credit_ledger ADD CONSTRAINT assistant_credit_ledger_check
  ((reason='submission_approved' AND delta IN (20,50,70) AND submission_id IS NOT NULL AND venue_identity IS NOT NULL AND usage_ledger_id IS NULL)
  OR (reason='message_spent' AND delta=-1 AND usage_ledger_id IS NOT NULL AND submission_id IS NULL AND venue_identity IS NULL)) NOT VALID;
 --> statement-breakpoint
+-- Match CMS taxonomy writer lock order. Drizzle applies keys, labels and the
+-- generation advance in one transaction, so pre-migration ETags cannot hide seeds.
+SELECT id FROM taxonomy_version WHERE id = 1 FOR UPDATE;
+--> statement-breakpoint
 WITH vocabulary(kind,key,vi,en) AS (VALUES
  ('amenity','power_at_each_table','Ổ cắm từng bàn','Power at each table'),
  ('amenity','separate_smoking_area','Khu hút thuốc riêng','Separate smoking area'),
@@ -44,6 +48,8 @@ INSERT INTO taxonomy_labels(taxonomy_id,locale,label)
 SELECT t.id,l.locale,l.label FROM vocabulary v JOIN taxonomies t ON t.kind::text=v.kind AND t.key=v.key
 CROSS JOIN LATERAL (VALUES ('vi',v.vi),('en',v.en)) l(locale,label)
 ON CONFLICT (taxonomy_id,locale) DO NOTHING;
+--> statement-breakpoint
+UPDATE taxonomy_version SET version = version + 1, updated_at = clock_timestamp() WHERE id = 1;
 
 --> statement-breakpoint
 -- Approval attaches user contributions to a separate set, never place_media.

@@ -48,6 +48,9 @@ Draft expiry releases retained bytes. CMS photo detail exposes optional `kind`.
 Accepted menu/bill evidence grants +20 once, including on merge; approval adds +50.
 Ledger deltas are extensible integers (20/50/70/-1); CMS must regenerate types.
 The consent property is optional in OpenAPI, with runtime conditional validation.
+Service/space ratings remain optional for generated-client consumers: omitted
+ratings are not provided, and supplied ratings still require an integer from 1 to 5.
+Migration 0088 atomically advances the taxonomy generation with its vocabulary seeds.
 Restore both decide request `oneOf` branches byte-for-byte from `origin/re-design`;
 photo publication and cleanup rules live in the operation description to avoid
 oasdiff treating description edits as branch removal. Rebind the existing

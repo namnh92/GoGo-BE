@@ -21,6 +21,15 @@ describe('contribution wizard validation (#796)', () => {
       true,
     );
   });
+  it.each([['service'], ['space'], ['service', 'space']] as const)(
+    'F-06 accepts omitted ratings (%j) without inventing values',
+    (...omitted) => {
+      const value = { ...completeEnrichment };
+      for (const key of omitted) delete (value as Partial<typeof value>)[key];
+      expect(enrichmentSchema.parse(value)).toEqual(value);
+      for (const key of omitted) expect(enrichmentSchema.parse(value)).not.toHaveProperty(key);
+    },
+  );
   it.each([
     { price: { min: 1, max: 2, currency: 'VND' } },
     { price: { min: 2, max: 1, currency: 'VND', unit: 'per_person' } },

@@ -51,8 +51,6 @@ export const enrichmentDraftSchema = z
 export const enrichmentSchema = enrichmentDraftSchema.extend({
   purposeKeys: keys(10, 1),
   vibeKeys: keys(3, 1),
-  service: rating,
-  space: rating,
 });
 export const saveContributionDraftSchema = z
   .object({

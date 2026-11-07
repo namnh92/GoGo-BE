@@ -18,7 +18,8 @@ chưa tuyên bố đã đối chiếu thiết kế.
 
 `place_submissions.enrichment` JSONB giữ đề xuất chưa xác minh, tách
 `review_draft` của moderator. Submit cũ vẫn chạy; trường enrichment mới tùy chọn,
-nhưng khi gửi phải đủ purpose, 1–3 vibe, rating phục vụ/không gian 1–5.
+nhưng khi gửi phải đủ purpose và 1–3 vibe. Service/space tùy chọn; bỏ trường
+nghĩa là chưa cung cấp, không tự tạo rating. Nếu có, rating phải là integer 1–5.
 Giá tùy chọn; nếu có phải kèm min/max integer minor units, currency VND và unit
 per_person/per_group/per_item/per_hour/per_night; miễn phí có unit free và 0/0.
 Thiếu giá nghĩa là chưa biết. Không suy ra giá, giờ mở cửa, rating hoặc amenity
@@ -33,6 +34,9 @@ power_at_each_table, separate_smoking_area, open_after_23, tables_over_six
 (amenity); service_friendly, service_attentive, space_quiet, space_spacious
 (checkin_tag). Cả hai nhóm chip nhận mọi key checkin_tag đang active do CMS quản lý;
 không ép prefix service_/space_ hoặc danh sách amenity cố định.
+Migration khóa singleton taxonomy_version trước khi seed, rồi tăng generation và
+updated_at trong cùng transaction với keys/labels, theo lock order của CMS (ADR-0047).
+Client giữ ETag trước migration sẽ nhận 200 với vocabulary mới khi revalidate.
 Boolean false là user khai không có; bỏ key nghĩa là chưa biết. Không lưu label.
 
 Nháp nằm trong `place_contribution_drafts`, FK user CASCADE, không có provider
