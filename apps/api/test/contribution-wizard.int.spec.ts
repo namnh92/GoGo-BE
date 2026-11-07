@@ -12,10 +12,11 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { schema, type SubmissionEnrichment } from '@gogo/database';
 import { ContributionDraftsService } from '../../../libs/modules/ingestion/application/contribution-drafts.service';
 import { PlaceSubmissionService } from '../../../libs/modules/ingestion/application/place-submission.service';
+import { PlaceResolverService } from '../../../libs/modules/ingestion/application/place-resolver.service';
 import { SubmissionPhotosService } from '../../../libs/modules/ingestion/application/submission-photos.service';
 import { UploadsService } from '../../../libs/modules/uploads/application/uploads.service';
 import { MediaCleanupService } from '../../../libs/modules/profile/application/media-cleanup.service';
-import { FakeStorage } from '@gogo/providers';
+import { FakePlaceProvider, FakeStorage } from '@gogo/providers';
 import { grantSubmissionCredits } from '../../../libs/modules/shared/assistant-credits';
 import { eraseAssistantDataForUser } from '../../../libs/modules/assistant/application/assistant-privacy';
 import { PrivacyJobs } from '../../../libs/modules/shared/privacy-jobs';
@@ -260,12 +261,9 @@ describe('private contribution lifecycle against PostgreSQL (#796)', () => {
       const proposal: SubmissionEnrichment = { ...enrichment };
       for (const key of omitted) delete proposal[key];
       const providerId = `wizard-provider-id-${omitted.join('-') || 'complete'}`;
-      const resolver = {
-        resolveByProviderId: async () => ({
-          status: 'RESOLVED',
-          details: { providerPlaceId: providerId, businessStatus: 'OPERATIONAL' },
-        }),
-      };
+      const provider = new FakePlaceProvider();
+      provider.seed({ providerPlaceId: providerId, attribution: 'Google Maps' });
+      const resolver = new PlaceResolverService(provider, db);
       const dedup = {
         knownProviderPlace: async () => ({ kind: 'MISS', reason: 'absent' }),
         check: async () => ({ kind: 'NEW' }),
@@ -274,7 +272,7 @@ describe('private contribution lifecycle against PostgreSQL (#796)', () => {
       };
       const submissions = new PlaceSubmissionService(
         db,
-        resolver as never,
+        resolver,
         dedup as never,
         {} as never,
         { PLACE_RESOLVE_DBFIRST_ENABLED: false } as never,
@@ -301,6 +299,16 @@ describe('private contribution lifecycle against PostgreSQL (#796)', () => {
         .from(schema.placeSubmissions)
         .where(eq(schema.placeSubmissions.id, id));
       expect(row!.enrichment).toEqual(proposal);
+      expect(provider.tiersRequested).toEqual(['core']);
+      expect(row!.displaySnapshot).toMatchObject({
+        source: 'google_places',
+        attributions: ['Google Maps'],
+        name: 'Fake Place',
+        addressShort: '1 Fake St, HCMC',
+        googleRating: null,
+        googleRatingCount: 0,
+        openingHours: [],
+      });
       expect(await db.select().from(schema.places)).toHaveLength(0);
       expect(await db.select().from(schema.assistantCreditLedger)).toHaveLength(0);
       expect(await submissions.getSubmission(owner, id)).toMatchObject({

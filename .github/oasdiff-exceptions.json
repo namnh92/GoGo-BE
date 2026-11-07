@@ -175,13 +175,13 @@
       "issue": "https://github.com/namnh92/GoGo-BE/issues/796",
       "decidedAt": "2026-11-07",
       "decidedBy": "product owner (CODEOWNER for openapi/gogo.v1.yaml), explicit in-session decision to record the credit delta exception and keep MINOR",
-      "baseCommit": "45d9d0822bef579929b603032e6e6b0dca37bc93",
-      "baseSha256": "4b744cd0994a727443292fc160992e277ea9eca14da51bac24bbcf85e3868620",
+      "baseCommit": "ae88f63c4b5049ea921ace54aa9121f091847b07",
+      "baseSha256": "1641e736024d730e8ce7026bc7e5794956139f781c6d891dfdc9607b5e35fca6",
       "revisionBasis": "Final working-tree openapi/gogo.v1.yaml; identified by revisionSha256 (no commit created)",
-      "revisionSha256": "bb76de8e00f3eec150575a1863a865546715c57078a7545636f93367913eb514",
+      "revisionSha256": "ce4eba0233308b4fc3891ba3599cbe3c8009e7e3f10ab95d5ae43678b678a57a",
       "diagnostic": "error [response-property-became-not-enum] at openapi/gogo.v1.yaml in API GET /cms/users/{id}/assistant-credits removed the enum constraint from the `items/items/delta` response property for the response status `200`",
       "reason": "ADR-0048 Contract compatibility exception (2026-11-07): retain MINOR 7.4.0-alpha.1 by explicit owner decision. CmsAssistantCreditEntry.delta becomes an integer with x-extensible-enum [50, 70, -1]. CMS must regenerate its client and tolerate unknown integer deltas before receiving +70; openapi/CHANGELOG.md carries the migration note.",
-      "note": "The base is origin/re-design at 45d9d0822bef579929b603032e6e6b0dca37bc93. Both SHA-256 values use the raw YAML bytes, exactly as scripts/check-contract-compat.ts does. The full diagnostic is retained from the CI-shaped oasdiff stable report generated from the repository root with CI's filenames (base .oasdiff-base.yaml, revision openapi/gogo.v1.yaml) and saved at dev/handoffs/be-796-oasdiff-ci-shaped.txt in the GoGo workspace. Replay with --expect=BE-796-credit-delta-extensible must admit it exactly once. Changing either contract or adding another finding still fails."
+      "note": "The base is origin/re-design at ae88f63c4b5049ea921ace54aa9121f091847b07. Both SHA-256 values use the raw YAML bytes, exactly as scripts/check-contract-compat.ts does. The full diagnostic is retained from the CI-shaped oasdiff stable report generated from the repository root with CI's filenames (base .oasdiff-base.yaml, revision openapi/gogo.v1.yaml) and saved at dev/handoffs/be-796-oasdiff-ci-shaped.txt in the GoGo workspace. Replay with --expect=BE-796-credit-delta-extensible must admit it exactly once. Changing either contract or adding another finding still fails."
     }
   ]
 }
