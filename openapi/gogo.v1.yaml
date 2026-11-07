@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 7.4.0-alpha.1
+  version: 7.5.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -4823,6 +4823,109 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
+  /place-contribution-drafts:
+    get:
+      operationId: listPlaceContributionDrafts
+      tags: [places]
+      summary: List own unexpired drafts (registered users only)
+      description: Bounded collection, at most 20 live drafts. Private, no-store. Stable UUID order.
+      responses:
+        '200':
+          description: All own live drafts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 20
+                    items: { $ref: '#/components/schemas/ContributionDraft' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /place-contribution-drafts/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      operationId: getPlaceContributionDraft
+      tags: [places]
+      summary: Resume own draft (registered users only)
+      responses:
+        '200':
+          description: Own live draft, private no-store
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContributionDraft' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: savePlaceContributionDraft
+      tags: [places]
+      summary: Save complete draft snapshot (registered users only)
+      description: >
+        Owned photos are claimed and copied to private retained storage through draft expiry.
+        Client-generated UUID. expectedVersion 0 creates, otherwise matches the
+        current version; success increments it. 30-day sliding expiry, at most
+        20 live drafts. Draft enrichment fields are optional. No provider content
+        or resolution token is persisted. Private no-store; optimistic version
+        handles retries without retaining free text in replay storage.
+        Bill photos require enrichment.billPhotoPublicConsent=true (400 with field error otherwise).
+        Only authorised moderators can preview pending bill images. All menu/bill photos are public contributions: explicitly approved photos become userPhotos with uploader attribution, never official gallery/cover; moderators can drop any photo.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [googlePlaceId, expectedVersion, enrichment]
+              properties:
+                googlePlaceId: { type: string, minLength: 5, maxLength: 255 }
+                expectedVersion: { type: integer, minimum: 0 }
+                enrichment: { $ref: '#/components/schemas/ContributionEnrichmentDraft' }
+      responses:
+        '200':
+          description: Saved draft
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContributionDraft' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: DRAFT_MODIFIED or DRAFT_LIMIT_REACHED
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503':
+          description: SUBMISSION_EVIDENCE_BLOCKED until private claim and sanitise pipeline #794 is connected
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    delete:
+      operationId: deletePlaceContributionDraft
+      tags: [places]
+      summary: Delete own draft (registered users only)
+      parameters:
+        - { name: version, in: query, required: true, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200':
+          description: Draft deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted: { type: boolean, enum: [true] }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /place-submissions:
     post:
       operationId: submitPlace
@@ -4846,6 +4949,7 @@ paths:
               type: object
               required: [googlePlaceId]
               properties:
+                enrichment: { $ref: '#/components/schemas/ContributionEnrichment' }
                 googlePlaceId: { type: string }
                 roomId: { type: string, format: uuid }
                 category: { type: string }
@@ -5018,7 +5122,9 @@ paths:
         Original submitter (registered user or guest) or recorded registered
         contributor only. `rejectionReason` is a stable public key when rejected;
         absent for historical decisions without a key and for other statuses.
-        Internal moderation notes are never returned.
+        Internal moderation notes are never returned. Enrichment and verificationStatus
+        are returned only to the original submitter; deduplicated contributors receive
+        status metadata without private text or evidence references.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -5034,6 +5140,8 @@ paths:
                   status: { type: string, enum: [pending, approved, rejected, merged] }
                   googlePlaceId: { type: string }
                   placeId: { type: string, format: uuid }
+                  enrichment: { $ref: '#/components/schemas/ContributionEnrichment' }
+                  verificationStatus: { type: string, enum: [unverified] }
                   submissionCount: { type: integer }
                   createdAt: { type: string, format: date-time }
                   rejectionReason: { $ref: '#/components/schemas/SubmissionRejectionReason' }
@@ -5304,6 +5412,12 @@ paths:
 
         `rejected` creates no place. `merged` points the proposal at an existing
         one and attaches the explicitly selected photos to it.
+        Every approved menu/bill photo is public in userPhotos with uploader credit,
+        never in the official gallery or cover. Unselected menu photos are rejected
+        and cleaned after seven days; rejected bills and their derivatives are queued
+        for immediate cleanup. These menu/bill rules take precedence over the general
+        cleanup description on approvedPhotoIds. Accepted menu/bill evidence adds
+        20 credits once; approval also grants the 50-credit base.
 
 
         Approval is not verification and not publication: the administrative
@@ -15657,8 +15771,8 @@ components:
           description: UTC ledger timestamp, including all six fractional digits.
         delta:
           type: integer
-          enum: [50, -1]
-          description: Signed credits; +50 for submission_approved, -1 for message_spent.
+          x-extensible-enum: [20, 50, 70, -1]
+          description: Signed credits; +50 or +70 for approval, +20 for accepted evidence on merge (ledger reason submission_approved), -1 for message_spent. Bonus requires approved menu/bill evidence (#794). Values are extensible; consumers must accept unknown integer deltas.
         reason: { type: string, enum: [submission_approved, message_spent] }
         submissionId:
           type: [string, 'null']
@@ -16521,7 +16635,16 @@ components:
         freshnessCheckedAt: { type: string, format: date-time }
         photos:
           type: array
-          description: Ordered gallery; empty when the place has no approved imagery.
+          description: Official place gallery; user contributions are returned separately in userPhotos.
+          items: { $ref: '#/components/schemas/PlacePhoto' }
+        userPhotos:
+          type: array
+          readOnly: true
+          description: >
+            Ảnh từ người dùng: approved community/review contributions, credited to
+            the original uploader. Includes menu and bill photos from the wizard.
+            Empty before approval. Separate from the official photos gallery and cover;
+            only an editor/moderator may promote a photo in a separately tracked feature.
           items: { $ref: '#/components/schemas/PlacePhoto' }
         taxonomies:
           type: array
@@ -17199,6 +17322,122 @@ components:
               name: { type: string }
               address: { type: string }
               confidence: { type: number }
+    ContributionPrice:
+      type: object
+      additionalProperties: false
+      required: [min, max, currency, unit]
+      description: Integer minor units; max >= min. Free requires both amounts zero. Omit unknown price.
+      properties:
+        min: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        max: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        currency: { type: string, enum: [VND] }
+        unit: { type: string, enum: [per_person, per_group, per_item, per_hour, per_night, free] }
+    ContributionRating:
+      type: object
+      additionalProperties: false
+      required: [rating, chipKeys]
+      properties:
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        chipKeys:
+          type: array
+          maxItems: 5
+          uniqueItems: true
+          items:
+            {
+              type: string,
+              minLength: 1,
+              maxLength: 64,
+              description: Active taxonomy key managed by CMS,
+              x-extensible: true,
+            }
+    ContributionEnrichmentDraft:
+      type: object
+      additionalProperties: false
+      description: >
+        Unverified user claims. Stable active taxonomy keys only: purposes use
+        suitability, vibes mood, amenities amenity, service/space chips checkin_tag.
+        Keys are managed by CMS and checked against enabled taxonomy rows at request time.
+        Unknown price/amenities omitted. Never automatically copied to catalogue,
+        including on approval. Menu photos use private submission-photo processing;
+        bills require explicit billPhotoPublicConsent=true on each save or submit (400 field error otherwise).
+        Every menu/bill photo is a public contribution, attached to the place with uploader attribution
+        only after explicit moderator approval. Moderators can drop any photo, including personal data.
+        Draft expiry deletes retained photos. No DLP or external personal-data processing provider.
+      properties:
+        price: { $ref: '#/components/schemas/ContributionPrice' }
+        purposeKeys:
+          type: array
+          maxItems: 10
+          uniqueItems: true
+          items:
+            {
+              type: string,
+              minLength: 1,
+              maxLength: 64,
+              description: Active taxonomy key managed by CMS,
+              x-extensible: true,
+            }
+        vibeKeys:
+          type: array
+          maxItems: 3
+          uniqueItems: true
+          items:
+            {
+              type: string,
+              minLength: 1,
+              maxLength: 64,
+              description: Active taxonomy key managed by CMS,
+              x-extensible: true,
+            }
+        amenities:
+          type: object
+          maxProperties: 6
+          description: >
+            Keys are active amenity taxonomy keys managed by CMS. False is explicit
+            absence; omitted is unknown. No closed key enum.
+          additionalProperties: { type: boolean }
+        billPhotoPublicConsent:
+          type: boolean
+          description: >
+            Optional for menu-only requests. Must be true when saving or submitting any bill photo.
+            The user confirms the photo may be shown publicly after moderator approval and that
+            they removed or hid personal information themselves. Missing or false with bills
+            returns 400 VALIDATION_FAILED, field_errors field enrichment.billPhotoPublicConsent.
+        photos:
+          type: array
+          maxItems: 5
+          description: Unique mediaId; private owner claim and sanitisation before CMS access. Bills require explicit consent. All menu/bill photos become userPhotos only after explicit approval with uploader attribution; never official gallery/cover. Draft photos are retained to draft expiry and transferred on submission.
+          items:
+            type: object
+            additionalProperties: false
+            required: [mediaId, kind]
+            properties:
+              mediaId: { type: string, format: uuid }
+              kind: { type: string, enum: [menu, bill] }
+        recommendedDishes: { type: string, maxLength: 1000 }
+        visitTips: { type: string, maxLength: 2000 }
+        service: { $ref: '#/components/schemas/ContributionRating' }
+        space: { $ref: '#/components/schemas/ContributionRating' }
+    ContributionEnrichment:
+      allOf:
+        - { $ref: '#/components/schemas/ContributionEnrichmentDraft' }
+        - type: object
+          required: [purposeKeys, vibeKeys]
+          properties:
+            purposeKeys: { type: array, minItems: 1, maxItems: 10, items: { type: string } }
+            vibeKeys: { type: array, minItems: 1, maxItems: 3, items: { type: string } }
+    ContributionDraft:
+      type: object
+      required: [id, googlePlaceId, enrichment, verificationStatus, version, updatedAt, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        googlePlaceId: { type: string }
+        enrichment: { $ref: '#/components/schemas/ContributionEnrichmentDraft' }
+        verificationStatus: { type: string, enum: [unverified] }
+        version: { type: integer, minimum: 1 }
+        updatedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+
     SubmissionResult:
       type: object
       properties:
@@ -18154,6 +18393,10 @@ components:
         width: { type: integer }
         height: { type: integer }
         status: { type: string, enum: [pending, approved, rejected] }
+        kind:
+          type: string
+          enum: [menu, bill]
+          description: Bill classification is durable; ordinary submission photos use menu.
         url:
           type: [string, 'null']
           description: Root-relative API URL for an authenticated CMS fetch; null after decision or removal.
@@ -18193,8 +18436,10 @@ components:
             CMS Authorization header; never load from the public asset host. No original keys.
         contribution:
           type: object
-          description: What the contributor sent, untouched by any review.
+          description: What the contributor sent, untouched by any review. Never automatically promoted to place facts.
           properties:
+            enrichment: { $ref: '#/components/schemas/ContributionEnrichment' }
+            verificationStatus: { type: string, enum: [unverified] }
             categoryKey: { type: string }
             estimatedPrice:
               type: object
@@ -20111,7 +20356,7 @@ components:
         creditBalance:
           type: integer
           minimum: 0
-          description: 'No-expiry contributor credits. Prospective registered-user submission approval grants +50 once. Daily allowance first, then one credit per accepted user send (202), including later provider failure. Replay/rejection costs zero; credits never bypass burst/readiness/budget gates.'
+          description: 'No-expiry contributor credits. Prospective registered-user submission approval grants +50 once, or +70 with at least one approved menu/bill photo; merge grants +20 only when menu/bill evidence is accepted. All bill uploads require public consent; approved menu/bill photos appear in userPhotos with uploader credit, separately from the official gallery/cover. Daily allowance first, then one credit per accepted user send (202), including later provider failure. Replay/rejection costs zero; credits never bypass burst/readiness/budget gates.'
         state:
           type: string
           description: >
@@ -20647,6 +20892,22 @@ components:
         reviews, reviewReactions, notificationSettings) is described on
         `exportMyData`. Unknown sections may appear; ignore them.
       properties:
+        contributionDrafts:
+          type: array
+          items: { $ref: '#/components/schemas/ContributionDraft' }
+        contributionEnrichments:
+          type: array
+          items:
+            type: object
+            required: [submissionId, enrichment, verificationStatus]
+            properties:
+              submissionId: { type: string, format: uuid }
+              enrichment:
+                oneOf:
+                  - { $ref: '#/components/schemas/ContributionEnrichment' }
+                  - { type: 'null' }
+              verificationStatus: { type: string, enum: [unverified] }
+
         assistantCreditBalance: { type: integer, minimum: 0 }
         exportedAt: { type: string, format: date-time }
         placeSubmissions:

@@ -58,7 +58,9 @@ function fixture(over: Record<string, unknown> = {}) {
     transaction: vi.fn(async (work: (transaction: typeof tx) => Promise<unknown>) => work(tx)),
   };
   const photos = {
-    decide: vi.fn<SubmissionPhotosService['decide']>().mockResolvedValue(undefined),
+    decide: vi
+      .fn<SubmissionPhotosService['decide']>()
+      .mockResolvedValue({ cleanupIds: [], originalKeys: [] }),
   };
   const service = new PlaceSubmissionService(
     db as unknown as Db,

@@ -468,6 +468,12 @@ export class SearchService {
       // GoGo-BE#360 — core rule 8's "or warned": a fact the client renders as
       // a warning. Absent when no provider has reported on the place.
       providerStatus: toProviderStatus(row['provider_status']),
+      userPhotos: toPhotos(
+        row['user_photos'] as PlacePhotoRow[] | null,
+        this.mediaBaseUrl,
+        undefined,
+        placeId,
+      ),
       photos: toPhotos(
         row['media'] as PlacePhotoRow[] | null,
         this.mediaBaseUrl,

@@ -6,6 +6,7 @@ export type {
   MatchCandidate,
   SubmissionReviewDraft,
   SubmissionDisplaySnapshot,
+  SubmissionEnrichment,
 } from './schema/ingestion';
 export { WorkerLease } from './worker-lease';
 export type { HeldLease, LeaseQuery, WorkerLeaseOptions } from './worker-lease';

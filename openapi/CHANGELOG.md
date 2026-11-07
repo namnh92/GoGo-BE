@@ -8,6 +8,56 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 7.5.0-alpha.1 — Contribution wizard and private drafts (GoGo-BE#796)
+
+MINOR additive: add optional `enrichment` to place submission and owner/CMS detail responses;
+proposal facts remain unverified and never automatically become place facts.
+Add registered-user-only `/place-contribution-drafts` list and `/{id}`
+GET/PUT/DELETE, version checks and 30-day retention. Taxonomy keys, price unit
+and currency, 1–3 vibes, amenity yes/no, service/space ratings and chips.
+Menu/bill refs capped at five including ordinary mediaIds; menu refs use #794's
+private owner claim/sanitisation pipeline and explicit CMS photo selection.
+Initial implementation (superseded by the final owner decision below):
+Bills still return `503 SUBMISSION_EVIDENCE_BLOCKED` pending real server-side
+PII masking (ADR-0048; incomplete #796 requirement). Approval credit is +50,
++20 only with server-approved original-contributor menu/bill evidence (max +70).
+No old required fields change. All active taxonomy keys of each relevant kind
+are accepted without fixed amenity lists or service/space prefixes.
+CMS credit history `CmsAssistantCreditEntry.delta` documents +50, +70 and -1
+with `x-extensible-enum`; generated clients accept integer deltas. Consumers
+must tolerate unknown integer deltas. Clients generated from the previous
+closed enum must regenerate before receiving +70; making the schema extensible
+does not make existing closed-enum readers tolerant. Owner decision 2026-11-07:
+keep MINOR and record `BE-796-credit-delta-extensible` for the exact-byte
+`response-property-became-not-enum` finding; see ADR-0048. Docker-denied fallback
+uses the supplied known finding; fresh oasdiff replay remains unverified.
+Consumers regenerate clients; CMS/mobile integration and Astra/CODEOWNER review
+remain required. ADR-0048 and migration 0089.
+
+Final owner decision 2026-11-07 removes `visibility`: every bill/menu upload is a
+public contribution after explicit moderator approval. Bill saves/submits require
+`enrichment.billPhotoPublicConsent: true`, confirming public display after approval
+and that the uploader removed/hid personal information themselves. No DLP or external
+receipt processor. Missing/false consent with bills returns a 400 field error.
+Final amendment: wizard photos become a separate read-only `PlaceDetail.userPhotos`
+set, credited to the original uploader; they do not enter `photos` or the cover.
+Editor/moderator promotion is tracked separately in GoGo-BE#804. Pending/rejected
+images never become public; moderators can discard any photo. Rejected bills are
+queued for immediate cleanup; rejected menus retain #794's seven-day retention.
+Draft expiry releases retained bytes. CMS photo detail exposes optional `kind`.
+Accepted menu/bill evidence grants +20 once, including on merge; approval adds +50.
+Ledger deltas are extensible integers (20/50/70/-1); CMS must regenerate types.
+The consent property is optional in OpenAPI, with runtime conditional validation.
+Service/space ratings remain optional for generated-client consumers: omitted
+ratings are not provided, and supplied ratings still require an integer from 1 to 5.
+Migration 0088 atomically advances the taxonomy generation with its vocabulary seeds.
+Restore both decide request `oneOf` branches byte-for-byte from `origin/re-design`;
+photo publication and cleanup rules live in the operation description to avoid
+oasdiff treating description edits as branch removal. Rebind the existing
+`BE-796-credit-delta-extensible` exception to the final raw YAML SHA-256.
+Credit-only policy replay passes; fresh oasdiff remains blocked by Docker socket
+permissions. See `docs/verification/be-802-owner-visibility.md` for evidence.
+
 ## 7.4.0-alpha.1 — Facts và chi tiết đóng góp (GoGo-BE#801)
 
 MINOR additive: list thêm `providerDisplay` từ snapshot còn mới được lưu lúc

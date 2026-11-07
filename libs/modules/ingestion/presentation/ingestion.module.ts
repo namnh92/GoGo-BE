@@ -1,3 +1,5 @@
+import { ContributionDraftsController } from './contribution-drafts.controller';
+import { ContributionDraftsService } from '../application/contribution-drafts.service';
 import { SubmissionDisplayService } from '../application/submission-display.service';
 import { SearchModule } from '../../search/presentation/search.module';
 import { SubmissionPhotoService } from '../application/submission-photo.service';
@@ -34,6 +36,7 @@ import { PlaceImportController } from './place-import.controller';
 @Module({
   imports: [IdentityModule, AdministrativeModule, SearchModule, ProfileModule],
   controllers: [
+    ContributionDraftsController,
     IngestionController,
     CmsSubmissionController,
     MyPlaceSubmissionsController,
@@ -42,6 +45,7 @@ import { PlaceImportController } from './place-import.controller';
     CommunityPhotoController,
   ],
   providers: [
+    ContributionDraftsService,
     SubmissionPhotoService,
     SubmissionPhotosService,
     MyPlaceSubmissionsService,

@@ -2263,6 +2263,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/place-contribution-drafts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List own unexpired drafts (registered users only)
+         * @description Bounded collection, at most 20 live drafts. Private, no-store. Stable UUID order.
+         */
+        get: operations["listPlaceContributionDrafts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/place-contribution-drafts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** Resume own draft (registered users only) */
+        get: operations["getPlaceContributionDraft"];
+        /**
+         * Save complete draft snapshot (registered users only)
+         * @description Owned photos are claimed and copied to private retained storage through draft expiry. Client-generated UUID. expectedVersion 0 creates, otherwise matches the current version; success increments it. 30-day sliding expiry, at most 20 live drafts. Draft enrichment fields are optional. No provider content or resolution token is persisted. Private no-store; optimistic version handles retries without retaining free text in replay storage. Bill photos require enrichment.billPhotoPublicConsent=true (400 with field error otherwise). Only authorised moderators can preview pending bill images. All menu/bill photos are public contributions: explicitly approved photos become userPhotos with uploader attribution, never official gallery/cover; moderators can drop any photo.
+         */
+        put: operations["savePlaceContributionDraft"];
+        post?: never;
+        /** Delete own draft (registered users only) */
+        delete: operations["deletePlaceContributionDraft"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/place-submissions": {
         parameters: {
             query?: never;
@@ -2372,7 +2416,7 @@ export interface paths {
         };
         /**
          * Poll a submission (recorded contributor or original submitter only)
-         * @description Original submitter (registered user or guest) or recorded registered contributor only. `rejectionReason` is a stable public key when rejected; absent for historical decisions without a key and for other statuses. Internal moderation notes are never returned.
+         * @description Original submitter (registered user or guest) or recorded registered contributor only. `rejectionReason` is a stable public key when rejected; absent for historical decisions without a key and for other statuses. Internal moderation notes are never returned. Enrichment and verificationStatus are returned only to the original submitter; deduplicated contributors receive status metadata without private text or evidence references.
          */
         get: operations["getPlaceSubmission"];
         put?: never;
@@ -2492,7 +2536,7 @@ export interface paths {
          *
          *     #786 / ADR-0043: with provider photos enabled, approval retains at most one current first Google photo with provider provenance and per-photo credits. No image or references were stored while pending. Disabled or confirmed no-photo results permit approval without imagery; photo budget, provider or storage failures return retryable `503 SUBMISSION_PHOTO_UNAVAILABLE` and leave the submission pending. Google may change photo order since preview.
          *
-         *     `rejected` creates no place. `merged` points the proposal at an existing one and attaches the explicitly selected photos to it.
+         *     `rejected` creates no place. `merged` points the proposal at an existing one and attaches the explicitly selected photos to it. Every approved menu/bill photo is public in userPhotos with uploader credit, never in the official gallery or cover. Unselected menu photos are rejected and cleaned after seven days; rejected bills and their derivatives are queued for immediate cleanup. These menu/bill rules take precedence over the general cleanup description on approvedPhotoIds. Accepted menu/bill evidence adds 20 credits once; approval also grants the 50-credit base.
          *
          *     Approval is not verification and not publication: the administrative mapping is resolved from the new place's own coordinate and is never `VERIFIED`, and the publication blocker stays until somebody confirms it (ADM-017, GoGo-BE#525).
          */
@@ -7733,11 +7777,8 @@ export interface components {
              * @description UTC ledger timestamp, including all six fractional digits.
              */
             createdAt: string;
-            /**
-             * @description Signed credits; +50 for submission_approved, -1 for message_spent.
-             * @enum {integer}
-             */
-            delta: 50 | -1;
+            /** @description Signed credits; +50 or +70 for approval, +20 for accepted evidence on merge (ledger reason submission_approved), -1 for message_spent. Bonus requires approved menu/bill evidence (#794). Values are extensible; consumers must accept unknown integer deltas. */
+            delta: number;
             /** @enum {string} */
             reason: "submission_approved" | "message_spent";
             /**
@@ -8334,8 +8375,10 @@ export interface components {
             curatedRank?: number;
             /** Format: date-time */
             freshnessCheckedAt?: string;
-            /** @description Ordered gallery; empty when the place has no approved imagery. */
+            /** @description Official place gallery; user contributions are returned separately in userPhotos. */
             photos?: components["schemas"]["PlacePhoto"][];
+            /** @description Ảnh từ người dùng: approved community/review contributions, credited to the original uploader. Includes menu and bill photos from the wizard. Empty before approval. Separate from the official photos gallery and cover; only an editor/moderator may promote a photo in a separately tracked feature. */
+            readonly userPhotos?: components["schemas"]["PlacePhoto"][];
             taxonomies?: {
                 kind?: string;
                 key?: string;
@@ -8702,6 +8745,59 @@ export interface components {
                 address?: string;
                 confidence?: number;
             }[];
+        };
+        /** @description Integer minor units; max >= min. Free requires both amounts zero. Omit unknown price. */
+        ContributionPrice: {
+            min: number;
+            max: number;
+            /** @enum {string} */
+            currency: "VND";
+            /** @enum {string} */
+            unit: "per_person" | "per_group" | "per_item" | "per_hour" | "per_night" | "free";
+        };
+        ContributionRating: {
+            rating: number;
+            chipKeys: string[];
+        };
+        /** @description Unverified user claims. Stable active taxonomy keys only: purposes use suitability, vibes mood, amenities amenity, service/space chips checkin_tag. Keys are managed by CMS and checked against enabled taxonomy rows at request time. Unknown price/amenities omitted. Never automatically copied to catalogue, including on approval. Menu photos use private submission-photo processing; bills require explicit billPhotoPublicConsent=true on each save or submit (400 field error otherwise). Every menu/bill photo is a public contribution, attached to the place with uploader attribution only after explicit moderator approval. Moderators can drop any photo, including personal data. Draft expiry deletes retained photos. No DLP or external personal-data processing provider. */
+        ContributionEnrichmentDraft: {
+            price?: components["schemas"]["ContributionPrice"];
+            purposeKeys?: string[];
+            vibeKeys?: string[];
+            /** @description Keys are active amenity taxonomy keys managed by CMS. False is explicit absence; omitted is unknown. No closed key enum. */
+            amenities?: {
+                [key: string]: boolean;
+            };
+            /** @description Optional for menu-only requests. Must be true when saving or submitting any bill photo. The user confirms the photo may be shown publicly after moderator approval and that they removed or hid personal information themselves. Missing or false with bills returns 400 VALIDATION_FAILED, field_errors field enrichment.billPhotoPublicConsent. */
+            billPhotoPublicConsent?: boolean;
+            /** @description Unique mediaId; private owner claim and sanitisation before CMS access. Bills require explicit consent. All menu/bill photos become userPhotos only after explicit approval with uploader attribution; never official gallery/cover. Draft photos are retained to draft expiry and transferred on submission. */
+            photos?: {
+                /** Format: uuid */
+                mediaId: string;
+                /** @enum {string} */
+                kind: "menu" | "bill";
+            }[];
+            recommendedDishes?: string;
+            visitTips?: string;
+            service?: components["schemas"]["ContributionRating"];
+            space?: components["schemas"]["ContributionRating"];
+        };
+        ContributionEnrichment: components["schemas"]["ContributionEnrichmentDraft"] & {
+            purposeKeys: string[];
+            vibeKeys: string[];
+        };
+        ContributionDraft: {
+            /** Format: uuid */
+            id: string;
+            googlePlaceId: string;
+            enrichment: components["schemas"]["ContributionEnrichmentDraft"];
+            /** @enum {string} */
+            verificationStatus: "unverified";
+            version: number;
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: date-time */
+            expiresAt: string;
         };
         SubmissionResult: {
             /** @enum {string} */
@@ -9260,6 +9356,11 @@ export interface components {
             height: number;
             /** @enum {string} */
             status: "pending" | "approved" | "rejected";
+            /**
+             * @description Bill classification is durable; ordinary submission photos use menu.
+             * @enum {string}
+             */
+            kind?: "menu" | "bill";
             /** @description Root-relative API URL for an authenticated CMS fetch; null after decision or removal. */
             url: string | null;
         };
@@ -9286,8 +9387,11 @@ export interface components {
             rejectionReason?: components["schemas"]["SubmissionRejectionReason"];
             /** @description Sanitised photos with bearer-authenticated CMS preview URLs. Fetch with the CMS Authorization header; never load from the public asset host. No original keys. */
             photos?: components["schemas"]["SubmissionPhoto"][];
-            /** @description What the contributor sent, untouched by any review. */
+            /** @description What the contributor sent, untouched by any review. Never automatically promoted to place facts. */
             contribution: {
+                enrichment?: components["schemas"]["ContributionEnrichment"];
+                /** @enum {string} */
+                verificationStatus?: "unverified";
                 categoryKey?: string;
                 estimatedPrice?: {
                     min?: number;
@@ -10529,7 +10633,7 @@ export interface components {
             }[];
         };
         AssistantStatus: {
-            /** @description No-expiry contributor credits. Prospective registered-user submission approval grants +50 once. Daily allowance first, then one credit per accepted user send (202), including later provider failure. Replay/rejection costs zero; credits never bypass burst/readiness/budget gates. */
+            /** @description No-expiry contributor credits. Prospective registered-user submission approval grants +50 once, or +70 with at least one approved menu/bill photo; merge grants +20 only when menu/bill evidence is accepted. All bill uploads require public consent; approved menu/bill photos appear in userPhotos with uploader credit, separately from the official gallery/cover. Daily allowance first, then one credit per accepted user send (202), including later provider failure. Replay/rejection costs zero; credits never bypass burst/readiness/budget gates. */
             creditBalance: number;
             /** @description `enabled` — sending works. `disabled` — kill switch off (`assistant.enabled`), or the environment cannot take new replies (for example its spending limit is reached). `limit_reached` — this account's daily messages and contributor credits are both spent until `resetsAt`. Unknown values mean "cannot send now". */
             state: string;
@@ -10965,6 +11069,14 @@ export interface components {
         };
         /** @description The allowlisted export document served by `GET /me/export` and by a redeemed secure export (`POST /me/exports/{id}/download`) — one shared collector, so both carry the same sections. Only the sections whose shape this contract pins are listed here; the rest of the allowlist (profile, memberships, preferences, votes, saved, reviews, reviewReactions, notificationSettings) is described on `exportMyData`. Unknown sections may appear; ignore them. */
         UserExportDocument: {
+            contributionDrafts?: components["schemas"]["ContributionDraft"][];
+            contributionEnrichments?: {
+                /** Format: uuid */
+                submissionId: string;
+                enrichment: components["schemas"]["ContributionEnrichment"] | null;
+                /** @enum {string} */
+                verificationStatus: "unverified";
+            }[];
             assistantCreditBalance?: number;
             /** Format: date-time */
             exportedAt?: string;
@@ -15572,6 +15684,138 @@ export interface operations {
             };
         };
     };
+    listPlaceContributionDrafts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description All own live drafts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["ContributionDraft"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    getPlaceContributionDraft: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Own live draft, private no-store */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContributionDraft"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    savePlaceContributionDraft: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    googlePlaceId: string;
+                    expectedVersion: number;
+                    enrichment: components["schemas"]["ContributionEnrichmentDraft"];
+                };
+            };
+        };
+        responses: {
+            /** @description Saved draft */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContributionDraft"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description DRAFT_MODIFIED or DRAFT_LIMIT_REACHED */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            /** @description SUBMISSION_EVIDENCE_BLOCKED until private claim and sanitise pipeline */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    deletePlaceContributionDraft: {
+        parameters: {
+            query: {
+                version: number;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Draft deleted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {boolean} */
+                        deleted: true;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
     submitPlace: {
         parameters: {
             query?: never;
@@ -15582,6 +15826,7 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    enrichment?: components["schemas"]["ContributionEnrichment"];
                     googlePlaceId: string;
                     /** Format: uuid */
                     roomId?: string;
@@ -15725,6 +15970,9 @@ export interface operations {
                         googlePlaceId?: string;
                         /** Format: uuid */
                         placeId?: string;
+                        enrichment?: components["schemas"]["ContributionEnrichment"];
+                        /** @enum {string} */
+                        verificationStatus?: "unverified";
                         submissionCount?: number;
                         /** Format: date-time */
                         createdAt?: string;

@@ -18,6 +18,17 @@ export const LEDGER_RETENTION_DAYS = 400;
  */
 export async function eraseAssistantDataForUser(tx: Exec, userId: string): Promise<void> {
   await lockAssistantAccount(tx, userId);
+  // Retained draft bytes have a durable cleanup deadline; erasure advances it.
+  await tx.execute(sql`update media_cleanup_queue set next_attempt_at = now()
+    where bucket = 'private' and object_key in (
+      select storage_key from media_uploads where actor_type = 'user' and actor_id = ${userId}
+      and attached_to_type = 'contribution_draft')`);
+  await tx.execute(sql`update media_uploads set status = 'expired', expires_at = now()
+    where actor_type = 'user' and actor_id = ${userId} and attached_to_type = 'contribution_draft'`);
+  await tx.execute(sql`delete from place_contribution_drafts where user_id = ${userId}`);
+  await tx.execute(
+    sql`update place_submissions set enrichment = null where submitted_by_user_id = ${userId}`,
+  );
   await tx.execute(
     sql`update place_submissions set submitted_by_user_id = null where submitted_by_user_id = ${userId}`,
   );

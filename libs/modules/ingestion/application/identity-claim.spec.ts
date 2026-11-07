@@ -37,7 +37,7 @@ function deferred() {
 }
 
 /** Transactional store with the actual advisory SQL as its serialization point. */
-function harness(owner?: string, legacy?: string) {
+function harness(owner?: string, legacy?: string, approvedEvidenceCount?: number) {
   const identity = 'claim-google';
   const submission = {
     id: randomUUID(),
@@ -45,6 +45,10 @@ function harness(owner?: string, legacy?: string) {
     status: 'pending',
     submittedByUserId: randomUUID(),
     reviewDraft: {},
+    enrichment:
+      approvedEvidenceCount === undefined
+        ? null
+        : { photos: [{ kind: 'menu', mediaId: randomUUID() }] },
     submissionRevision: 1,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -115,6 +119,16 @@ function harness(owner?: string, legacy?: string) {
             };
           if (sql.includes('select id from users'))
             return { rows: [{ id: submission.submittedByUserId }] };
+          if (sql.includes('select count(*)::int as n from place_submission_photos')) {
+            expect(sql).toContain("status = 'approved'");
+            expect(sql).toContain('uploaded_by_user_id');
+            expect(params).toEqual([
+              submission.id,
+              submission.submittedByUserId,
+              submission.enrichment!.photos[0]!.mediaId,
+            ]);
+            return { rows: [{ n: approvedEvidenceCount }] };
+          }
           if (sql.includes('insert into assistant_credit_ledger')) {
             writes.push(() => {
               state.ledger++;
@@ -123,7 +137,7 @@ function harness(owner?: string, legacy?: string) {
           }
           if (sql.includes('insert into assistant_credit_accounts'))
             writes.push(() => {
-              state.balance += 50;
+              state.balance += Number(params[1]);
             });
           return { rows: [] };
         },
@@ -330,6 +344,20 @@ function harness(owner?: string, legacy?: string) {
 }
 
 describe('F-02 identity claims', () => {
+  it.each([
+    [0, 50],
+    [1, 70],
+    [5, 70],
+  ])('awards approval credit from %i server-approved evidence photos', async (count, delta) => {
+    const h = harness(undefined, undefined, count);
+    await h.approve();
+    expect(h.state.balance).toBe(delta);
+    expect(h.state.ledger).toBe(1);
+    await expect(h.approve()).rejects.toMatchObject({ code: 'ALREADY_DECIDED' });
+    expect(h.state.balance).toBe(delta);
+    expect(h.state.ledger).toBe(1);
+  });
+
   it('uses one UUID lock order for mixed-case merge targets and same-owner claims', async () => {
     const a = 'a0000000-0000-4000-8000-000000000000';
     const b = 'b0000000-0000-4000-8000-000000000000';

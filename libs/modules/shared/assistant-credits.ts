@@ -24,7 +24,11 @@ export async function grantSubmissionCredits(
   userId: string,
   submissionId: string,
   venueIdentity: string,
+  approvedMenuBillPhotoCount = 0,
+  grantBase = true,
 ): Promise<void> {
+  const delta = (grantBase ? 50 : 0) + (approvedMenuBillPhotoCount > 0 ? 20 : 0);
+  if (!delta) return;
   await lockAssistantAccount(tx, userId);
   const active = await tx.execute(
     sql`select id from users where id = ${userId} and status = 'active' for share`,
@@ -33,10 +37,10 @@ export async function grantSubmissionCredits(
     throw AppError.conflict('CONTRIBUTOR_UNAVAILABLE', 'Contributor account is unavailable');
   const grant =
     await tx.execute(sql`insert into assistant_credit_ledger(user_id,delta,reason,submission_id,venue_identity)
-    values (${userId},50,'submission_approved',${submissionId},${venueIdentity}) on conflict do nothing returning id`);
+    values (${userId},${delta},'submission_approved',${submissionId},${venueIdentity}) on conflict do nothing returning id`);
   if (grant.rows.length) {
-    await tx.execute(sql`insert into assistant_credit_accounts(user_id,balance) values (${userId},50)
-      on conflict (user_id) do update set balance = assistant_credit_accounts.balance + 50`);
+    await tx.execute(sql`insert into assistant_credit_accounts(user_id,balance) values (${userId},${delta})
+      on conflict (user_id) do update set balance = assistant_credit_accounts.balance + ${delta}`);
   }
 }
 

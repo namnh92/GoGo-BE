@@ -96,3 +96,17 @@ describe('#801 resolution token contract compatibility', () => {
     ).toBe(1024);
   });
 });
+
+it.each([{}, { min: 100 }, { max: 200 }, { unit: 'per_item' }])(
+  'F-06 accepts contract-valid partial estimatedPrice %j',
+  (estimatedPrice) => {
+    const args = Reflect.getMetadata('__routeArguments__', IngestionController, 'submit') as Record<
+      string,
+      { pipes: { transform: (value: unknown) => unknown }[] }
+    >;
+    const pipe = Object.values(args)
+      .flatMap((arg) => arg.pipes)
+      .find((p) => typeof p === 'object' && 'transform' in p)!;
+    expect(() => pipe.transform({ googlePlaceId: 'valid-place', estimatedPrice })).not.toThrow();
+  },
+);

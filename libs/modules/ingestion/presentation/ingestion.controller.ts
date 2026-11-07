@@ -1,5 +1,6 @@
 import { MAX_RESOLUTION_TOKEN_LENGTH } from '../domain/resolution-attestation';
 import { Body, Controller, Get, Header, Param, Post, Put, Query } from '@nestjs/common';
+import { enrichmentSchema } from '../domain/contribution-enrichment';
 import { z } from 'zod';
 import { contactProvenanceSchema } from '../../shared/place-contact-schema';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
@@ -47,13 +48,14 @@ const resolveSchema = z.object({
 });
 
 const submitSchema = z.object({
+  enrichment: enrichmentSchema.optional(),
   googlePlaceId: z.string().trim().min(5).max(255),
   roomId: z.string().uuid().optional(),
   category: z.string().trim().max(64).optional(),
   estimatedPrice: z
     .object({
-      min: z.number().int().min(0),
-      max: z.number().int().min(0),
+      min: z.number().int().min(0).optional(),
+      max: z.number().int().min(0).optional(),
       unit: z
         .enum(['per_person', 'per_group', 'per_item', 'free', 'unknown'])
         .default('per_person'),
@@ -97,6 +99,7 @@ export class IngestionController {
   @Post('place-submissions')
   submit(@CurrentActor() actor: Actor, @Body(new ZodValidationPipe(submitSchema)) body: SubmitDto) {
     return this.submissions.submit(actor, {
+      enrichment: body.enrichment,
       googlePlaceId: body.googlePlaceId,
       roomId: body.roomId,
       categoryKey: body.category,

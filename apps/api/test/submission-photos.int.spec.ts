@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { drizzle } from 'drizzle-orm/node-postgres';
@@ -7,7 +8,7 @@ import argon2 from 'argon2';
 import sharp from 'sharp';
 import path from 'node:path';
 import { Pool } from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { schema } from '@gogo/database';
 import {
   PLACE_PROVIDER,
@@ -139,13 +140,18 @@ beforeAll(async () => {
     if (role === 'moderator') moderator = logged.json().accessToken;
     else editor = logged.json().accessToken;
   }
-  user = await register('photo-user@gogo.local');
-  other = await register('other-photo-user@gogo.local');
   original = await sharp({ create: { width: 80, height: 60, channels: 3, background: '#ff0000' } })
     .withMetadata({ orientation: 6, exif: { IFD0: { Copyright: 'must be removed' } } })
     .jpeg()
     .toBuffer();
 }, 180000);
+beforeEach(async () => {
+  // uploads.create is actor-keyed (30/min): rotating IPs cannot isolate it.
+  // Keep ownership/retries shared within a test, but never share its quota with another test.
+  const id = randomUUID();
+  user = await register(`photo-user-${id}@gogo.local`);
+  other = await register(`other-photo-user-${id}@gogo.local`);
+});
 afterAll(async () => {
   await app?.close();
   await pool?.end();
@@ -257,6 +263,305 @@ describe('approved submission derivative detach (#793 F-02)', () => {
     } finally {
       await db.execute(sql`drop trigger fail_submission_cleanup_793 on media_cleanup_queue`);
       await db.execute(sql`drop function fail_submission_cleanup_793()`);
+    }
+  });
+});
+
+describe('wizard menu evidence and approval credits (#796)', () => {
+  const enrichment = (mediaId: string) => ({
+    purposeKeys: ['work_reading'],
+    vibeKeys: ['chill'],
+    service: { rating: 5, chipKeys: ['friendly_staff'] },
+    space: { rating: 4, chipKeys: ['quiet_private'] },
+    photos: [{ mediaId, kind: 'menu' }],
+  });
+  const send = (
+    id: string,
+    evidence: ReturnType<typeof enrichment>,
+    token = user,
+    mediaIds: string[] = [],
+  ) =>
+    api().inject({
+      method: 'POST',
+      url: '/v1/place-submissions',
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: { googlePlaceId: id, enrichment: evidence, mediaIds },
+    });
+  const ledger = (id: string) =>
+    db
+      .select()
+      .from(schema.assistantCreditLedger)
+      .where(eq(schema.assistantCreditLedger.submissionId, id));
+  it.each([
+    ['menu', false],
+    ['bill', false],
+    ['menu', true],
+    ['bill', true],
+  ] as const)(
+    'F-07 publishes uppercase %s references as user photos (draft=%s)',
+    async (kind, retained) => {
+      await db
+        .insert(schema.taxonomies)
+        .values([
+          { kind: 'suitability', key: 'work_reading' },
+          { kind: 'mood', key: 'chill' },
+          { kind: 'checkin_tag', key: 'friendly_staff' },
+          { kind: 'checkin_tag', key: 'quiet_private' },
+        ])
+        .onConflictDoNothing();
+      const item = await upload();
+      const id = identity();
+      const evidence = {
+        ...enrichment(item.id.toUpperCase()),
+        billPhotoPublicConsent: true,
+        photos: [{ mediaId: item.id.toUpperCase(), kind }],
+      };
+      if (retained) {
+        const draftId = randomUUID();
+        const url = `/v1/place-contribution-drafts/${draftId}`;
+        const save = (expectedVersion: number) =>
+          api().inject({
+            method: 'PUT',
+            url,
+            remoteAddress: ip(),
+            headers: auth(user),
+            payload: { googlePlaceId: id, expectedVersion, enrichment: evidence },
+          });
+        const saved = await save(0);
+        expect(saved.statusCode, saved.body).toBe(200);
+        expect(saved.json().enrichment.photos).toEqual([{ mediaId: item.id, kind }]);
+        const resumed = await api().inject({
+          method: 'GET',
+          url,
+          remoteAddress: ip(),
+          headers: auth(user),
+        });
+        expect(resumed.statusCode, resumed.body).toBe(200);
+        expect(resumed.json().enrichment.photos).toEqual([{ mediaId: item.id, kind }]);
+        const updated = await save(saved.json().version);
+        expect(updated.statusCode, updated.body).toBe(200);
+        expect(updated.json().version).toBe(2);
+        const [draft] = await db
+          .select()
+          .from(schema.placeContributionDrafts)
+          .where(eq(schema.placeContributionDrafts.id, draftId));
+        expect(draft!.enrichment.photos).toEqual([{ mediaId: item.id, kind }]);
+      }
+      // Mixed casing across the two fields must still claim a single upload.
+      const sent = await send(id, evidence, user, [item.id]);
+      expect(sent.statusCode, sent.body).toBe(201);
+      const submissionId = sent.json().submissionId;
+      const [submission] = await db
+        .select()
+        .from(schema.placeSubmissions)
+        .where(eq(schema.placeSubmissions.id, submissionId));
+      expect(submission!.enrichment!.photos).toEqual([{ mediaId: item.id, kind }]);
+      const photos = (await detail(submissionId)).json().photos;
+      expect(photos).toHaveLength(1);
+      expect(photos[0]).toMatchObject({ mediaId: item.id, kind });
+      const retried = await send(id, evidence, user, [item.id.toUpperCase()]);
+      expect(retried.statusCode, retried.body).toBe(201);
+      expect(retried.json().submissionId).toBe(submissionId);
+      expect((await detail(submissionId)).json().photos).toHaveLength(1);
+      const [photo] = await db
+        .select()
+        .from(schema.placeSubmissionPhotos)
+        .where(eq(schema.placeSubmissionPhotos.id, photos[0].id));
+      expect(photo!.storageKey).toMatch(
+        kind === 'bill' ? /^submission-photos\/bills\// : /^submission-photos\/menus\//,
+      );
+      const approved = await decide(submissionId, 'approved', [photos[0].id]);
+      expect(approved.statusCode, approved.body).toBe(201);
+      expect(
+        await db
+          .select()
+          .from(schema.placeMedia)
+          .where(eq(schema.placeMedia.mediaUploadId, item.id)),
+      ).toHaveLength(0);
+      const place = await api().inject({
+        method: 'GET',
+        url: `/v1/places/${approved.json().placeId}`,
+      });
+      expect(place.statusCode, place.body).toBe(200);
+      expect(place.json().photos).toEqual([]);
+      expect(place.json().userPhotos).toHaveLength(1);
+      expect(place.json().userPhotos[0].id).toBe(photos[0].id);
+    },
+  );
+  it('claims only owned evidence, keeps it private, and grants 70 exactly once only after explicit approval', async () => {
+    await db
+      .insert(schema.taxonomies)
+      .values([
+        { kind: 'mood', key: 'chill' },
+        { kind: 'checkin_tag', key: 'friendly_staff' },
+        { kind: 'checkin_tag', key: 'quiet_private' },
+      ])
+      .onConflictDoNothing();
+    const foreign = await upload(other);
+    const invalid = await send(identity(), enrichment(foreign.id));
+    expect(invalid.statusCode, invalid.body).toBe(400);
+    expect(invalid.json().code).toBe('INVALID_SUBMISSION_PHOTOS');
+    const item = await upload();
+    const id = identity();
+    // The same reference in both fields still claims exactly one photo.
+    const sent = await send(id, enrichment(item.id), user, [item.id]);
+    expect(sent.statusCode, sent.body).toBe(201);
+    const submissionId = sent.json().submissionId;
+    expect(await ledger(submissionId)).toEqual([]);
+    const photos = (await detail(submissionId)).json().photos;
+    expect(photos).toHaveLength(1);
+    expect(
+      (await api().inject({ method: 'GET', url: photos[0].url, headers: auth(user) })).statusCode,
+    ).toBe(403);
+    const preview = await api().inject({
+      method: 'GET',
+      url: photos[0].url,
+      headers: auth(moderator),
+    });
+    expect(preview.statusCode, preview.body).toBe(200);
+    expect((await sharp(preview.rawPayload).metadata()).exif).toBeUndefined();
+    expect((await send(id, enrichment(item.id))).statusCode).toBe(201);
+    expect((await detail(submissionId)).json().photos).toHaveLength(1);
+    expect((await decide(submissionId, 'approved')).statusCode).toBe(409);
+    expect(await ledger(submissionId)).toEqual([]);
+    const approved = await decide(submissionId, 'approved', [photos[0].id]);
+    expect(approved.statusCode, approved.body).toBe(201);
+    const placeDetail = (
+      await api().inject({ method: 'GET', url: `/v1/places/${approved.json().placeId}` })
+    ).json();
+    expect(placeDetail.photos).toEqual([]);
+    expect(placeDetail.userPhotos).toHaveLength(1);
+    expect(placeDetail.userPhotos[0].contributor.displayName).toBe('Mai');
+    expect((await ledger(submissionId)).map((row) => row.delta)).toEqual([70]);
+    expect((await decide(submissionId, 'approved', [photos[0].id])).statusCode).toBe(409);
+    expect((await ledger(submissionId)).map((row) => row.delta)).toEqual([70]);
+  });
+  it.each(['approved', 'merged', 'rejected', 'dropped'])(
+    'publishes all bill evidence only after selection (%s)',
+    async (decision) => {
+      const item = await upload();
+      const bill = {
+        ...enrichment(item.id),
+        billPhotoPublicConsent: true,
+        photos: [{ mediaId: item.id, kind: 'bill' }],
+      };
+      const id = identity();
+      for (const consent of [undefined, false]) {
+        const rejected = await send(id, {
+          ...bill,
+          billPhotoPublicConsent: consent,
+        } as typeof bill);
+        expect(rejected.statusCode, rejected.body).toBe(400);
+        expect(rejected.json().field_errors).toContainEqual(
+          expect.objectContaining({ field: 'enrichment.billPhotoPublicConsent' }),
+        );
+      }
+      const sent = await send(id, bill);
+      expect(sent.statusCode, sent.body).toBe(201);
+      const submissionId = sent.json().submissionId;
+      const [photo] = (await detail(submissionId)).json().photos;
+      expect(photo).toMatchObject({ kind: 'bill' });
+      expect(photo).not.toHaveProperty('visibility');
+      expect((await api().inject({ method: 'GET', url: photo.url })).statusCode).toBe(401);
+      expect(
+        (await api().inject({ method: 'GET', url: photo.url, headers: auth(user) })).statusCode,
+      ).toBe(403);
+      const preview = await api().inject({
+        method: 'GET',
+        url: photo.url,
+        headers: auth(moderator),
+      });
+      expect(preview.statusCode, preview.body).toBe(200);
+      expect((await submit(id, [], other)).statusCode).toBe(201);
+      const [pending] = await db
+        .select()
+        .from(schema.placeSubmissionPhotos)
+        .where(eq(schema.placeSubmissionPhotos.id, photo.id));
+      const premature = await api().inject({
+        method: 'GET',
+        url: `/v1/places/${randomUUID()}/photos/${photo.id}/content`,
+      });
+      expect(premature.statusCode).toBe(404);
+      let target: string | undefined;
+      if (decision === 'merged') {
+        const parent = await submit(identity(), []);
+        target = (await decide(parent.json().submissionId, 'approved')).json().placeId;
+      }
+      const selected = decision === 'approved' || decision === 'merged';
+      const actualDecision = decision === 'dropped' ? 'approved' : decision;
+      const result = await decide(submissionId, actualDecision, selected ? [photo.id] : [], target);
+      expect(result.statusCode, result.body).toBe(201);
+      const media = await db
+        .select()
+        .from(schema.placeMedia)
+        .where(eq(schema.placeMedia.mediaUploadId, item.id));
+      expect(media).toHaveLength(0);
+      const userPhotos = await db
+        .select()
+        .from(schema.placeSubmissionPhotos)
+        .where(eq(schema.placeSubmissionPhotos.mediaUploadId, item.id));
+      expect(userPhotos[0]).toMatchObject({
+        status: selected ? 'approved' : 'rejected',
+        placeId: selected ? result.json().placeId : null,
+      });
+      if (selected) {
+        expect(userPhotos[0]!.uploadedByUserId).toBe(
+          JSON.parse(Buffer.from(user.split('.')[1]!, 'base64url').toString()).sub,
+        );
+        expect(userPhotos[0]!.storageKey).toMatch(/^submission-photos\/bills\//);
+        const placeDetail = (
+          await api().inject({ method: 'GET', url: `/v1/places/${userPhotos[0]!.placeId}` })
+        ).json();
+        expect(placeDetail.photos).toEqual([]);
+        expect(placeDetail.userPhotos).toHaveLength(1);
+        expect(placeDetail.userPhotos[0].contributor.displayName).toBe('Mai');
+        const publicRead = await api().inject({
+          method: 'GET',
+          url: `/v1/places/${userPhotos[0]!.placeId}/photos/${userPhotos[0]!.id}/content`,
+        });
+        expect(publicRead.statusCode, publicRead.body).toBe(200);
+        await app.get(MediaCleanupService).runDue(1000);
+        expect(storage().objects.has(userPhotos[0]!.storageKey!)).toBe(true);
+      }
+      if (!selected) {
+        await app.get(MediaCleanupService).runDue(1000);
+        expect(storage().objects.has(pending!.storageKey)).toBe(false);
+      }
+      expect(
+        (await api().inject({ method: 'GET', url: photo.url, headers: auth(moderator) }))
+          .statusCode,
+      ).toBe(404);
+      expect((await ledger(submissionId)).map((r) => r.delta)).toEqual(
+        decision === 'approved'
+          ? [70]
+          : decision === 'merged'
+            ? [20]
+            : decision === 'dropped'
+              ? [50]
+              : [],
+      );
+      expect((await decide(submissionId, actualDecision, [], target)).statusCode).toBe(409);
+    },
+  );
+  it('does not award the bonus for discarded evidence or a dedup contributor photo', async () => {
+    for (const keepEvidence of [false, true]) {
+      const id = identity();
+      const item = await upload();
+      const sent = await send(id, enrichment(item.id));
+      expect(sent.statusCode, sent.body).toBe(201);
+      const submissionId = sent.json().submissionId;
+      const extra = await upload(other);
+      expect((await send(id, enrichment(extra.id), other)).statusCode).toBe(201);
+      const photos = (await detail(submissionId)).json().photos;
+      const selection = keepEvidence
+        ? photos
+            .filter((p: { mediaId: string }) => p.mediaId === extra.id)
+            .map((p: { id: string }) => p.id)
+        : [];
+      const result = await decide(submissionId, 'approved', selection);
+      expect(result.statusCode, result.body).toBe(201);
+      expect((await ledger(submissionId)).map((row) => row.delta)).toEqual([50]);
     }
   });
 });
