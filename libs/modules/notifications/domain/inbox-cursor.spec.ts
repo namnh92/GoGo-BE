@@ -4,6 +4,8 @@ import {
   InboxCursorCodec,
   INBOX_CURSOR_TTL_MS,
   legacyInboxTimestamp,
+  fallbackInboxCursor,
+  fallbackInboxPosition,
   type InboxCursor,
 } from './inbox-cursor';
 
@@ -22,6 +24,17 @@ const through: InboxCursor = {
 };
 
 describe('inbox signed cursors', () => {
+  it('round-trips full-precision fallback positions and rejects malformed boundaries', () => {
+    const position = { createdAt: '2026-11-08T10:00:00.123456Z', id: randomUUID() };
+    expect(fallbackInboxPosition(fallbackInboxCursor(position))).toEqual(position);
+    for (const raw of [
+      `before:2026-02-31T10:00:00.123456Z:${position.id}`,
+      `before:2026-11-08T10:00:00.1234567Z:${position.id}`,
+      `before:${position.createdAt}:invalid`,
+      `${fallbackInboxCursor(position)}:extra`,
+    ])
+      expect(fallbackInboxPosition(raw)).toBeNull();
+  });
   it('preserves bigint cutoff without JS precision loss and microsecond/id pagination position', () => {
     expect(codec.open(codec.seal(through), account, 'through', now)).toEqual(through);
     const page: InboxCursor = {

@@ -20,7 +20,12 @@ import {
   advanceReadOperation,
   type ReadOperationRow,
 } from '../../../libs/modules/notifications/application/inbox-read-operations';
-import { InboxCursorCodec } from '../../../libs/modules/notifications/domain/inbox-cursor';
+import {
+  fallbackInboxPosition,
+  InboxCursorCodec,
+} from '../../../libs/modules/notifications/domain/inbox-cursor';
+import { OutboxDispatcher } from '../../../libs/modules/notifications/application/outbox-dispatcher';
+import { FakePush } from '@gogo/providers';
 import type { IdempotencyScope } from '../../../libs/modules/shared/idempotency.interceptor';
 
 let container: StartedPostgreSqlContainer;
@@ -30,6 +35,8 @@ let app: NestFastifyApplication;
 let snapshot: string;
 let historical: string;
 let preCutoverCursor: string;
+let preCutoverBoundary: string;
+const fallbackCases: { userId: string; cursor: string; seen: string[]; expected: string[] }[] = [];
 let inbox: NotificationInboxService;
 const secret = 'inbox-integration-secret'.padEnd(48, 'x');
 const config = { AUTH_JWT_SECRET: secret };
@@ -163,7 +170,10 @@ describe.sequential('shared inbox upgrade and concurrency', () => {
     expect(first.statusCode).toBe(200);
     expect(first.json().notifications).toHaveLength(20);
     const cursor = first.json().nextCursor;
-    expect(cursor).toMatch(/^2026-01-01T.*\.000Z$/);
+    expect(fallbackInboxPosition(cursor)).toMatchObject({
+      createdAt: expect.stringMatching(/^2026-01-01T.*\.000000Z$/),
+    });
+    const legacy = first.json().notifications.at(-1).createdAt;
     const next = await api().inject({
       method: 'GET',
       url: `/v1/me/notifications?cursor=${encodeURIComponent(cursor)}`,
@@ -172,7 +182,7 @@ describe.sequential('shared inbox upgrade and concurrency', () => {
     expect(next.statusCode).toBe(200);
     expect(next.json().notifications).toHaveLength(20);
     expect(
-      next.json().notifications.every((n: { createdAt: string }) => n.createdAt < cursor),
+      next.json().notifications.every((n: { createdAt: string }) => n.createdAt < legacy),
     ).toBe(true);
     const summary = await api().inject({
       method: 'GET',
@@ -202,6 +212,44 @@ describe.sequential('shared inbox upgrade and concurrency', () => {
     expect(claims.rows).toHaveLength(0);
     // Stored for the next test, which opens the actual rollout gate.
     preCutoverCursor = cursor;
+    preCutoverBoundary = legacy;
+    // Previously issued timestamp-only cursors still accept the old boundary.
+    const oldPage = await inbox.list(userId, legacy);
+    expect(oldPage.notifications.map((n) => n.id)).toEqual(
+      next.json().notifications.map((n: { id: string }) => n.id),
+    );
+  });
+
+  it('issues lossless fallback boundaries for tied and microsecond rows before cutover', async () => {
+    for (const microseconds of [false, true]) {
+      const id = await user();
+      // Both datasets collapse to the same millisecond in a JavaScript Date.
+      await insert(id, 21, '2026-11-08T10:00:00.123456Z');
+      if (microseconds) {
+        await insert(id, 1, '2026-11-08T10:00:00.123457Z');
+        await insert(id, 1, '2026-11-08T10:00:00.123455Z');
+      }
+      const expected = (
+        await pool.query(
+          'select id from notifications where user_id=$1 order by created_at desc, id desc',
+          [id],
+        )
+      ).rows.map((n) => n.id);
+      const first = await inbox.list(id);
+      expect(first.notifications.map((n) => n.id)).toEqual(expected.slice(0, 20));
+      expect(fallbackInboxPosition(first.nextCursor!)).toEqual({
+        createdAt: '2026-11-08T10:00:00.123456Z',
+        id: expected[19],
+      });
+      const secondBefore = await inbox.list(id, first.nextCursor!);
+      expect(secondBefore.notifications.map((n) => n.id)).toEqual(expected.slice(20));
+      fallbackCases.push({
+        userId: id,
+        cursor: first.nextCursor!,
+        seen: first.notifications.map((n) => n.id),
+        expected,
+      });
+    }
   });
 
   it('gates cutoff until bounded resumable backfill + concurrent indexes complete', async () => {
@@ -217,10 +265,20 @@ describe.sequential('shared inbox upgrade and concurrency', () => {
     expect(await inbox.summary(historical)).toMatchObject({ unreadCount: 1101 });
     const page = await inbox.list(historical, preCutoverCursor);
     expect(page.notifications).toHaveLength(20);
-    expect(page.notifications.every((n) => n.createdAt < preCutoverCursor)).toBe(true);
-    expect(new InboxCursorCodec(secret).open(page.nextCursor!, historical, 'page')).toMatchObject({
-      type: 'page',
-    });
+    expect(page.notifications.every((n) => n.createdAt < preCutoverBoundary)).toBe(true);
+    expect(fallbackInboxPosition(page.nextCursor!)).not.toBeNull();
+    const legacyPage = await inbox.list(historical, preCutoverBoundary);
+    expect(legacyPage.notifications.map((n) => n.id)).toEqual(page.notifications.map((n) => n.id));
+    expect(
+      new InboxCursorCodec(secret).open(legacyPage.nextCursor!, historical, 'page'),
+    ).toMatchObject({ type: 'page' });
+    for (const fixture of fallbackCases) {
+      const continuation = await inbox.list(fixture.userId, fixture.cursor);
+      const ids = [...fixture.seen, ...continuation.notifications.map((n) => n.id)];
+      expect(ids).toEqual(fixture.expected);
+      expect(new Set(ids).size).toBe(fixture.expected.length);
+      expect(continuation.nextCursor).toBeNull();
+    }
     const { rows } = await pool.query(
       `select count(distinct inbox_sequence)::int as unique_count,
       min(read_at)::text as first_read from notifications where user_id=$1`,
@@ -456,6 +514,199 @@ describe.sequential('shared inbox upgrade and concurrency', () => {
       expect(result.rows).toHaveLength(0);
     }
     expect(await counts(b)).toEqual({ read: 0, unread: 0 });
+  });
+
+  it('real self-service erasure retains memberships but fences outbox retries and every raw producer', async () => {
+    const { userId: erasedId, headers } = await registeredUser();
+    const liveId = await user();
+    const [room] = await db
+      .insert(schema.rooms)
+      .values({
+        code: randomUUID().slice(0, 8).toUpperCase(),
+        type: 'group',
+        decisionMode: 'vote',
+        participantCount: 2,
+        status: 'collecting',
+        hostUserId: liveId,
+      })
+      .returning();
+    await db.insert(schema.roomMembers).values([
+      { roomId: room!.id, userId: liveId, role: 'host', displayName: 'Live' },
+      { roomId: room!.id, userId: erasedId, role: 'member', displayName: 'Erased' },
+    ]);
+    const [event] = await db
+      .insert(schema.outboxEvents)
+      .values({
+        eventType: 'plan.published',
+        resourceType: 'room',
+        resourceId: room!.id,
+        payload: {},
+      })
+      .returning();
+    const push = new FakePush();
+    const send = vi.spyOn(push, 'sendToUsers');
+    const worker = new OutboxDispatcher(db, push);
+    await worker.dispatchBatch();
+    expect(await counts(erasedId)).toEqual({ read: 0, unread: 1 });
+    const removed = await api().inject({ method: 'DELETE', url: '/v1/me', headers });
+    expect(removed.statusCode).toBe(200);
+    expect((await pool.query('select status from users where id=$1', [erasedId])).rows).toEqual([
+      { status: 'deleted' },
+    ]);
+    expect(
+      (
+        await pool.query('select removed_at from room_members where user_id=$1 and room_id=$2', [
+          erasedId,
+          room!.id,
+        ])
+      ).rows,
+    ).toEqual([{ removed_at: null }]);
+    send.mockClear();
+    // Same event retries after deletion; retained membership must not resurrect inbox state.
+    await pool.query('update outbox_events set published_at=null where id=$1', [event!.id]);
+    await worker.dispatchBatch();
+    expect(send).toHaveBeenCalledOnce();
+    expect(send.mock.calls[0]![0]).toEqual([liveId]);
+    expect(await counts(liveId)).toEqual({ read: 0, unread: 1 });
+    // Covers campaign/privacy kinds plus old binaries issuing INSERT VALUES.
+    for (const kind of schema.notificationKind.enumValues) {
+      const result = await pool.query(
+        "insert into notifications(user_id,kind,payload) values ($1,$2,'{}') returning id",
+        [erasedId, kind],
+      );
+      expect(result.rows).toHaveLength(0);
+    }
+    expect(await backfillNotificationInboxBatch(db)).toBe(0);
+    for (const table of [
+      'notifications',
+      'notification_inbox_state',
+      'notification_read_operations',
+    ]) {
+      expect(
+        (await pool.query(`select * from ${table} where user_id=$1`, [erasedId])).rows,
+      ).toHaveLength(0);
+    }
+  });
+
+  it('an insert waiting behind erasure observes deleted status before allocating inbox state', async () => {
+    const id = await user();
+    const eraser = await pool.connect();
+    let pending: ReturnType<typeof insert> | undefined;
+    try {
+      await eraser.query('begin');
+      const {
+        rows: [{ pid }],
+      } = await eraser.query('select pg_backend_pid() as pid');
+      await eraser.query("update users set status='deleted' where id=$1", [id]);
+      pending = insert(id);
+      await expect
+        .poll(
+          async () =>
+            (
+              await pool.query(
+                'select exists(select 1 from pg_stat_activity where $1::int = any(pg_blocking_pids(pid))) as blocked',
+                [pid],
+              )
+            ).rows[0].blocked,
+        )
+        .toBe(true);
+      await eraser.query('commit');
+      expect(await pending).toHaveLength(0);
+      expect(
+        (await pool.query('select * from notification_inbox_state where user_id=$1', [id])).rows,
+      ).toHaveLength(0);
+    } finally {
+      await eraser.query('rollback');
+      eraser.release();
+      await pending;
+    }
+  });
+
+  it('read-all waiting behind erasure creates no operation or idempotency claim', async () => {
+    const id = await user();
+    const through = (await inbox.summary(id)).readThroughCursor;
+    const key = scope();
+    const eraser = await pool.connect();
+    let pending: Promise<unknown> | undefined;
+    try {
+      await eraser.query('begin');
+      const {
+        rows: [{ pid }],
+      } = await eraser.query('select pg_backend_pid() as pid');
+      await eraser.query("update users set status='deleted' where id=$1", [id]);
+      pending = inbox.readAll(id, through, key).then(
+        () => {
+          throw new Error('read-all must reject the erased account');
+        },
+        (error: unknown) => expect(error).toMatchObject({ httpStatus: 401 }),
+      );
+      await expect
+        .poll(
+          async () =>
+            (
+              await pool.query(
+                'select exists(select 1 from pg_stat_activity where $1::int = any(pg_blocking_pids(pid))) as blocked',
+                [pid],
+              )
+            ).rows[0].blocked,
+        )
+        .toBe(true);
+      await eraser.query('commit');
+      await pending;
+      expect(
+        (await pool.query('select * from notification_read_operations where user_id=$1', [id]))
+          .rows,
+      ).toHaveLength(0);
+      expect(
+        (await pool.query('select * from idempotency_keys where key=$1', [key.storedKey])).rows,
+      ).toHaveLength(0);
+    } finally {
+      await eraser.query('rollback');
+      eraser.release();
+      await pending;
+    }
+  });
+
+  it('real erasure waits for an earlier insertion and removes its committed inbox state', async () => {
+    const { userId, headers } = await registeredUser();
+    const writer = await pool.connect();
+    let deletion: Promise<unknown> | undefined;
+    try {
+      await writer.query('begin');
+      const {
+        rows: [{ pid }],
+      } = await writer.query('select pg_backend_pid() as pid');
+      await writer.query(
+        "insert into notifications(user_id,kind,payload) values ($1,'campaign','{}')",
+        [userId],
+      );
+      deletion = (async () => {
+        const res = await api().inject({ method: 'DELETE', url: '/v1/me', headers });
+        expect(res.statusCode).toBe(200);
+      })();
+      await expect
+        .poll(
+          async () =>
+            (
+              await pool.query(
+                'select exists(select 1 from pg_stat_activity where $1::int = any(pg_blocking_pids(pid))) as blocked',
+                [pid],
+              )
+            ).rows[0].blocked,
+        )
+        .toBe(true);
+      await writer.query('commit');
+      await deletion;
+      expect(await counts(userId)).toEqual({ read: 0, unread: 0 });
+      expect(
+        (await pool.query('select * from notification_inbox_state where user_id=$1', [userId]))
+          .rows,
+      ).toHaveLength(0);
+    } finally {
+      await writer.query('rollback');
+      writer.release();
+      await deletion;
+    }
   });
 
   it('serves authenticated HTTP summary/read-all/status, exact errors, old single-read status and no guest access', async () => {

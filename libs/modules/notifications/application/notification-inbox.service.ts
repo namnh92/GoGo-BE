@@ -14,6 +14,8 @@ import {
   InboxCursorCodec,
   INBOX_CURSOR_TTL_MS,
   legacyInboxTimestamp,
+  fallbackInboxCursor,
+  fallbackInboxPosition,
   type InboxCursor,
 } from '../domain/inbox-cursor';
 import {
@@ -78,16 +80,17 @@ export class NotificationInboxService {
   }
   async list(userId: string, cursor?: string) {
     const legacy = cursor ? legacyInboxTimestamp(cursor) : null;
+    const fallback = cursor ? fallbackInboxPosition(cursor) : null;
     let token: InboxCursor | null = null;
-    if (cursor && !legacy) token = this.cursors.open(cursor, userId, 'page');
-    else {
+    if (cursor && !legacy && !fallback) token = this.cursors.open(cursor, userId, 'page');
+    else if (!fallback) {
       const s = await this.snapshot(userId, false);
       // Keep the existing inbox callable while historical sequences/indexes
-      // are backfilled. Until cutover it issues the old timestamp cursor and
+      // are backfilled. Until cutover it issues a full-precision tuple cursor and
       // includes historical rows with NULL sequences.
       if (s.ready) token = this.token(userId, s.cutoff, s.as_of, 'page');
     }
-    const before = token?.before;
+    const before = token?.before ?? fallback;
     const { rows } = await this.db.execute<{
       id: string;
       kind: string;
@@ -120,7 +123,7 @@ export class NotificationInboxService {
         rows.length > 20 && last
           ? token
             ? this.cursors.seal({ ...token, before: { createdAt: last.cursor_at, id: last.id } })
-            : new Date(last.created_at).toISOString()
+            : fallbackInboxCursor({ createdAt: last.cursor_at, id: last.id })
           : null,
     };
   }
@@ -131,6 +134,12 @@ export class NotificationInboxService {
   }
   async readAll(userId: string, through: string, scope: IdempotencyScope) {
     const result = await this.db.transaction(async (tx) => {
+      // Authentication may have completed before erasure. Serialize every new
+      // operation with deletion, in the same user-first order as inbox inserts.
+      const account = await tx.execute(sql`
+        select id from users where id = ${userId}::uuid and status <> 'deleted' for share
+      `);
+      if (!account.rows[0]) throw AppError.unauthorized();
       // Claim + operation + first batch + replay completion commit together.
       // A crash at any point rolls back the claim, so retry can always resume.
       const begin = await beginIdempotent(tx, scope);

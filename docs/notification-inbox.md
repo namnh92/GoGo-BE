@@ -34,6 +34,10 @@ unique dedupe constraints still decide whether a row exists; safe sequence gaps
 are expected on dedupe retries. Multi-account transactional writers must acquire
 account locks in sorted user-id order (current producers insert one account at a
 time, except privacy publication, which inserts one row in its transaction).
+Migration **0080_notification-erasure-fence** drains in-flight inserts before
+replacing the allocator function under the same five-second lock timeout. It
+retains the guard on binary rollback; a lock timeout rolls back the migration
+and requires draining contention before retry.
 
 1. Apply `pnpm db:migrate`. DDL waits for old insertion transactions before the
    trigger is installed, so old insert work is drained at this boundary. Schedule
@@ -45,8 +49,8 @@ time, except privacy publication, which inserts one row in its transaction).
    hot-table access. No data backfill or notifications index build runs in the
    migration transaction.
 2. Deploy this release's API and worker together. Before backfill completes,
-   the existing list stays available using the old exclusive timestamp cursor
-   path, including historical rows with null sequences. Only summary/read-all
+   the existing list stays available using full-precision `(createdAt,id)` fallback
+   cursors, including historical rows with null sequences. Only summary/read-all
    return standard 503 until the gate is ready.
 3. Run **one** operator process: `pnpm inbox:backfill` with the deployment's
    `DATABASE_URL`. Each commit assigns at most 500 historical rows for one
@@ -56,8 +60,8 @@ time, except privacy publication, which inserts one row in its transaction).
    page indexes with `CREATE INDEX CONCURRENTLY`, repairs invalid indexes left
    by interruption, then enables the cutoff gate only when no null sequences
    remain. Do not run simultaneous rollout CLI instances. Once ready, new list pages issue
-   signed sequence-snapshot cursors; previously issued timestamp cursors still
-   work through cutover.
+   signed sequence-snapshot cursors; previously issued fallback tuple and legacy
+   timestamp cursors still work through cutover.
    Sequence assignment is already active before APIs can issue cutoffs. A
    summary statement reads count and committed sequence in one MVCC snapshot;
    an uncommitted insert cannot enter its cutoff. Display ordering stays
@@ -104,9 +108,11 @@ Read-through and page tokens are signed with a domain-separated key derived from
 503; rotation invalidates existing tokens and clients should refetch. Tokens bind
 account, purpose, schema version, all-kinds filter, committed sequence cutoff,
 capture time and a 24-hour expiry. Page tokens also carry `(createdAt,id)`.
-Before cutover, the list requires no signing key and returns legacy ISO timestamp
-cursors with their old exclusive timestamp boundary. These remain accepted after
-cutover. Once enabled, new arrivals above a page snapshot stay out of its
+Before cutover, the list requires no signing key and returns unsigned, strictly
+validated `before:<full-precision UTC timestamp>:<UUID>` tuple cursors. These retain
+their tuple boundary and include historical rows regardless of gate activation;
+they carry no sequence snapshot. Legacy ISO timestamp cursors retain their old
+exclusive timestamp boundary and remain accepted after cutover. Once enabled, new arrivals above a page snapshot stay out of its
 later pages, even with a backdated createdAt. Never log cursor values.
 
 POST read-all requires `Idempotency-Key` and `{ through: readThroughCursor }`.
@@ -126,7 +132,13 @@ Missing and foreign single-read IDs return the existing `{ read: true }`/201;
 foreign and missing operation IDs both return 404. No read action changes room
 membership or invitation state. Self-service and CMS account erasure explicitly
 delete inbox rows, counters and operations in their shared transaction; accounts
-are soft-deleted, so FK cascades alone do not erase these records. No automatic
+are soft-deleted, so FK cascades alone do not erase these records. Migration 0080
+fences every notification insert with a user row SHARE lock before allocating a
+sequence, suppressing deleted recipients for campaigns, privacy exports, raw SQL
+and old workers as well. Backfill and read-all operation creation take the same
+user-first lock; read-all rejects an already-erased account before claiming
+idempotency. Erasure either
+waits for insertion and removes it, or commits first and prevents recreation. No automatic
 retention cleanup is introduced.
 
 Metrics have bounded labels only: `notification_inbox_summary_total`,

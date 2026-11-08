@@ -1,43 +1,85 @@
 import type { Db } from '@gogo/database';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { describe, expect, it, vi } from 'vitest';
-import { InboxCursorCodec } from '../domain/inbox-cursor';
+import { fallbackInboxPosition, InboxCursorCodec } from '../domain/inbox-cursor';
 import { NotificationInboxService } from './notification-inbox.service';
 
 describe('NotificationInboxService raw timestamp mapping', () => {
-  it('keeps legacy pages available before cutover without signing or excluding NULL sequences', async () => {
+  it('rejects erased accounts before creating an idempotency claim or read operation', async () => {
+    const execute = vi.fn().mockResolvedValue({ rows: [] });
+    const transaction = vi.fn(async (fn: (tx: { execute: typeof execute }) => Promise<unknown>) =>
+      fn({ execute }),
+    );
+    const inbox = new NotificationInboxService({ transaction } as unknown as Db, {
+      AUTH_JWT_SECRET: '',
+    });
+    const userId = '00000000-0000-4000-8000-000000000001';
+    await expect(
+      inbox.readAll(userId, 'unused', {
+        storedKey: 'key',
+        requestHash: 'hash',
+        actorScope: 'test',
+        endpoint: 'POST /v1/me/notifications/read-all',
+      }),
+    ).rejects.toMatchObject({ httpStatus: 401 });
+    expect(execute).toHaveBeenCalledOnce();
+    const query = new PgDialect().sqlToQuery(execute.mock.calls[0]![0]);
+    expect(query.sql).toContain("status <> 'deleted' for share");
+    expect(query.params).toEqual([userId]);
+  });
+  it('retains legacy timestamp acceptance and its exclusive boundary without signing before cutover', async () => {
+    const userId = '00000000-0000-4000-8000-000000000001';
+    const cursor = '2026-11-08T10:00:00.123Z';
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [{ ready: false }] })
+      .mockResolvedValueOnce({ rows: [] });
+    const inbox = new NotificationInboxService({ execute } as unknown as Db, {
+      AUTH_JWT_SECRET: '',
+    });
+    expect(await inbox.list(userId, cursor)).toEqual({ notifications: [], nextCursor: null });
+    const query = new PgDialect().sqlToQuery(execute.mock.calls[1]![0]);
+    expect(query.sql).toContain('created_at <');
+    expect(query.sql).not.toContain('inbox_sequence');
+    expect(query.params).toEqual([userId, cursor]);
+  });
+  it('keeps tuple fallback pages available across cutover without signing or excluding NULL sequences', async () => {
     const userId = '00000000-0000-4000-8000-000000000001';
     const rows = Array.from({ length: 21 }, (_, i) => ({
-      id: String(i),
+      id: `00000000-0000-4000-8000-${String(21 - i).padStart(12, '0')}`,
       kind: 'invite',
       payload: {},
-      created_at: new Date(Date.UTC(2026, 10, 8, 10, 0, 21 - i)).toISOString(),
+      created_at: '2026-11-08T10:00:00.123456Z',
+      cursor_at: '2026-11-08T10:00:00.123456Z',
       read_at: null,
     }));
     const execute = vi
       .fn()
       .mockResolvedValueOnce({ rows: [{ ready: false }] })
       .mockResolvedValueOnce({ rows })
-      .mockResolvedValueOnce({ rows: [{ ready: false }] })
       .mockResolvedValueOnce({ rows: rows.slice(20) })
       .mockResolvedValueOnce({ rows: [{ ready: false }] });
-    // No signing key is needed for the existing timestamp cursor path.
+    // Fallback remains callable without a signing key, including after cutover.
     const inbox = new NotificationInboxService({ execute } as unknown as Db, {
       AUTH_JWT_SECRET: '',
     });
     const first = await inbox.list(userId);
     expect(first.notifications).toHaveLength(20);
-    expect(first.nextCursor).toBe(rows[19]!.created_at);
+    expect(fallbackInboxPosition(first.nextCursor!)).toEqual({
+      createdAt: rows[19]!.cursor_at,
+      id: rows[19]!.id,
+    });
     const second = await inbox.list(userId, first.nextCursor!);
     expect(second.notifications.map((n) => n.id)).toEqual([rows[20]!.id]);
     expect(second.nextCursor).toBeNull();
     const dialect = new PgDialect();
     const firstQuery = dialect.sqlToQuery(execute.mock.calls[1]![0]);
-    const secondQuery = dialect.sqlToQuery(execute.mock.calls[3]![0]);
+    const secondQuery = dialect.sqlToQuery(execute.mock.calls[2]![0]);
     expect(firstQuery.sql).not.toContain('inbox_sequence');
     expect(firstQuery.params).toEqual([userId]);
-    expect(secondQuery.sql).toContain('created_at <');
-    expect(secondQuery.params).toEqual([userId, first.nextCursor]);
+    expect(secondQuery.sql).toContain('(created_at, id) <');
+    expect(secondQuery.sql).not.toContain('inbox_sequence');
+    expect(secondQuery.params).toEqual([userId, rows[19]!.cursor_at, rows[19]!.id]);
     await expect(inbox.summary(userId)).rejects.toMatchObject({ httpStatus: 503 });
   });
 

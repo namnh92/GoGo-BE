@@ -361,14 +361,18 @@ export class CampaignDispatcher {
 
     await this.db.execute(sql`
       insert into notifications (user_id, kind, payload, dedupe_key)
-      values (${userId}::uuid, 'campaign', ${JSON.stringify(payload)}::jsonb, ${options.dedupeKey})
+      select id, 'campaign', ${JSON.stringify(payload)}::jsonb, ${options.dedupeKey}
+      from users where id = ${userId}::uuid and status <> 'deleted'
       on conflict (dedupe_key) where dedupe_key is not null do nothing
     `);
     const { rows } = await this.db.execute(sql`
-      select id, push_sent_at from notifications where dedupe_key = ${options.dedupeKey}
+      select n.id, n.push_sent_at from notifications n join users u on u.id = n.user_id
+      where n.dedupe_key = ${options.dedupeKey} and u.status <> 'deleted'
     `);
     const row = rows[0] as { id: string; push_sent_at: Date | string | null } | undefined;
-    if (!row) throw new Error('notification row missing after insert');
+    // The audience may have been erased since it was selected. The common
+    // insert trigger also suppresses a concurrent erasure before allocation.
+    if (!row) return 'no_target';
     if (row.push_sent_at !== null) return 'already_sent';
 
     // #193: addressed by user id; the provider owns the device list. A thrown

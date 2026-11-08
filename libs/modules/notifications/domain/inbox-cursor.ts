@@ -12,6 +12,21 @@ const instant = z
   .string()
   .regex(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3,6}Z$/)
   .refine(validInstant);
+const positionSchema = z.object({ createdAt: instant, id: z.string().uuid() });
+type InboxPosition = z.infer<typeof positionSchema>;
+
+// Pre-cutover pagination must include unsequenced historical rows and remain
+// available without signing material, like the legacy timestamp path. Keep
+// this mode explicit so activation cannot turn it into a sequence snapshot.
+export function fallbackInboxCursor(position: InboxPosition): string {
+  return `before:${position.createdAt}:${position.id}`;
+}
+export function fallbackInboxPosition(raw: string): InboxPosition | null {
+  const match = /^before:(.+):([\da-f-]+)$/i.exec(raw);
+  if (!match) return null;
+  const parsed = positionSchema.safeParse({ createdAt: match[1], id: match[2] });
+  return parsed.success ? parsed.data : null;
+}
 const tokenSchema = z.object({
   v: z.literal(1),
   account: z.string().uuid(),
@@ -20,7 +35,7 @@ const tokenSchema = z.object({
   expires: z.number().int(),
   type: z.enum(['through', 'page']),
   filter: z.literal('all'),
-  before: z.object({ createdAt: instant, id: z.string().uuid() }).optional(),
+  before: positionSchema.optional(),
 });
 export type InboxCursor = z.infer<typeof tokenSchema>;
 export const INBOX_CURSOR_TTL_MS = 24 * 60 * 60 * 1000;

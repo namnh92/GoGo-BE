@@ -6,7 +6,9 @@ import type { Db } from './client';
 export async function backfillNotificationInboxBatch(db: Db): Promise<number> {
   return db.transaction(async (tx) => {
     const candidate = await tx.execute<{ user_id: string }>(sql`
-      select user_id from notifications where inbox_sequence is null limit 1
+      select n.user_id from notifications n join users u on u.id = n.user_id
+      where n.inbox_sequence is null and u.status <> 'deleted' limit 1
+      for share of u
     `);
     const userId = candidate.rows[0]?.user_id;
     if (!userId) return 0;
