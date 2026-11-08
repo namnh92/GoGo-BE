@@ -1,6 +1,7 @@
 /** Packaged operator entrypoint: resumable data + concurrent DDL, outside migrations. */
 import {
   createDb,
+  cleanupDeletedNotificationInboxBatch,
   backfillNotificationInboxBatch,
   finishNotificationInboxRollout,
 } from '@gogo/database';
@@ -9,6 +10,10 @@ async function main() {
   if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required');
   const { db, pool } = createDb(process.env.DATABASE_URL, { max: 1 });
   try {
+    while ((await cleanupDeletedNotificationInboxBatch(db)) > 0) {
+      // Old binaries could recreate erased inboxes before the insert fence.
+      // Repair those remnants in bounded commits before enabling cutoff APIs.
+    }
     while ((await backfillNotificationInboxBatch(db)) > 0) {
       // Each iteration is a separate bounded commit. Safe to kill and rerun.
     }

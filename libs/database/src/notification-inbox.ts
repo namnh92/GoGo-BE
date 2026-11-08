@@ -2,6 +2,45 @@ import { sql } from 'drizzle-orm';
 import type { Pool } from 'pg';
 import type { Db } from './client';
 
+/** Erasure repair: one deleted owner and at most 500 removed rows per commit. */
+export async function cleanupDeletedNotificationInboxBatch(db: Db): Promise<number> {
+  return db.transaction(async (tx) => {
+    const candidate = await tx.execute<{ user_id: string }>(sql`
+      select u.id as user_id from users u
+      where u.status = 'deleted' and (
+        exists (select 1 from notifications n where n.user_id = u.id)
+        or exists (select 1 from notification_inbox_state s where s.user_id = u.id)
+        or exists (select 1 from notification_read_operations o where o.user_id = u.id)
+      ) limit 1 for update of u
+    `);
+    const userId = candidate.rows[0]?.user_id;
+    if (!userId) return 0;
+    // Operations first matches the read worker's operation -> notification lock
+    // order. Commit each nonempty batch before moving on to another table.
+    const operations = await tx.execute<{ count: number }>(sql`
+      with removed as (
+        delete from notification_read_operations where id in (
+          select id from notification_read_operations
+          where user_id = ${userId}::uuid order by id limit 500
+        ) returning id
+      ) select count(*)::int as count from removed
+    `);
+    if (operations.rows[0]!.count > 0) return operations.rows[0]!.count;
+    const notifications = await tx.execute<{ count: number }>(sql`
+      with removed as (
+        delete from notifications where id in (
+          select id from notifications where user_id = ${userId}::uuid order by id limit 500
+        ) returning id
+      ) select count(*)::int as count from removed
+    `);
+    if (notifications.rows[0]!.count > 0) return notifications.rows[0]!.count;
+    const state = await tx.execute(sql`
+      delete from notification_inbox_state where user_id = ${userId}::uuid returning user_id
+    `);
+    return state.rows.length;
+  });
+}
+
 /** One resumable commit, at most 500 historical rows, sharing the insert lock. */
 export async function backfillNotificationInboxBatch(db: Db): Promise<number> {
   return db.transaction(async (tx) => {

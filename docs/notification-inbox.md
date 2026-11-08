@@ -53,7 +53,15 @@ and requires draining contention before retry.
    cursors, including historical rows with null sequences. Only summary/read-all
    return standard 503 until the gate is ready.
 3. Run **one** operator process: `pnpm inbox:backfill` with the deployment's
-   `DATABASE_URL`. Each commit assigns at most 500 historical rows for one
+   `DATABASE_URL`. First it repairs inbox remnants belonging to already-deleted
+   accounts, including NULL-sequence rows recreated by old workers before 0079.
+   Each repair commit removes at most 500 rows for one deleted account: read
+   operations first, then notifications (with or without sequences), then its
+   counter after both are empty. Accounts with only operations or a counter are
+   also repaired. Each batch commits independently; interruption resumes from
+   the remaining rows. Active accounts are excluded from erasure repair.
+   This is rollout-time erasure repair, not an age-based retention policy.
+   After repair, each commit assigns at most 500 historical rows for one
    account using the same account lock. New inserts continue. Kill/restart is
    safe: assigned rows are not selected again. Existing readAt, payload and
    dedupe markers stay unchanged. This command builds the unique, unread and

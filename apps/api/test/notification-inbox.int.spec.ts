@@ -6,11 +6,14 @@ import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import {
   schema,
+  cleanupDeletedNotificationInboxBatch,
   backfillNotificationInboxBatch,
   finishNotificationInboxRollout,
 } from '@gogo/database';
@@ -34,6 +37,7 @@ let db: ReturnType<typeof drizzle<typeof schema>>;
 let app: NestFastifyApplication;
 let snapshot: string;
 let historical: string;
+let historicalDeleted: string;
 let preCutoverCursor: string;
 let preCutoverBoundary: string;
 const fallbackCases: { userId: string; cursor: string; seen: string[]; expected: string[] }[] = [];
@@ -100,8 +104,13 @@ beforeAll(async () => {
   await cp(migrations, snapshot, { recursive: true });
   const journalPath = path.join(snapshot, 'meta/_journal.json');
   const journal = JSON.parse(await readFile(journalPath, 'utf8'));
-  journal.entries = journal.entries.filter((entry: { idx: number }) => entry.idx < 79);
-  await writeFile(journalPath, JSON.stringify(journal));
+  await writeFile(
+    journalPath,
+    JSON.stringify({
+      ...journal,
+      entries: journal.entries.filter((entry: { idx: number }) => entry.idx < 79),
+    }),
+  );
   await migrate(db, { migrationsFolder: snapshot });
   historical = await user();
   // Existing read markers survive schema + backfill. >500 proves bounded upgrade.
@@ -110,6 +119,15 @@ beforeAll(async () => {
     select $1,'invite','{}',case when i=1 then '2026-01-01'::timestamptz else null end
     from generate_series(1,1101) i`,
     [historical],
+  );
+  historicalDeleted = await user();
+  await pool.query("update users set status='deleted' where id=$1", [historicalDeleted]);
+  // A pre-0079 old worker recreates inbox rows AFTER erasure. The upgrade
+  // leaves their sequences NULL, while live-account backfill must skip them.
+  await pool.query(
+    `insert into notifications(user_id,kind,payload)
+    select $1,'invite','{}' from generate_series(1,501)`,
+    [historicalDeleted],
   );
   // Rehearse hot-table contention: a reader blocks ALTER; migration-local
   // lock_timeout must abort and roll back all of 0079 so an operator can retry.
@@ -133,6 +151,23 @@ beforeAll(async () => {
     await blocker.query('rollback');
     blocker.release();
   }
+  // An earlier 0079 rollout could also leave sequenced rows, state, and read
+  // operations on a deleted account. Upgrade through the real old allocator.
+  await writeFile(
+    journalPath,
+    JSON.stringify({
+      ...journal,
+      entries: journal.entries.filter((entry: { idx: number }) => entry.idx < 80),
+    }),
+  );
+  await migrate(db, { migrationsFolder: snapshot });
+  await insert(historicalDeleted);
+  await pool.query(
+    `insert into notification_read_operations(user_id,cutoff,action_at,status)
+    select $1,1,now(),case when i % 2 = 0 then 'completed' else 'running' end
+    from generate_series(1,501) i`,
+    [historicalDeleted],
+  );
   await migrate(db, { migrationsFolder: migrations });
   inbox = new NotificationInboxService(db, config);
   process.env.DATABASE_URL = container.getConnectionUri();
@@ -260,6 +295,85 @@ describe.sequential('shared inbox upgrade and concurrency', () => {
     expect(await backfillNotificationInboxBatch(db)).toBe(500);
     expect(await backfillNotificationInboxBatch(db)).toBe(101);
     expect(await backfillNotificationInboxBatch(db)).toBe(0);
+    // A-F-06: live-account backfill is exhausted, but historical erased rows
+    // still block the global gate. Repeating it cannot make any progress.
+    expect(await backfillNotificationInboxBatch(db)).toBe(0);
+    expect(
+      (
+        await pool.query(
+          'select count(*)::int as count from notifications where user_id=$1 and inbox_sequence is null',
+          [historicalDeleted],
+        )
+      ).rows,
+    ).toEqual([{ count: 501 }]);
+    await expect(finishNotificationInboxRollout(pool)).rejects.toThrow(
+      'Notification inbox backfill is incomplete',
+    );
+    await expect(inbox.summary(historical)).rejects.toMatchObject({ httpStatus: 503 });
+    await pool.query(
+      'insert into notification_read_operations(user_id,cutoff,action_at) values ($1,0,now())',
+      [historical],
+    );
+    const tables = ['notifications', 'notification_inbox_state', 'notification_read_operations'];
+    const liveRows = () =>
+      Promise.all(
+        tables.map(
+          async (table) =>
+            (await pool.query(`select * from ${table} where user_id=$1 order by 1`, [historical]))
+              .rows,
+        ),
+      );
+    const beforeRepair = await liveRows();
+    expect(await cleanupDeletedNotificationInboxBatch(db)).toBe(500);
+    expect(
+      (
+        await pool.query(
+          'select count(*)::int as count from notification_read_operations where user_id=$1',
+          [historicalDeleted],
+        )
+      ).rows,
+    ).toEqual([{ count: 1 }]);
+    expect(await counts(historicalDeleted)).toEqual({ read: 0, unread: 502 });
+    // Resume independent committed batches; operations precede notifications.
+    expect(await cleanupDeletedNotificationInboxBatch(db)).toBe(1);
+    expect(await cleanupDeletedNotificationInboxBatch(db)).toBe(500);
+    expect(await counts(historicalDeleted)).toEqual({ read: 0, unread: 2 });
+    expect(
+      (
+        await pool.query('select last_sequence from notification_inbox_state where user_id=$1', [
+          historicalDeleted,
+        ])
+      ).rows,
+    ).toEqual([{ last_sequence: '1' }]);
+    // Also cover deleted owners having ONLY a counter or ONLY an operation.
+    const stateOnly = await user();
+    const operationOnly = await user();
+    await pool.query("update users set status='deleted' where id=any($1::uuid[])", [
+      [stateOnly, operationOnly],
+    ]);
+    await pool.query('insert into notification_inbox_state(user_id) values ($1)', [stateOnly]);
+    await pool.query(
+      'insert into notification_read_operations(user_id,cutoff,action_at) values ($1,0,now())',
+      [operationOnly],
+    );
+    // Restart through the actual packaged command, proving CLI cleanup runs
+    // before gate activation and resumes the partially repaired deleted owner.
+    const cli = await promisify(execFile)('pnpm', ['inbox:backfill'], {
+      cwd: path.resolve(__dirname, '../../..'),
+      timeout: 60_000,
+    });
+    expect(cli.stdout).toContain('cutoff APIs enabled');
+    for (const table of tables) {
+      expect(
+        (
+          await pool.query(`select * from ${table} where user_id=any($1::uuid[])`, [
+            [historicalDeleted, stateOnly, operationOnly],
+          ])
+        ).rows,
+      ).toHaveLength(0);
+    }
+    expect(await cleanupDeletedNotificationInboxBatch(db)).toBe(0);
+    expect(await liveRows()).toEqual(beforeRepair);
     await finishNotificationInboxRollout(pool);
     await finishNotificationInboxRollout(pool); // restart after DDL succeeds
     expect(await inbox.summary(historical)).toMatchObject({ unreadCount: 1101 });
