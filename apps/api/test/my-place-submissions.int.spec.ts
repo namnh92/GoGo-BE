@@ -591,7 +591,10 @@ describe('#801 contribution cards and shared pending detail', () => {
     await db.execute(sql`delete from feature_flags where key = 'place_provider_photos.enabled'`);
     (app.get(PLACE_PROVIDER) as FakePlaceProvider).tiersRequested.length = 0;
   });
-  afterEach(() => {
+  afterEach(async () => {
+    await db.execute(
+      sql`delete from feature_flags where key = 'place_resolution_attestation.enabled'`,
+    );
     Object.assign(config, previous);
     (app.get(PLACE_PROVIDER) as FakePlaceProvider).failing = false;
   });
@@ -624,6 +627,10 @@ describe('#801 contribution cards and shared pending detail', () => {
       payload: { url: `https://www.google.com/maps?place_id=${googlePlaceId}` },
     });
     expect(resolved.statusCode, resolved.body).toBe(201);
+    expect(resolved.json().candidate.photo).toMatchObject({
+      url: `/v1/places/google-provider-photo/${googlePlaceId}`,
+      authorAttributions: [{ displayName: 'Lan' }],
+    });
     const resolutionToken = resolved.json().resolutionToken as string;
     expect(resolutionToken).toBeTruthy();
     const provider = app.get(PLACE_PROVIDER) as FakePlaceProvider;
@@ -668,6 +675,7 @@ describe('#801 contribution cards and shared pending detail', () => {
     expect(opened.headers['cache-control']).toBe('no-store');
     expect(opened.json()).toMatchObject({
       status: 'pending',
+      providerDisplay: card.providerDisplay,
       name: 'Tên thật',
       contribution: { verificationStatus: 'unverified', note: 'My private tip' },
     });
@@ -682,37 +690,98 @@ describe('#801 contribution cards and shared pending detail', () => {
     expect(photos.mediaCalls.length).toBe(mediaBefore);
   });
 
-  it('persists only core facts without a resolution token and reads them without provider calls', async () => {
-    const googlePlaceId = seedProvider();
-    const provider = app.get(PLACE_PROVIDER) as FakePlaceProvider;
-    const photos = app.get(PLACE_PHOTO_DISPLAY) as FakePlacePhotoDisplay;
-    const refsBefore = photos.refCalls.length;
-    const mediaBefore = photos.mediaCalls.length;
-    const submitted = await submit(owner.token, googlePlaceId);
-    expect(submitted.statusCode, submitted.body).toBe(201);
-    expect(provider.tiersRequested).toEqual(['core']);
-    const id = submitted.json().submissionId as string;
-    const [row] = await db
-      .select()
-      .from(schema.placeSubmissions)
-      .where(eq(schema.placeSubmissions.id, id));
-    const coreFacts = { googleRating: null, googleRatingCount: 0, openingHours: [] };
-    expect(row!.displaySnapshot).toMatchObject({ name: 'Shared café', ...coreFacts });
-    provider.tiersRequested.length = 0;
-    const response = await list();
-    expect(response.statusCode, response.body).toBe(200);
-    expect(response.json().items[0]).toMatchObject({
-      id,
-      providerStatus: 'ok',
-      providerDisplay: coreFacts,
-    });
-    const opened = await detail(id);
-    expect(opened.statusCode, opened.body).toBe(200);
-    expect(opened.json()).toMatchObject({ id, providerStatus: 'ok', providerDisplay: coreFacts });
-    expect(provider.tiersRequested).toEqual([]);
-    expect(photos.refCalls.length).toBe(refsBefore);
-    expect(photos.mediaCalls.length).toBe(mediaBefore);
-  });
+  it.each(['unconfigured', 'disabled', 'not forwarded'] as const)(
+    'preserves preview facts and lazy photo in list/detail when attestation is %s',
+    async (mode) => {
+      if (mode === 'unconfigured') config.PLACE_RESOLUTION_ATTESTATION_SECRET = '';
+      if (mode === 'disabled') {
+        await db.insert(schema.featureFlags).values({
+          key: 'place_resolution_attestation.enabled',
+          enabled: false,
+        });
+      }
+      const googlePlaceId = seedProvider();
+      const provider = app.get(PLACE_PROVIDER) as FakePlaceProvider;
+      const photos = app.get(PLACE_PHOTO_DISPLAY) as FakePlacePhotoDisplay;
+      const facts = {
+        googleRating: 4.4,
+        googleRatingCount: 376,
+        openingHours: [{ dayOfWeek: 1, openMinute: 480, closeMinute: 1020, isOvernight: false }],
+      };
+      provider.seed({
+        providerPlaceId: googlePlaceId,
+        name: 'Bảo tàng Văn học Việt Nam',
+        rating: facts.googleRating,
+        ratingCount: facts.googleRatingCount,
+        hours: facts.openingHours,
+      });
+      photos.seed(googlePlaceId, [
+        {
+          reference: `places/${googlePlaceId}/photos/never-save-this`,
+          widthPx: 800,
+          heightPx: 600,
+          authorAttributions: [{ displayName: 'laiguo lu', uri: null, photoUri: null }],
+          googleMapsUri: null,
+        },
+      ]);
+      const preview = await api().inject({
+        method: 'POST',
+        url: '/v1/places/resolve-google-maps-link',
+        remoteAddress: ip(),
+        payload: { url: `https://www.google.com/maps?place_id=${googlePlaceId}` },
+      });
+      expect(preview.statusCode, preview.body).toBe(201);
+      expect(preview.json().candidate).toMatchObject({
+        ...facts,
+        photo: {
+          url: `/v1/places/google-provider-photo/${googlePlaceId}`,
+          authorAttributions: [{ displayName: 'laiguo lu' }],
+        },
+      });
+      expect(Boolean(preview.json().resolutionToken)).toBe(mode === 'not forwarded');
+      const refsBefore = photos.refCalls.length;
+      const mediaBefore = photos.mediaCalls.length;
+      // Intentionally omit the token, as older/unconfigured clients do.
+      const submitted = await submit(owner.token, googlePlaceId);
+      expect(submitted.statusCode, submitted.body).toBe(201);
+      const id = submitted.json().submissionId as string;
+      const [row] = await db
+        .select()
+        .from(schema.placeSubmissions)
+        .where(eq(schema.placeSubmissions.id, id));
+      expect(row!.displaySnapshot).toMatchObject(facts);
+      expect(provider.tiersRequested).toEqual(['quality', 'quality']);
+      expect(row!.displaySnapshot).not.toHaveProperty('photo');
+      provider.tiersRequested.length = 0;
+      const response = await list();
+      expect(response.statusCode, response.body).toBe(200);
+      const expected = {
+        id,
+        providerStatus: 'ok',
+        providerDisplay: {
+          ...facts,
+          photo: {
+            url: `/v1/places/google-provider-photo/${googlePlaceId}`,
+            provider: 'google',
+            attribution: 'Google Maps',
+            authorAttributions: [],
+          },
+        },
+      };
+      expect(response.json().items[0]).toMatchObject(expected);
+      const opened = await detail(id);
+      expect(opened.statusCode, opened.body).toBe(200);
+      expect(opened.json()).toMatchObject(expected);
+      expect(response.headers['cache-control']).toBe('no-store');
+      expect(opened.headers['cache-control']).toBe('no-store');
+      expect(provider.tiersRequested).toEqual([]);
+      expect(photos.refCalls.length).toBe(refsBefore);
+      expect(photos.mediaCalls.length).toBe(mediaBefore);
+      expect(await db.select().from(schema.placeSubmissionPhotos)).toEqual([]);
+      expect(await db.select().from(schema.placeMedia)).toEqual([]);
+      expect(JSON.stringify(row)).not.toMatch(/never-save-this|dataBase64|laiguo lu/);
+    },
+  );
 
   it('F-01: opening/refreshing 25 distinct stored cards makes zero Details, refs or media calls', async () => {
     const provider = app.get(PLACE_PROVIDER) as FakePlaceProvider;

@@ -36,7 +36,7 @@ const proposal = {
   enrichment: { visitTips: 'PRIVATE-TIP', photos: [{ mediaId: 'PRIVATE-EVIDENCE', kind: 'menu' }] },
 };
 
-function fixture() {
+function fixture(secret = 'test-snapshot-secret') {
   const contributions: Record<string, unknown>[] = [];
   const submissions: Record<string, unknown>[] = [];
   const db = {
@@ -96,7 +96,7 @@ function fixture() {
     } as unknown as PlaceDedupService,
     {} as AdministrativeResolverService,
     {
-      PLACE_RESOLUTION_ATTESTATION_SECRET: 'test-snapshot-secret',
+      PLACE_RESOLUTION_ATTESTATION_SECRET: secret,
       PLACE_RESOLUTION_TTL_S: 600,
     } as PlatformConfig & ResolutionAttestationConfig,
     photos as unknown as SubmissionPhotosService,
@@ -307,22 +307,40 @@ it('#801 refuses resolve when its snapshot cannot be stored', async () => {
   });
 });
 
-it.each([false, true])(
-  '#801 snapshots only the existing core fetch without a token (attestation enabled: %s)',
-  async (enabled) => {
+it.each([
+  { enabled: false, secret: 'test-snapshot-secret', mode: 'attestation disabled' },
+  { enabled: true, secret: '', mode: 'attestation unconfigured' },
+  { enabled: true, secret: 'test-snapshot-secret', mode: 'token not forwarded' },
+])(
+  '#801 preserves preview rating/count/hours on submit with $mode',
+  async ({ enabled, secret }) => {
     flags.attestation = enabled;
-    const { service, submissions, resolveByProviderId, provider } = fixture();
+    const { service, submissions, resolveByProviderId, provider, snapshots } = fixture(secret);
+    const hours = [{ dayOfWeek: 1, openMinute: 480, closeMinute: 1020, isOvernight: false }];
+    provider.seed({
+      providerPlaceId: proposal.googlePlaceId,
+      rating: 4.4,
+      ratingCount: 376,
+      hours,
+    });
+    const preview = await service.resolveLink({ googlePlaceId: proposal.googlePlaceId });
+    expect(preview.candidate).toMatchObject({
+      googleRating: 4.4,
+      googleRatingCount: 376,
+      openingHours: hours,
+    });
     await service.submit(actor, { googlePlaceId: proposal.googlePlaceId });
-    expect(resolveByProviderId).toHaveBeenCalledExactlyOnceWith(proposal.googlePlaceId, 'core');
-    expect(provider.tiersRequested).toEqual(['core']);
     expect(submissions[0]?.displaySnapshot).toMatchObject({
       source: 'google_places',
       name: 'Fake Place',
       addressShort: '1 Fake St, HCMC',
-      googleRating: null,
-      googleRatingCount: 0,
-      openingHours: [],
+      googleRating: 4.4,
+      googleRatingCount: 376,
+      openingHours: hours,
     });
+    expect(resolveByProviderId).toHaveBeenLastCalledWith(proposal.googlePlaceId, 'quality');
+    expect(provider.tiersRequested).toEqual(['quality', 'quality']);
     expect(submissions[0]?.displaySnapshot).not.toHaveProperty('photo');
+    snapshots.onModuleDestroy();
   },
 );

@@ -304,15 +304,15 @@ describe('private contribution lifecycle against PostgreSQL (#796)', () => {
         .from(schema.placeSubmissions)
         .where(eq(schema.placeSubmissions.id, id));
       expect(row!.enrichment).toEqual(proposal);
-      expect(provider.tiersRequested).toEqual(['core']);
+      expect(provider.tiersRequested).toEqual(['quality']);
       expect(row!.displaySnapshot).toMatchObject({
         source: 'google_places',
         attributions: ['Google Maps'],
         name: 'Fake Place',
         addressShort: '1 Fake St, HCMC',
-        googleRating: null,
-        googleRatingCount: 0,
-        openingHours: [],
+        googleRating: 4.4,
+        googleRatingCount: 250,
+        openingHours: provider.registry.get(providerId)!.hours,
       });
       expect(await db.select().from(schema.places)).toHaveLength(0);
       expect(await db.select().from(schema.assistantCreditLedger)).toHaveLength(0);
