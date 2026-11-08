@@ -30,6 +30,7 @@ import {
 import { OutboxDispatcher } from '../../../libs/modules/notifications/application/outbox-dispatcher';
 import { FakePush } from '@gogo/providers';
 import type { IdempotencyScope } from '../../../libs/modules/shared/idempotency.interceptor';
+import { OLD_PASSWORD } from './support/password-recovery-fixture';
 
 let container: StartedPostgreSqlContainer;
 let pool: Pool;
@@ -59,7 +60,7 @@ async function registeredUser() {
     remoteAddress: `10.81.1.${++registrationIp}`,
     payload: {
       email: `inbox-${randomUUID()}@gogo.test`,
-      password: 'sufficiently-long-pw',
+      password: OLD_PASSWORD,
       displayName: 'Inbox',
     },
   });
@@ -108,7 +109,7 @@ beforeAll(async () => {
     journalPath,
     JSON.stringify({
       ...journal,
-      entries: journal.entries.filter((entry: { idx: number }) => entry.idx < 79),
+      entries: journal.entries.filter((entry: { idx: number }) => entry.idx < 91),
     }),
   );
   await migrate(db, { migrationsFolder: snapshot });
@@ -122,7 +123,7 @@ beforeAll(async () => {
   );
   historicalDeleted = await user();
   await pool.query("update users set status='deleted' where id=$1", [historicalDeleted]);
-  // A pre-0079 old worker recreates inbox rows AFTER erasure. The upgrade
+  // A pre-0091 old worker recreates inbox rows AFTER erasure. The upgrade
   // leaves their sequences NULL, while live-account backfill must skip them.
   await pool.query(
     `insert into notifications(user_id,kind,payload)
@@ -130,7 +131,7 @@ beforeAll(async () => {
     [historicalDeleted],
   );
   // Rehearse hot-table contention: a reader blocks ALTER; migration-local
-  // lock_timeout must abort and roll back all of 0079 so an operator can retry.
+  // lock_timeout must abort and roll back all of 0091 so an operator can retry.
   const blocker = await pool.connect();
   try {
     await blocker.query('begin');
@@ -151,13 +152,13 @@ beforeAll(async () => {
     await blocker.query('rollback');
     blocker.release();
   }
-  // An earlier 0079 rollout could also leave sequenced rows, state, and read
+  // An earlier 0091 rollout could also leave sequenced rows, state, and read
   // operations on a deleted account. Upgrade through the real old allocator.
   await writeFile(
     journalPath,
     JSON.stringify({
       ...journal,
-      entries: journal.entries.filter((entry: { idx: number }) => entry.idx < 80),
+      entries: journal.entries.filter((entry: { idx: number }) => entry.idx < 92),
     }),
   );
   await migrate(db, { migrationsFolder: snapshot });
@@ -824,19 +825,7 @@ describe.sequential('shared inbox upgrade and concurrency', () => {
   });
 
   it('serves authenticated HTTP summary/read-all/status, exact errors, old single-read status and no guest access', async () => {
-    const res = await api().inject({
-      method: 'POST',
-      url: '/v1/auth/register',
-      remoteAddress: '10.81.1.1',
-      payload: {
-        email: `inbox-${randomUUID()}@gogo.test`,
-        password: 'sufficiently-long-pw',
-        displayName: 'Inbox',
-      },
-    });
-    expect(res.statusCode).toBe(201);
-    const { accessToken, userId } = res.json();
-    const headers = { authorization: `Bearer ${accessToken}` };
+    const { userId, headers } = await registeredUser();
     const [note] = await insert(userId);
     const s = await api().inject({ method: 'GET', url: '/v1/me/notifications/summary', headers });
     expect(s.statusCode).toBe(200);

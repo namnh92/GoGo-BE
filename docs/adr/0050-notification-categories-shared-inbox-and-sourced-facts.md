@@ -348,7 +348,7 @@ Binding source: workspace `.claude/rules/execution-policy.md` §8, **2026-11-08 
 | Quiet hours         | **Default off**. Opt-in **23:00–07:00** in the stored IANA timezone; defer push until the window ends, rechecking relevance and preferences. Inbox remains immediate.                                                              |
 | Emergency exception | **No exception**. No quiet-hour bypass or master/category opt-out bypass.                                                                                                                                                          |
 | Seven-day cleanup   | **No automatic cleanup**. Remove the seven-day cleanup claim from UI; no archive or deletion job is authorized.                                                                                                                    |
-| Contract staging    | PR1 is **MINOR**; independent category semantics in PR2 require **MAJOR 5.0.0**. Owner signs CODEOWNER after review.                                                                                                               |
+| Contract staging    | PR1 is **MINOR**; independent category semantics in PR2 require **MAJOR 8.0.0**. Owner signs CODEOWNER after review.                                                                                                               |
 
 PR4 quiet-hour implementation must define DST handling, absent timezone behavior, expiry while deferred, and cancellation. The approved behavior defers push; replace Stitch's claim of automatically muting sound.
 
@@ -376,7 +376,7 @@ The current single-read endpoint rewrites `readAt`, and current pagination uses 
 Use ordered PRs, each containing its own implementation, contract, tests, telemetry, and documentation:
 
 1. **Shared inbox capability:** ADR, common insertion/sequence support, summary, bounded read-all, single-read/pagination corrections. Own #809’s unread requirement here.
-2. **Category preferences:** schema, legacy compatibility, versioned API, delivery filtering, retry/cutover safeguards, rollback procedure. Publish the owner-approved semantic **MAJOR 5.0.0** change (PR1 stays MINOR).
+2. **Category preferences:** schema, legacy compatibility, versioned API, delivery filtering, retry/cutover safeguards, rollback procedure. Publish the owner-approved semantic **MAJOR 8.0.0** change (PR1 stays MINOR).
 3. **Sourced payload facts:** event-time reminder/plan preview facts; no assumed two-hour schedule.
 4. **Approved policies:** implement the 2026-11-08 decisions: 120-minute reminders and opt-in 23:00–07:00 quiet hours (default off), no emergency exception and no automatic cleanup. No cleanup job ships.
 

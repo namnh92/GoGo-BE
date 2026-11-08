@@ -1,6 +1,6 @@
 # Shared notification inbox — #811 PR1 / #809
 
-ADR-0050 defines the four-PR shape. This release implements only shared inbox
+ADR-0050 defines the four-PR shape. Contract **7.7.0-alpha.1** implements only shared inbox
 storage and read APIs. Owner decisions dated **2026-11-08** are recorded in
 workspace `.claude/rules/execution-policy.md` §8 (BE#811) and ADR-0050 §6:
 one reminder **120 minutes** before confirmed start (no start, no reminder;
@@ -11,7 +11,7 @@ exception**; **no automatic cleanup**, including no seven-day deletion.
 Replace Stitch's automatic sound-muting and seven-day cleanup claims.
 
 The four PRs remain ordered: (1) shared inbox, **MINOR**; (2) category preferences
-and filtering, semantic contract **MAJOR 5.0.0**; (3) sourced payload facts;
+and filtering, semantic contract **MAJOR 8.0.0**; (3) sourced payload facts;
 (4) approved scheduling and quiet-hour policies, with no emergency bypass or
 cleanup job. These product policies are implemented in **PR4**, not this release.
 Contract/migration CODEOWNER approval remains separate and required.
@@ -34,16 +34,16 @@ unique dedupe constraints still decide whether a row exists; safe sequence gaps
 are expected on dedupe retries. Multi-account transactional writers must acquire
 account locks in sorted user-id order (current producers insert one account at a
 time, except privacy publication, which inserts one row in its transaction).
-Migration **0080_notification-erasure-fence** drains in-flight inserts before
+Migration **0092_notification-erasure-fence** drains in-flight inserts before
 replacing the allocator function under the same five-second lock timeout. It
 retains the guard on binary rollback; a lock timeout rolls back the migration
 and requires draining contention before retry.
 
 1. Apply `pnpm db:migrate`. DDL waits for old insertion transactions before the
    trigger is installed, so old insert work is drained at this boundary. Schedule
-   the DDL in a short-lock window. Migration 0079 enforces **SET LOCAL
+   the DDL in a short-lock window. Migration 0091 enforces **SET LOCAL
    lock_timeout = '5s'** for its DDL, then restores the default. On PostgreSQL
-   **55P03** (lock timeout), the transactional runner rolls back 0079, leaving
+   **55P03** (lock timeout), the transactional runner rolls back 0091, leaving
    it unapplied. Identify/drain the blocking transaction, then rerun the same
    migrate command; do not mark it applied or increase the timeout to force
    hot-table access. No data backfill or notifications index build runs in the
@@ -54,7 +54,7 @@ and requires draining contention before retry.
    return standard 503 until the gate is ready.
 3. Run **one** operator process: `pnpm inbox:backfill` with the deployment's
    `DATABASE_URL`. First it repairs inbox remnants belonging to already-deleted
-   accounts, including NULL-sequence rows recreated by old workers before 0079.
+   accounts, including NULL-sequence rows recreated by old workers before 0091.
    Each repair commit removes at most 500 rows for one deleted account: read
    operations first, then notifications (with or without sequences), then its
    counter after both are empty. Accounts with only operations or a counter are
@@ -140,7 +140,7 @@ Missing and foreign single-read IDs return the existing `{ read: true }`/201;
 foreign and missing operation IDs both return 404. No read action changes room
 membership or invitation state. Self-service and CMS account erasure explicitly
 delete inbox rows, counters and operations in their shared transaction; accounts
-are soft-deleted, so FK cascades alone do not erase these records. Migration 0080
+are soft-deleted, so FK cascades alone do not erase these records. Migration 0092
 fences every notification insert with a user row SHARE lock before allocating a
 sequence, suppressing deleted recipients for campaigns, privacy exports, raw SQL
 and old workers as well. Backfill and read-all operation creation take the same
