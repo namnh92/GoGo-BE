@@ -311,36 +311,34 @@ it.each([
   { enabled: false, secret: 'test-snapshot-secret', mode: 'attestation disabled' },
   { enabled: true, secret: '', mode: 'attestation unconfigured' },
   { enabled: true, secret: 'test-snapshot-secret', mode: 'token not forwarded' },
-])(
-  '#801 preserves preview rating/count/hours on submit with $mode',
-  async ({ enabled, secret }) => {
-    flags.attestation = enabled;
-    const { service, submissions, resolveByProviderId, provider, snapshots } = fixture(secret);
-    const hours = [{ dayOfWeek: 1, openMinute: 480, closeMinute: 1020, isOvernight: false }];
-    provider.seed({
-      providerPlaceId: proposal.googlePlaceId,
-      rating: 4.4,
-      ratingCount: 376,
-      hours,
-    });
-    const preview = await service.resolveLink({ googlePlaceId: proposal.googlePlaceId });
-    expect(preview.candidate).toMatchObject({
-      googleRating: 4.4,
-      googleRatingCount: 376,
-      openingHours: hours,
-    });
-    await service.submit(actor, { googlePlaceId: proposal.googlePlaceId });
-    expect(submissions[0]?.displaySnapshot).toMatchObject({
-      source: 'google_places',
-      name: 'Fake Place',
-      addressShort: '1 Fake St, HCMC',
-      googleRating: 4.4,
-      googleRatingCount: 376,
-      openingHours: hours,
-    });
-    expect(resolveByProviderId).toHaveBeenLastCalledWith(proposal.googlePlaceId, 'quality');
-    expect(provider.tiersRequested).toEqual(['quality', 'quality']);
-    expect(submissions[0]?.displaySnapshot).not.toHaveProperty('photo');
-    snapshots.onModuleDestroy();
-  },
-);
+])('#801 keeps the Pro fallback when $mode despite a full preview', async ({ enabled, secret }) => {
+  flags.attestation = enabled;
+  const { service, submissions, resolveByProviderId, provider, snapshots } = fixture(secret);
+  const hours = [{ dayOfWeek: 1, openMinute: 480, closeMinute: 1020, isOvernight: false }];
+  provider.seed({
+    providerPlaceId: proposal.googlePlaceId,
+    rating: 4.4,
+    ratingCount: 376,
+    hours,
+  });
+  const preview = await service.resolveLink({ googlePlaceId: proposal.googlePlaceId });
+  expect(preview.candidate).toMatchObject({
+    googleRating: 4.4,
+    googleRatingCount: 376,
+    openingHours: hours,
+  });
+  expect(Boolean(preview.resolutionToken)).toBe(enabled && !!secret);
+  await service.submit(actor, { googlePlaceId: proposal.googlePlaceId });
+  expect(submissions[0]?.displaySnapshot).toMatchObject({
+    source: 'google_places',
+    name: 'Fake Place',
+    addressShort: '1 Fake St, HCMC',
+    googleRating: null,
+    googleRatingCount: 0,
+    openingHours: [],
+  });
+  expect(resolveByProviderId).toHaveBeenLastCalledWith(proposal.googlePlaceId, 'core');
+  expect(provider.tiersRequested).toEqual(['quality', 'core']);
+  expect(submissions[0]?.displaySnapshot).not.toHaveProperty('photo');
+  snapshots.onModuleDestroy();
+});

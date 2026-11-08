@@ -39,13 +39,10 @@ chậm đã làm mất cả facts mà request vừa trả tiền.
   không phát token thiếu snapshot. Không consume record khi submit để hỗ trợ retry.
   Token identity-only cũ vẫn hợp lệ, tạo row thiếu snapshot; detail có thể hydrate.
   Snapshot fetchedAt giữ thời điểm đã fetch,
-  không gán lại khi submit/list. Nếu không có token được chấp nhận (không gửi, flag tắt hoặc chưa cấu hình
-  secret), submit dùng một quality Details cho cả xác minh và snapshot. Core
-  không yêu cầu rating/count/hours, nên tạo snapshot mới còn fresh nhưng thiếu
-  facts dù preview vừa có đủ (#801, DEV 2026-11-08). Fallback tăng SKU từ core
-  lên quality, không tăng số call; token hợp lệ vẫn tái dùng resolution record
-  với 0 call ở submit. Resolve/approve không đổi SKU. Provider không có rating
-  hoặc giờ thì snapshot vẫn giữ null/0/array rỗng, không tự suy đoán facts.
+  không gán lại khi submit/list. Nếu không dùng token, submit giữ nguyên một
+  core Details để xác minh và lưu snapshot từ dữ liệu đó: rating/count/hours
+  chưa biết là null/0/array rỗng. Snapshot không thêm call hay nâng SKU của
+  resolve/submit/approve; snapshot đầy đủ lấy từ resolution record đã fetch.
 - Submission mới lưu snapshot cùng transaction/attribution/outbox. Dedup tăng
   count như trước; snapshot còn mới không bị ghi đè bởi submit lần nữa. Snapshot
   không thành canonical facts, không được dùng để approve, chấm credit hay xác
@@ -93,7 +90,7 @@ chậm đã làm mất cả facts mà request vừa trả tiền.
 | Thao tác                                             | Details quality                              | photoRefs / media                                              |
 | ---------------------------------------------------- | -------------------------------------------- | -------------------------------------------------------------- |
 | Resolve một link rồi submit token                    | 1 ở resolve, 0 ở submit                      | Resolve tối đa 1 refs theo flag; 0 media tự động               |
-| Submit không có token được chấp nhận                 | 1 quality Details ở submit                   | 0 / 0                                                          |
+| Submit không token                                   | 0 (1 core Details ở submit)                  | 0 / 0                                                          |
 | Mở/refresh list 25 rows bất kỳ                       | **0**                                        | **0 / 0**                                                      |
 | Mở detail snapshot ≤30 ngày                          | 0                                            | 0 / 0 tự động                                                  |
 | Detail pending/rejected thiếu hoặc snapshot >30 ngày | Tối đa 1, phải reserve; lease chặn đồng thời | Tối đa 1 refs trong remaining deadline, 0 media                |
@@ -151,21 +148,28 @@ to proceed and merge: “Vẫn làm. Merged đi”. The 30-day refresh is an int
 freshness rule, not a Google permission. Follow-up: verify against the current Google Maps Platform
 terms and change the design if required.
 
-## Bugfix 2026-11-08 — GoGo-BE#801
+## Bugfix 2026-11-08 — GoGo-BE#801, giữ nguyên chi phí provider
 
-Ba trường rating/count/hours bị mất ở nhánh submit không nhận attestation,
-không phải ở mapper quality hay resolution store. Nhánh này phải mua quality
-để lưu facts hiển thị; không tin facts do client tự gửi và không thêm cache
-Place ID. Token sai/hết hạn hoặc record mất khi attestation bật vẫn trả lỗi,
-không tự fallback mua lại. Token identity-only cũ giữ hành vi tương thích.
+Owner yêu cầu giữ fallback `core` (Place Details Pro). Không mua Enterprise
+để bù token bị thiếu: snapshot ở fallback chỉ có facts của request core;
+rating/count/hours vẫn unknown. Token còn hạn tái dùng resolution snapshot
+với **0 Details, photoRefs hoặc media bổ sung khi submit**, kể cả khi client
+lưu/đọc nháp wizard trước đó. Nháp chỉ chứa enrichment unverified; không lưu
+hoặc gia hạn proof 600 giây. Client giữ token trong flow đang mở; sau khi mở
+lại flow phải resolve lấy proof mới trước submit. Token sai/hết hạn/mất record
+trả `RESOLUTION_TOKEN_INVALID`, không silently fallback khi feature còn bật.
 
 Ảnh Google không thuộc `place_submission_photos` (ảnh user upload). Snapshot
-DB tiếp tục không lưu photo name/ref/URL/credit/bytes; list và detail dựng một
-`CandidateProviderPhotoReference` lazy từ Place ID qua proxy #786. Proxy trả
-credit authoritative và tuân theo flag/budget/no-store ADR-0043. Không thêm
-field public: `SubmissionProviderDisplay` đã có rating/count/hours/photo.
+DB không lưu photo name/ref/URL/credit/bytes; list/detail dựng
+`CandidateProviderPhotoReference` lazy từ Place ID qua proxy #786, theo
+ADR-0043. Regression kiểm tra facts trong snapshot và photo ở response,
+không ghi ảnh Google vào snapshot.
 
-Không backfill hay mua lại facts cho row cũ trong bugfix này; snapshot cũ còn
-fresh vẫn được giữ theo quy tắc dedup/30 ngày ở trên. Detail chỉ refresh khi
-thiếu snapshot hoặc hết hạn. Rollback binary khôi phục fallback core (và lỗi
-thiếu facts); không cần đổi schema hay xoá ảnh.
+Điều tra token và bước activation nằm ở
+[be-801-token-reuse.md](../verification/be-801-token-reuse.md). Integration
+preview → save/read draft → token submit dùng Google adapter + ledger thật
+với HTTP Google được stub: một quality Details ở preview, ledger legacy và
+canonical không đổi từ sau preview qua submit/list/detail/xóa nháp. Test
+cost-pinning submit không token vẫn một Pro; CMS preview/approve vẫn Enterprise.
+Không backfill row cũ hoặc đổi contract/schema. Rollback binary không cần
+xóa dữ liệu. Activation secret thuộc Infra; không tự sinh secret trong BE.

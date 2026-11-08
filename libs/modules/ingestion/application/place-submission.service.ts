@@ -858,12 +858,11 @@ export class PlaceSubmissionService {
             ? { kind: 'LINKED_EXISTING', placeId: identity.placeId }
             : { kind: 'NEW' };
     } else {
-      // #801: without an accepted token, this fetch also owns the display
-      // snapshot. Core drops rating/count/hours even when preview had them
-      // (e.g. attestation is unconfigured). Buy quality once; accepted tokens
-      // above still reuse the original preview without a second provider call.
+      // #801 reuses this verification for the display snapshot without changing
+      // its SKU. Core supplies identity/closure/dedup facts; rating and hours
+      // remain unknown unless resolve already fetched them for a signed candidate.
       const details = await this.resolver
-        .resolveByProviderId(input.googlePlaceId, 'quality')
+        .resolveByProviderId(input.googlePlaceId, 'core')
         // #339 — `catch(() => null)` turned every provider fault into
         // `400 PLACE_NOT_FOUND`: a disabled API, an exhausted quota and an
         // upstream outage all reached the submitter as "that place does not
