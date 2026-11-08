@@ -33,7 +33,7 @@ export class NotificationInboxService {
     this.cursors = new InboxCursorCodec(config.AUTH_JWT_SECRET);
   }
 
-  private async snapshot(userId: string) {
+  private async snapshot(userId: string, requireReady = true) {
     // One statement, one MVCC snapshot: state cannot expose an uncommitted insert.
     const { rows } = await this.db.execute<{
       ready: boolean;
@@ -47,7 +47,7 @@ export class NotificationInboxService {
       from notification_inbox_rollout r where singleton = true
     `);
     const row = rows[0];
-    if (!row?.ready)
+    if (!row || (requireReady && !row.ready))
       throw AppError.serviceUnavailable(
         'NOTIFICATION_INBOX_UNAVAILABLE',
         'Inbox rollout incomplete',
@@ -78,13 +78,16 @@ export class NotificationInboxService {
   }
   async list(userId: string, cursor?: string) {
     const legacy = cursor ? legacyInboxTimestamp(cursor) : null;
-    let token: InboxCursor;
+    let token: InboxCursor | null = null;
     if (cursor && !legacy) token = this.cursors.open(cursor, userId, 'page');
     else {
-      const s = await this.snapshot(userId);
-      token = this.token(userId, s.cutoff, s.as_of, 'page');
+      const s = await this.snapshot(userId, false);
+      // Keep the existing inbox callable while historical sequences/indexes
+      // are backfilled. Until cutover it issues the old timestamp cursor and
+      // includes historical rows with NULL sequences.
+      if (s.ready) token = this.token(userId, s.cutoff, s.as_of, 'page');
     }
-    const before = token.before;
+    const before = token?.before;
     const { rows } = await this.db.execute<{
       id: string;
       kind: string;
@@ -95,7 +98,8 @@ export class NotificationInboxService {
     }>(sql`
       select id, kind, payload, read_at, created_at,
         to_char(created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cursor_at
-      from notifications where user_id = ${userId}::uuid and inbox_sequence <= ${token.cutoff}::bigint
+      from notifications where user_id = ${userId}::uuid
+        ${token ? sql`and inbox_sequence <= ${token.cutoff}::bigint` : sql``}
         ${before ? sql`and (created_at, id) < (${before.createdAt}::timestamptz, ${before.id}::uuid)` : sql``}
         ${legacy ? sql`and created_at < ${legacy}::timestamptz` : sql``}
       order by created_at desc, id desc limit 21
@@ -114,7 +118,9 @@ export class NotificationInboxService {
       })),
       nextCursor:
         rows.length > 20 && last
-          ? this.cursors.seal({ ...token, before: { createdAt: last.cursor_at, id: last.id } })
+          ? token
+            ? this.cursors.seal({ ...token, before: { createdAt: last.cursor_at, id: last.id } })
+            : new Date(last.created_at).toISOString()
           : null,
     };
   }

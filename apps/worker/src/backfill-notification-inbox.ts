@@ -1,4 +1,4 @@
-/** Separate from the transactional migration runner: resumable data + concurrent DDL. */
+/** Packaged operator entrypoint: resumable data + concurrent DDL, outside migrations. */
 import {
   createDb,
   backfillNotificationInboxBatch,
@@ -13,6 +13,7 @@ async function main() {
       // Each iteration is a separate bounded commit. Safe to kill and rerun.
     }
     await finishNotificationInboxRollout(pool);
+    // eslint-disable-next-line no-console -- one-off operator CLI, no Nest logger
     console.log('notification inbox backfill/indexes complete; cutoff APIs enabled');
   } finally {
     await pool.end();
@@ -20,6 +21,7 @@ async function main() {
 }
 main().catch((error: unknown) => {
   // No connection strings or raw database error detail in operator logs.
+  // eslint-disable-next-line no-console -- sanitized operator CLI failure
   console.error('notification inbox rollout failed', error instanceof Error ? error.name : 'Error');
   process.exitCode = 1;
 });

@@ -5,6 +5,10 @@
 -- Rollback: disable cutoff APIs, stop read-all ticks, retain additive tables,
 -- trigger, indexes and read markers. Do not roll back read_at. Physical down is
 -- a later maintenance migration after draining clients/operations, not deploy.
+-- Bound ACCESS EXCLUSIVE waits on the hot inbox table. On 55P03 the runner
+-- rolls back this migration; drain the blocker and retry the whole migration.
+SET LOCAL lock_timeout = '5s';
+--> statement-breakpoint
 ALTER TABLE notifications ADD COLUMN inbox_sequence bigint;
 --> statement-breakpoint
 CREATE TABLE notification_inbox_state (
@@ -44,3 +48,5 @@ END $$;
 CREATE TRIGGER notifications_allocate_sequence
   BEFORE INSERT ON notifications FOR EACH ROW
   EXECUTE FUNCTION allocate_notification_inbox_sequence();
+--> statement-breakpoint
+SET LOCAL lock_timeout TO DEFAULT;

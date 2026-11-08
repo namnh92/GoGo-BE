@@ -681,7 +681,15 @@ export class UserContentService {
       // GoGo-BE#713 — GoGo AI history is personal data, not a contribution:
       // hard-deleted, with its sources, proposals and feedback.
       await eraseAssistantDataForUser(tx, userId);
+      // Account erasure is a soft delete: FK cascades do not remove inbox state.
+      // Match the read-all worker's lock order: operations before inbox rows.
+      await tx
+        .delete(schema.notificationReadOperations)
+        .where(eq(schema.notificationReadOperations.userId, userId));
       await tx.delete(schema.notifications).where(eq(schema.notifications.userId, userId));
+      await tx
+        .delete(schema.notificationInboxState)
+        .where(eq(schema.notificationInboxState.userId, userId));
       await tx
         .delete(schema.notificationPreferences)
         .where(eq(schema.notificationPreferences.userId, userId));

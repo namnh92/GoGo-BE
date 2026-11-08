@@ -29,6 +29,7 @@ let db: ReturnType<typeof drizzle<typeof schema>>;
 let app: NestFastifyApplication;
 let snapshot: string;
 let historical: string;
+let preCutoverCursor: string;
 let inbox: NotificationInboxService;
 const secret = 'inbox-integration-secret'.padEnd(48, 'x');
 const config = { AUTH_JWT_SECRET: secret };
@@ -40,6 +41,22 @@ async function user() {
   ]);
   return rows[0].id as string;
 }
+async function registeredUser() {
+  const res = await api().inject({
+    method: 'POST',
+    url: '/v1/auth/register',
+    remoteAddress: `10.81.1.${++registrationIp}`,
+    payload: {
+      email: `inbox-${randomUUID()}@gogo.test`,
+      password: 'sufficiently-long-pw',
+      displayName: 'Inbox',
+    },
+  });
+  expect(res.statusCode).toBe(201);
+  const { accessToken, userId } = res.json();
+  return { userId: userId as string, headers: { authorization: `Bearer ${accessToken}` } };
+}
+let registrationIp = 0;
 async function insert(userId: string, count = 1, timestamp = '2026-11-08T10:00:00.123456Z') {
   const { rows } = await pool.query(
     `insert into notifications(user_id, kind, payload, created_at)
@@ -87,6 +104,28 @@ beforeAll(async () => {
     from generate_series(1,1101) i`,
     [historical],
   );
+  // Rehearse hot-table contention: a reader blocks ALTER; migration-local
+  // lock_timeout must abort and roll back all of 0079 so an operator can retry.
+  const blocker = await pool.connect();
+  try {
+    await blocker.query('begin');
+    await blocker.query('select 1 from notifications limit 1');
+    let failure: unknown;
+    try {
+      await migrate(db, { migrationsFolder: migrations });
+    } catch (error) {
+      failure = error;
+    }
+    // Drizzle wraps the PostgreSQL error, preserving it as cause.
+    while (failure instanceof Error && failure.cause) failure = failure.cause;
+    expect(failure).toMatchObject({ code: '55P03' });
+    const column = await pool.query(`select 1 from information_schema.columns
+      where table_name='notifications' and column_name='inbox_sequence'`);
+    expect(column.rows).toHaveLength(0);
+  } finally {
+    await blocker.query('rollback');
+    blocker.release();
+  }
   await migrate(db, { migrationsFolder: migrations });
   inbox = new NotificationInboxService(db, config);
   process.env.DATABASE_URL = container.getConnectionUri();
@@ -106,6 +145,65 @@ afterAll(async () => {
 });
 
 describe.sequential('shared inbox upgrade and concurrency', () => {
+  it('serves old HTTP list pages before backfill, then accepts their cursors after cutover', async () => {
+    const { userId, headers } = await registeredUser();
+    // The historical fixture still has NULL sequences. Log in as its owner so
+    // this goes through the real route without fabricating an actor or token.
+    await pool.query('update notifications set user_id=$1 where user_id=$2', [userId, historical]);
+    historical = userId;
+    // Distinct instants make the old exclusive timestamp pages observable.
+    await pool.query(
+      `update notifications set created_at = '2026-01-01'::timestamptz +
+      interval '1 second' * n.i from
+      (select id, row_number() over (order by id) as i from notifications where user_id=$1) n
+      where notifications.id=n.id`,
+      [userId],
+    );
+    const first = await api().inject({ method: 'GET', url: '/v1/me/notifications', headers });
+    expect(first.statusCode).toBe(200);
+    expect(first.json().notifications).toHaveLength(20);
+    const cursor = first.json().nextCursor;
+    expect(cursor).toMatch(/^2026-01-01T.*\.000Z$/);
+    const next = await api().inject({
+      method: 'GET',
+      url: `/v1/me/notifications?cursor=${encodeURIComponent(cursor)}`,
+      headers,
+    });
+    expect(next.statusCode).toBe(200);
+    expect(next.json().notifications).toHaveLength(20);
+    expect(
+      next.json().notifications.every((n: { createdAt: string }) => n.createdAt < cursor),
+    ).toBe(true);
+    const summary = await api().inject({
+      method: 'GET',
+      url: '/v1/me/notifications/summary',
+      headers,
+    });
+    expect(summary.statusCode).toBe(503);
+    const through = new InboxCursorCodec(secret).seal({
+      v: 1,
+      account: userId,
+      cutoff: '0',
+      asOf: new Date().toISOString(),
+      expires: Date.now() + 60_000,
+      type: 'through',
+      filter: 'all',
+    });
+    const bulk = await api().inject({
+      method: 'POST',
+      url: '/v1/me/notifications/read-all',
+      headers: { ...headers, 'idempotency-key': randomUUID() },
+      payload: { through },
+    });
+    expect(bulk.statusCode).toBe(503);
+    const claims = await pool.query('select * from notification_read_operations where user_id=$1', [
+      userId,
+    ]);
+    expect(claims.rows).toHaveLength(0);
+    // Stored for the next test, which opens the actual rollout gate.
+    preCutoverCursor = cursor;
+  });
+
   it('gates cutoff until bounded resumable backfill + concurrent indexes complete', async () => {
     await expect(inbox.summary(historical)).rejects.toMatchObject({ httpStatus: 503 });
     expect(await backfillNotificationInboxBatch(db)).toBe(500);
@@ -117,6 +215,12 @@ describe.sequential('shared inbox upgrade and concurrency', () => {
     await finishNotificationInboxRollout(pool);
     await finishNotificationInboxRollout(pool); // restart after DDL succeeds
     expect(await inbox.summary(historical)).toMatchObject({ unreadCount: 1101 });
+    const page = await inbox.list(historical, preCutoverCursor);
+    expect(page.notifications).toHaveLength(20);
+    expect(page.notifications.every((n) => n.createdAt < preCutoverCursor)).toBe(true);
+    expect(new InboxCursorCodec(secret).open(page.nextCursor!, historical, 'page')).toMatchObject({
+      type: 'page',
+    });
     const { rows } = await pool.query(
       `select count(distinct inbox_sequence)::int as unique_count,
       min(read_at)::text as first_read from notifications where user_id=$1`,
@@ -318,9 +422,9 @@ describe.sequential('shared inbox upgrade and concurrency', () => {
     expect(claims.rows).toHaveLength(0);
   });
 
-  it('foreign/missing notifications and operations are indistinguishable; deletion cascades', async () => {
-    const a = await user(),
-      b = await user();
+  it('foreign/missing resources are indistinguishable; real account erasure deletes all inbox state', async () => {
+    const { userId: a, headers } = await registeredUser();
+    const b = await user();
     const [note] = await insert(a);
     expect(await inbox.markRead(b, note!.id)).toEqual(await inbox.markRead(b, randomUUID()));
     expect(await counts(a)).toEqual({ unread: 1, read: 0 });
@@ -334,7 +438,15 @@ describe.sequential('shared inbox upgrade and concurrency', () => {
         code: 'NOTIFICATION_READ_OPERATION_NOT_FOUND',
         httpStatus: 404,
       });
-    await pool.query('delete from users where id=$1', [a]);
+    // Erase both a completed and a still-running operation via the real API.
+    await insert(a, 501);
+    const pending = await inbox.readAll(a, (await inbox.summary(a)).readThroughCursor, scope());
+    expect(pending.status).toBe(202);
+    const erased = await api().inject({ method: 'DELETE', url: '/v1/me', headers });
+    expect(erased.statusCode).toBe(200);
+    expect(erased.json()).toEqual({ deleted: true });
+    const retained = await pool.query('select status from users where id=$1', [a]);
+    expect(retained.rows).toEqual([{ status: 'deleted' }]);
     for (const table of [
       'notifications',
       'notification_inbox_state',
@@ -343,6 +455,7 @@ describe.sequential('shared inbox upgrade and concurrency', () => {
       const result = await pool.query(`select * from ${table} where user_id=$1`, [a]);
       expect(result.rows).toHaveLength(0);
     }
+    expect(await counts(b)).toEqual({ read: 0, unread: 0 });
   });
 
   it('serves authenticated HTTP summary/read-all/status, exact errors, old single-read status and no guest access', async () => {

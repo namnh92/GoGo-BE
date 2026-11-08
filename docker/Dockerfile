@@ -44,7 +44,7 @@ COPY resources ./resources
 ENV NODE_ENV=production
 ENV SWC_NODE_PROJECT=/app/tsconfig.base.json
 
-# PROCESS=api (default) | worker | migrate | seed
+# PROCESS=api (default) | worker | migrate | seed | inbox-backfill
 #
 # migrate = migrations, then cms:sync-super-admin (GoGo-BE#687 D-3): the super
 # admin row follows CMS_SUPER_ADMIN_EMAIL before the new API starts, and a
@@ -62,6 +62,8 @@ CMD ["sh", "-c", "\
     exec node -r @swc-node/register libs/database/src/sync-super-admin.ts; \
   elif [ \"$PROCESS\" = 'seed' ]; then \
     exec node -r @swc-node/register libs/database/src/seed.ts; \
+  elif [ \"$PROCESS\" = 'inbox-backfill' ]; then \
+    exec node -r @swc-node/register apps/worker/src/backfill-notification-inbox.ts; \
   else \
     exec node -r @swc-node/register apps/api/src/main.ts; \
   fi"]

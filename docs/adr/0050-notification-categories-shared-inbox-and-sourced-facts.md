@@ -1,7 +1,8 @@
 **ADR-0050 — Category notification preferences, shared unread state, and sourced reminder facts**
 
 **Date:** 2026-11-08  
-**Status:** Proposed ADR text; solution shape decided by Astra. Product policies in §6 remain pending owner approval. Contract and migrations require CODEOWNER review.  
+**Status:** Solution shape decided by Astra; §6 product policies and the category semantic MAJOR approved by owner on 2026-11-08 (workspace `.claude/rules/execution-policy.md` §8, BE#811 entry). Four-PR implementation staging remains; product policies ship in PR4. Contract and migrations still require separate CODEOWNER approval.
+
 **Scope:** GoGo-BE#811; shared unread capability for #809; consumer GoGo-MobileApp#539.  
 **Basis:** Worktree HEAD and local `origin/develop` both `18ca7f4d1a8a27ce292488c292408dc6efe7e14c`. Both specified Stitch screens inspected through their live HTML. No files edited; no tests, builds, or installs run.
 
@@ -287,7 +288,7 @@ Record bounded metrics for category, kind, suppression reason, enqueue/send outc
 
 **5. Reminder and preview facts**
 
-The existing `room.status_active → date_reminder` means **the outing started**, not “two hours remaining.” Keep this distinction explicit until the scheduling policy is approved.
+The existing `room.status_active → date_reminder` means **the outing started**, not “two hours remaining.” Keep this distinction explicit; the approved advance-reminder scheduler is implemented separately in PR4.
 
 Add optional payload structures; historical rows remain valid without them:
 
@@ -337,46 +338,47 @@ Read current membership/access and resource availability live. Opening a histori
 
 Keep private evidence references and actor identities server-side. Push contains routing identifiers and generic localized copy; place/address snapshots remain in the authenticated inbox response.
 
-**6. Owner-gated product policies — pending owner**
+**6. Product policies — owner approved 2026-11-08; implementation in PR4**
 
-Recommendations below are **not approval to implement these policies**.
+Binding source: workspace `.claude/rules/execution-policy.md` §8, **2026-11-08 — GoGo-BE#811**. The owner approved Astra's policy recommendations and contract staging below. This records product approval; it does not replace contract/migration CODEOWNER approval or claim PR1 implements these policies.
 
-| Policy              | Recommended decision                                                                                                                                                                                                                                       | Alternatives                                                                                                    |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| Two-hour reminder   | One reminder 120 minutes before a confirmed start; absent start means no scheduled reminder. Reschedule/cancel on schedule changes; skip after start. For a newly confirmed appointment inside the window, send once immediately while still before start. | User-selectable lead time; different fixed lead time; no advance reminder                                       |
-| Quiet hours         | Default disabled. If opted in, 23:00–07:00 in an explicitly stored IANA timezone; defer ordinary push until the window ends, then recheck relevance and preferences. Inbox remains immediate.                                                              | Default-on with explicit product approval; silent-push behavior, acknowledging OS limitations; omit quiet hours |
-| Emergency exception | No exception initially. A future exception needs an owner-approved event allowlist and trusted server authorization; it may bypass quiet hours only, never master/category opt-out.                                                                        | Narrow approved room-event exception; no exception permanently                                                  |
-| Seven-day cleanup   | No automatic cleanup initially. If approved, archive only **expired invitation** notifications seven days after invitation expiry; do not interpret Stitch as deleting all notifications after creation+7 days.                                            | Read-only archival; all-kind archival; permanent deletion with separately defined retention and replay behavior |
+| Policy              | Approved decision                                                                                                                                                                                                                  |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Two-hour reminder   | One reminder **120 minutes before** a confirmed start; absent start means no reminder. Reschedule/cancel on schedule changes; skip after start. Newly confirmed inside the window sends once immediately while still before start. |
+| Quiet hours         | **Default off**. Opt-in **23:00–07:00** in the stored IANA timezone; defer push until the window ends, rechecking relevance and preferences. Inbox remains immediate.                                                              |
+| Emergency exception | **No exception**. No quiet-hour bypass or master/category opt-out bypass.                                                                                                                                                          |
+| Seven-day cleanup   | **No automatic cleanup**. Remove the seven-day cleanup claim from UI; no archive or deletion job is authorized.                                                                                                                    |
+| Contract staging    | PR1 is **MINOR**; independent category semantics in PR2 require **MAJOR 5.0.0**. Owner signs CODEOWNER after review.                                                                                                               |
 
-Quiet-hour implementation must define DST handling, absent timezone behavior, expiry while deferred, and cancellation. This recommendation differs from Stitch’s claim of automatically muting sound; that copy cannot ship unchanged.
+PR4 quiet-hour implementation must define DST handling, absent timezone behavior, expiry while deferred, and cancellation. The approved behavior defers push; replace Stitch's claim of automatically muting sound.
 
-Expired-invitation cleanup requires a real linked invitation and authoritative expiry. The current `invite` emitted for `member.joined` is insufficient.
+No retention/archive job is part of PR4. A future change needs a new owner decision, real linked invitation/expiry where relevant, and replay/dedupe retention analysis; the current `invite` emitted for `member.joined` is insufficient.
 
 **Can proceed independently:** preference model/filtering, unread/read-all, provenance-safe payload structures, event-time snapshots, and compatibility work, subject to normal contract gates.
 
-**Blocked pending policy approval:** advance-reminder scheduler, quiet-hour delivery behavior, emergency classification, and retention/archive jobs. Group 10 UI still waits for the agreed BE scope; partial BE delivery does not waive the owner’s UI gate.
+**Staged for PR4:** approved advance-reminder scheduler and opt-in quiet-hour delivery behavior. No emergency exception or automatic cleanup is authorized. Group 10 UI still waits for the agreed BE scope; partial BE delivery does not waive the owner’s UI gate.
 
 **7. Verification, PR sequence, and consequences**
 
 This is proposed verification coverage, not executed evidence.
 
-| Layer               | Required coverage                                                                                                                                                                                                                         |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Unit                | Exhaustive kind/category mapping; unknown-kind suppression; master/category truth table; “enable all”; legacy writes; provenance omission; fact-only payloads                                                                             |
-| Contract            | Old requests still accepted; ETag and replay semantics; error statuses; optional historical payloads; extensible kinds; generated consumers; exact-base oasdiff                                                                           |
-| Integration         | Migration defaults; concurrent preference writes; export/delete; all inbox producers assign sequences; equal timestamps; late commits; concurrent arrivals/reads; operations beyond 500 rows; crash/retry recovery; account-bound cursors |
-| Delivery regression | Opt-out between enqueue/send and before retries; no backlog replay on opt-in; provider timeout after acceptance; stable dedupe keys; campaigns; privacy-export never pushed; removed members/deleted accounts                             |
-| Rollback            | Forward → conservative collapse → old predicates → forward; no opted-out category resumes; read markers remain preserved                                                                                                                  |
-| Policy-dependent    | Reschedule/cancel, stale plans, late scheduling, DST and timezone changes, expiry while quiet, emergency authorization, archive/count consistency and dedupe retention                                                                    |
+| Layer                   | Required coverage                                                                                                                                                                                                                         |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unit                    | Exhaustive kind/category mapping; unknown-kind suppression; master/category truth table; “enable all”; legacy writes; provenance omission; fact-only payloads                                                                             |
+| Contract                | Old requests still accepted; ETag and replay semantics; error statuses; optional historical payloads; extensible kinds; generated consumers; exact-base oasdiff                                                                           |
+| Integration             | Migration defaults; concurrent preference writes; export/delete; all inbox producers assign sequences; equal timestamps; late commits; concurrent arrivals/reads; operations beyond 500 rows; crash/retry recovery; account-bound cursors |
+| Delivery regression     | Opt-out between enqueue/send and before retries; no backlog replay on opt-in; provider timeout after acceptance; stable dedupe keys; campaigns; privacy-export never pushed; removed members/deleted accounts                             |
+| Rollback                | Forward → conservative collapse → old predicates → forward; no opted-out category resumes; read markers remain preserved                                                                                                                  |
+| Approved policies (PR4) | 120-minute boundary, absent start, reschedule/cancel, stale plans, late scheduling, default-off quiet hours, DST/timezone changes, expiry while quiet, no emergency bypass, no automatic cleanup                                          |
 
 The current single-read endpoint rewrites `readAt`, and current pagination uses only timestamps; both need focused regression coverage ([controller](/Users/maxnguyen/MyWorks/GoGo/dev/worktrees/be-811/libs/modules/notifications/presentation/notifications.controller.ts:39)).
 
 Use ordered PRs, each containing its own implementation, contract, tests, telemetry, and documentation:
 
 1. **Shared inbox capability:** ADR, common insertion/sequence support, summary, bounded read-all, single-read/pagination corrections. Own #809’s unread requirement here.
-2. **Category preferences:** schema, legacy compatibility, versioned API, delivery filtering, retry/cutover safeguards, rollback procedure. Publish the semantic MAJOR change.
+2. **Category preferences:** schema, legacy compatibility, versioned API, delivery filtering, retry/cutover safeguards, rollback procedure. Publish the owner-approved semantic **MAJOR 5.0.0** change (PR1 stays MINOR).
 3. **Sourced payload facts:** event-time reminder/plan preview facts; no assumed two-hour schedule.
-4. **Approved policies only:** separate narrowly scoped scheduling, quiet-hours, and cleanup changes after owner decisions.
+4. **Approved policies:** implement the 2026-11-08 decisions: 120-minute reminders and opt-in 23:00–07:00 quiet hours (default off), no emergency exception and no automatic cleanup. No cleanup job ships.
 
 Consequences: old clients retain callable endpoints but cannot fully represent mixed category state; category-aware clients must regenerate from the contract. Read-all adds durable operation/progress state. Preference changes govern future eligible attempts, not already accepted pushes. Missing provenance intentionally produces less preview content.
 

@@ -4694,7 +4694,10 @@ paths:
         New opaque signed cursors bind the account, all-kinds filter and committed
         sequence snapshot for 24 hours. Equal timestamps use id as a tie breaker.
         Previously issued ISO timestamp cursors remain accepted during transition;
-        these retain their original exclusive timestamp boundary. No category filter
+        these retain their original exclusive timestamp boundary. Before backfill
+        opens the rollout gate, this endpoint stays available, includes historical
+        rows, and issues the old timestamp cursors; only summary/read-all are gated.
+        No category filter
         is activated in this release. All inbox kinds remain visible.
         Invalid/foreign/purpose-mismatched cursors return INVALID_NOTIFICATION_CURSOR;
         expired signed cursors return NOTIFICATION_CURSOR_EXPIRED.

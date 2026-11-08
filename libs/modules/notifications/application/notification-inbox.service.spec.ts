@@ -5,6 +5,42 @@ import { InboxCursorCodec } from '../domain/inbox-cursor';
 import { NotificationInboxService } from './notification-inbox.service';
 
 describe('NotificationInboxService raw timestamp mapping', () => {
+  it('keeps legacy pages available before cutover without signing or excluding NULL sequences', async () => {
+    const userId = '00000000-0000-4000-8000-000000000001';
+    const rows = Array.from({ length: 21 }, (_, i) => ({
+      id: String(i),
+      kind: 'invite',
+      payload: {},
+      created_at: new Date(Date.UTC(2026, 10, 8, 10, 0, 21 - i)).toISOString(),
+      read_at: null,
+    }));
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [{ ready: false }] })
+      .mockResolvedValueOnce({ rows })
+      .mockResolvedValueOnce({ rows: [{ ready: false }] })
+      .mockResolvedValueOnce({ rows: rows.slice(20) })
+      .mockResolvedValueOnce({ rows: [{ ready: false }] });
+    // No signing key is needed for the existing timestamp cursor path.
+    const inbox = new NotificationInboxService({ execute } as unknown as Db, {
+      AUTH_JWT_SECRET: '',
+    });
+    const first = await inbox.list(userId);
+    expect(first.notifications).toHaveLength(20);
+    expect(first.nextCursor).toBe(rows[19]!.created_at);
+    const second = await inbox.list(userId, first.nextCursor!);
+    expect(second.notifications.map((n) => n.id)).toEqual([rows[20]!.id]);
+    expect(second.nextCursor).toBeNull();
+    const dialect = new PgDialect();
+    const firstQuery = dialect.sqlToQuery(execute.mock.calls[1]![0]);
+    const secondQuery = dialect.sqlToQuery(execute.mock.calls[3]![0]);
+    expect(firstQuery.sql).not.toContain('inbox_sequence');
+    expect(firstQuery.params).toEqual([userId]);
+    expect(secondQuery.sql).toContain('created_at <');
+    expect(secondQuery.params).toEqual([userId, first.nextCursor]);
+    await expect(inbox.summary(userId)).rejects.toMatchObject({ httpStatus: 503 });
+  });
+
   it('serializes read/unread rows while retaining microseconds in the next-page boundary', async () => {
     const userId = '00000000-0000-4000-8000-000000000001';
     const secret = 'inbox-unit-secret'.padEnd(48, 'x');
