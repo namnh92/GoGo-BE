@@ -147,3 +147,29 @@ coordinates for ≤30 consecutive days. The owner accepted this risk and ordered
 to proceed and merge: “Vẫn làm. Merged đi”. The 30-day refresh is an internal
 freshness rule, not a Google permission. Follow-up: verify against the current Google Maps Platform
 terms and change the design if required.
+
+## Bugfix 2026-11-08 — GoGo-BE#801, giữ nguyên chi phí provider
+
+Owner yêu cầu giữ fallback `core` (Place Details Pro). Không mua Enterprise
+để bù token bị thiếu: snapshot ở fallback chỉ có facts của request core;
+rating/count/hours vẫn unknown. Token còn hạn tái dùng resolution snapshot
+với **0 Details, photoRefs hoặc media bổ sung khi submit**, kể cả khi client
+lưu/đọc nháp wizard trước đó. Nháp chỉ chứa enrichment unverified; không lưu
+hoặc gia hạn proof 600 giây. Client giữ token trong flow đang mở; sau khi mở
+lại flow phải resolve lấy proof mới trước submit. Token sai/hết hạn/mất record
+trả `RESOLUTION_TOKEN_INVALID`, không silently fallback khi feature còn bật.
+
+Ảnh Google không thuộc `place_submission_photos` (ảnh user upload). Snapshot
+DB không lưu photo name/ref/URL/credit/bytes; list/detail dựng
+`CandidateProviderPhotoReference` lazy từ Place ID qua proxy #786, theo
+ADR-0043. Regression kiểm tra facts trong snapshot và photo ở response,
+không ghi ảnh Google vào snapshot.
+
+Điều tra token và bước activation nằm ở
+[be-801-token-reuse.md](../verification/be-801-token-reuse.md). Integration
+preview → save/read draft → token submit dùng Google adapter + ledger thật
+với HTTP Google được stub: một quality Details ở preview, ledger legacy và
+canonical không đổi từ sau preview qua submit/list/detail/xóa nháp. Test
+cost-pinning submit không token vẫn một Pro; CMS preview/approve vẫn Enterprise.
+Không backfill row cũ hoặc đổi contract/schema. Rollback binary không cần
+xóa dữ liệu. Activation secret thuộc Infra; không tự sinh secret trong BE.
