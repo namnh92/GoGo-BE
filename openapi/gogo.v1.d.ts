@@ -2207,8 +2207,68 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** In-app notification inbox (cursor by createdAt) */
+        /**
+         * In-app notification inbox (createdAt and id descending)
+         * @description New opaque signed cursors bind the account, all-kinds filter and committed sequence snapshot for 24 hours. Equal timestamps use id as a tie breaker. Previously issued ISO timestamp cursors remain accepted during transition; these retain their original exclusive timestamp boundary. No category filter is activated in this release. All inbox kinds remain visible. Invalid/foreign/purpose-mismatched cursors return INVALID_NOTIFICATION_CURSOR; expired signed cursors return NOTIFICATION_CURSOR_EXPIRED.
+         */
         get: operations["listNotifications"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/notifications/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Shared account unread count and committed read-through cutoff
+         * @description Source for the bell, new-item count and profile (#809). Counts all account-owned inbox kinds with readAt absent in the same database snapshot as the cutoff. Push preferences do not affect it. Refetch after reads; mutation replays are not a current count. Cutoff APIs return 503 until the resumable historical backfill and concurrent indexes complete.
+         */
+        get: operations["getNotificationSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/notifications/read-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mark unread rows through a fixed account cutoff
+         * @description Requires Idempotency-Key. The signed summary cursor is account-bound and valid for 24 hours. At most 500 rows change in one transaction. Further batches resume durably in bounded worker ticks after crashes. Each changed row receives the operation action timestamp; existing readAt is preserved. Concurrent reads count each changed row once. Arrivals above the cutoff remain unread. Retrying the same key/body replays the original operation response (even after cursor expiry); poll Location for current progress, then refetch summary. A different body with the same key returns 422.
+         */
+        post: operations["readAllNotifications"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/notifications/read-all/{operationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Poll an account-owned durable read-all operation */
+        get: operations["getNotificationReadOperation"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2925,7 +2985,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Mark one notification read */
+        /**
+         * Mark one notification read
+         * @description Retries preserve the first readAt. Missing and foreign ids return the same success without changing another account. Does not decline or revoke an invitation. Refetch the shared notification summary after success.
+         */
         post: operations["markNotificationRead"];
         delete?: never;
         options?: never;
@@ -5892,6 +5955,26 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        NotificationSummary: {
+            unreadCount: number;
+            /** Format: date-time */
+            asOf: string;
+            /** @description Signed opaque account cutoff; expires in 24 hours */
+            readThroughCursor: string;
+        };
+        NotificationReadOperation: {
+            /** Format: uuid */
+            operationId: string;
+            /** @enum {string} */
+            status: "running" | "completed";
+            /**
+             * Format: date-time
+             * @description Fixed action timestamp
+             */
+            asOf: string;
+            /** @description Rows changed by this operation only */
+            changedCount: number;
+        };
         AdministrativeUnit: {
             /** @description Official GSO code. Not unique on its own — see ADR-0019 §2. */
             code: string;
@@ -11428,6 +11511,15 @@ export interface components {
         };
     };
     responses: {
+        /** @description NOTIFICATION_INBOX_UNAVAILABLE when the inbox rollout or signing key is unavailable, or SERVICE_UNAVAILABLE (retryable true) when the authoritative consumer session lookup encounters an operational database connection, pool or query timeout/unavailability. Retry with backoff; cached state cannot authorize access. SQL/schema/permission/configuration errors retain existing error handling. Standard error envelope. */
+        NotificationInboxUnavailable: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
         /** @description SERVICE_UNAVAILABLE (retryable true) — the authoritative consumer session lookup encountered an operational database connection, pool or query timeout/unavailability. Retry with backoff; cached state cannot authorize access. SQL/schema/permission/configuration errors retain existing error handling. */
         SessionLookupUnavailable: {
             headers: {
@@ -15628,7 +15720,177 @@ export interface operations {
                     };
                 };
             };
-            503: components["responses"]["SessionLookupUnavailable"];
+            /** @description INVALID_NOTIFICATION_CURSOR */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description NOTIFICATION_CURSOR_EXPIRED */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["NotificationInboxUnavailable"];
+        };
+    };
+    getNotificationSummary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Account snapshot; never cache */
+            200: {
+                headers: {
+                    "Cache-Control"?: "private, no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationSummary"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["NotificationInboxUnavailable"];
+        };
+    };
+    readAllNotifications: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    through: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Completed immediately */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationReadOperation"];
+                };
+            };
+            /** @description Durable operation running */
+            202: {
+                headers: {
+                    /** @description Account-authenticated operation status URL */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationReadOperation"];
+                };
+            };
+            /** @description VALIDATION_FAILED, INVALID_IDEMPOTENCY_KEY or INVALID_NOTIFICATION_CURSOR */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description IDEMPOTENT_REQUEST_IN_FLIGHT */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description NOTIFICATION_CURSOR_EXPIRED */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description IDEMPOTENCY_KEY_REUSED */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["NotificationInboxUnavailable"];
+        };
+    };
+    getNotificationReadOperation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current progress; never cache */
+            200: {
+                headers: {
+                    "Cache-Control"?: "private, no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationReadOperation"];
+                };
+            };
+            /** @description VALIDATION_FAILED */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description NOTIFICATION_READ_OPERATION_NOT_FOUND (foreign and missing indistinguishable) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["NotificationInboxUnavailable"];
         };
     };
     registerPushSubscription: {

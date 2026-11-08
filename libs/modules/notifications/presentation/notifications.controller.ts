@@ -1,10 +1,10 @@
-import { Body, Controller, Get, Inject, Param, Post, Put, Query } from '@nestjs/common';
-import { and, desc, eq, lt, sql } from 'drizzle-orm';
+import { Body, Controller, Get, Headers, Param, Post, Put, Query, Req, Res } from '@nestjs/common';
 import { z } from 'zod';
-import { schema, type Db } from '@gogo/database';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import { AppError } from '../../shared/app-error';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
-import { DB } from '../../shared/tokens';
+import { ManualIdempotency, idempotencyScope } from '../../shared/idempotency.interceptor';
+import { NotificationInboxService } from '../application/notification-inbox.service';
 import type { Actor } from '../../identity/domain/actor';
 import { CurrentActor, RateLimit } from '../../identity/presentation/decorators';
 import { PushSubscriptionsService } from '../application/push-subscriptions.service';
@@ -26,51 +26,57 @@ function requireUser(actor: Actor): string {
 @Controller('me')
 export class NotificationsController {
   constructor(
-    @Inject(DB) private readonly db: Db,
+    private readonly inbox: NotificationInboxService,
     private readonly pushSubscriptions: PushSubscriptionsService,
   ) {}
 
   @Get('notifications')
-  async list(@CurrentActor() actor: Actor, @Query('cursor') cursor?: string) {
+  list(@CurrentActor() actor: Actor, @Query('cursor') cursor?: string) {
+    return this.inbox.list(requireUser(actor), cursor);
+  }
+
+  @Get('notifications/summary')
+  summary(@CurrentActor() actor: Actor, @Res({ passthrough: true }) reply: FastifyReply) {
+    reply.header('Cache-Control', 'private, no-store');
+    return this.inbox.summary(requireUser(actor));
+  }
+
+  @ManualIdempotency()
+  @RateLimit({ action: 'me.notifications.read-all', limit: 30, windowSeconds: 60, keyBy: 'actor' })
+  @Post('notifications/read-all')
+  async readAll(
+    @CurrentActor() actor: Actor,
+    @Headers('idempotency-key') key: string | undefined,
+    @Body(new ZodValidationPipe(z.object({ through: z.string().min(1).max(2048) }).strict()))
+    body: { through: string },
+    @Req() req: FastifyRequest,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ) {
     const userId = requireUser(actor);
-    const before = cursor ? new Date(cursor) : null;
-    const rows = await this.db
-      .select()
-      .from(schema.notifications)
-      .where(
-        and(
-          eq(schema.notifications.userId, userId),
-          ...(before && !Number.isNaN(before.getTime())
-            ? [lt(schema.notifications.createdAt, before)]
-            : []),
-        ),
-      )
-      .orderBy(desc(schema.notifications.createdAt))
-      .limit(21);
-    const page = rows.slice(0, 20);
-    return {
-      notifications: page.map((n) => ({
-        id: n.id,
-        kind: n.kind,
-        payload: n.payload,
-        readAt: n.readAt?.toISOString(),
-        createdAt: n.createdAt.toISOString(),
-      })),
-      nextCursor: rows.length > 20 ? page[page.length - 1]!.createdAt.toISOString() : null,
-    };
+    const scope = idempotencyScope(Object.assign(req, { actor }), key ?? '');
+    const result = await this.inbox.readAll(userId, body.through, scope);
+    reply.code(result.status).header('Cache-Control', 'private, no-store');
+    if (result.status === 202)
+      reply.header('Location', `/v1/me/notifications/read-all/${result.body.operationId}`);
+    return result.body;
+  }
+
+  @Get('notifications/read-all/:operationId')
+  operation(
+    @CurrentActor() actor: Actor,
+    @Param('operationId', new ZodValidationPipe(z.string().uuid())) id: string,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ) {
+    reply.header('Cache-Control', 'private, no-store');
+    return this.inbox.operation(requireUser(actor), id);
   }
 
   @Post('notifications/:id/read')
-  async markRead(
+  markRead(
     @CurrentActor() actor: Actor,
     @Param('id', new ZodValidationPipe(z.string().uuid())) id: string,
   ) {
-    const userId = requireUser(actor);
-    await this.db
-      .update(schema.notifications)
-      .set({ readAt: sql`now()` })
-      .where(and(eq(schema.notifications.id, id), eq(schema.notifications.userId, userId)));
-    return { read: true };
+    return this.inbox.markRead(requireUser(actor), id);
   }
 
   /**

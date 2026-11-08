@@ -1,3 +1,4 @@
+import { finishNotificationInboxRollout } from '@gogo/database';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
@@ -164,6 +165,7 @@ beforeAll(async () => {
   pool.on('error', () => undefined);
   db = drizzle(pool, { schema });
   await migrate(db, { migrationsFolder: path.resolve(__dirname, '../../../migrations') });
+  await finishNotificationInboxRollout(pool);
 
   const { createApp } = await import('../src/main.js');
   app = await createApp({
@@ -313,6 +315,7 @@ describe('generation (worker)', () => {
       .where(eq(schema.notifications.userId, user.userId));
     expect(notes).toHaveLength(1);
     expect(notes[0]).toMatchObject({ kind: 'privacy_export_ready' });
+    expect(notes[0]!.inboxSequence).toBeGreaterThan(0n);
     expect(Object.keys(notes[0]!.payload as object).sort()).toEqual(['expiresAt', 'exportId']);
 
     const inbox = await api().inject({
@@ -321,6 +324,7 @@ describe('generation (worker)', () => {
       remoteAddress: ip(),
       headers: auth(user.token),
     });
+    expect(inbox.statusCode).toBe(200);
     expect(inbox.json().notifications[0]).toMatchObject({ kind: 'privacy_export_ready' });
   });
 

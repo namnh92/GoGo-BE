@@ -1,3 +1,4 @@
+import { finishNotificationInboxRollout } from '@gogo/database';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
@@ -68,6 +69,7 @@ beforeAll(async () => {
   pool.on('error', () => undefined);
   db = drizzle(pool, { schema });
   await migrate(db, { migrationsFolder: path.resolve(__dirname, '../../../migrations') });
+  await finishNotificationInboxRollout(pool);
 
   await db.insert(schema.serviceAreas).values({
     key: 'hcm_q1',
@@ -374,6 +376,7 @@ describe('outbox dispatcher (BE-BFF-010)', () => {
       .from(schema.notifications)
       .where(eq(schema.notifications.userId, userId));
     expect(notifications).toHaveLength(1);
+    expect(notifications[0]!.inboxSequence).toBeGreaterThan(0n);
     expect(notifications[0]!.kind).toBe('plan_ready');
     // #193: one provider call per event, addressed by user id — never by the
     // device token registered above — and keyed by the event for provider-side
@@ -405,6 +408,7 @@ describe('outbox dispatcher (BE-BFF-010)', () => {
       url: '/v1/me/notifications',
       headers: auth((await loginAgain('notif@gogo.id.vn')).token),
     });
+    expect(inbox.statusCode).toBe(200);
     expect(inbox.json().notifications[0].kind).toBe('plan_ready');
   });
 
@@ -446,7 +450,8 @@ describe('outbox dispatcher (BE-BFF-010)', () => {
       .select()
       .from(schema.notifications)
       .where(eq(schema.notifications.userId, userId));
-    expect(notifications).toHaveLength(1); // in-app kept
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]!.inboxSequence).toBeGreaterThan(0n); // in-app kept
     expect(push.sent).toHaveLength(0); // push suppressed
   });
 });
@@ -673,6 +678,7 @@ describe('outbox delivery: retry, dead-letter, dedupe', () => {
       .from(schema.notifications)
       .where(eq(schema.notifications.userId, userId));
     expect(notifications).toHaveLength(1);
+    expect(notifications[0]!.inboxSequence).toBeGreaterThan(0n);
     // A sole recipient holds the bare event id: the key the previous release
     // wrote, kept so that release cannot add a second row after a rollback.
     expect(notifications[0]!.dedupeKey).toBe(event.id);
@@ -1104,6 +1110,7 @@ describe('outbox delivery: retry, dead-letter, dedupe', () => {
       .from(schema.notifications)
       .where(eq(schema.notifications.userId, userId));
     expect(notifications).toHaveLength(1);
+    expect(notifications[0]!.inboxSequence).toBeGreaterThan(0n);
   });
 
   it('a provider answer with nobody subscribed is counted as no target, never as sent (#193 review)', async () => {

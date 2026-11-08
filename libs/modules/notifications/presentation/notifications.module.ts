@@ -1,3 +1,4 @@
+import { NotificationInboxService } from '../application/notification-inbox.service';
 import { Module } from '@nestjs/common';
 import { IdentityModule } from '../../identity/presentation/identity.module';
 import { PushIdentityService } from '../application/push-identity.service';
@@ -10,7 +11,12 @@ import { PushIdentityController } from './push-identity.controller';
 @Module({
   imports: [IdentityModule],
   controllers: [NotificationsController, PushIdentityController, PushDeviceController],
-  providers: [PushIdentityService, PushSubscriptionsService, PushDeviceIdentityService],
+  providers: [
+    NotificationInboxService,
+    PushIdentityService,
+    PushSubscriptionsService,
+    PushDeviceIdentityService,
+  ],
   exports: [PushIdentityService, PushSubscriptionsService, PushDeviceIdentityService],
 })
 export class NotificationsModule {}

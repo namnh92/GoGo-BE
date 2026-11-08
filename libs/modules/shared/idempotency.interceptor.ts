@@ -149,7 +149,7 @@ const CLAIM_ATTEMPTS = 3;
  * untouched — and the claim is made again. It is never replayed.
  */
 export async function beginIdempotent(
-  db: Db,
+  db: Db | Tx,
   scope: IdempotencyScope,
   options: {
     replayVersion?: number | undefined;

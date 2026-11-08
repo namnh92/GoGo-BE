@@ -2,6 +2,7 @@ import os from 'node:os';
 import { createDb } from '@gogo/database';
 import {
   CampaignDispatcher,
+  InboxReadAllWorker,
   PushDeviceLifecycle,
   DbUsageLedger,
   OutboxDispatcher,
@@ -262,6 +263,7 @@ async function bootstrap(): Promise<void> {
       : pushStatus.provider === 'unconfigured'
         ? new UnconfiguredPushProvider()
         : new FakePush();
+  const inboxReadAll = new InboxReadAllWorker(db, metrics);
   const dispatcher = new OutboxDispatcher(db, push, metrics);
   // BE-CMS-G4e (#226): campaigns are sent here, never from a request. Same
   // tick as the outbox rather than a schedule of their own.
@@ -710,6 +712,13 @@ async function bootstrap(): Promise<void> {
             },
           ]
         : []),
+      {
+        name: 'gogo:worker:notification-read-all',
+        schedule: { everyMs: 1000 },
+        run: async () => {
+          await inboxReadAll.runTick();
+        },
+      },
       {
         name: 'gogo:worker:heartbeat',
         schedule: { everyMs: HEARTBEAT_INTERVAL_MS },

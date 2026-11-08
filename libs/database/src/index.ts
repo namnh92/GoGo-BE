@@ -20,3 +20,8 @@ export {
 export type { SyncSuperAdminInput, SyncSuperAdminResult } from './super-admin-sync';
 export { errorFacts, summarizeError } from './error-summary';
 export type { ErrorFacts } from './error-summary';
+
+export {
+  backfillNotificationInboxBatch,
+  finishNotificationInboxRollout,
+} from './notification-inbox';
