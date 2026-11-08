@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 7.6.0-alpha.1
+  version: 7.7.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -4689,11 +4689,23 @@ paths:
     get:
       operationId: listNotifications
       tags: [me]
-      summary: In-app notification inbox (cursor by createdAt)
+      summary: In-app notification inbox (createdAt and id descending)
+      description: >
+        New opaque signed cursors bind the account, all-kinds filter and committed
+        sequence snapshot for 24 hours. Equal timestamps use id as a tie breaker.
+        Previously issued ISO timestamp cursors remain accepted during transition;
+        these retain their original exclusive timestamp boundary. Before backfill
+        opens the rollout gate, this endpoint stays available, includes historical
+        rows, and issues full-precision unsigned (createdAt,id) fallback cursors.
+        Fallback continuations retain that boundary across gate activation without
+        acquiring a sequence snapshot; only summary/read-all are gated.
+        No category filter
+        is activated in this release. All inbox kinds remain visible.
+        Invalid/foreign/purpose-mismatched cursors return INVALID_NOTIFICATION_CURSOR;
+        expired signed cursors return NOTIFICATION_CURSOR_EXPIRED.
       parameters:
         - $ref: '#/components/parameters/Cursor'
       responses:
-        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: Notification inbox page
           content:
@@ -4705,6 +4717,143 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/Notification' }
                   nextCursor: { type: [string, 'null'] }
+        '400':
+          description: INVALID_NOTIFICATION_CURSOR
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '410':
+          description: NOTIFICATION_CURSOR_EXPIRED
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/NotificationInboxUnavailable' }
+
+  /me/notifications/summary:
+    get:
+      operationId: getNotificationSummary
+      tags: [me]
+      summary: Shared account unread count and committed read-through cutoff
+      description: >
+        Source for the bell, new-item count and profile (#809). Counts all
+        account-owned inbox kinds with readAt absent in the same database snapshot
+        as the cutoff. Push preferences do not affect it. Refetch after reads;
+        mutation replays are not a current count. Cutoff APIs return 503 until
+        the resumable historical backfill and concurrent indexes complete.
+      responses:
+        '200':
+          description: Account snapshot; never cache
+          headers:
+            Cache-Control: { schema: { type: string, const: 'private, no-store' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/NotificationInboxUnavailable' }
+
+  /me/notifications/read-all:
+    post:
+      operationId: readAllNotifications
+      tags: [me]
+      summary: Mark unread rows through a fixed account cutoff
+      description: >
+        Requires Idempotency-Key. The signed summary cursor is account-bound and
+        valid for 24 hours. At most 500 rows change in one transaction. Further
+        batches resume durably in bounded worker ticks after crashes. Each changed
+        row receives the operation action timestamp; existing readAt is preserved.
+        Concurrent reads count each changed row once. Arrivals above the cutoff
+        remain unread. Retrying the same key/body replays the original operation
+        response (even after cursor expiry); poll Location for current progress,
+        then refetch summary. A different body with the same key returns 422.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, minLength: 8, maxLength: 128, pattern: '^[A-Za-z0-9_-]{8,128}$' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [through]
+              properties:
+                through: { type: string, minLength: 1, maxLength: 2048 }
+      responses:
+        '200':
+          description: Completed immediately
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationReadOperation' }
+        '202':
+          description: Durable operation running
+          headers:
+            Location:
+              description: Account-authenticated operation status URL
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationReadOperation' }
+        '400':
+          description: VALIDATION_FAILED, INVALID_IDEMPOTENCY_KEY or INVALID_NOTIFICATION_CURSOR
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: IDEMPOTENT_REQUEST_IN_FLIGHT
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '410':
+          description: NOTIFICATION_CURSOR_EXPIRED
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          description: IDEMPOTENCY_KEY_REUSED
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/NotificationInboxUnavailable' }
+
+  /me/notifications/read-all/{operationId}:
+    get:
+      operationId: getNotificationReadOperation
+      tags: [me]
+      summary: Poll an account-owned durable read-all operation
+      parameters:
+        - { name: operationId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Current progress; never cache
+          headers:
+            Cache-Control: { schema: { type: string, const: 'private, no-store' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationReadOperation' }
+        '400':
+          description: VALIDATION_FAILED
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: NOTIFICATION_READ_OPERATION_NOT_FOUND (foreign and missing indistinguishable)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/NotificationInboxUnavailable' }
 
   /me/push-subscriptions:
     put:
@@ -6148,6 +6297,10 @@ paths:
       operationId: markNotificationRead
       tags: [me]
       summary: Mark one notification read
+      description: >
+        Retries preserve the first readAt. Missing and foreign ids return the same
+        success without changing another account. Does not decline or revoke an
+        invitation. Refetch the shared notification summary after success.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -12566,6 +12719,23 @@ components:
         maximum: 100
         default: 20
   schemas:
+    NotificationSummary:
+      type: object
+      required: [unreadCount, asOf, readThroughCursor]
+      properties:
+        unreadCount: { type: integer, minimum: 0 }
+        asOf: { type: string, format: date-time }
+        readThroughCursor:
+          { type: string, description: Signed opaque account cutoff; expires in 24 hours }
+    NotificationReadOperation:
+      type: object
+      required: [operationId, status, asOf, changedCount]
+      properties:
+        operationId: { type: string, format: uuid }
+        status: { type: string, enum: [running, completed] }
+        asOf: { type: string, format: date-time, description: Fixed action timestamp }
+        changedCount:
+          { type: integer, minimum: 0, description: Rows changed by this operation only }
     AdministrativeUnit:
       type: object
       required: [code, name, fullName, unitType, level, status, effectiveFrom, isCurrent]
@@ -21442,6 +21612,18 @@ components:
       schema: { type: integer, minimum: 1 }
 
   responses:
+    NotificationInboxUnavailable:
+      description: >
+        NOTIFICATION_INBOX_UNAVAILABLE when the inbox rollout or signing key is
+        unavailable, or SERVICE_UNAVAILABLE (retryable true) when the authoritative
+        consumer session lookup encounters an operational database connection,
+        pool or query timeout/unavailability. Retry with backoff; cached state
+        cannot authorize access. SQL/schema/permission/configuration errors
+        retain existing error handling. Standard error envelope.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
     SessionLookupUnavailable:
       description: >
         SERVICE_UNAVAILABLE (retryable true) — the authoritative consumer

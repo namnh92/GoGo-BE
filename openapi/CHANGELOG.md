@@ -8,6 +8,18 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 7.7.0-alpha.1 — shared notification inbox (GoGo-BE#811 PR1, #809)
+
+Additive MINOR: shared unread summary, signed account-bound cutoff, durable bounded
+read-all and operation polling. New read-all requires Idempotency-Key; existing
+single-read keeps its 201/success shape and now preserves the first readAt.
+Inbox pages use opaque account/snapshot-bound (createdAt,id) cursors with a 24-hour
+expiry and accept legacy timestamp cursors during transition. All existing kinds
+remain extensible; preferences, dispatcher delivery and payload facts are unchanged.
+Summary is private/no-store; refetch after reads. Cutoff APIs remain unavailable
+until the bounded backfill and concurrent-index rollout finishes (ADR-0050).
+Category semantics in a later PR require a MAJOR version, not this MINOR release.
+
 ## 7.6.0-alpha.1 — Wizard keep/drop moderation (GoGo-BE#806)
 
 Add optional `enrichmentSelection` to CMS decide, `enrichmentItems` and

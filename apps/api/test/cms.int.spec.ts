@@ -2438,6 +2438,16 @@ describe('CMS app users, rooms and plans (BE-CMS-G7 #246)', () => {
   it('deletes through the consumer flow, so nothing is left behind twice', async () => {
     const boss = await superAdmin();
     const user = await createUser('g7-erase@example.com');
+    const other = await createUser('g7-erase-other@example.com');
+    await db.insert(schema.notifications).values([
+      { userId: user.id, kind: 'invite', payload: {} },
+      { userId: other.id, kind: 'invite', payload: {} },
+    ]);
+    await db.insert(schema.notificationReadOperations).values([
+      { userId: user.id, cutoff: 1n, actionAt: new Date(), status: 'running' },
+      { userId: user.id, cutoff: 0n, actionAt: new Date(), status: 'completed' },
+      { userId: other.id, cutoff: 1n, actionAt: new Date(), status: 'running' },
+    ]);
 
     expect((await post(boss.token, `/v1/cms/users/${user.id}/delete`)).statusCode).toBe(201);
 
@@ -2446,6 +2456,14 @@ describe('CMS app users, rooms and plans (BE-CMS-G7 #246)', () => {
     // The address is freed: the partial unique index only covers live rows.
     expect(row?.email).toBeNull();
     expect(row?.passwordHash).toBeNull();
+    for (const table of [
+      schema.notifications,
+      schema.notificationInboxState,
+      schema.notificationReadOperations,
+    ]) {
+      expect(await db.select().from(table).where(eq(table.userId, user.id))).toHaveLength(0);
+      expect(await db.select().from(table).where(eq(table.userId, other.id))).toHaveLength(1);
+    }
 
     // Attributed to the staff member who ordered it, not to the account.
     const [entry] = await db

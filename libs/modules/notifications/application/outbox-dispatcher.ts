@@ -158,7 +158,7 @@ export class OutboxDispatcher {
     });
     if (targets.length === 0) return;
 
-    const userIds = targets.map((t) => t.userId!) as string[];
+    const memberIds = targets.map((t) => t.userId!) as string[];
     // NTF-BE-014 (#572), ADR-0025: one switch per account decides push for
     // every kind. The in-app row below is written regardless of it.
     // #594: the same read carries each recipient's account locale, which
@@ -170,7 +170,12 @@ export class OutboxDispatcher {
         allowed: sql<boolean>`${pushAllowed(sql`${schema.users.id}`)}`,
       })
       .from(schema.users)
-      .where(inArray(schema.users.id, userIds));
+      .where(and(inArray(schema.users.id, memberIds), sql`${schema.users.status} <> 'deleted'`));
+    // Erasure retains room memberships. Only live accounts may receive inbox
+    // rows or push, including when an old event is retried after deletion.
+    const liveIds = new Set(pushRows.map((row) => row.id));
+    const userIds = memberIds.filter((id) => liveIds.has(id));
+    if (userIds.length === 0) return;
     const optedOutOfPush = new Set(pushRows.filter((row) => !row.allowed).map((row) => row.id));
     const localeOf = new Map(pushRows.map((row) => [row.id, pushLocaleOf(row.locale)]));
 

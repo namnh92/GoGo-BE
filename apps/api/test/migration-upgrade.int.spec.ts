@@ -212,6 +212,11 @@ describe('migration ordering across both epics', () => {
     const journal = journalOf(combinedMigrations);
     const whens = journal.entries.map((e) => e.when);
     expect(whens).toEqual([...whens].sort((a, b) => a - b));
+    expect(new Set(whens).size).toBe(journal.entries.length);
+    const indices = journal.entries.map((e) => e.idx);
+    expect(indices).toEqual([...indices].sort((a, b) => a - b));
+    expect(new Set(indices).size).toBe(journal.entries.length);
+    expect(new Set(journal.entries.map((e) => e.tag)).size).toBe(journal.entries.length);
     // Located by tag, not by `slice(-2)`. These two are this epic's migrations
     // wherever they end up in the journal, and what matters is that they are
     // adjacent and in this order. Pinning them to the *last* two rows would
@@ -219,6 +224,19 @@ describe('migration ordering across both epics', () => {
     const [push, links] = indicesOf(journal, EPIC_TAGS);
     expect(push).toBeGreaterThanOrEqual(0);
     expect(links).toBe(push! + 1);
+  });
+
+  it('applies shared inbox 0091 and its erasure fence 0092 after the re-design chain', () => {
+    const journal = journalOf(combinedMigrations);
+    const tags = [
+      '0090_submission-enrichment-selection',
+      '0091_notification-shared-inbox',
+      '0092_notification-erasure-fence',
+    ];
+    const positions = indicesOf(journal, tags);
+    expect(positions[0]).toBeGreaterThanOrEqual(0);
+    expect(positions).toEqual([positions[0], positions[0]! + 1, positions[0]! + 2]);
+    expect(positions.map((position) => journal.entries[position]!.idx)).toEqual([90, 91, 92]);
   });
 
   it('sits above the CMS chain, which is what makes CMS-first work', () => {

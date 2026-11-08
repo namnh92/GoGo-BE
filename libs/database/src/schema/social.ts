@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
   boolean,
+  bigint,
   integer,
   check,
   index,
@@ -155,6 +156,7 @@ export const notifications = pgTable(
      * someone's inbox twice.
      */
     dedupeKey: text('dedupe_key'),
+    inboxSequence: bigint('inbox_sequence', { mode: 'bigint' }),
     readAt: timestamp('read_at', { withTimezone: true }),
     /**
      * #193 — the delivery fact, separate from the inbox fact. Set when the
@@ -169,6 +171,11 @@ export const notifications = pgTable(
   },
   (t) => [
     index('notifications_user_idx').on(t.userId, t.createdAt),
+    uniqueIndex('notifications_user_sequence_unique').on(t.userId, t.inboxSequence),
+    index('notifications_unread_sequence_idx')
+      .on(t.userId, t.inboxSequence)
+      .where(sql`${t.readAt} is null`),
+    index('notifications_inbox_page_idx').on(t.userId, t.createdAt.desc(), t.id.desc()),
     // Delivery is at-least-once, so a retry has to be a no-op rather than a
     // second push. The column existed and was never unique.
     uniqueIndex('notifications_dedupe_unique')
@@ -477,5 +484,35 @@ export const campaignDeviceSends = pgTable(
   (t) => [
     uniqueIndex('campaign_device_sends_dedupe_unique').on(t.dedupeKey),
     index('campaign_device_sends_campaign_idx').on(t.campaignId),
+  ],
+);
+
+/** ADR-0050: common insertion trigger owns sequence allocation. */
+export const notificationInboxState = pgTable('notification_inbox_state', {
+  userId: uuid('user_id')
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  lastSequence: bigint('last_sequence', { mode: 'bigint' }).notNull().default(0n),
+});
+export const notificationInboxRollout = pgTable('notification_inbox_rollout', {
+  singleton: boolean('singleton').primaryKey().default(true),
+  ready: boolean('ready').notNull().default(false),
+});
+export const notificationReadOperations = pgTable(
+  'notification_read_operations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    cutoff: bigint('cutoff', { mode: 'bigint' }).notNull(),
+    actionAt: timestamp('action_at', { withTimezone: true }).notNull(),
+    status: text('status').notNull().default('running'),
+    changedCount: bigint('changed_count', { mode: 'bigint' }).notNull().default(0n),
+  },
+  (t) => [
+    index('notification_read_operations_running_idx')
+      .on(t.actionAt, t.id)
+      .where(sql`${t.status} = 'running'`),
   ],
 );

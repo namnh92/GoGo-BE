@@ -332,15 +332,15 @@ describe('previous release and this release on one outbox event (#584)', () => {
 
     expect(await inbox(event.id, roomId, userIds)).toEqual([1, 1, 1]);
   });
-  it('(f) the bare-key owner deletes their account before a retry: nobody gets a second row', async () => {
+  it('(f) the bare-key owner leaves the room before a retry: nobody gets a second row', async () => {
     const { roomId, userIds, event } = await roomOf(3);
     await new OutboxDispatcher(db as never, new FakePush()).dispatchBatch();
     const [owner] = await db
       .select({ userId: schema.notifications.userId })
       .from(schema.notifications)
       .where(eq(schema.notifications.dedupeKey, event.id));
-    // What account deletion does to this event: the person's notifications go
-    // (user-content.service.ts) and they are no longer a member.
+    // A removed member whose inbox row was erased. Real soft-deletion (which
+    // retains membership) is covered in notification-inbox.int.spec.ts.
     await db.delete(schema.notifications).where(eq(schema.notifications.userId, owner!.userId));
     await db
       .update(schema.roomMembers)

@@ -214,6 +214,10 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   realtime_stream_refusals_total: ['reason'],
 
   // --- notifications -------------------------------------------------------
+  notification_inbox_summary_total: [],
+  notification_read_all_requests_total: ['status'],
+  notification_read_all_batches_total: ['status'],
+  notification_read_all_changed_total: [],
   campaign_dispatched_total: ['result'],
   // #193 — one provider call per event; `kind` is the notification kind enum.
   // `sent` counts provider-accepted calls, `unknown_user` the ids the provider
