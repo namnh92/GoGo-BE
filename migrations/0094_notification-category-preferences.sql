@@ -1,7 +1,13 @@
 SET LOCAL lock_timeout = '5s';
 --> statement-breakpoint
 -- #815 / 0093 must be rebased first. Additive DDL only; absent categories mean true.
-ALTER TABLE notification_settings ADD COLUMN version bigint NOT NULL DEFAULT 0 CHECK (version >= 0);
+-- A constant default is metadata-only (no rewrite). The CHECK is NOT VALID so no
+-- row of this hot table is scanned under ACCESS EXCLUSIVE; new writes are checked
+-- at once. Drizzle commits every pending file in one transaction, so validate
+-- only AFTER db:migrate returns: scripts/ops/validate-notification-settings-version.sql.
+ALTER TABLE notification_settings ADD COLUMN version bigint NOT NULL DEFAULT 0;
+--> statement-breakpoint
+ALTER TABLE notification_settings ADD CONSTRAINT notification_settings_version_check CHECK (version >= 0) NOT VALID;
 --> statement-breakpoint
 CREATE TABLE notification_category_preferences (
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,

@@ -3,6 +3,7 @@ import type { SQL } from 'drizzle-orm';
 import { describe, expect, it, vi } from 'vitest';
 import type { Db } from './client';
 import {
+  collapseNotificationCategoriesBatch,
   disableNotificationRecipientKeys,
   enableNotificationRecipientKeys,
   resumeNotificationProducers,
@@ -39,11 +40,29 @@ describe('notification binary transition gates', () => {
       expect(statements[1]).toContain('e.published_at is null');
       expect(statements[1]).not.toMatch(/occurred_at|cutover_at|failed_at/);
       expect(statements[1]).toContain("status in ('pending', 'attempting')");
+      // #817 F-01: a campaign a worker is still walking is in-flight work too.
+      expect(statements[1]).toContain("notification_campaigns where status = 'sending'");
       expect(
         statements.every((statement) => !/^\s*(update|delete|insert)\b/i.test(statement)),
       ).toBe(true);
     });
   }
+
+  it('collapses an account whose terminally suppressed campaign delivery an old worker could resume (#817 F-01)', async () => {
+    const { db, statements } = database([{ writes_frozen: true }], []);
+    expect(await collapseNotificationCategoriesBatch(db)).toBe(0);
+    expect(statements).toHaveLength(2);
+    const candidate = statements[1]!;
+    expect(candidate).toContain('not cp.enabled');
+    // Only a dispatch the previous release can still pick up or reopen: its kept
+    // key, under `scheduled`/`sending`/`failed`. `sent` has no outgoing
+    // transition and a cancel clears the key, so neither is ever retried.
+    expect(candidate).toContain("c.status in ('scheduled', 'sending', 'failed')");
+    expect(candidate).toContain('c.dispatch_key is not null');
+    expect(candidate).toContain("n.kind = 'campaign'");
+    expect(candidate).toContain('n.push_sent_at is null and n.push_suppressed_at is not null');
+    expect(candidate).toContain("'campaign:' || c.dispatch_key::text || ':' || u.id::text");
+  });
 
   it('closes recipient dispatch and freezes writes only after rollback reconciliation', async () => {
     const { db, statements } = database([{ producers_frozen: true }], []);

@@ -231,8 +231,12 @@ pages. Summary and read-through tokens remain unfiltered. Use the existing
 hashes after rebasing. CODEOWNER contract/migration review remains separate.
 
 1. Apply 0094 after 0093 (#816). Its additive DDL uses a 5s lock timeout;
-   retry after contention clears. Existing GET remains available. Category-aware
-   preference mutations and outbox dispatch fail closed until the key gate opens.
+   retry after contention clears. The `notification_settings.version` CHECK is
+   added `NOT VALID` so nothing is scanned under ACCESS EXCLUSIVE; after
+   `db:migrate` returns, run `scripts/ops/validate-notification-settings-version.sql`
+   (SHARE UPDATE EXCLUSIVE, retry-safe) to validate existing rows. Existing GET
+   remains available. Category-aware preference mutations and outbox dispatch fail
+   closed until the key gate opens.
 2. Before **every worker binary transition**, stop API/jobs that produce outbox
    events and run `pnpm notifications:categories --quiesce-producers`. This durable
    database fence rejects **all outbox inserts**, including from old binaries;
@@ -253,9 +257,15 @@ hashes after rebasing. CODEOWNER contract/migration review remains separate.
    zero pending/attempting recipient deliveries even on published events. Only then
    deploy/start category-aware API/workers and run
    `pnpm notifications:categories --resume-producers`. Verify gates and the new API.
+   Both gates also refuse while any campaign is `sending`: the binary that started
+   walking its recipients finishes it.
 4. Recipient delivery state is durable (pending/attempting/sent/suppressed/failed/no_target).
    Every cohort is preference-gated before pending work, then eligibility is
-   rechecked immediately before every provider call/retry. Per-recipient stable UUID
+   rechecked immediately before every provider call/retry. Each attempt resolves
+   **every ledger row of the event**, not only today's members: a recipient staged
+   by an earlier attempt who has since left the room or been erased fails the final
+   check and ends `suppressed`; an event publishes only when no row is left
+   pending/attempting, otherwise it backs off and retries. Per-recipient stable UUID
    keys survive retries and changing locales/cohorts. A 2-minute claim lease allows
    crash recovery; provider idempotency handles acceptance before a DB failure.
    Suppression is terminal and opt-in never replays it. Campaign provider keys and
@@ -278,8 +288,16 @@ Stop the category-aware workers only after reconciliation, then run
 `pnpm notifications:categories --rollback-collapse`. This repeats the full delivery
 gate, commits the preference write freeze and **disables recipient-key dispatch**,
 then collapses at most one account per subsequent transaction. Any disabled category
-becomes master=false and all legacy push mirrors=false. Category rows, versions,
-inbox/read markers, published events and delivery ledgers remain intact.
+becomes master=false and all legacy push mirrors=false. The same collapse applies to
+an account holding a **terminally suppressed campaign delivery an old binary could
+still resume** — a `campaign:<dispatch_key>:<user>` inbox row with `push_sent_at`
+null and `push_suppressed_at` set, whose campaign is `scheduled`/`sending`/`failed`
+with that dispatch key (`failed → scheduled` keeps the key). The old campaign worker
+reads only `push_sent_at` and the master, so master=false is the only form it
+respects; `sent` dispatches (no outgoing transition) and cancelled ones (key cleared)
+collapse nobody. Such an account rolls back to push off even if it had re-enabled
+everything, and roll-forward does not restore it. Category rows, versions,
+inbox/read markers, published events, campaign rows and delivery ledgers remain intact.
 The operator-only transaction-local `gogo.notification_rollback` bypass is used by
 this command; APIs never set it. Database triggers reject INSERT/UPDATE from old
 binaries while frozen; deletes remain possible for erasure. New APIs report

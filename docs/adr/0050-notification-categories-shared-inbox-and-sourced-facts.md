@@ -118,6 +118,12 @@ Therefore, rollback to `18ca7f4d` requires:
    `--rollback-collapse` checks this gate, disables recipient-key dispatch and
    freezes preference mutations before collapsing any accounts.
 2. For accounts with any disabled category, conservatively set master=false and all legacy push mirrors=false.
+   Collapse the same way any account holding a terminally suppressed campaign
+   delivery under a dispatch the old binary can still pick up or reopen
+   (`scheduled`/`sending`/`failed` with its kept dispatch key): the old campaign
+   worker reads only `push_sent_at` and the master, so master=false is the only
+   durable form it respects. Campaign rows and ledgers are never rewritten; a
+   campaign still `sending` blocks either binary transition.
 3. Retain category rows, versions, read states, and additive schema.
 4. Keep preference mutations frozen until a category-aware release returns.
 
@@ -420,7 +426,10 @@ legacy mirrors, export/erasure, recipient-level delivery state and stable provid
 keys, final attempt/retry eligibility checks, explicit old-key drain gate, terminal
 suppression, and bounded rollback collapse with a durable DB write freeze.
 Migration **0094** follows #815/0093: rebase **#815 first, then this PR**. No fleet
-backfill is needed for default-true categories. Normal API changes are blocked until
+backfill is needed for default-true categories. The `notification_settings.version`
+CHECK is added `NOT VALID` and validated after `db:migrate` commits
+(`scripts/ops/validate-notification-settings-version.sql`), so the hot table is
+never scanned under ACCESS EXCLUSIVE. Normal API changes are blocked until
 the recipient-key cutover gate opens. See `docs/notification-inbox.md` for commands,
 lease/crash behavior, rollback and the unavoidable provider-call race window.
 

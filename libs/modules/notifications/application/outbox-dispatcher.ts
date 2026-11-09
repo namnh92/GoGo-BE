@@ -149,8 +149,27 @@ export class OutboxDispatcher {
         .limit(1);
       roomId = plan?.roomId ?? null;
     }
-    if (!roomId) return;
+    // #817 F-04 — two sets, deliberately. The cohort this attempt stages is
+    // whoever is a live member now. The recipients this attempt must resolve are
+    // whoever the ledger holds for the event: a recipient an earlier attempt
+    // staged who has since left the room or been erased is still owed a terminal
+    // row, and the event publishes only when every ledger row is terminal.
+    const staged = roomId ? await this.stageCohort(event, mapping, roomId) : null;
+    await this.drainDeliveries(event, mapping, roomId, staged);
+  }
 
+  /**
+   * Inbox rows and pending push work for the current cohort. Null when the event
+   * reaches nobody now; ledger rows from earlier attempts are drained regardless.
+   */
+  private async stageCohort(
+    event: typeof schema.outboxEvents.$inferSelect,
+    mapping: (typeof EVENT_TO_NOTIFICATION)[string],
+    roomId: string,
+  ): Promise<{
+    localeOf: Map<string, ReturnType<typeof pushLocaleOf>>;
+    currentPlanId: string | null;
+  } | null> {
     const [room] = await this.db
       .select({ title: schema.rooms.title })
       .from(schema.rooms)
@@ -165,7 +184,7 @@ export class OutboxDispatcher {
       if (m.userId === null) return false; // guests have no push/in-app inbox
       return mapping.audience === 'host' ? m.role === 'host' : true;
     });
-    if (targets.length === 0) return;
+    if (targets.length === 0) return null;
 
     const memberIds = targets.map((t) => t.userId!) as string[];
     // Master and category gate push work independently of the inbox below.
@@ -182,7 +201,7 @@ export class OutboxDispatcher {
     // rows or push, including when an old event is retried after deletion.
     const liveIds = new Set(pushRows.map((row) => row.id));
     const userIds = memberIds.filter((id) => liveIds.has(id));
-    if (userIds.length === 0) return;
+    if (userIds.length === 0) return null;
     const localeOf = new Map(pushRows.map((row) => [row.id, pushLocaleOf(row.locale)]));
 
     // A plan kind opens the room's current plan. An edit or a regenerate writes
@@ -306,9 +325,28 @@ export class OutboxDispatcher {
           reason: 'preference',
         });
     }
-    // Stage the entire cohort before the first provider attempt: an early
+    // The entire cohort is staged before the first provider attempt: an early
     // outage must not allow a later opt-in to resurrect another recipient.
-    for (const userId of userIds) {
+    return { localeOf, currentPlanId };
+  }
+
+  /**
+   * Every pending recipient of the event, whichever attempt staged it, is
+   * claimed, rechecked and closed here. A recipient outside today's cohort
+   * fails the membership check and ends `suppressed`, which is terminal: the
+   * ledger never keeps a row the gates would have to wait for.
+   */
+  private async drainDeliveries(
+    event: typeof schema.outboxEvents.$inferSelect,
+    mapping: (typeof EVENT_TO_NOTIFICATION)[string],
+    roomId: string | null,
+    staged: Awaited<ReturnType<OutboxDispatcher['stageCohort']>>,
+  ): Promise<void> {
+    const ledger = await this.db.execute<{
+      user_id: string;
+    }>(sql`select user_id from notification_push_deliveries
+      where event_id = ${event.id}::uuid and status in ('pending', 'attempting') order by user_id`);
+    for (const { user_id: userId } of ledger.rows) {
       const claimed = await this.db.execute(sql`update notification_push_deliveries
         set status = 'attempting', lease_until = now() + interval '2 minutes', updated_at = now()
         where event_id = ${event.id}::uuid and user_id = ${userId}::uuid and
@@ -320,19 +358,33 @@ export class OutboxDispatcher {
         continue;
       }
       // Final eligibility snapshot immediately before the provider call, on every
-      // retry. No transaction/lock is held across the external request.
-      const eligible = await this.db.execute(sql`select u.id from users u
-        where u.id = ${userId}::uuid and u.status <> 'deleted'
-          and ${kindPushAllowed(sql`u.id`, mapping.kind)}
-          and exists (select 1 from room_members rm where rm.user_id = u.id
-            and rm.room_id = ${roomId}::uuid and rm.removed_at is null
-            ${mapping.audience === 'host' ? sql`and rm.role = 'host'` : sql``})`);
+      // retry. No transaction/lock is held across the external request. A
+      // recipient outside this attempt's cohort reads its locale here; without a
+      // room there is no membership to hold, so nobody is eligible.
+      const eligible = roomId
+        ? await this.db.execute<{
+            id: string;
+            locale: string | null;
+          }>(sql`select u.id, u.locale from users u
+          where u.id = ${userId}::uuid and u.status <> 'deleted'
+            and ${kindPushAllowed(sql`u.id`, mapping.kind)}
+            and exists (select 1 from room_members rm where rm.user_id = u.id
+              and rm.room_id = ${roomId}::uuid and rm.removed_at is null
+              ${mapping.audience === 'host' ? sql`and rm.role = 'host'` : sql``})`)
+        : { rows: [] as { id: string; locale: string | null }[] };
       let status = 'suppressed';
       try {
-        if (eligible.rows[0]) {
-          const locale = localeOf.get(userId) ?? 'vi';
+        const recipient = eligible.rows[0];
+        if (recipient && roomId) {
+          const locale = staged?.localeOf.get(userId) ?? pushLocaleOf(recipient.locale);
           status = await this.sendPush([userId], mapping.kind, {
-            ...renderPushNotification({ kind: mapping.kind, locale, event, roomId, currentPlanId }),
+            ...renderPushNotification({
+              kind: mapping.kind,
+              locale,
+              event,
+              roomId,
+              currentPlanId: staged?.currentPlanId ?? null,
+            }),
             idempotencyKey: recipientPushKey(event.id, userId),
           });
         } else
@@ -356,6 +408,12 @@ export class OutboxDispatcher {
         .execute(sql`update notification_push_deliveries set status = ${status}, lease_until = null, updated_at = now()
         where event_id = ${event.id}::uuid and user_id = ${userId}::uuid and status = 'attempting'`);
     }
+    // Publishing is the claim that every recipient reached a terminal state. A
+    // row still pending or leased here belongs to another worker, or to a claim
+    // this loop could not take; the event backs off and retries instead.
+    const unresolved = await this.db.execute(sql`select 1 from notification_push_deliveries
+      where event_id = ${event.id}::uuid and status in ('pending', 'attempting') limit 1`);
+    if (unresolved.rows[0]) throw new ProviderUnavailableError('notification_delivery_in_flight');
   }
 
   private async sendPush(

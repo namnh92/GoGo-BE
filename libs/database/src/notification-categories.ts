@@ -19,13 +19,16 @@ async function requireReconciledDeliveries(tx: Tx, eventTypes: string[]) {
   if (!eventTypes.length) throw new Error('Notification event types are required');
   // No timestamp boundary: rollback-era events and dead letters need the same
   // reconciliation as the initial cutover. Published events with active leases
-  // or pending recipients also block a binary transition.
+  // or pending recipients also block a binary transition, and so does a campaign
+  // a worker is still walking (#817 F-01): its recipients are decided one by one
+  // and the binary that started it must be the one that finishes it.
   const unresolved = await tx.execute(sql`select 1 from outbox_events e
     where e.published_at is null and e.event_type in (${sql.join(
       eventTypes.map((k) => sql`${k}`),
       sql`, `,
     )})
     union all select 1 from notification_push_deliveries where status in ('pending', 'attempting')
+    union all select 1 from notification_campaigns where status = 'sending'
     limit 1`);
   if (unresolved.rows[0])
     throw new Error(
@@ -52,8 +55,27 @@ export async function disableNotificationRecipientKeys(db: Db, eventTypes: strin
   });
 }
 
+/**
+ * Who a pre-category binary would push to against this release's decisions.
+ *
+ * Two shapes. An account with any disabled category: the old worker reads only
+ * the master. And an account holding a campaign delivery this release suppressed
+ * terminally, under a dispatch the old binary can still pick up or reopen
+ * (`scheduled`/`sending`, or `failed → scheduled` which keeps the dispatch key):
+ * the old campaign worker reads `push_sent_at` and the master, never
+ * `push_suppressed_at`, so the only durable form it respects is master=false
+ * (#817 F-01). A `sent` dispatch has no outgoing transition and a cancel clears
+ * the key, so neither can ever retry that row and neither collapses anyone.
+ * Either shape collapses only while the old predicate would still push.
+ */
 const needsCollapse = sql`u.status <> 'deleted'
-  and exists (select 1 from notification_category_preferences cp where cp.user_id = u.id and not cp.enabled)
+  and (exists (select 1 from notification_category_preferences cp where cp.user_id = u.id and not cp.enabled)
+    or exists (select 1 from notifications n
+      join notification_campaigns c on c.dispatch_key is not null
+        and c.status in ('scheduled', 'sending', 'failed')
+        and n.dedupe_key = 'campaign:' || c.dispatch_key::text || ':' || u.id::text
+      where n.user_id = u.id and n.kind = 'campaign'
+        and n.push_sent_at is null and n.push_suppressed_at is not null))
   and (not exists (select 1 from notification_settings ns where ns.user_id = u.id and not ns.push_enabled)
     or exists (select 1 from notification_preferences np where np.user_id = u.id and np.channel = 'push' and np.enabled))`;
 

@@ -670,6 +670,25 @@ describe('ADR-0050 category preference mutations', () => {
       'utf8',
     );
     expect(current).not.toContain('CREATE INDEX CONCURRENTLY');
+    // #817 F-05: no inline validated CHECK on the hot table; the scan runs later.
+    expect(current).not.toMatch(/ADD COLUMN version[^;]*CHECK/);
+    expect(current).toMatch(
+      /ADD CONSTRAINT notification_settings_version_check CHECK \(version >= 0\) NOT VALID/,
+    );
+    const convalidated = async () =>
+      (
+        await pool.query(
+          "select convalidated from pg_constraint where conname = 'notification_settings_version_check'",
+        )
+      ).rows[0]?.convalidated;
+    expect(await convalidated()).toBe(false);
+    await pool.query(
+      await readFile(
+        path.resolve(__dirname, '../../../scripts/ops/validate-notification-settings-version.sql'),
+        'utf8',
+      ),
+    );
+    expect(await convalidated()).toBe(true);
     const account = await register('category-default');
     const initial = await getSettings(account.token);
     expect(initial.json()).toMatchObject({ categories: DEFAULT_CATEGORIES, version: '0' });
@@ -964,7 +983,9 @@ describe('ADR-0050 delivery and rollback safeguards', () => {
           return async (query: Parameters<typeof db.execute>[0]) => {
             if (
               !fired &&
-              new PgDialect().sqlToQuery(query as never).sql.includes('select u.id from users u')
+              new PgDialect()
+                .sqlToQuery(query as never)
+                .sql.includes('select u.id, u.locale from users u')
             ) {
               fired = true;
               await mutateNotificationSettings(db, a.userId, { categories: { plan_ready: false } });
@@ -1027,6 +1048,107 @@ describe('ADR-0050 delivery and rollback safeguards', () => {
     );
     await worker.dispatchBatch();
     expect(attempted).toHaveLength(2);
+  });
+  it('suppresses a staged recipient who left before the retry and publishes only once the ledger is resolved (#817 F-04)', async () => {
+    const a = await register('category-worker-left-a');
+    const b = await register('category-worker-left-b');
+    const roomId = await roomWith([a.userId, b.userId]);
+    const [event] = await db
+      .insert(schema.outboxEvents)
+      .values({
+        eventType: 'plan.published',
+        resourceType: 'room',
+        resourceId: roomId,
+        payload: {},
+      })
+      .returning();
+    const push = new FakePush();
+    const original = push.sendToUsers.bind(push);
+    let outage = true;
+    push.sendToUsers = async (ids, notification) => {
+      if (outage) throw new ProviderUnavailableError('test');
+      return original(ids, notification);
+    };
+    const worker = new OutboxDispatcher(db, push);
+    await worker.dispatchBatch();
+    // The whole cohort is staged before the first provider attempt failed.
+    const staged = await pool.query(
+      "select user_id from notification_push_deliveries where event_id=$1 and status='pending'",
+      [event!.id],
+    );
+    expect(staged.rows.map((row) => row.user_id).sort()).toEqual([a.userId, b.userId].sort());
+    await pool.query('update room_members set removed_at=now() where room_id=$1 and user_id=$2', [
+      roomId,
+      b.userId,
+    ]);
+    outage = false;
+    await pool.query('update outbox_events set next_attempt_at=null where id=$1', [event!.id]);
+    await worker.dispatchBatch();
+    expect(push.sent.map((call) => call.userIds)).toEqual([[a.userId]]);
+    const ledger = await pool.query(
+      'select user_id,status from notification_push_deliveries where event_id=$1',
+      [event!.id],
+    );
+    expect(ledger.rows).toHaveLength(2);
+    expect(ledger.rows).toEqual(
+      expect.arrayContaining([
+        { user_id: a.userId, status: 'sent' },
+        { user_id: b.userId, status: 'suppressed' },
+      ]),
+    );
+    expect(
+      (await pool.query('select published_at from outbox_events where id=$1', [event!.id])).rows[0]
+        .published_at,
+    ).toBeTruthy();
+  });
+  it('drains an empty cohort: a staged recipient whose whole room left is terminally suppressed and the event publishes (#817 F-04)', async () => {
+    const a = await register('category-worker-left-all');
+    const roomId = await roomWith([a.userId]);
+    const [event] = await db
+      .insert(schema.outboxEvents)
+      .values({
+        eventType: 'plan.published',
+        resourceType: 'room',
+        resourceId: roomId,
+        payload: {},
+      })
+      .returning();
+    const push = new FakePush();
+    push.unavailable = true;
+    const worker = new OutboxDispatcher(db, push);
+    await worker.dispatchBatch();
+    expect(
+      (
+        await pool.query(
+          'select status from notification_push_deliveries where event_id=$1 and user_id=$2',
+          [event!.id, a.userId],
+        )
+      ).rows,
+    ).toEqual([{ status: 'pending' }]);
+    await pool.query('update room_members set removed_at=now() where room_id=$1', [roomId]);
+    push.unavailable = false;
+    await pool.query('update outbox_events set next_attempt_at=null where id=$1', [event!.id]);
+    await worker.dispatchBatch();
+    expect(push.sent).toHaveLength(0);
+    expect(
+      (
+        await pool.query('select status from notification_push_deliveries where event_id=$1', [
+          event!.id,
+        ])
+      ).rows,
+    ).toEqual([{ status: 'suppressed' }]);
+    expect(
+      (await pool.query('select published_at from outbox_events where id=$1', [event!.id])).rows[0]
+        .published_at,
+    ).toBeTruthy();
+    // Nothing pending remains anywhere, so the transition gates can open.
+    expect(
+      (
+        await pool.query(
+          "select 1 from notification_push_deliveries where status in ('pending','attempting') limit 1",
+        )
+      ).rows,
+    ).toEqual([]);
   });
   it('freezes old/new writes, collapses conservatively in bounded commits and retains read/category state', async () => {
     const a = await register('category-rollback');
@@ -1216,5 +1338,144 @@ describe('campaign other/master final gate', () => {
       .where(eq(schema.notificationCampaigns.id, campaign!.id));
     await new CampaignDispatcher(db, push).dispatchDue();
     expect(push.sent).toHaveLength(0);
+  });
+  it('rollback collapses an account whose suppressed campaign delivery an old worker could resume, and nothing else (#817 F-01)', async () => {
+    const subscribe = (userId: string) =>
+      db.insert(schema.pushSubscriptions).values({
+        userId,
+        platform: 'web',
+        subscriptionId: `rollback-campaign-${randomUUID()}`,
+      });
+    const newCampaign = async (status: 'scheduled' | 'sent' | 'cancelled') =>
+      (
+        await db
+          .insert(schema.notificationCampaigns)
+          .values({
+            name: `rollback-campaign-${randomUUID()}`,
+            title: 'Rollback',
+            body: 'Rollback body',
+            audienceType: 'platform',
+            audienceFilter: { platform: 'web' },
+            status,
+            scheduledAt: status === 'scheduled' ? new Date() : null,
+            dispatchKey: status === 'cancelled' ? null : randomUUID(),
+            createdByAdminId: randomUUID(),
+          })
+          .returning()
+      )[0]!;
+    const campaignRow = (
+      userId: string,
+      key: string,
+      column: 'push_sent_at' | 'push_suppressed_at',
+    ) =>
+      pool.query(
+        `insert into notifications(user_id,kind,payload,dedupe_key,${column}) values($1,'campaign','{}',$2,now())`,
+        [userId, `campaign:${key}:${userId}`],
+      );
+
+    // a: the real path — suppressed at the final check of a dispatch that then
+    // failed and kept its key, so an old binary's `failed → scheduled` would
+    // retry that exact dedupe key. Then a turns push back on, every category true.
+    const a = await register('rollback-campaign-hazard');
+    await subscribe(a.userId);
+    const hazard = await newCampaign('scheduled');
+    let fired = false;
+    const intercepted = new Proxy(db, {
+      get(target, key) {
+        if (key === 'execute')
+          return async (query: Parameters<typeof db.execute>[0]) => {
+            if (
+              !fired &&
+              new PgDialect().sqlToQuery(query as never).sql.includes('select n.id, n.push_sent_at')
+            ) {
+              fired = true;
+              await mutateNotificationSettings(db, a.userId, { pushEnabled: false });
+            }
+            return target.execute(query);
+          };
+        const value = Reflect.get(target, key);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const push = new FakePush();
+    await new CampaignDispatcher(intercepted, push).dispatchDue();
+    expect(fired).toBe(true);
+    expect(push.sent).toHaveLength(0);
+    const hazardRow = () =>
+      pool.query('select push_sent_at, push_suppressed_at from notifications where dedupe_key=$1', [
+        `campaign:${hazard.dispatchKey}:${a.userId}`,
+      ]);
+    expect((await hazardRow()).rows).toMatchObject([
+      { push_sent_at: null, push_suppressed_at: expect.anything() },
+    ]);
+    const hazardState = () =>
+      pool.query('select status, dispatch_key from notification_campaigns where id=$1', [
+        hazard.id,
+      ]);
+    expect((await hazardState()).rows).toEqual([
+      { status: 'failed', dispatch_key: hazard.dispatchKey },
+    ]);
+    await mutateNotificationSettings(db, a.userId, { pushEnabled: true });
+    expect(await thisReleaseAllows(a.userId)).toBe(true);
+    expect(await previousReleasePushes(a.userId)).toEqual(AFTER_CATEGORY_WRITE);
+
+    // Controls an old binary can never resume: b was accepted under the failed
+    // dispatch; c was suppressed under a dispatch that ended `sent`; d was
+    // suppressed under a dispatch that was cancelled (key cleared).
+    const b = await register('rollback-campaign-accepted');
+    const c = await register('rollback-campaign-sent-dispatch');
+    const d = await register('rollback-campaign-cancelled-dispatch');
+    await campaignRow(b.userId, hazard.dispatchKey!, 'push_sent_at');
+    await campaignRow(c.userId, (await newCampaign('sent')).dispatchKey!, 'push_suppressed_at');
+    await newCampaign('cancelled');
+    await campaignRow(d.userId, randomUUID(), 'push_suppressed_at');
+    for (const control of [b, c, d]) {
+      expect(await previousReleasePushes(control.userId)).toEqual(EVERYTHING);
+    }
+
+    await quiesceNotificationProducers(db);
+    try {
+      // In-flight campaign work blocks either binary transition.
+      await pool.query("update notification_campaigns set status='sending' where id=$1", [
+        hazard.id,
+      ]);
+      await expect(disableNotificationRecipientKeys(db, ['plan.published'])).rejects.toThrow(
+        'existing provider keys',
+      );
+      await pool.query("update notification_campaigns set status='failed' where id=$1", [
+        hazard.id,
+      ]);
+      await disableNotificationRecipientKeys(db, ['plan.published']);
+      await expect(resumeNotificationProducers(db)).rejects.toThrow('Complete rollback collapse');
+      while (await collapseNotificationCategoriesBatch(db)) {
+        /* account-sized rollback commits */
+      }
+      expect(await thisReleaseAllows(a.userId)).toBe(false);
+      expect(await previousReleasePushes(a.userId)).toEqual([]);
+      for (const control of [b, c, d]) {
+        expect(await previousReleasePushes(control.userId)).toEqual(EVERYTHING);
+      }
+      // The ledger is untouched: suppression stays terminal, the dispatch stays as it was.
+      expect((await hazardRow()).rows).toMatchObject([
+        { push_sent_at: null, push_suppressed_at: expect.anything() },
+      ]);
+      expect((await hazardState()).rows).toEqual([
+        { status: 'failed', dispatch_key: hazard.dispatchKey },
+      ]);
+      expect(
+        (
+          await pool.query(
+            "select count(*)::int as n from audit_logs where resource_id=$1 and action='notification.category_rollback_collapsed'",
+            [a.userId],
+          )
+        ).rows[0].n,
+      ).toBe(1);
+      await resumeNotificationProducers(db);
+    } finally {
+      await quiesceNotificationProducers(db);
+      await enableNotificationRecipientKeys(db, ['plan.published']);
+      await unfreezeNotificationPreferenceWrites(db);
+      await resumeNotificationProducers(db);
+    }
   });
 });
