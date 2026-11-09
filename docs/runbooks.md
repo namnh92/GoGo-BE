@@ -472,14 +472,23 @@ and fix the role model rather than the people.
 ## Transient Google photos on Place Detail (GoGo-BE#509)
 
 `GET /v1/places/{id}/provider-photos` fetches up to three Google photos per
-view and stores nothing (ADR-0030). It always answers 200; `status` says why
-`photos` is empty. Three things have to allow it before Google is called:
+view and stores nothing (ADR-0030). After rate-limit checks,
+it answers 200; `status` says why `photos` is empty. Three things have to allow it before Google is called:
 
 | Check       | Where                                                                                  | Off looks like                                                                                                                                      |
 | ----------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | kill switch | `feature_flags` row `place_provider_photos.enabled`, else `FLAG_PLACE_PROVIDER_PHOTOS` | `status: disabled`; `place_provider_photos_total{outcome="disabled"}`                                                                               |
 | hard budget | `PLACE_DISPLAY_DAILY_MAX_*` (scope `google.places.display`)                            | `status: budget_exhausted`; `place_provider_photos_total{outcome="refused_budget"}` (one outcome per request; `empty` = Google had no usable photo) |
-| rate limit  | `places.providerPhotos`, 30/min per IP                                                 | 429                                                                                                                                                 |
+| rate limit  | `places.providerPhotos`, 120/min per verified actor (otherwise: per IP)                | 429                                                                                                                                                 |
+
+`GET /v1/places/google-provider-photo/{googlePlaceId}` uses a separate
+`places.candidatePhoto` bucket with the same 120 requests per 60 seconds per
+verified actor (otherwise: per IP). Actors sharing an IP have independent quotas; an
+actor keeps its quota across IP changes.
+
+Both routes are public. Supplied bearer tokens or access cookies use the normal
+token and session checks. Only verified actors use actor quotas; missing, invalid,
+expired or revoked credentials are anonymous and use the IP quota.
 
 Incident: insert/update the flag row with `enabled = false` — the next request
 answers `disabled` with no provider call. Spend: `google.photoMedia` on the

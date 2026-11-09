@@ -1,15 +1,15 @@
 import { Controller, Get, Header, Param } from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
-import { Public, RateLimit } from '../../identity/presentation/decorators';
+import { OptionalAuth, RateLimit } from '../../identity/presentation/decorators';
 import { ProviderPhotosService } from '../application/provider-photos.service';
 
 @Controller('places')
 export class ProviderPhotosController {
   constructor(private readonly photos: ProviderPhotosService) {}
 
-  @Public()
-  @RateLimit({ action: 'places.candidatePhoto', limit: 10, windowSeconds: 60, keyBy: 'ip' })
+  @OptionalAuth()
+  @RateLimit({ action: 'places.candidatePhoto', limit: 120, windowSeconds: 60, keyBy: 'actorOrIp' })
   @Header('cache-control', 'private, no-store')
   @Get('google-provider-photo/:googlePlaceId')
   candidatePhoto(
@@ -28,8 +28,8 @@ export class ProviderPhotosController {
    * `private` because Google forbids caching photo names and the bytes are
    * served for this view only — no CDN, proxy or client cache may keep them.
    */
-  @Public()
-  @RateLimit({ action: 'places.providerPhotos', limit: 30, windowSeconds: 60, keyBy: 'ip' })
+  @OptionalAuth()
+  @RateLimit({ action: 'places.providerPhotos', limit: 120, windowSeconds: 60, keyBy: 'actorOrIp' })
   @Header('cache-control', 'private, no-store')
   @Get(':id/provider-photos')
   providerPhotos(@Param('id', new ZodValidationPipe(z.string().uuid())) id: string) {

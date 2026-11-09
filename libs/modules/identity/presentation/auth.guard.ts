@@ -6,7 +6,7 @@ import type { Actor } from '../domain/actor';
 import { SessionRevocationService } from '../application/session-revocation.service';
 import { TokenService } from '../application/token.service';
 import { IdentityRepository } from '../infrastructure/identity.repository';
-import { IS_PUBLIC_KEY } from './decorators';
+import { IS_PUBLIC_KEY, OPTIONAL_AUTH_KEY } from './decorators';
 
 export const ACCESS_COOKIE = 'gogo_at';
 export const REFRESH_COOKIE = 'gogo_rt';
@@ -92,9 +92,15 @@ export class AuthGuard implements CanActivate {
       context.getHandler(),
       context.getClass(),
     ]);
-    if (isPublic) return true;
+    const optionalAuth = this.reflector.getAllAndOverride<boolean>(OPTIONAL_AUTH_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (isPublic && !optionalAuth) return true;
 
     const req = context.switchToHttp().getRequest<AuthedRequest>();
+    const allowAnonymous = isPublic && optionalAuth;
+    if (allowAnonymous) delete req.actor;
     const header = req.headers.authorization;
     let token: string | undefined;
     let viaCookie = false;
@@ -105,12 +111,18 @@ export class AuthGuard implements CanActivate {
       token = req.cookies[ACCESS_COOKIE];
       viaCookie = true;
     }
-    if (!token) throw AppError.unauthorized();
+    if (!token) {
+      if (allowAnonymous) return true;
+      throw AppError.unauthorized();
+    }
 
     let claims;
     try {
       claims = this.tokens.verifyAccessToken(token);
     } catch {
+      // Invalid/expired credentials on public routes are anonymous. Do not log
+      // the token or verifier error: either can contain credential details.
+      if (allowAnonymous) return true;
       throw AppError.unauthorized('INVALID_TOKEN', 'Authentication required');
     }
 
@@ -135,6 +147,7 @@ export class AuthGuard implements CanActivate {
         );
       }
       if (!session || session.userId !== claims.sub || session.revokedAt) {
+        if (allowAnonymous) return true;
         throw AppError.unauthorized('SESSION_REVOKED', 'Session is no longer valid');
       }
       // supersededAt only rotates refresh credentials, not access credentials.
@@ -143,6 +156,7 @@ export class AuthGuard implements CanActivate {
     // Logout/removal revokes the session id; the outstanding access token must
     // stop working immediately, not when it happens to expire.
     if (await this.revocations.isRevoked(claims.sid)) {
+      if (allowAnonymous) return true;
       throw AppError.unauthorized('SESSION_REVOKED', 'Session is no longer valid');
     }
 
