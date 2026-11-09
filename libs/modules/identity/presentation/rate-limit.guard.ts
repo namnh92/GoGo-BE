@@ -71,7 +71,10 @@ export class RateLimitGuard implements CanActivate {
     if (!spec) return true;
 
     const parts: string[] = [spec.action];
-    if (spec.keyBy.includes('ip')) {
+    if (spec.keyBy === 'actorOrIp' && req.actor) {
+      parts.push(`${req.actor.type}:${req.actor.id}`);
+    }
+    if (spec.keyBy.includes('ip') || (spec.keyBy === 'actorOrIp' && !req.actor)) {
       // SEC-004: `edgeClientIp` is set only for a request whose edge hop
       // authenticated (see `edge-client-ip.ts`); a spoofed header never
       // reaches here because the hook strips it. Absent it, this is `req.ip`
@@ -79,7 +82,7 @@ export class RateLimitGuard implements CanActivate {
       const clientIp = spec.edgeClientIp ? (req.edgeClientIp ?? req.ip) : req.ip;
       parts.push(clientIp ?? 'noip');
     }
-    if (spec.keyBy.includes('actor'))
+    if (spec.keyBy === 'actor' || spec.keyBy === 'ip+actor')
       parts.push(req.actor ? `${req.actor.type}:${req.actor.id}` : 'anon');
 
     const key = parts.join('|');

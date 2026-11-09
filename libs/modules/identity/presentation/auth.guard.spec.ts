@@ -130,3 +130,152 @@ describe('consumer authoritative session guard', () => {
     expect(repo.findAuthSessionById).not.toHaveBeenCalled();
   });
 });
+
+describe('optional authentication', () => {
+  function setup(publicRoute: boolean, optional: boolean, authorization?: string) {
+    const request = {
+      method: 'GET',
+      headers: { authorization },
+      actor: undefined,
+      cookies: {} as Record<string, string>,
+    };
+    const verifyAccessToken = vi.fn(() => ({ sid: 's1', sub: 'u1', act: 'user' }));
+    const repo = { findAuthSessionById: vi.fn().mockResolvedValue({ userId: 'u1' }) };
+    const isRevoked = vi.fn().mockResolvedValue(false);
+    const guard = new AuthGuard(
+      {
+        getAllAndOverride: (key: string) => (key === 'gogo:is_public' ? publicRoute : optional),
+      } as unknown as Reflector,
+      { verifyAccessToken } as unknown as TokenService,
+      { isRevoked } as unknown as SessionRevocationService,
+      repo as unknown as IdentityRepository,
+    );
+    const context = {
+      getHandler: () => ({}),
+      getClass: () => ({}),
+      switchToHttp: () => ({ getRequest: () => request }),
+    } as unknown as ExecutionContext;
+    return { guard, context, request, verifyAccessToken, repo, isRevoked };
+  }
+
+  it('allows anonymous requests without token verification', async () => {
+    const h = setup(true, true);
+    await expect(h.guard.canActivate(h.context)).resolves.toBe(true);
+    expect(h.verifyAccessToken).not.toHaveBeenCalled();
+    expect(h.request.actor).toBeUndefined();
+  });
+
+  it('resolves a supplied token through authoritative session checks', async () => {
+    const h = setup(true, true, 'Bearer valid');
+    await expect(h.guard.canActivate(h.context)).resolves.toBe(true);
+    expect(h.repo.findAuthSessionById).toHaveBeenCalledWith('s1');
+    expect(h.request.actor).toMatchObject({ type: 'user', id: 'u1', sessionId: 's1' });
+  });
+
+  it.each(['Bearer ', 'Basic invalid'])(
+    'treats malformed header %s as anonymous',
+    async (header) => {
+      const h = setup(true, true, header);
+      await expect(h.guard.canActivate(h.context)).resolves.toBe(true);
+      expect(h.request.actor).toBeUndefined();
+      expect(h.verifyAccessToken).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['bearer', 'cookie'])(
+    'discards invalid/expired %s credentials and verifier details',
+    async (source) => {
+      const h = setup(true, true, source === 'bearer' ? 'Bearer private-token' : undefined);
+      if (source === 'cookie') h.request.cookies.gogo_at = 'private-token';
+      h.verifyAccessToken.mockImplementation(() => {
+        throw new Error('expired private-token: private claims');
+      });
+      const spies = ['log', 'warn', 'error', 'info', 'debug'].map((method) =>
+        vi.spyOn(console, method as 'log').mockImplementation(() => undefined),
+      );
+      try {
+        await expect(h.guard.canActivate(h.context)).resolves.toBe(true);
+        expect(h.request.actor).toBeUndefined();
+        expect(h.repo.findAuthSessionById).not.toHaveBeenCalled();
+        for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+      } finally {
+        for (const spy of spies) spy.mockRestore();
+      }
+    },
+  );
+
+  it.each([null, { userId: 'other' }, { userId: 'u1', revokedAt: new Date() }])(
+    'treats an invalid authoritative session as anonymous',
+    async (session) => {
+      const h = setup(true, true, 'Bearer valid');
+      h.repo.findAuthSessionById.mockResolvedValue(session);
+      await expect(h.guard.canActivate(h.context)).resolves.toBe(true);
+      expect(h.request.actor).toBeUndefined();
+    },
+  );
+
+  it('treats a denylisted session as anonymous', async () => {
+    const h = setup(true, true, 'Bearer valid');
+    h.isRevoked.mockResolvedValue(true);
+    await expect(h.guard.canActivate(h.context)).resolves.toBe(true);
+    expect(h.request.actor).toBeUndefined();
+  });
+
+  it.each([
+    Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }),
+    Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' }),
+    Object.assign(new Error('database unavailable'), { code: 'ECONNREFUSED' }),
+  ])(
+    'continues anonymously only on optional public routes for lookup failure %s',
+    async (cause) => {
+      for (const error of [cause, new Error('Drizzle wrapper', { cause })]) {
+        for (const [publicRoute, optional] of [
+          [true, true],
+          [false, false],
+          [false, true],
+        ] as const) {
+          const h = setup(publicRoute, optional, 'Bearer valid');
+          h.repo.findAuthSessionById.mockRejectedValue(error);
+          if (publicRoute) {
+            await expect(h.guard.canActivate(h.context)).resolves.toBe(true);
+          } else {
+            await expect(h.guard.canActivate(h.context)).rejects.toMatchObject({
+              code: 'SERVICE_UNAVAILABLE',
+              httpStatus: 503,
+              options: { retryable: true },
+            });
+          }
+          expect(h.request.actor).toBeUndefined();
+          expect(h.isRevoked).not.toHaveBeenCalled();
+        }
+      }
+    },
+  );
+
+  it('preserves unexpected lookup failures on optional public routes', async () => {
+    const h = setup(true, true, 'Bearer valid');
+    const error = new TypeError('unexpected lookup failure');
+    h.repo.findAuthSessionById.mockRejectedValue(error);
+    await expect(h.guard.canActivate(h.context)).rejects.toBe(error);
+    expect(h.request.actor).toBeUndefined();
+  });
+
+  it('keeps invalid credentials rejected on protected routes', async () => {
+    const h = setup(false, false, 'Bearer invalid');
+    h.verifyAccessToken.mockImplementation(() => {
+      throw new Error('invalid');
+    });
+    await expect(h.guard.canActivate(h.context)).rejects.toMatchObject({ httpStatus: 401 });
+  });
+
+  it('keeps ordinary public routes bypassing authentication', async () => {
+    const h = setup(true, false, 'Bearer invalid');
+    await expect(h.guard.canActivate(h.context)).resolves.toBe(true);
+    expect(h.verifyAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('keeps protected routes requiring credentials', async () => {
+    const h = setup(false, false);
+    await expect(h.guard.canActivate(h.context)).rejects.toBeInstanceOf(AppError);
+  });
+});

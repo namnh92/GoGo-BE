@@ -1731,7 +1731,7 @@ export interface paths {
         };
         /**
          * Fetch at most one transient Google candidate photo through the BFF
-         * @description Public, 10/min/IP. Fetch the candidate photo reference as JSON and render its base64 bytes with its Google Maps and author attribution; the URL is not a directly loadable image. No Google key/name/URL for image retrieval is exposed. Fresh first photo at fetch time; response credits are authoritative. Flag place_provider_photos, google.places.display budgets, 800px/400KiB, 6s overall deadline and bounded expired-reference retry apply. Nothing is stored.
+         * @description Public. 120/min per verified actor when a valid session is sent, otherwise per IP. Fetch the candidate photo reference as JSON and render its base64 bytes with its Google Maps and author attribution; the URL is not a directly loadable image. No Google key/name/URL for image retrieval is exposed. Fresh first photo at fetch time; response credits are authoritative. Flag place_provider_photos, google.places.display budgets, 800px/400KiB, 6s overall deadline and bounded expired-reference retry apply. Nothing is stored.
          */
         get: operations["getCandidateProviderPhoto"];
         put?: never;
@@ -1753,7 +1753,7 @@ export interface paths {
          * Transient Google photos for one Place Detail view (never stored)
          * @description GoGo-BE#509 (owner decision 2026-10-02, ADR-0030). Fetched from Google when Place Detail is opened and returned once: photo names, image URLs and bytes are not stored anywhere (database, object storage, cache, jobs, snapshots), and the response is `Cache-Control: private, no-store` — clients must not persist it in a disk/offline image cache or persisted query state either. Images arrive inline as base64 so the client never calls Google directly. At most three photos, each with its author credit (`authorAttributions`) to render beside it, plus the `attribution` text (Google Maps) whenever any photo is shown. Never call this per list card.
          *
-         *     Always 200 for a place Place Detail opens (404 otherwise). `status` says why `photos` is empty: `disabled` (kill switch off), `not_linked` (no Google Place ID), `budget_exhausted` (daily provider budget reached or not configured), `unavailable` (provider error, timeout or moved place). Treat an unknown `status` like `unavailable`. GoGo imagery stays on `PlaceDetail.photos`; Google price ranges are never returned (core rule 13: a price without its unit).
+         *     Public. 120/min per verified actor when a valid session is sent, otherwise per IP. Always 200 for a place Place Detail opens (404 otherwise), subject to rate limits. `status` says why `photos` is empty: `disabled` (kill switch off), `not_linked` (no Google Place ID), `budget_exhausted` (daily provider budget reached or not configured), `unavailable` (provider error, timeout or moved place). Treat an unknown `status` like `unavailable`. GoGo imagery stays on `PlaceDetail.photos`; Google price ranges are never returned (core rule 13: a price without its unit).
          */
         get: operations["getPlaceProviderPhotos"];
         put?: never;

@@ -5,6 +5,11 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { sql } from 'drizzle-orm';
 import path from 'node:path';
 import { Pool } from 'pg';
+import { createHmac } from 'node:crypto';
+import {
+  ACCESS_TOKEN_AUDIENCE,
+  ACCESS_TOKEN_ISSUER,
+} from '../../../libs/modules/identity/domain/actor';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { schema } from '@gogo/database';
 import {
@@ -439,3 +444,115 @@ describe('GET /v1/places/:id/provider-photos', () => {
     expect(fake.refCalls).toEqual([]);
   });
 });
+
+describe.each(['providerPhotos', 'candidatePhoto'] as const)(
+  'places.%s rate limit (#821)',
+  (route) => {
+    const photoUrl = (placeId: string) =>
+      route === 'candidatePhoto'
+        ? '/v1/places/google-provider-photo/ChIJ-rate-limit-821'
+        : `/v1/places/${placeId}/provider-photos`;
+
+    async function register(email: string) {
+      const res = await api().inject({
+        method: 'POST',
+        url: '/v1/auth/register',
+        remoteAddress: ip(),
+        payload: { email, password: 'Sufficiently-long-pw1!', displayName: 'Photo viewer' },
+      });
+      expect(res.statusCode, res.body).toBe(201);
+      return res.json().accessToken as string;
+    }
+
+    it('gives actors sharing an IP independent 120/min buckets, even across IP changes', async () => {
+      const a = await register(`photo-limit-${route}-a@gogo.id.vn`);
+      const b = await register(`photo-limit-${route}-b@gogo.id.vn`);
+      const sharedIp = ip();
+      const p = await place({ googleId: null });
+      const request = (token: string, address = sharedIp) =>
+        api().inject({
+          method: 'GET',
+          url: photoUrl(p.id),
+          remoteAddress: address,
+          headers: { authorization: `Bearer ${token}` },
+        });
+      for (let i = 0; i < 120; i++) {
+        expect((await request(a)).statusCode).toBe(200);
+        expect((await request(b)).statusCode).toBe(200);
+      }
+      expect((await request(a, ip())).statusCode).toBe(429);
+      expect((await request(b)).statusCode).toBe(429);
+      // Authenticated traffic did not consume the anonymous bucket on this IP.
+      expect(
+        (
+          await api().inject({
+            method: 'GET',
+            url: photoUrl(p.id),
+            remoteAddress: sharedIp,
+          })
+        ).statusCode,
+      ).toBe(200);
+    });
+
+    it('shares anonymous quota by IP and keeps other IPs independent', async () => {
+      const sharedIp = ip();
+      const p = await place({ googleId: null });
+      const request = (address: string) =>
+        api().inject({
+          method: 'GET',
+          url: photoUrl(p.id),
+          remoteAddress: address,
+        });
+      for (let i = 0; i < 120; i++) expect((await request(sharedIp)).statusCode).toBe(200);
+      expect((await request(sharedIp)).statusCode).toBe(429);
+      expect((await request(ip())).statusCode).toBe(200);
+    });
+
+    it('shares the anonymous IP bucket for missing, invalid and expired credentials', async () => {
+      const p = await place({ googleId: null });
+      const sharedIp = ip();
+      const jwtHeader = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString(
+        'base64url',
+      );
+      const payload = Buffer.from(
+        JSON.stringify({
+          sub: 'expired-user',
+          sid: 'expired-session',
+          act: 'user',
+          exp: 1,
+          iss: ACCESS_TOKEN_ISSUER,
+          aud: ACCESS_TOKEN_AUDIENCE,
+        }),
+      ).toString('base64url');
+      const signature = createHmac('sha256', process.env.AUTH_JWT_SECRET!)
+        .update(`${jwtHeader}.${payload}`)
+        .digest('base64url');
+      const expired = `${jwtHeader}.${payload}.${signature}`;
+      const headers: Record<string, string>[] = [
+        {},
+        { authorization: 'Bearer invalid-private-token' },
+        { authorization: `Bearer ${expired}` },
+        { cookie: 'gogo_at=invalid-private-token' },
+        { cookie: `gogo_at=${expired}` },
+        { authorization: 'Basic invalid-private-token' },
+      ];
+      const request = (address: string, credentials: Record<string, string>) =>
+        api().inject({
+          method: 'GET',
+          url: photoUrl(p.id),
+          remoteAddress: address,
+          headers: credentials,
+        });
+      for (let i = 0; i < 120; i++) {
+        const res = await request(sharedIp, headers[i % headers.length]!);
+        expect(res.statusCode, res.body).toBe(200);
+        expect(res.body).not.toContain('invalid-private-token');
+        expect(res.body).not.toContain(expired);
+      }
+      for (const credentials of headers) {
+        expect((await request(sharedIp, credentials)).statusCode).toBe(429);
+        expect((await request(ip(), credentials)).statusCode).toBe(200);
+      }
+    });
+  },
+);

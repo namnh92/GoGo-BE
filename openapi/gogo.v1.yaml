@@ -2,7 +2,7 @@ openapi: 3.1.0
 x-gogo-notification-preference-semantics: master-and-five-categories-v1
 info:
   title: GoGo API
-  version: 8.1.0-alpha.1
+  version: 8.1.1-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -3863,7 +3863,7 @@ paths:
       operationId: getCandidateProviderPhoto
       summary: Fetch at most one transient Google candidate photo through the BFF
       description: >
-        Public, 10/min/IP. Fetch the candidate photo reference as JSON and render
+        Public. 120/min per verified actor when a valid session is sent, otherwise per IP. Fetch the candidate photo reference as JSON and render
         its base64 bytes with its Google Maps and author attribution; the URL is
         not a directly loadable image. No Google key/name/URL for image retrieval
         is exposed. Fresh first photo at fetch time; response credits are authoritative.
@@ -3912,7 +3912,9 @@ paths:
         call this per list card.
 
 
-        Always 200 for a place Place Detail opens (404 otherwise). `status`
+        Public. 120/min per verified actor when a valid session is sent, otherwise per IP.
+        Always 200 for a place Place Detail opens (404 otherwise), subject to
+        rate limits. `status`
         says why `photos` is empty: `disabled` (kill switch off), `not_linked`
         (no Google Place ID), `budget_exhausted` (daily provider budget
         reached or not configured), `unavailable` (provider error, timeout or

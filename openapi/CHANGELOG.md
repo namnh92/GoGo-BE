@@ -8,6 +8,13 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 8.1.1-alpha.1 — Provider-photo rate-limit documentation (#821)
+
+PATCH: correct provider-photo descriptions to document 120 requests/minute per
+verified actor, falling back to IP for anonymous requests. Place-detail photo
+availability remains subject to rate limits. No response or schema changes.
+Regenerate consumers from **8.1.1-alpha.1**.
+
 ## 8.1.0-alpha.1 — Sourced event-time notification facts (#811 PR3)
 
 Additive MINOR: optional `payload.reminder`, `payload.planPreview` and
