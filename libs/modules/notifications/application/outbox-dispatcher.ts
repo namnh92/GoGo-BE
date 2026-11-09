@@ -245,7 +245,7 @@ export class OutboxDispatcher {
     // #609: the row also carries where it opens, in the same shape as the push
     // data (`route`, `entityType`, `entityId`), so the inbox and a tapped push
     // route one way. `resourceId` stays for clients that already read it.
-    const payload = {
+    const payload: Record<string, unknown> = {
       eventType: event.eventType,
       roomId,
       resourceId: event.resourceId,
@@ -257,43 +257,89 @@ export class OutboxDispatcher {
         eventPayload: event.payload as Record<string, unknown>,
       }),
     };
-    const existing = await this.db
-      .select({ userId: schema.notifications.userId })
-      .from(schema.notifications)
-      .where(
-        inArray(schema.notifications.dedupeKey, [
-          event.id,
-          ...userIds.map((userId) => outboxDedupeKey(event.id, userId)),
-        ]),
-      );
-    const withRow = new Set(existing.map((row) => row.userId));
-    // Never someone who already has a row: the bare key must not become a
-    // second row for them.
-    const legacyCandidate = userIds.find((userId) => !withRow.has(userId));
-    if (legacyCandidate) {
-      await this.db
-        .insert(schema.notifications)
-        .values({ userId: legacyCandidate, kind: mapping.kind, payload, dedupeKey: event.id })
-        .onConflictDoNothing();
+    for (const fact of ['reminder', 'planPreview', 'inviterAvatar'] as const) {
+      this.metrics?.increment('notification_event_facts_total', {
+        kind: mapping.kind,
+        fact,
+        present: String(Object.hasOwn(payload, fact)),
+      });
     }
-    const [legacyOwner] = await this.db
-      .select({ userId: schema.notifications.userId })
-      .from(schema.notifications)
-      .where(eq(schema.notifications.dedupeKey, event.id))
-      .limit(1);
+    // Keep independently durable inbox writes for events without inviter PII:
+    // a failed fan-out can leave a prefix for the next attempt to complete.
+    const writeInbox = async (db: Pick<Db, 'select' | 'insert'>) => {
+      const existing = await db
+        .select({ userId: schema.notifications.userId })
+        .from(schema.notifications)
+        .where(
+          inArray(schema.notifications.dedupeKey, [
+            event.id,
+            ...userIds.map((userId) => outboxDedupeKey(event.id, userId)),
+          ]),
+        );
+      const withRow = new Set(existing.map((row) => row.userId));
+      // Never someone who already has a row: the bare key must not become a
+      // second row for them.
+      const legacyCandidate = userIds.find((userId) => !withRow.has(userId));
+      if (legacyCandidate) {
+        await db
+          .insert(schema.notifications)
+          .values({ userId: legacyCandidate, kind: mapping.kind, payload, dedupeKey: event.id })
+          .onConflictDoNothing();
+      }
+      const [legacyOwner] = await db
+        .select({ userId: schema.notifications.userId })
+        .from(schema.notifications)
+        .where(eq(schema.notifications.dedupeKey, event.id))
+        .limit(1);
 
-    for (const userId of userIds) {
-      if (userId === legacyOwner?.userId) continue;
-      await this.db
-        .insert(schema.notifications)
-        .values({
-          userId,
-          kind: mapping.kind,
-          payload,
-          dedupeKey: outboxDedupeKey(event.id, userId),
-        })
-        // Redelivery must not put the same notification in an inbox twice.
-        .onConflictDoNothing();
+      for (const userId of userIds) {
+        if (userId === legacyOwner?.userId) continue;
+        await db
+          .insert(schema.notifications)
+          .values({
+            userId,
+            kind: mapping.kind,
+            payload,
+            dedupeKey: outboxDedupeKey(event.id, userId),
+          })
+          // Redelivery must not put the same notification in an inbox twice.
+          .onConflictDoNothing();
+      }
+    };
+    const eventPayload = event.payload as Record<string, unknown>;
+    const inviterMemberId =
+      mapping.kind === 'invite'
+        ? ((eventPayload.notificationFacts as { _inviterMemberId?: string } | undefined)
+            ?._inviterMemberId ??
+          (typeof eventPayload.inviterMemberId === 'string'
+            ? eventPayload.inviterMemberId
+            : undefined))
+        : undefined;
+    if (inviterMemberId) {
+      // A worker may have loaded the event before erasure scrubbed its stored
+      // snapshot. Lock accounts before inbox rows in stable order and recheck
+      // the inviter under capture/erasure's fence, only through inbox writes.
+      await this.db.transaction(async (tx) => {
+        const accounts = await tx.execute<{ id: string; status: string }>(sql`
+          select id, status from users
+          where id in (${sql.join(
+            userIds.map((id) => sql`${id}::uuid`),
+            sql`, `,
+          )}) or id = (select user_id from room_members where id = ${inviterMemberId}::uuid)
+          order by id for share
+        `);
+        const inviter = await tx.execute<{ user_id: string | null }>(sql`
+          select user_id from room_members where id = ${inviterMemberId}::uuid
+        `);
+        const userId = inviter.rows[0]?.user_id;
+        if (userId && !accounts.rows.some((row) => row.id === userId && row.status !== 'deleted')) {
+          delete payload.inviterName;
+          delete payload.inviterAvatar;
+        }
+        await writeInbox(tx);
+      });
+    } else {
+      await writeInbox(this.db);
     }
 
     for (const userId of userIds) {

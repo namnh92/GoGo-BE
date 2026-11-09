@@ -1,4 +1,5 @@
 import type { PushKind } from './notification-templates';
+import type { EventNotificationFacts } from '../../shared/notification-event-facts';
 
 type MemberFact = {
   id: string;
@@ -37,9 +38,10 @@ export function notificationFacts(
   context: NotificationFactContext,
 ): Record<string, unknown> {
   const facts: Record<string, unknown> = {};
+  const snapshot = context.eventPayload.notificationFacts as EventNotificationFacts | undefined;
   if (context.roomName) facts.roomName = context.roomName;
 
-  if (kind === 'invite') {
+  if (kind === 'invite' && !snapshot) {
     const inviterMemberId = context.eventPayload.inviterMemberId;
     if (typeof inviterMemberId === 'string') {
       const inviter = context.members.find((member) => member.id === inviterMemberId);
@@ -97,5 +99,18 @@ export function notificationFacts(
     }
   }
 
+  // New structures come only from the originating transaction. Legacy events
+  // deliberately receive no synthesized preview/reminder/avatar on replay.
+  if (snapshot) {
+    if (kind === 'invite') {
+      if (snapshot.inviterName !== undefined) facts.inviterName = snapshot.inviterName;
+      if (snapshot.inviterAvatar) facts.inviterAvatar = snapshot.inviterAvatar;
+      if (snapshot._inviterMemberId) facts._inviterMemberId = snapshot._inviterMemberId;
+    }
+    if (kind === 'plan_ready' || kind === 'plan_changed' || kind === 'date_reminder') {
+      if (snapshot.planPreview) facts.planPreview = snapshot.planPreview;
+    }
+    if (kind === 'date_reminder' && snapshot.reminder) facts.reminder = snapshot.reminder;
+  }
   return facts;
 }

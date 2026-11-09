@@ -8,6 +8,27 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 8.1.0-alpha.1 — Sourced event-time notification facts (#811 PR3)
+
+Additive MINOR: optional `payload.reminder`, `payload.planPreview` and
+`payload.inviterAvatar`. Existing rows and queued events remain valid without
+these fields; no historical snapshots are backfilled. Producers capture the new
+facts in the business transaction. Plan previews identify the event-time plan,
+version and constraints, confirmed start instant and up to three ordered stops.
+Venue text needs independent field provenance (addresses follow ADR-0031).
+Only approved independently uploaded GoGo place-media IDs and processed GoGo
+avatar references are retained; no Google content, external image URLs, private
+evidence references, account or actor IDs enter the public facts.
+
+`room.status_active` emits `reminder.trigger=room_started`, with
+`scheduledFor=null`; it means the outing started. No assumed two-hour lead time,
+advance scheduler or quiet hours ship here. The client composes venue/time/countdown
+copy from facts and must not treat room_started as an advance reminder.
+Historical previews never establish current access: inbox reads suppress sensitive
+facts after membership revocation and unavailable text/media; opening resolves the
+current authorized plan. Regenerate consumers from **8.1.0-alpha.1**.
+No migration beyond 0094 is needed. PR4 remains separate.
+
 ## 8.0.0-alpha.1 — Category preferences and server-side inbox kinds (#811 PR2)
 
 **Semantic MAJOR**, owner approved **2026-11-08**; contract/migration CODEOWNER
