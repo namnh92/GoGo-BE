@@ -2,7 +2,7 @@ openapi: 3.1.0
 x-gogo-notification-preference-semantics: master-and-five-categories-v1
 info:
   title: GoGo API
-  version: 8.1.1-alpha.1
+  version: 9.0.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -3863,6 +3863,7 @@ paths:
       operationId: getCandidateProviderPhoto
       summary: Fetch at most one transient Google candidate photo through the BFF
       description: >
+        Resolve-preview only (ADR-0052). Submission views use the stored CDN cover.
         Public. 120/min per verified actor when a valid session is sent, otherwise per IP. Fetch the candidate photo reference as JSON and render
         its base64 bytes with its Google Maps and author attribution; the URL is
         not a directly loadable image. No Google key/name/URL for image retrieval
@@ -3893,48 +3894,6 @@ paths:
                         maxItems: 1
                         items: { $ref: '#/components/schemas/PlaceProviderPhoto' }
         '400': { $ref: '#/components/responses/BadRequest' }
-        '429': { $ref: '#/components/responses/RateLimited' }
-  /places/{id}/provider-photos:
-    get:
-      operationId: getPlaceProviderPhotos
-      tags: [places]
-      summary: Transient Google photos for one Place Detail view (never stored)
-      description: >
-        GoGo-BE#509 (owner decision 2026-10-02, ADR-0030). Fetched from Google
-        when Place Detail is opened and returned once: photo names, image URLs
-        and bytes are not stored anywhere (database, object storage, cache,
-        jobs, snapshots), and the response is `Cache-Control: private,
-        no-store` — clients must not persist it in a disk/offline image cache
-        or persisted query state either. Images arrive inline as base64 so the
-        client never calls Google directly. At most three photos, each with
-        its author credit (`authorAttributions`) to render beside it, plus the
-        `attribution` text (Google Maps) whenever any photo is shown. Never
-        call this per list card.
-
-
-        Public. 120/min per verified actor when a valid session is sent, otherwise per IP.
-        Always 200 for a place Place Detail opens (404 otherwise), subject to
-        rate limits. `status`
-        says why `photos` is empty: `disabled` (kill switch off), `not_linked`
-        (no Google Place ID), `budget_exhausted` (daily provider budget
-        reached or not configured), `unavailable` (provider error, timeout or
-        moved place). Treat an unknown `status` like `unavailable`. GoGo
-        imagery stays on `PlaceDetail.photos`; Google price ranges are never
-        returned (core rule 13: a price without its unit).
-      security: []
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
-      responses:
-        '200':
-          description: Zero to three provider photos with attribution, for this view only
-          headers:
-            Cache-Control:
-              description: Always `private, no-store`.
-              schema: { type: string }
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/PlaceProviderPhotos' }
-        '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
   /places/{id}/reports:
@@ -8382,12 +8341,13 @@ paths:
         required it for a contact value.
 
 
-        **No provider content.** This route calls no Google provider and
-        persists no provider fact — no rating, review count, price level, hours
-        or canonical link. A `googlePlaceId` is stored as identity only. The
-        PI-BE-021 enrichment that did so on this route is withdrawn
-        (`docs/adr/0020-provider-facts-on-editor-created-places.md`, #440
-        amendment).
+        **Photo-only provider exception.** With `googlePlaceId`, acquires one
+        Google cover photo when enabled (ADR-0052 / ADR-0020 amendment #2), with
+        no opt-in field. Still persists no other provider fact: no rating,
+        review count, price level, hours or canonical link. The place and
+        idempotency record commit before acquisition; any photo failure leaves
+        creation successful, and replay never re-runs acquisition. A missing
+        cover requires editor upload; #797 remains published-only.
 
 
         **Identity beats similarity.** Given a `googlePlaceId`, the catalogue is
@@ -18193,6 +18153,9 @@ components:
     SubmissionResult:
       type: object
       properties:
+        photo:
+          $ref: '#/components/schemas/PlacePhoto'
+          description: Stored attributed cover (ADR-0052); rejected photos are shown only while updateDeadline is in the future.
         status: { type: string, enum: [PENDING, ALREADY_EXISTS] }
         submissionId: { type: string, format: uuid }
         placeId: { type: string, format: uuid }
@@ -18815,6 +18778,13 @@ components:
       additionalProperties: false
       required: [id, status, createdAt, updatedAt]
       properties:
+        photo:
+          $ref: '#/components/schemas/PlacePhoto'
+          description: Stored attributed cover (ADR-0052); rejected photos are shown only while updateDeadline is in the future.
+        updateDeadline:
+          type: string
+          format: date-time
+          description: Rejected submissions only; decidedAt plus seven days, for every rejection reason.
         id: { type: string, format: uuid }
         name:
           type: string
@@ -18855,6 +18825,13 @@ components:
       additionalProperties: false
       required: [id, status, createdAt, updatedAt]
       properties:
+        photo:
+          $ref: '#/components/schemas/PlacePhoto'
+          description: Stored attributed cover (ADR-0052); rejected photos are shown only while updateDeadline is in the future.
+        updateDeadline:
+          type: string
+          format: date-time
+          description: Rejected submissions only; decidedAt plus seven days, for every rejection reason.
         id: { type: string, format: uuid }
         name:
           type: string
@@ -18896,7 +18873,7 @@ components:
     SubmissionProviderDisplay:
       type: object
       additionalProperties: false
-      description: Owner-approved submission display snapshot (ADR-0048), reused for at most 30 days. Render Google Maps attribution; never promote to catalogue facts or cache on clients. Photo is a locally constructed lazy BFF reference with empty author credits until the proxy responds; proxy credits are authoritative. No photo refs or bytes are persisted in the snapshot.
+      description: Owner-approved submission display snapshot (ADR-0048), reused for at most 30 days. Render Google Maps attribution; never promote to catalogue facts or cache on clients. The deprecated photo property is no longer emitted; use photo on the parent submission. Stored covers carry their own credits. No photo refs or bytes are persisted in the snapshot.
       required:
         [
           source,
@@ -18933,7 +18910,10 @@ components:
               openMinute: { type: integer, minimum: 0, maximum: 1440 }
               closeMinute: { type: integer, minimum: 0, maximum: 1440 }
               isOvernight: { type: boolean }
-        photo: { $ref: '#/components/schemas/CandidateProviderPhotoReference' }
+        photo:
+          $ref: '#/components/schemas/CandidateProviderPhotoReference'
+          deprecated: true
+          description: Servers no longer emit this property; use photo on the parent submission.
 
     MySubmissionContribution:
       type: object
@@ -19013,6 +18993,9 @@ components:
       type: object
       required: [id, googlePlaceId, status, submissionCount, createdAt]
       properties:
+        providerPhoto:
+          $ref: '#/components/schemas/PlacePhoto'
+          description: Stored attributed cover (ADR-0052); rejected photos are shown only while updateDeadline is in the future.
         id: { type: string, format: uuid }
         googlePlaceId: { type: string }
         status: { type: string, enum: [pending, approved, rejected, merged] }
@@ -19201,6 +19184,9 @@ components:
       required:
         [id, googlePlaceId, status, submissionCount, createdAt, updatedAt, contribution, history]
       properties:
+        providerPhoto:
+          $ref: '#/components/schemas/PlacePhoto'
+          description: Stored attributed cover (ADR-0052); rejected photos are shown only while updateDeadline is in the future.
         expectedCredit:
           allOf: [{ $ref: '#/components/schemas/SubmissionCreditFacts' }]
           description: Potential explicit-selection approval credit with all still-pending original evidence kept. Zero if contributor/ledger/state ineligible. Use credit-preview after changing selection; no client arithmetic.

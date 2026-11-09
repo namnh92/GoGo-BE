@@ -1,5 +1,5 @@
 {
-  "$schema-note": "GoGo-BE#694. Each entry admits ONE oasdiff ERR, and only on the exact pair of contract files it was decided for. Both sha256 values must match the bytes being compared, and the finding text must contain `diagnostic`. Nothing else is admitted \u2014 a new breaking change, the same change on different bytes, or an unparseable report all still fail. Read by scripts/check-contract-compat.ts.",
+  "$schema-note": "GoGo-BE#694. Each entry admits ONE oasdiff ERR, and only on the exact pair of contract files it was decided for. Both sha256 values must match the bytes being compared, and the finding text must contain `diagnostic`. Nothing else is admitted — a new breaking change, the same change on different bytes, or an unparseable report all still fail. Read by scripts/check-contract-compat.ts.",
   "exceptions": [
     {
       "id": "BE-694-room-events-resync-oneof",
@@ -25,7 +25,7 @@
       "revisionSha256": "840aba4b94afc144f06501dddf389f24883a06b1a5b2eb1f1fb47d33be0fa04d",
       "reason": "Taxonomy labels are shown to people and read by the assistant's models as data, so a label must be one line of plain text. Refusing other characters withdraws the old 'any string' guarantee; the contract moves to 3.0.0-alpha.1 and openapi/CHANGELOG.md carries the consumer-facing note. Rule from Astra (dev/handoffs/sa-question-GoGo-BE-740-f01.astra.out).",
       "note": "revisionCommit is the reviewed PR head that CI run 41189461106 judged; a later commit that only edits this file leaves openapi/gogo.v1.yaml byte-identical.",
-      "diagnostic": "in API POST /cms/taxonomies added the pattern `^[\\p{L}\\p{M}\\p{N}\\p{Zs}'\"\u2018\u2019\u201c\u201d()&+,./\\-\u2013\u2014]*$` to the request property `labels/additionalProperties/`"
+      "diagnostic": "in API POST /cms/taxonomies added the pattern `^[\\p{L}\\p{M}\\p{N}\\p{Zs}'\"‘’“”()&+,./\\-–—]*$` to the request property `labels/additionalProperties/`"
     },
     {
       "id": "BE-737-taxonomy-label-pattern-update",
@@ -38,7 +38,7 @@
       "revisionSha256": "840aba4b94afc144f06501dddf389f24883a06b1a5b2eb1f1fb47d33be0fa04d",
       "reason": "Taxonomy labels are shown to people and read by the assistant's models as data, so a label must be one line of plain text. Refusing other characters withdraws the old 'any string' guarantee; the contract moves to 3.0.0-alpha.1 and openapi/CHANGELOG.md carries the consumer-facing note. Rule from Astra (dev/handoffs/sa-question-GoGo-BE-740-f01.astra.out).",
       "note": "revisionCommit is the reviewed PR head that CI run 41189461106 judged; a later commit that only edits this file leaves openapi/gogo.v1.yaml byte-identical.",
-      "diagnostic": "in API PATCH /cms/taxonomies/{id} added the pattern `^[\\p{L}\\p{M}\\p{N}\\p{Zs}'\"\u2018\u2019\u201c\u201d()&+,./\\-\u2013\u2014]*$` to the request property `labels/additionalProperties/`"
+      "diagnostic": "in API PATCH /cms/taxonomies/{id} added the pattern `^[\\p{L}\\p{M}\\p{N}\\p{Zs}'\"‘’“”()&+,./\\-–—]*$` to the request property `labels/additionalProperties/`"
     },
     {
       "id": "BE-747-campaign-audience-public-list",
@@ -161,7 +161,7 @@
       "id": "BE-793-submission-photos-decide-oneof",
       "issue": "https://github.com/namnh92/GoGo-BE/issues/793",
       "decidedAt": "2026-11-07",
-      "decidedBy": "product owner (CODEOWNER for openapi/gogo.v1.yaml), in session on PR #794: \"Ghi exception, gi\u1eef MINOR\"",
+      "decidedBy": "product owner (CODEOWNER for openapi/gogo.v1.yaml), in session on PR #794: \"Ghi exception, giữ MINOR\"",
       "baseCommit": "facd5cedb91f9b93b86bedffc79da906ff2dd425",
       "baseSha256": "dfa9f14fd0a98b23c0cc6c31f1cf236f460d30c2379ef137774a5139620a4d99",
       "revisionBasis": "Final rebased working-tree openapi/gogo.v1.yaml; identified by revisionSha256 (no commit created)",
@@ -194,6 +194,18 @@
       "diagnostic": "in API GET /me/notification-preferences push kinds no longer all report the master switch; independent category suppression changes effective permission (ADR-0050)",
       "reason": "ADR-0050 replaces ADR-0025 single-switch semantics with five independently suppressible categories. Legacy GET reports effective permission. Contract 8.0.0-alpha.1 and openapi/CHANGELOG.md coordinate consumers. This is a semantic finding produced by check-contract-compat in addition to structural oasdiff.",
       "note": "Owner authorization records the product/contract version decision only, not CODEOWNER sign-off. Exact uncommitted revision bytes after rebase onto #816 (514b9993, contract 7.8.0-alpha.1 and migration 0093); refresh hashes after any further base or spec edit. No unrelated oasdiff ERR is admitted."
+    },
+    {
+      "id": "BE-822-provider-photos-path-removed",
+      "issue": "https://github.com/namnh92/GoGo-BE/issues/822",
+      "decidedAt": "2026-11-09",
+      "decidedBy": "product owner, shape rev 2.2 section 16 Q6; exact-head CODEOWNER sign-off remains pending",
+      "baseSha256": "4dc3eb679681e9139420cdf5cf4237c2a1e369da7656f28b72987a9890f67684",
+      "revisionSha256": "9aec23d77f526c33f1b3c9baa390ceb630320c9d21fd2d1e414bc940b5a146b9",
+      "revisionBasis": "S1 uncommitted YAML bytes in be-822; no git command or commit created",
+      "diagnostic": "error [api-path-removed-without-deprecation] at openapi/gogo.v1.yaml in API GET /places/{id}/provider-photos",
+      "reason": "Owner Q6 removes the transient gallery in #822 on unreleased re-design. Stored cover in PlaceDetail.photos replaces it; ADR-0052. MAJOR 9.0.0-alpha.1 also withdraws the CMS no-provider guarantee for implicit cover acquisition.",
+      "note": "Check/file/method/path prefix from the authorized shape; fresh oasdiff report unavailable in sandbox (no oasdiff binary, Docker prohibited). The exception is pinned to exact base/revision YAML SHA-256 and one diagnostic. Synthetic matcher tests verify admission mechanics only; replace/confirm the verbatim diagnostic from fresh oasdiff before PR and rerun --expect=BE-822-provider-photos-path-removed. No fresh structural compatibility pass or CODEOWNER approval is claimed."
     }
   ]
 }

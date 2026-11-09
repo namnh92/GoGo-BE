@@ -16,6 +16,7 @@ export type ProvenanceConfig = { PROVENANCE_UNIFIED_READS: boolean };
 export type ProviderPhotosConfig = {
   APP_ENV: 'dev' | 'staging' | 'prod' | 'production';
   FLAG_PLACE_PROVIDER_PHOTOS: boolean;
+  FLAG_PLACE_PROVIDER_PHOTO_ACQUIRE?: boolean;
   PLACE_DISPLAY_DAILY_MAX_CALLS?: number | undefined;
   PLACE_DISPLAY_DAILY_MAX_LIST_COST_USD?: number | undefined;
   PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_PHOTOMEDIA?: number | undefined;

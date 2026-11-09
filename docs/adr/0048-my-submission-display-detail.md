@@ -173,3 +173,13 @@ canonical không đổi từ sau preview qua submit/list/detail/xóa nháp. Test
 cost-pinning submit không token vẫn một Pro; CMS preview/approve vẫn Enterprise.
 Không backfill row cũ hoặc đổi contract/schema. Rollback binary không cần
 xóa dữ liệu. Activation secret thuộc Infra; không tự sinh secret trong BE.
+
+## Amendment — GoGo-BE#822 (2026-11-09)
+
+[ADR-0052](0052-stored-submission-provider-photo.md) replaces the lazy submission
+photo projection with a stored attributed CDN cover. Submit may now buy photoRefs
+and bounded media, after a durable claim; zero additional Details with a valid
+resolution token stays unchanged. List/detail emit no providerDisplay.photo;
+detail facts refresh uses photos:false. The >30-day Details refresh stays.
+#824 separately owns inheritance/information purge; no new freshness exclusion
+or information_purged_at column belongs to #822.

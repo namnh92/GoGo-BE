@@ -36,7 +36,10 @@ function mediaSetup(refs = 0, provider = true) {
     sourceType: provider ? 'google_derived' : 'editorial',
     providerPhoto: provider ? providerPhoto : null,
   };
-  const queueValues = vi.fn(() => ({ onConflictDoNothing: vi.fn(async () => undefined) }));
+  const queueValues = vi.fn(() => ({
+    onConflictDoNothing: vi.fn(async () => undefined),
+    onConflictDoUpdate: vi.fn(() => ({ returning: async () => [{ id: 'cleanup' }] })),
+  }));
   const tx = {
     delete: vi.fn(() => ({ where: vi.fn(async () => undefined) })),
     execute: vi.fn(async (_query: SQL) => ({ rows: [{ refs }] })),

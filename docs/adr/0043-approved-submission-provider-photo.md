@@ -80,3 +80,10 @@ giữ reservation khi lỗi/crash/không có ảnh để rerun không mua lại.
 attempt đã reserve; không đổi hành vi retry approval của #786. Không đổi contract/schema. Xem
 [runbook #797](../runbooks/place-provider-photo-backfill.md) cho giới hạn, chi phí,
 kill switch, cleanup và rollback.
+
+## Amendment — GoGo-BE#822 (2026-11-09)
+
+[ADR-0052](0052-stored-submission-provider-photo.md) supersedes the photo timing,
+transient-only/cache and CMS no-provider guarantees for **one stored cover** at
+submit/CMS create. Approval reuses bytes; merge may attach; rejection retains and
+shows the cover for seven days. No other provider content rule is changed.

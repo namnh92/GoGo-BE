@@ -220,7 +220,7 @@ Metric đang phát — danh sách đầy đủ, đối chiếu với `METRIC_LAB
 | `provider_request_duration_seconds`                  | `provider`, `service`, `operation`, `status` | histogram, thời lượng một lần gọi ở trên (#414); chỉ vào registry Prometheus, không ra log                                                                                                                                                                    |
 | `provider_usage_ledger_flush_total`                  | `outcome`                                    | mỗi lần ghi `provider_usage_daily` (#335); `outcome=error` = sổ chi phí đang tụt lại                                                                                                                                                                          |
 | `place_refresh_total`                                | `outcome`                                    | mỗi tick/row của `gogo:worker:place-refresh` (#340); 10 giá trị đóng, không có id nào                                                                                                                                                                         |
-| `place_provider_photos_total`                        | `outcome`                                    | ảnh Google tạm thời trên Place Detail (#509); 8 giá trị đóng (`served`, `empty`, …), đúng 1 lần/response; không id                                                                                                                                            |
+| `provider_photo_requests_total`                      | `stage`, `outcome`                           | ADR-0052: photo pipeline; stage submit / approve / preview / cms_create / backfill, outcome đóng, không id                                                                                                                                                    |
 | `provider_usage_ledger_flush_duration_seconds`       | —                                            | histogram, thời lượng một lần flush ledger (#369) — số ADR-0012 chưa đo được                                                                                                                                                                                  |
 | `cost_collector_runs_total`                          | `collector`, `outcome`                       | mỗi collector mỗi tick `gogo:worker:cost-collectors` (#369); `collector` là id literal                                                                                                                                                                        |
 | `cost_collector_duration_seconds`                    | `collector`                                  | histogram, thời lượng một lần collect (#369)                                                                                                                                                                                                                  |
@@ -492,6 +492,11 @@ không ai phát nữa **trông y hệt** một alert đang im vì mọi thứ đ
 
 Runbook cho từng alert: `docs/runbooks.md` §7. Chưa có: dashboard.
 
+`provider_photo_acquisition_total` (`stage`, `outcome`) — ADR-0052 submit/CMS stage:
+`stored | empty | skipped | error`; stage is `submit | approve | preview | cms_create | backfill`.
+`provider_photo_reconciled_total` — hourly recovery of a missing due retirement job;
+no labels. `provider_photo_requests_total` (`stage`, `outcome`) uses the same closed stage set.
+
 ## 3c. CORS cho browser client (BE-IMP-003)
 
 CMS và Web chạy ở origin khác API, gửi kèm cookie session, nên CORS phải là
@@ -550,3 +555,16 @@ password recovery mail is disabled. Operational lookup connection/pool/query
 failures return retryable `503 SERVICE_UNAVAILABLE`; SQL/schema, permissions,
 configuration and programming errors retain existing handling. Cached negative
 revocation results cannot authorize access during that outage.
+
+### Provider cover acquisition — ADR-0052 (#822)
+
+`provider_photo_requests_total` (`stage`, `outcome`) uses only stages `submit`, `approve`,
+`preview`, `cms_create`, `backfill`; outcomes `served`, `empty`, `disabled`,
+`not_linked`, `refused_budget`, `identity_mismatch`, `provider_error`, `timeout`.
+`provider_photo_acquisition_total` (`stage`, `outcome`) records submit/CMS completion
+(`stored`, `empty`, `skipped`, `error`). `provider_photo_reconciled_total` counts
+recovered retirement schedules. No identifiers, URLs, names or credits as labels.
+`media_cleanup_attempt_total{bucket,outcome}` adds `deferred` for future markers.
+Hourly leased job `gogo:worker:provider-photo-retirements` reconciles at most 100
+expired obligations per tick. Existing cleanup tick deletes + purges due objects.
+See [runbook](submission-provider-photo.md) for rollout and phased rollback.

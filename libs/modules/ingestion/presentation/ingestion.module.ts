@@ -61,6 +61,12 @@ import { PlaceImportController } from './place-import.controller';
     },
     PlaceImportJobService,
   ],
-  exports: [PlaceResolverService, PlaceDedupService, PlaceSubmissionService, PlaceImportJobService],
+  exports: [
+    SubmissionPhotoService,
+    PlaceResolverService,
+    PlaceDedupService,
+    PlaceSubmissionService,
+    PlaceImportJobService,
+  ],
 })
 export class IngestionModule {}

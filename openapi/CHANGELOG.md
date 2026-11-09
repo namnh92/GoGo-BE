@@ -8,6 +8,30 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 9.0.0-alpha.1 — Stored provider cover (#822, ADR-0052)
+
+MAJOR: remove `GET /places/{id}/provider-photos` / `getPlaceProviderPhotos` and
+withdraw the no-Google-provider guarantee on `POST /cms/places`: a request with
+`googlePlaceId` implicitly acquires one Google cover when enabled. No new request
+field. Other provider facts remain excluded on this door.
+
+SubmissionResult and MyPlaceSubmission/Detail add optional `photo: PlacePhoto`;
+CMS PlaceSubmissionSummary/Detail add `providerPhoto`. Google images always carry
+credits. `photoUrl` retains its editorial/community semantics.
+`SubmissionProviderDisplay.photo` remains declared, deprecated and never emitted.
+Rejected submissions add `updateDeadline = decidedAt + 7 days`; their cover is
+shown only while that deadline is in the future. No inheritance or information
+purge in #822 (#824 owns those).
+
+Deploy consumers in the same DEV window: Mobile removes the gallery call, query
+and persistence rule, uses PlaceDetail.photos, renders submission `photo` plus
+credits, and limits useCandidatePhoto to resolve preview. CMS regenerates its
+client, renders providerPhoto and explains implicit cover acquisition; failed
+CMS acquisition requires editor upload. Regenerate both clients at 9.0.0-alpha.1.
+Exact-head CODEOWNER approval for migration/OpenAPI remains required; the owner
+product decision in shape §16 is not that approval. The single oasdiff exception
+is `BE-822-provider-photos-path-removed`; no other ERR is admitted.
+
 ## 8.1.1-alpha.1 — Provider-photo rate-limit documentation (#821)
 
 PATCH: correct provider-photo descriptions to document 120 requests/minute per

@@ -195,3 +195,10 @@ provenance** (Astra, `dev/handoffs/codex-review-request-sa-GoGo-BE-440-provenanc
 
 No migration. Rollback: revert the change; claim rows written under it remain
 valid editorial rows.
+
+## Amendment — GoGo-BE#822 (2026-11-09)
+
+[ADR-0052](0052-stored-submission-provider-photo.md) supersedes the photo timing,
+transient-only/cache and CMS no-provider guarantees for **one stored cover** at
+submit/CMS create. Approval reuses bytes; merge may attach; rejection retains and
+shows the cover for seven days. No other provider content rule is changed.

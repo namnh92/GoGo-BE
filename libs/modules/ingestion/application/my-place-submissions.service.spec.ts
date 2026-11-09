@@ -88,6 +88,7 @@ describe('MyPlaceSubmissionsService', () => {
             createdAt: row.created_at,
             updatedAt: '2026-11-07T01:00:00.000Z',
             decidedAt: '2026-11-07T01:00:00.000Z',
+            updateDeadline: '2026-11-14T01:00:00.000Z',
           },
         ],
         nextCursor: cursor([row.created_at, actor.id]),
@@ -268,7 +269,7 @@ function snapshotFixture(row = pending) {
   return { service, execute, get };
 }
 
-it('#801 supplies pending facts and a local lazy photo reference from the stored snapshot', async () => {
+it('#801 supplies pending facts without a lazy photo reference from the stored snapshot', async () => {
   const { service, get } = snapshotFixture();
   const { items } = await service.list(actor, { limit: 25 });
   expect(items[0]).toMatchObject({
@@ -276,13 +277,7 @@ it('#801 supplies pending facts and a local lazy photo reference from the stored
     addressShort: snapshot.addressShort,
     categoryKey: 'cafe',
     providerStatus: 'ok',
-    providerDisplay: {
-      ...snapshot,
-      photo: {
-        url: '/v1/places/google-provider-photo/provider',
-        authorAttributions: [],
-      },
-    },
+    providerDisplay: snapshot,
   });
   expect(get).not.toHaveBeenCalled();
 });
@@ -306,7 +301,7 @@ it('#801 omits expired facts from LIST, then DETAIL refreshes and persists only 
   expect((await service.list(actor, { limit: 25 })).items[0]?.providerStatus).toBe('deferred');
   expect(get).not.toHaveBeenCalled();
   expect((await service.detail(actor, actor.id)).providerDisplay).toEqual(snapshot);
-  expect(get).toHaveBeenCalledExactlyOnceWith('provider');
+  expect(get).toHaveBeenCalledExactlyOnceWith('provider', { photos: false });
   expect(execute).toHaveBeenCalledTimes(4); // list, detail, lease, snapshot write
 });
 

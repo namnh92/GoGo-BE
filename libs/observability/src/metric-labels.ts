@@ -156,7 +156,9 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // `refused_budget`, `identity_mismatch`, `provider_error`, `timeout`) —
   // exactly one per 200 response. No place id, no photo name — those are
   // exactly what must not be kept.
-  place_provider_photos_total: ['outcome'],
+  provider_photo_requests_total: ['stage', 'outcome'],
+  provider_photo_acquisition_total: ['stage', 'outcome'],
+  provider_photo_reconciled_total: [],
   place_dbfirst_hit_total: ['path'],
   // …and why a lookup fell through, which is the more useful half: `absent` is
   // the catalogue growing, `stale` is refresh falling behind, `legacy` is a

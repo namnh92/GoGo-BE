@@ -1,6 +1,7 @@
+import { submissionPhotoView, updateDeadline } from '../domain/submission-provider-photo';
+import { communityPhotoUrl, isSubmissionPhotoKey } from '../../shared/submission-photo-url';
 import {
   freshSnapshot,
-  lazySubmissionPhoto,
   submissionDisplaySnapshotSchema,
 } from '../domain/submission-display-snapshot';
 import { submissionEnrichmentViewSchema } from '../domain/submission-enrichment-view';
@@ -37,6 +38,19 @@ type SubmissionRow = {
   id: string;
   google_place_id: string;
   display_snapshot: unknown;
+  provider_photo: unknown;
+  cover: {
+    id: string;
+    storage_key: string;
+    source_type: string;
+    attribution: string | null;
+    width: number | null;
+    height: number | null;
+    provider_photo: {
+      authorAttributions: { displayName: string; uri: string | null; photoUri: string | null }[];
+      googleMapsUri: string | null;
+    } | null;
+  } | null;
   category_key: string | null;
   address_short: string | null;
   own_input: {
@@ -85,7 +99,7 @@ export class MyPlaceSubmissionsService {
           and (display_refresh_started_at is null or display_refresh_started_at < now() - interval '60 seconds')
         returning id`);
       if (claimed.rows.length) {
-        live = await this.display.get(row.google_place_id);
+        live = await this.display.get(row.google_place_id, { photos: false });
         if (live.providerDisplay) {
           // Strip the transient photo before writing. Never bump submission's
           // review concurrency token/updatedAt for a display-only refresh.
@@ -149,7 +163,7 @@ export class MyPlaceSubmissionsService {
     const result = await this.db
       .execute(
         sql`
-      select s.id, s.status, s.result_place_id, s.rejection_reason, s.google_place_id, s.display_snapshot,
+      select s.id, s.status, s.result_place_id, s.rejection_reason, s.google_place_id, s.display_snapshot, s.provider_photo, to_jsonb(cover) as cover,
              case when p.id is not null then ct.key else st.key end as category_key,
              p.address_text as address_short,
              case when s.submitted_by_user_id = ${actor.id}::uuid then
@@ -179,6 +193,11 @@ export class MyPlaceSubmissionsService {
         order by is_cover desc, sort_order, created_at, id
         limit 1
       ) m on true
+      left join lateral (
+        select id, storage_key, source_type, attribution, width, height, provider_photo
+        from place_media where place_id = p.id and moderation = 'approved'
+        order by is_cover desc, sort_order, created_at, id limit 1
+      ) cover on true
       where (s.submitted_by_user_id = ${actor.id}::uuid or exists (
         select 1 from place_submission_contributors c
         where c.submission_id = s.id and c.user_id = ${actor.id}::uuid
@@ -202,13 +221,46 @@ export class MyPlaceSubmissionsService {
     return snapshot
       ? {
           providerStatus: 'ok',
-          providerDisplay: { ...snapshot, photo: lazySubmissionPhoto(row.google_place_id) },
+          providerDisplay: snapshot,
         }
       : { providerStatus: 'deferred', providerDisplay: undefined };
   }
 
   private projectRow(row: SubmissionRow, live: DisplayAnswer) {
+    const c = row.cover;
+    const url = c
+      ? isSubmissionPhotoKey(c.storage_key)
+        ? communityPhotoUrl(row.result_place_id!, c.id)
+        : publicCatalogueUrl(this.config.MEDIA_PUBLIC_BASE_URL, c.storage_key)
+      : null;
+    const photo =
+      row.status === 'approved' || row.status === 'merged'
+        ? c && url
+          ? {
+              id: c.id,
+              url,
+              source:
+                c.source_type === 'google_derived'
+                  ? ('google' as const)
+                  : c.source_type === 'community'
+                    ? ('community' as const)
+                    : ('manual' as const),
+              ...(c.width ? { width: c.width } : {}),
+              ...(c.height ? { height: c.height } : {}),
+              ...(c.attribution ? { attribution: c.attribution } : {}),
+              ...(c.provider_photo ?? {}),
+            }
+          : undefined
+        : submissionPhotoView(
+            row.provider_photo,
+            this.config.MEDIA_PUBLIC_BASE_URL,
+            row.status,
+            row.decided_at,
+          );
+    const deadline = updateDeadline(row.status, row.decided_at);
     return {
+      ...(photo ? { photo } : {}),
+      ...(deadline ? { updateDeadline: deadline } : {}),
       id: row.id,
       status: row.status,
       ...(row.name || live.providerDisplay?.name

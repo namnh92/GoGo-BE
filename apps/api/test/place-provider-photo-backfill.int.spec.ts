@@ -228,8 +228,7 @@ describe('#797 real SQL + shared #786 persistence', () => {
         expect(await db.select().from(schema.mediaCleanupQueue)).toHaveLength(0);
         expect(
           (await db.select().from(schema.auditLogs)).filter(
-            (row) =>
-              row.resourceId === p.id && row.action === 'place.provider_photo_backfill_attempt',
+            (row) => row.resourceId === p.id && row.action === 'place.provider_photo_reservation',
           ),
         ).toHaveLength(1);
       } finally {

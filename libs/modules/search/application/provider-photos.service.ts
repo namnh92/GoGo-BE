@@ -1,5 +1,4 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
-import { sql } from 'drizzle-orm';
 import {
   ProviderBudgetService,
   budgetLimitsFrom,
@@ -16,28 +15,17 @@ import {
   type ProviderPhotoAuthor,
   type ProviderPhotoMedia,
 } from '@gogo/providers';
-import { APP_CONFIG, type ProvenanceConfig, type ProviderPhotosConfig } from '../../shared/config';
-import { AppError } from '../../shared/app-error';
+import { APP_CONFIG, type ProviderPhotosConfig } from '../../shared/config';
 import { flagEnvironmentOf, resolveFlag } from '../../shared/feature-flags';
-import { GOOGLE_PROVIDER_PUBLIC, googleProvenanceRows } from '../../shared/google-provenance';
 import { DB } from '../../shared/tokens';
 
 /**
- * GoGo-BE#509 — transient Google photos for Place Detail.
- *
- * Owner decision 2026-10-02 (ADR-0030): **display only, never stored.** A photo
- * name, its image URL and its bytes exist only inside this one request — they
- * are not written to the database, R2, Redis, a job or a snapshot, and the
- * response is `Cache-Control: no-store`. The only provider value GoGo keeps is
- * the Place ID it already holds.
- *
- * Every way this can fail ends in a 200 with no photos and a reason: Place
- * Detail is already on screen from GoGo's own data, and a missing gallery must
- * never turn into an error page.
+ * ADR-0052: one bounded Google photo pipeline for resolve preview and authorized
+ * stored covers. Provider names/retrieval URLs exist only inside this request;
+ * callers may persist bytes + attribution, never the transient reference.
+ * Preview stays private/no-store; submission views read the stored CDN cover.
  */
 
-/** At most this many photos per view — each one is a billed media call. */
-export const MAX_PROVIDER_PHOTOS = 3;
 /** Width asked of Google; a phone detail hero, not an original. */
 export const PROVIDER_PHOTO_MAX_WIDTH_PX = 800;
 /** Per-image byte ceiling; base64 adds a third on top. */
@@ -128,19 +116,12 @@ export class ProviderPhotosService {
     @Inject(DB) private readonly db: Db,
     @Inject(PLACE_PHOTO_DISPLAY) private readonly provider: PlacePhotoDisplayPort,
     @Inject(APP_CONFIG)
-    private readonly config: ProviderPhotosConfig & Partial<ProvenanceConfig>,
+    private readonly config: ProviderPhotosConfig,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
     @Optional() budget?: ProviderBudgetService,
   ) {
     this.budget = budget ?? new ProviderBudgetService(db);
     this.limits = budgetLimitsFrom(SCOPE, config as unknown as Record<string, number | undefined>);
-  }
-
-  async photos(placeId: string): Promise<ProviderPhotosDto> {
-    const result = await this.resolve(placeId);
-    // The single place an outcome is counted: one request, one outcome.
-    this.metrics.increment('place_provider_photos_total', { outcome: result.outcome });
-    return result.dto;
   }
 
   /** #786: references only; no billed media and nothing retained between requests. */
@@ -186,9 +167,16 @@ export class ProviderPhotosService {
   }
 
   /** #786: candidate proxy and approval share the existing bounded, metered pipeline. */
-  async firstForProvider(providerPlaceId: string): Promise<ProviderPhotosDto> {
-    const result = await this.resolveProvider(providerPlaceId, 1);
-    this.metrics.increment('place_provider_photos_total', { outcome: result.outcome });
+  async firstForProvider(
+    providerPlaceId: string,
+    stage: 'submit' | 'approve' | 'preview' | 'cms_create' | 'backfill' = 'preview',
+  ): Promise<ProviderPhotosDto> {
+    const result = await this.resolveProvider(
+      providerPlaceId,
+      1,
+      stage === 'submit' || stage === 'cms_create',
+    );
+    this.metrics.increment('provider_photo_requests_total', { stage, outcome: result.outcome });
     return result.dto;
   }
 
@@ -217,12 +205,12 @@ export class ProviderPhotosService {
     }
   }
 
-  private async resolve(placeId: string): Promise<Result> {
-    return this.resolveProvider(await this.googleIdOf(placeId), MAX_PROVIDER_PHOTOS);
-  }
-
-  private async resolveProvider(providerPlaceId: string | null, limit: number): Promise<Result> {
-    if (!(await this.enabled())) return this.result('disabled', 'disabled');
+  private async resolveProvider(
+    providerPlaceId: string | null,
+    limit: number,
+    acquired = false,
+  ): Promise<Result> {
+    if (!acquired && !(await this.enabled())) return this.result('disabled', 'disabled');
     if (!providerPlaceId) return this.result('not_linked', 'not_linked');
     // The reference lookup is IDs Only and free, so it reserves nothing — but
     // it is skipped outright when no photo could be paid for: an environment
@@ -392,38 +380,6 @@ export class ProviderPhotosService {
       authorAttributions: ref.authorAttributions,
       googleMapsUri: ref.googleMapsUri,
     };
-  }
-
-  /**
-   * The place's Google Place ID — the one provider value GoGo may keep — or
-   * `null` when it has none. 404 for a place Place Detail would not show.
-   */
-  private async googleIdOf(placeId: string): Promise<string | null> {
-    // F-10 (SA): one reader for Google identity — the same rows, and the same
-    // #334 rollback switch, Place Detail attributes the place with. A canonical
-    // row the place has moved away from is never an identity to ask Google for;
-    // a canonical row outranks a legacy one, then the freshest wins.
-    const { rows } = await this.db.execute(sql`
-      select
-        (select src.external_id
-          from (${googleProvenanceRows(sql`p.id`, this.unifiedProvenance)}) src
-          left join place_provider_sources canon on canon.id = src.id
-          where src.provider = ${GOOGLE_PROVIDER_PUBLIC}
-            and coalesce(canon.source_status <> 'moved', true)
-          order by (canon.id is not null) desc, src.fetched_at desc nulls last
-          limit 1) as provider_id
-      from places p
-      where p.id = ${placeId} and p.status in ('published', 'community_submitted')
-      limit 1
-    `);
-    const row = rows[0] as { provider_id: string | null } | undefined;
-    if (!row) throw AppError.notFound('PLACE_NOT_FOUND', 'Place not found');
-    return row.provider_id ?? null;
-  }
-
-  /** #334 rollback switch, as Place Detail reads it. */
-  private get unifiedProvenance(): boolean {
-    return this.config.PROVENANCE_UNIFIED_READS ?? true;
   }
 
   async enabled(): Promise<boolean> {

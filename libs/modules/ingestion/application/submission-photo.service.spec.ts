@@ -56,7 +56,7 @@ describe('approved provider photo storage (#786)', () => {
       expect.stringMatching(/^places\/provider\/.*\.jpg$/),
       Buffer.from([1, 2, 3]),
       'image/jpeg',
-      expect.objectContaining({ cacheControl: 'private, no-store' }),
+      expect.objectContaining({ cacheControl: 'public, max-age=31536000, immutable' }),
     );
   });
 

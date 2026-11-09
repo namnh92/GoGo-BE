@@ -18,6 +18,8 @@ import {
   ProviderPhotosService,
   type CandidatePhotoReference,
 } from '../../search/application/provider-photos.service';
+import { submissionPhotoView } from '../domain/submission-provider-photo';
+import { providerPhotoEligible } from '../../places/application/provider-photo-reservation';
 import { SubmissionPhotoService } from './submission-photo.service';
 import { SubmissionPhotosService } from './submission-photos.service';
 import {
@@ -46,6 +48,7 @@ import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { AppError } from '../../shared/app-error';
 import {
   APP_CONFIG,
+  type MediaConfig,
   type PlatformConfig,
   type ResolutionAttestationConfig,
 } from '../../shared/config';
@@ -279,7 +282,7 @@ export class PlaceSubmissionService {
      */
     private readonly administrative: AdministrativeResolverService,
     @Inject(APP_CONFIG)
-    private readonly config: PlatformConfig & ResolutionAttestationConfig,
+    private readonly config: PlatformConfig & ResolutionAttestationConfig & Partial<MediaConfig>,
     private readonly photos: SubmissionPhotosService,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
     @Optional() private readonly providerPhotos?: ProviderPhotosService,
@@ -1007,6 +1010,25 @@ export class PlaceSubmissionService {
     this.metrics.increment('mobile_place_submissions_total', {
       status: result.deduped ? 'deduped' : 'pending',
     });
+    if (this.submissionPhotos) {
+      try {
+        await this.submissionPhotos.acquireSubmission(result.submissionId, input.googlePlaceId);
+        const [stored] = await this.db
+          .select()
+          .from(schema.placeSubmissions)
+          .where(eq(schema.placeSubmissions.id, result.submissionId))
+          .limit(1);
+        const photo = submissionPhotoView(
+          stored?.providerPhoto,
+          this.config.MEDIA_PUBLIC_BASE_URL,
+          stored?.status,
+          stored?.decidedAt,
+        );
+        if (photo) return { ...result, photo };
+      } catch {
+        /* The submission already committed; every photo-stage failure is optional. */
+      }
+    }
     return result;
   }
 
@@ -1087,7 +1109,7 @@ export class PlaceSubmissionService {
       select s.id, s.google_place_id, s.status, s.submission_count, s.category_key,
              s.price_min, s.price_max, s.price_unit, s.vibe_keys, s.note,
              s.room_id, s.result_place_id, s.created_at, s.updated_at, s.decided_at,
-             s.decision_reason, s.rejection_reason, s.review_draft, s.reviewed_at,
+             s.decision_reason, s.rejection_reason, s.review_draft, s.reviewed_at, s.provider_photo,
              (s.submitted_by_user_id is not null) as from_user,
              p.name as result_place_name,
              coalesce(pps.place_id, ps.place_id) as linked_place_id,
@@ -1112,6 +1134,7 @@ export class PlaceSubmissionService {
     type Row = {
       id: string;
       google_place_id: string;
+      provider_photo: unknown;
       status: string;
       submission_count: number;
       category_key: string | null;
@@ -1143,6 +1166,12 @@ export class PlaceSubmissionService {
       items: items.map((r) => ({
         id: r.id,
         googlePlaceId: r.google_place_id,
+        providerPhoto: submissionPhotoView(
+          r.provider_photo,
+          this.config.MEDIA_PUBLIC_BASE_URL,
+          r.status,
+          r.decided_at,
+        ),
         status: r.status,
         // Many people proposing the same place is one row, not many — the
         // count is the signal a moderator prioritises by.
@@ -1245,6 +1274,12 @@ export class PlaceSubmissionService {
       status: row.status,
       rejectionReason: row.status === 'rejected' ? (row.rejectionReason ?? undefined) : undefined,
       googlePlaceId: row.googlePlaceId,
+      providerPhoto: submissionPhotoView(
+        row.providerPhoto,
+        this.config.MEDIA_PUBLIC_BASE_URL,
+        row.status,
+        row.decidedAt,
+      ),
       googleMapsUrl: `https://www.google.com/maps/place/?q=place_id:${row.googlePlaceId}`,
       submissionCount: row.submissionCount,
       fromRegisteredUser: row.submittedByUserId !== null,
@@ -1520,6 +1555,37 @@ export class PlaceSubmissionService {
 
     let billCleanup: Awaited<ReturnType<SubmissionPhotosService['decide']>> | undefined;
     const finalize = async (tx: Tx, resultPlaceId: string | null) => {
+      const decidedAt = new Date();
+      const [current] = await tx
+        .select()
+        .from(schema.placeSubmissions)
+        .where(eq(schema.placeSubmissions.id, id))
+        .limit(1);
+      if (current?.providerPhoto && this.submissionPhotos && decision !== 'approved') {
+        let reused = false;
+        if (decision === 'merged' && resultPlaceId) {
+          const eligible = await tx.execute(
+            sql`select p.id from places p where p.id = ${resultPlaceId}::uuid and ${providerPhotoEligible(true)}`,
+          );
+          if (eligible.rows.length) {
+            await this.submissionPhotos.attachStored(
+              tx,
+              resultPlaceId,
+              adminId,
+              current.providerPhoto,
+            );
+            reused = true;
+          }
+        }
+        if (!reused)
+          await this.submissionPhotos.retire(
+            tx,
+            id,
+            current.providerPhoto,
+            decision === 'rejected',
+            decidedAt,
+          );
+      }
       billCleanup = await this.photos.decide(
         tx,
         id,
@@ -1542,7 +1608,7 @@ export class PlaceSubmissionService {
           decidedByAdminId: adminId,
           decisionReason: reason ?? null,
           rejectionReason: decision === 'rejected' ? rejectionReason! : null,
-          decidedAt: sql`clock_timestamp()`,
+          decidedAt,
           updatedAt: sql`clock_timestamp()`,
           resultPlaceId,
         })
@@ -1834,12 +1900,22 @@ export class PlaceSubmissionService {
             }
           : null;
 
-    const photo = await this.submissionPhotos?.prepare(row.googlePlaceId);
+    const claimId = !row.providerPhoto
+      ? await this.submissionPhotos?.claimApproval(row.id)
+      : undefined;
+    let photo: Awaited<ReturnType<SubmissionPhotoService['prepare']>>;
+    try {
+      if (claimId) photo = await this.submissionPhotos!.prepare(row.googlePlaceId);
+    } catch (error) {
+      await this.submissionPhotos!.release(row.id, claimId!).catch(() => undefined);
+      throw error;
+    }
+    let photoAttached = false;
     return this.db
       .transaction(async (tx) => {
         // Account first: erasure may clear submission ownership while holding it.
         if (row.submittedByUserId) await lockAssistantAccount(tx, row.submittedByUserId);
-        await this.lockPendingSubmission(tx, row);
+        const current = await this.lockPendingSubmission(tx, row);
         await this.dedup.lockGoogleIdentities(tx, [row.googlePlaceId]);
         await this.dedup.assertGoogleIdentityOwner(tx, row.googlePlaceId);
         const existing =
@@ -1874,7 +1950,20 @@ export class PlaceSubmissionService {
             freshnessCheckedAt: new Date(),
           })
           .returning();
-        if (photo) await this.submissionPhotos!.attach(tx, place!.id, adminId, photo);
+        if (current.providerPhoto) {
+          await this.submissionPhotos!.attachStored(tx, place!.id, adminId, current.providerPhoto);
+        } else if (photo && current.providerPhotoClaimId === claimId) {
+          await this.submissionPhotos!.attach(tx, place!.id, adminId, photo);
+          await tx
+            .update(schema.placeSubmissions)
+            .set({
+              providerPhoto: photo.stored,
+              providerPhotoClaimId: null,
+              providerPhotoClaimedAt: null,
+            })
+            .where(eq(schema.placeSubmissions.id, row.id));
+          photoAttached = true;
+        }
         for (const h of d.hours) {
           await tx.insert(schema.placeHours).values({
             placeId: place!.id,
@@ -1982,8 +2071,12 @@ export class PlaceSubmissionService {
         return place!.id;
       })
       .catch(async (error: unknown) => {
-        if (photo) await this.submissionPhotos!.discard(photo);
+        photoAttached = false;
         throw error;
+      })
+      .finally(async () => {
+        if (photo && !photoAttached) await this.submissionPhotos!.discard(photo);
+        if (claimId) await this.submissionPhotos!.release(row.id, claimId).catch(() => undefined);
       })
       .then((placeId) => {
         if (mappingWrite) this.administrative.countPersist(mappingWrite);

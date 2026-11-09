@@ -654,6 +654,13 @@ async function bootstrap(): Promise<void> {
       ...(mediaCleanup
         ? [
             {
+              name: 'gogo:worker:provider-photo-retirements',
+              schedule: { everyMs: 3_600_000 },
+              run: async () => {
+                await mediaCleanup.reconcileRetirements(100);
+              },
+            },
+            {
               name: 'gogo:worker:media-cleanup',
               schedule: { everyMs: MEDIA_CLEANUP_POLL_MS },
               run: async () => {

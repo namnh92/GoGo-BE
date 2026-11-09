@@ -1731,31 +1731,9 @@ export interface paths {
         };
         /**
          * Fetch at most one transient Google candidate photo through the BFF
-         * @description Public. 120/min per verified actor when a valid session is sent, otherwise per IP. Fetch the candidate photo reference as JSON and render its base64 bytes with its Google Maps and author attribution; the URL is not a directly loadable image. No Google key/name/URL for image retrieval is exposed. Fresh first photo at fetch time; response credits are authoritative. Flag place_provider_photos, google.places.display budgets, 800px/400KiB, 6s overall deadline and bounded expired-reference retry apply. Nothing is stored.
+         * @description Resolve-preview only (ADR-0052). Submission views use the stored CDN cover. Public. 120/min per verified actor when a valid session is sent, otherwise per IP. Fetch the candidate photo reference as JSON and render its base64 bytes with its Google Maps and author attribution; the URL is not a directly loadable image. No Google key/name/URL for image retrieval is exposed. Fresh first photo at fetch time; response credits are authoritative. Flag place_provider_photos, google.places.display budgets, 800px/400KiB, 6s overall deadline and bounded expired-reference retry apply. Nothing is stored.
          */
         get: operations["getCandidateProviderPhoto"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/places/{id}/provider-photos": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Transient Google photos for one Place Detail view (never stored)
-         * @description GoGo-BE#509 (owner decision 2026-10-02, ADR-0030). Fetched from Google when Place Detail is opened and returned once: photo names, image URLs and bytes are not stored anywhere (database, object storage, cache, jobs, snapshots), and the response is `Cache-Control: private, no-store` — clients must not persist it in a disk/offline image cache or persisted query state either. Images arrive inline as base64 so the client never calls Google directly. At most three photos, each with its author credit (`authorAttributions`) to render beside it, plus the `attribution` text (Google Maps) whenever any photo is shown. Never call this per list card.
-         *
-         *     Public. 120/min per verified actor when a valid session is sent, otherwise per IP. Always 200 for a place Place Detail opens (404 otherwise), subject to rate limits. `status` says why `photos` is empty: `disabled` (kill switch off), `not_linked` (no Google Place ID), `budget_exhausted` (daily provider budget reached or not configured), `unavailable` (provider error, timeout or moved place). Treat an unknown `status` like `unavailable`. GoGo imagery stays on `PlaceDetail.photos`; Google price ranges are never returned (core rule 13: a price without its unit).
-         */
-        get: operations["getPlaceProviderPhotos"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3926,7 +3904,7 @@ export interface paths {
          *
          *     **Contact evidence (1.0.0-alpha.66, GoGo-BE#280).** `addressText`, `phone` and `website` are the exception to `sourceReferences`: each non-null value carries its structured evidence in `provenance.<field>` (`sourceType` `editorial | community | provider`, `sourceReference`, `collectedAt`) and is recorded with that evidence, the acting editor and `verifiedAt` = now — never `google_derived`. A non-null value without its entry is `400 VALIDATION_FAILED` (`provenance.<field>`, `required`); an entry without a value is `value_missing`; an entry beside `null` is `not_allowed`; `null` alone writes nothing. A `sourceReferences` key for any of the three is refused `400 SOURCE_REFERENCE_INVALID` with `code: unknown` and a message naming `provenance.<field>` — there is no fallback or alias, even when both carry the same text. **Breaking versus alpha.65** (as introduced in alpha.62), which accepted `sourceReferences.<contact>` and required it for a contact value.
          *
-         *     **No provider content.** This route calls no Google provider and persists no provider fact — no rating, review count, price level, hours or canonical link. A `googlePlaceId` is stored as identity only. The PI-BE-021 enrichment that did so on this route is withdrawn (`docs/adr/0020-provider-facts-on-editor-created-places.md`, #440 amendment).
+         *     **Photo-only provider exception.** With `googlePlaceId`, acquires one Google cover photo when enabled (ADR-0052 / ADR-0020 amendment #2), with no opt-in field. Still persists no other provider fact: no rating, review count, price level, hours or canonical link. The place and idempotency record commit before acquisition; any photo failure leaves creation successful, and replay never re-runs acquisition. A missing cover requires editor upload; #797 remains published-only.
          *
          *     **Identity beats similarity.** Given a `googlePlaceId`, the catalogue is asked first whether that Google record already belongs to a place — it does, and the answer is `409 PLACE_ALREADY_LINKED` naming it; two places already claim it, and the answer is `409 PLACE_IDENTITY_CONFLICT` naming both. Checked again inside the creating transaction, and a concurrent create that loses the race gets the same 409, never a 500. `allowDuplicate` does not open this gate.
          *
@@ -9194,6 +9172,8 @@ export interface components {
             expiresAt: string;
         };
         SubmissionResult: {
+            /** @description Stored attributed cover (ADR-0052); rejected photos are shown only while updateDeadline is in the future. */
+            photo?: components["schemas"]["PlacePhoto"];
             /** @enum {string} */
             status?: "PENDING" | "ALREADY_EXISTS";
             /** Format: uuid */
@@ -9508,6 +9488,13 @@ export interface components {
             nextCursor: string | null;
         };
         MyPlaceSubmission: {
+            /** @description Stored attributed cover (ADR-0052); rejected photos are shown only while updateDeadline is in the future. */
+            photo?: components["schemas"]["PlacePhoto"];
+            /**
+             * Format: date-time
+             * @description Rejected submissions only; decidedAt plus seven days, for every rejection reason.
+             */
+            updateDeadline?: string;
             /** Format: uuid */
             id: string;
             /** @description Stored GoGo name or fresh submission snapshot fallback; use providerDisplay attribution for the fallback. */
@@ -9547,6 +9534,13 @@ export interface components {
             decidedAt?: string;
         };
         MyPlaceSubmissionDetail: {
+            /** @description Stored attributed cover (ADR-0052); rejected photos are shown only while updateDeadline is in the future. */
+            photo?: components["schemas"]["PlacePhoto"];
+            /**
+             * Format: date-time
+             * @description Rejected submissions only; decidedAt plus seven days, for every rejection reason.
+             */
+            updateDeadline?: string;
             /** Format: uuid */
             id: string;
             /** @description Stored GoGo name or fresh submission snapshot fallback; use providerDisplay attribution for the fallback. */
@@ -9586,7 +9580,7 @@ export interface components {
             decidedAt?: string;
             contribution?: components["schemas"]["MySubmissionContribution"];
         };
-        /** @description Owner-approved submission display snapshot (ADR-0048), reused for at most 30 days. Render Google Maps attribution; never promote to catalogue facts or cache on clients. Photo is a locally constructed lazy BFF reference with empty author credits until the proxy responds; proxy credits are authoritative. No photo refs or bytes are persisted in the snapshot. */
+        /** @description Owner-approved submission display snapshot (ADR-0048), reused for at most 30 days. Render Google Maps attribution; never promote to catalogue facts or cache on clients. The deprecated photo property is no longer emitted; use photo on the parent submission. Stored covers carry their own credits. No photo refs or bytes are persisted in the snapshot. */
         SubmissionProviderDisplay: {
             /** @constant */
             source: "google_places";
@@ -9607,6 +9601,10 @@ export interface components {
                 closeMinute: number;
                 isOvernight: boolean;
             }[];
+            /**
+             * @deprecated
+             * @description Servers no longer emit this property; use photo on the parent submission.
+             */
             photo?: components["schemas"]["CandidateProviderPhotoReference"];
         };
         MySubmissionContribution: {
@@ -9655,6 +9653,8 @@ export interface components {
             chipKeys: string[];
         };
         PlaceSubmissionSummary: {
+            /** @description Stored attributed cover (ADR-0052); rejected photos are shown only while updateDeadline is in the future. */
+            providerPhoto?: components["schemas"]["PlacePhoto"];
             /** Format: uuid */
             id: string;
             googlePlaceId: string;
@@ -9774,6 +9774,8 @@ export interface components {
         };
         /** @description PI-BE-031 (GoGo-BE#528) — everything a decision needs that GoGo already holds. No provider request: this endpoint costs nothing to open, and `POST /cms/place-submissions/{id}/provider-preview` is the explicit, separately-counted way to ask Google. */
         PlaceSubmissionDetail: {
+            /** @description Stored attributed cover (ADR-0052); rejected photos are shown only while updateDeadline is in the future. */
+            providerPhoto?: components["schemas"]["PlacePhoto"];
             /** @description Potential explicit-selection approval credit with all still-pending original evidence kept. Zero if contributor/ledger/state ineligible. Use credit-preview after changing selection; no client arithmetic. */
             expectedCredit?: components["schemas"]["SubmissionCreditFacts"];
             enrichmentItems?: {
@@ -15149,32 +15151,6 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
-            429: components["responses"]["RateLimited"];
-        };
-    };
-    getPlaceProviderPhotos: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Zero to three provider photos with attribution, for this view only */
-            200: {
-                headers: {
-                    /** @description Always `private, no-store`. */
-                    "Cache-Control"?: string;
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PlaceProviderPhotos"];
-                };
-            };
-            404: components["responses"]["NotFound"];
             429: components["responses"]["RateLimited"];
         };
     };

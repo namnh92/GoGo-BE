@@ -22,19 +22,7 @@ import { ProviderPhotosService } from '../../../libs/modules/search/application/
 
 process.env.METRICS_TOKEN = process.env.METRICS_TOKEN || 'metrics-token-int-tests';
 
-/**
- * GoGo-BE#509 — transient Google photos on Place Detail, over real HTTP and a
- * real Postgres, with the provider faked (never a real Google call).
- *
- * Owner decision 2026-10-02 (ADR-0030): display only. What these cases hold:
- * - nothing about a photo — its name, a URL, its bytes — lands in **any** table;
- * - the response is `private, no-store`;
- * - the kill switch is off by default and a `feature_flags` row flips it;
- * - the daily budget is default-deny and bounds billed media calls per photo;
- * - a provider failure, timeout or moved place answers 200 with no photos,
- *   and Place Detail itself is untouched;
- * - no Google price range is exposed anywhere (core rule 13).
- */
+/** ADR-0052: resolve-preview stays transient; the gallery route is gone. */
 
 let container: StartedPostgreSqlContainer;
 let pool: Pool;
@@ -101,7 +89,7 @@ function seedPhotos(googleId: string, count: number) {
 const read = (placeId: string) =>
   api().inject({
     method: 'GET',
-    url: `/v1/places/${placeId}/provider-photos`,
+    url: `/v1/places/google-provider-photo/${placeId}`,
     remoteAddress: ip(),
   });
 
@@ -177,7 +165,7 @@ beforeEach(async () => {
   await setKillSwitch(true);
 });
 
-describe('GET /v1/places/:id/provider-photos', () => {
+describe('ADR-0052 resolve-preview photos', () => {
   it('keyed link resolve returns fresh photo credits without persisting a replay (#786 F-01)', async () => {
     const googleId = 'ChIJ-keyed-preview-786';
     const marker = 'KeyedPreviewCredits786';
@@ -225,334 +213,159 @@ describe('GET /v1/places/:id/provider-photos', () => {
     expect(await tablesContaining(marker)).toEqual([]);
   });
 
-  it('the no-persistence probe can see a marker when one is stored (control)', async () => {
+  it('removes the transient place gallery route', async () => {
     const p = await place();
-    await db.execute(sql`update places set description = ${`ctl-${MARK}`} where id = ${p.id}`);
-    expect(await tablesContaining(`ctl-${MARK}`)).toEqual(['places']);
-    await db.execute(sql`update places set description = null where id = ${p.id}`);
-  });
-
-  it('is off by default: no row, no Google call, and never cacheable', async () => {
-    await setKillSwitch(null);
-    const p = await place();
-    seedPhotos(p.googleId!, 1);
-
-    const res = await read(p.id);
-    expect(res.statusCode).toBe(200);
-    expect(res.headers['cache-control']).toBe('private, no-store');
-    expect(res.json()).toEqual({
-      status: 'disabled',
-      provider: 'google',
-      attribution: 'Google Maps',
-      photos: [],
+    const response = await api().inject({
+      method: 'GET',
+      url: `/v1/places/${p.id}/provider-photos`,
+      remoteAddress: ip(),
     });
-    expect(fake.refCalls).toEqual([]);
+    expect(response.statusCode).toBe(404);
+    expect(fake.mediaCalls).toHaveLength(0);
   });
-
-  it('404s a place Place Detail would not show', async () => {
-    const draft = await place({ status: 'draft' });
-    expect((await read(draft.id)).statusCode).toBe(404);
-    expect((await read('00000000-0000-4000-8000-000000000000')).statusCode).toBe(404);
-  });
-
-  it('says not_linked for a place with no Google Place ID, without calling Google', async () => {
-    const p = await place({ googleId: null });
-    const res = await read(p.id);
-    expect(res.json()).toMatchObject({ status: 'not_linked', photos: [] });
-    expect(fake.refCalls).toEqual([]);
-  });
-
-  it('serves at most three photos, each with its credit, and stores none of it', async () => {
-    const p = await place();
-    seedPhotos(p.googleId!, 5);
-
-    const res = await read(p.id);
-    expect(res.statusCode).toBe(200);
-    expect(res.headers['cache-control']).toBe('private, no-store');
-    const body = res.json();
-    expect(body.status).toBe('ok');
-    expect(body.attribution).toBe('Google Maps');
-    expect(body.photos).toHaveLength(3);
-    expect(fake.mediaCalls).toHaveLength(3);
-    expect(body.photos[0]).toEqual({
-      contentType: 'image/jpeg',
-      dataBase64: Buffer.from(JPEG).toString('base64'),
-      widthPx: 4032,
-      heightPx: 3024,
-      authorAttributions: [
-        {
-          displayName: 'Tác giả 0',
-          uri: `https://maps.google.com/maps/contrib/${MARK}0`,
-          photoUri: `https://lh3.googleusercontent.com/a/${MARK}0`,
-        },
-      ],
-      googleMapsUri: `https://www.google.com/maps/photo/${MARK}0`,
-    });
-    // Core rule 13: nothing price-shaped from Google, here or anywhere.
-    expect(JSON.stringify(body)).not.toMatch(/price/i);
-
-    // No persistence: neither the photo name, its links nor its bytes are in
-    // any table. Only counts (provider_budget_daily) were written.
-    expect(await tablesContaining(MARK)).toEqual([]);
-    expect(await tablesContaining(Buffer.from(JPEG).toString('base64'))).toEqual([]);
-    const budget = await db.execute(sql`
-      select scope, operation, reserved_calls, reserved_units
-      from provider_budget_daily where scope = 'google.places.display'
-    `);
-    expect(
-      (budget.rows as { operation: string; reserved_units: unknown }[]).map((r) => ({
-        operation: r.operation,
-        units: Number(r.reserved_units),
-      })),
-    ).toEqual([{ operation: 'google.photoMedia', units: 3 }]);
-  });
-
-  it('stops at the daily budget: 3 → 2 → none, inside one case', async () => {
-    // Five billed photo calls a day (beforeAll). Three, then the two left.
+  it('serves only one bounded preview without persisting a photo name or retrieval URL', async () => {
     const p = await place();
     seedPhotos(p.googleId!, 3);
-    expect((await read(p.id)).json().photos).toHaveLength(3);
-
-    const partial = (await read(p.id)).json();
-    expect(partial).toMatchObject({ status: 'ok' });
-    expect(partial.photos).toHaveLength(2);
-
-    const none = (await read(p.id)).json();
-    expect(none).toEqual({
-      status: 'budget_exhausted',
-      provider: 'google',
-      attribution: 'Google Maps',
-      photos: [],
-    });
-    expect(fake.mediaCalls).toHaveLength(5);
+    const response = await read(p.googleId!);
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toBe('private, no-store');
+    expect(response.json().photos).toHaveLength(1);
+    expect(fake.mediaCalls).toHaveLength(1);
+    expect(await tablesContaining(MARK)).toEqual([]);
   });
-
-  it('refetches an expired photo name once and serves the fresh one', async () => {
-    const p = await place();
-    seedPhotos(p.googleId!, 1);
-    fake.expired.add(photoName(p.googleId!, 0));
-    // The fresh lookup names the same photo anew.
-    const original = fake.photos.get(p.googleId!)!;
-    let lookups = 0;
-    const photoRefs = fake.photoRefs.bind(fake);
-    fake.photoRefs = async (id, options) => {
-      lookups += 1;
-      if (lookups === 2) {
-        const freshName = `places/${id}/photos/${MARK}fresh`;
-        fake.seed(id, [{ ...original[0]!, reference: freshName }]);
-        fake.seedMedia(freshName, { contentType: 'image/jpeg', bytes: JPEG });
-      }
-      return photoRefs(id, options);
-    };
-    try {
-      const body = (await read(p.id)).json();
-      expect(body.status).toBe('ok');
-      expect(body.photos).toHaveLength(1);
-      expect(lookups).toBe(2);
-      expect(fake.mediaCalls).toHaveLength(2);
-    } finally {
-      fake.photoRefs = photoRefs;
-    }
-  });
-
-  it('a provider outage answers 200 with no photos; Place Detail is untouched', async () => {
+  it('returns no photo on budget refusal, provider failure or timeout', async () => {
     const p = await place();
     seedPhotos(p.googleId!, 1);
     fake.failing = true;
-    const res = await read(p.id);
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ status: 'unavailable', photos: [] });
-
-    const detail = await api().inject({
-      method: 'GET',
-      url: `/v1/places/${p.id}`,
-      remoteAddress: ip(),
-    });
-    expect(detail.statusCode).toBe(200);
-    expect(detail.json()).not.toHaveProperty('priceRange');
-    expect(detail.json().photos).toEqual([]);
-  });
-
-  it('a provider that hangs is cut off by the deadline, not waited on', async () => {
-    const p = await place();
-    seedPhotos(p.googleId!, 1);
+    expect((await read(p.googleId!)).json()).toMatchObject({ status: 'unavailable', photos: [] });
+    fake.failing = false;
     fake.hanging = true;
-    const started = Date.now();
-    const res = await read(p.id);
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ status: 'unavailable', photos: [] });
-    expect(Date.now() - started).toBeLessThan(9_000);
-    // F-01: the deadline aborted the call; nothing ran after it.
-    await new Promise((r) => setTimeout(r, 200));
-    expect(fake.mediaCalls).toEqual([]);
-    expect(fake.callsAfterAbort).toBe(0);
-  }, 20_000);
-
-  it("refuses a moved place's photos — the successor is not this place", async () => {
-    const p = await place();
-    seedPhotos(p.googleId!, 1);
-    fake.answerAs = 'ChIJ-successor';
-    const res = await read(p.id);
-    expect(res.json()).toMatchObject({ status: 'unavailable', photos: [] });
-    expect(fake.mediaCalls).toEqual([]);
-  });
-
-  it('F-10 (SA): reads Google identity through the provenance reader and its rollback switch', async () => {
-    // Canonical row and a legacy import row disagree about the Google id.
-    const p = await place({ googleId: 'ChIJ-canonical-f10' });
-    await db.execute(sql`
-      insert into place_sources (place_id, provider, external_id)
-      values (${p.id}, 'google', 'ChIJ-legacy-f10')
-    `);
-    seedPhotos('ChIJ-canonical-f10', 1);
-    seedPhotos('ChIJ-legacy-f10', 1);
-    const config = {
-      APP_ENV: 'dev' as const,
-      FLAG_PLACE_PROVIDER_PHOTOS: true,
-      PLACE_DISPLAY_DAILY_MAX_CALLS: 100,
-      PLACE_DISPLAY_DAILY_MAX_LIST_COST_USD: 1,
-      PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_PHOTOMEDIA: 5,
-    };
-    const unified = new ProviderPhotosService(db as never, fake, config);
-    const rolledBack = new ProviderPhotosService(db as never, fake, {
-      ...config,
-      PROVENANCE_UNIFIED_READS: false,
+    const service = app.get(ProviderPhotosService);
+    const previous = service.deadlineMs;
+    service.deadlineMs = 20;
+    try {
+      expect((await read(p.googleId!)).json()).toMatchObject({ status: 'unavailable', photos: [] });
+    } finally {
+      service.deadlineMs = previous;
+      fake.hanging = false;
+    }
+    // Ref failures/timeouts buy no media, so there may be no ledger row to UPDATE.
+    // The removed gallery's multi-photo purchases must not be a setup dependency.
+    await db.execute(sql`insert into provider_budget_daily
+      (day, scope, operation, reserved_calls, reserved_units, reserved_cost_micros)
+      values ((now() at time zone 'UTC')::date, 'google.places.display', 'google.photoMedia', 5, 5, 35000)
+      on conflict (day, scope, operation) do update set reserved_units = 5`);
+    const callsBeforeRefusal = fake.mediaCalls.length;
+    expect((await read(p.googleId!)).json()).toMatchObject({
+      status: 'budget_exhausted',
+      photos: [],
     });
-
-    await unified.photos(p.id);
-    expect(fake.refCalls.at(-1)).toBe('ChIJ-canonical-f10');
-    // #334 rollback: Place Detail reads `place_sources` alone — so does this.
-    await rolledBack.photos(p.id);
-    expect(fake.refCalls.at(-1)).toBe('ChIJ-legacy-f10');
-  });
-
-  it('F-10 (SA): a canonical row the place moved away from is not asked about', async () => {
-    const p = await place({ googleId: 'ChIJ-moved-f10' });
-    await db.execute(sql`
-      update place_provider_sources set source_status = 'moved' where place_id = ${p.id}
-    `);
-    const res = await read(p.id);
-    expect(res.json()).toMatchObject({ status: 'not_linked', photos: [] });
-    expect(fake.refCalls).toEqual([]);
-  });
-
-  it('the kill switch row turns it off on the next request', async () => {
-    const p = await place();
-    seedPhotos(p.googleId!, 1);
-    await setKillSwitch(false);
-    expect((await read(p.id)).json()).toMatchObject({ status: 'disabled' });
-    expect(fake.refCalls).toEqual([]);
+    expect(fake.mediaCalls).toHaveLength(callsBeforeRefusal);
   });
 });
 
-describe.each(['providerPhotos', 'candidatePhoto'] as const)(
-  'places.%s rate limit (#821)',
-  (route) => {
-    const photoUrl = (placeId: string) =>
-      route === 'candidatePhoto'
-        ? '/v1/places/google-provider-photo/ChIJ-rate-limit-821'
-        : `/v1/places/${placeId}/provider-photos`;
+describe.each(['candidatePhoto'] as const)('places.%s rate limit (#821)', (route) => {
+  const photoUrl = (placeId: string) => `/v1/places/google-provider-photo/${placeId}`;
 
-    async function register(email: string) {
-      const res = await api().inject({
-        method: 'POST',
-        url: '/v1/auth/register',
-        remoteAddress: ip(),
-        payload: { email, password: 'Sufficiently-long-pw1!', displayName: 'Photo viewer' },
+  async function register(email: string) {
+    const res = await api().inject({
+      method: 'POST',
+      url: '/v1/auth/register',
+      remoteAddress: ip(),
+      payload: { email, password: 'Sufficiently-long-pw1!', displayName: 'Photo viewer' },
+    });
+    expect(res.statusCode, res.body).toBe(201);
+    return res.json().accessToken as string;
+  }
+
+  it('gives actors sharing an IP independent 120/min buckets, even across IP changes', async () => {
+    const a = await register(`photo-limit-${route}-a@gogo.id.vn`);
+    const b = await register(`photo-limit-${route}-b@gogo.id.vn`);
+    const sharedIp = ip();
+    const p = await place({ googleId: null });
+    const request = (token: string, address = sharedIp) =>
+      api().inject({
+        method: 'GET',
+        url: photoUrl(p.id),
+        remoteAddress: address,
+        headers: { authorization: `Bearer ${token}` },
       });
-      expect(res.statusCode, res.body).toBe(201);
-      return res.json().accessToken as string;
+    for (let i = 0; i < 120; i++) {
+      expect((await request(a)).statusCode).toBe(200);
+      expect((await request(b)).statusCode).toBe(200);
     }
-
-    it('gives actors sharing an IP independent 120/min buckets, even across IP changes', async () => {
-      const a = await register(`photo-limit-${route}-a@gogo.id.vn`);
-      const b = await register(`photo-limit-${route}-b@gogo.id.vn`);
-      const sharedIp = ip();
-      const p = await place({ googleId: null });
-      const request = (token: string, address = sharedIp) =>
-        api().inject({
+    expect((await request(a, ip())).statusCode).toBe(429);
+    expect((await request(b)).statusCode).toBe(429);
+    // Authenticated traffic did not consume the anonymous bucket on this IP.
+    expect(
+      (
+        await api().inject({
           method: 'GET',
           url: photoUrl(p.id),
-          remoteAddress: address,
-          headers: { authorization: `Bearer ${token}` },
-        });
-      for (let i = 0; i < 120; i++) {
-        expect((await request(a)).statusCode).toBe(200);
-        expect((await request(b)).statusCode).toBe(200);
-      }
-      expect((await request(a, ip())).statusCode).toBe(429);
-      expect((await request(b)).statusCode).toBe(429);
-      // Authenticated traffic did not consume the anonymous bucket on this IP.
-      expect(
-        (
-          await api().inject({
-            method: 'GET',
-            url: photoUrl(p.id),
-            remoteAddress: sharedIp,
-          })
-        ).statusCode,
-      ).toBe(200);
-    });
+          remoteAddress: sharedIp,
+        })
+      ).statusCode,
+    ).toBe(200);
+  });
 
-    it('shares anonymous quota by IP and keeps other IPs independent', async () => {
-      const sharedIp = ip();
-      const p = await place({ googleId: null });
-      const request = (address: string) =>
-        api().inject({
-          method: 'GET',
-          url: photoUrl(p.id),
-          remoteAddress: address,
-        });
-      for (let i = 0; i < 120; i++) expect((await request(sharedIp)).statusCode).toBe(200);
-      expect((await request(sharedIp)).statusCode).toBe(429);
-      expect((await request(ip())).statusCode).toBe(200);
-    });
+  it('shares anonymous quota by IP and keeps other IPs independent', async () => {
+    const sharedIp = ip();
+    const p = await place({ googleId: null });
+    const request = (address: string) =>
+      api().inject({
+        method: 'GET',
+        url: photoUrl(p.id),
+        remoteAddress: address,
+      });
+    for (let i = 0; i < 120; i++) expect((await request(sharedIp)).statusCode).toBe(200);
+    expect((await request(sharedIp)).statusCode).toBe(429);
+    expect((await request(ip())).statusCode).toBe(200);
+  });
 
-    it('shares the anonymous IP bucket for missing, invalid and expired credentials', async () => {
-      const p = await place({ googleId: null });
-      const sharedIp = ip();
-      const jwtHeader = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString(
-        'base64url',
-      );
-      const payload = Buffer.from(
-        JSON.stringify({
-          sub: 'expired-user',
-          sid: 'expired-session',
-          act: 'user',
-          exp: 1,
-          iss: ACCESS_TOKEN_ISSUER,
-          aud: ACCESS_TOKEN_AUDIENCE,
-        }),
-      ).toString('base64url');
-      const signature = createHmac('sha256', process.env.AUTH_JWT_SECRET!)
-        .update(`${jwtHeader}.${payload}`)
-        .digest('base64url');
-      const expired = `${jwtHeader}.${payload}.${signature}`;
-      const headers: Record<string, string>[] = [
-        {},
-        { authorization: 'Bearer invalid-private-token' },
-        { authorization: `Bearer ${expired}` },
-        { cookie: 'gogo_at=invalid-private-token' },
-        { cookie: `gogo_at=${expired}` },
-        { authorization: 'Basic invalid-private-token' },
-      ];
-      const request = (address: string, credentials: Record<string, string>) =>
-        api().inject({
-          method: 'GET',
-          url: photoUrl(p.id),
-          remoteAddress: address,
-          headers: credentials,
-        });
-      for (let i = 0; i < 120; i++) {
-        const res = await request(sharedIp, headers[i % headers.length]!);
-        expect(res.statusCode, res.body).toBe(200);
-        expect(res.body).not.toContain('invalid-private-token');
-        expect(res.body).not.toContain(expired);
-      }
-      for (const credentials of headers) {
-        expect((await request(sharedIp, credentials)).statusCode).toBe(429);
-        expect((await request(ip(), credentials)).statusCode).toBe(200);
-      }
-    });
-  },
-);
+  it('shares the anonymous IP bucket for missing, invalid and expired credentials', async () => {
+    const p = await place({ googleId: null });
+    const sharedIp = ip();
+    const jwtHeader = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString(
+      'base64url',
+    );
+    const payload = Buffer.from(
+      JSON.stringify({
+        sub: 'expired-user',
+        sid: 'expired-session',
+        act: 'user',
+        exp: 1,
+        iss: ACCESS_TOKEN_ISSUER,
+        aud: ACCESS_TOKEN_AUDIENCE,
+      }),
+    ).toString('base64url');
+    const signature = createHmac('sha256', process.env.AUTH_JWT_SECRET!)
+      .update(`${jwtHeader}.${payload}`)
+      .digest('base64url');
+    const expired = `${jwtHeader}.${payload}.${signature}`;
+    const headers: Record<string, string>[] = [
+      {},
+      { authorization: 'Bearer invalid-private-token' },
+      { authorization: `Bearer ${expired}` },
+      { cookie: 'gogo_at=invalid-private-token' },
+      { cookie: `gogo_at=${expired}` },
+      { authorization: 'Basic invalid-private-token' },
+    ];
+    const request = (address: string, credentials: Record<string, string>) =>
+      api().inject({
+        method: 'GET',
+        url: photoUrl(p.id),
+        remoteAddress: address,
+        headers: credentials,
+      });
+    for (let i = 0; i < 120; i++) {
+      const res = await request(sharedIp, headers[i % headers.length]!);
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.body).not.toContain('invalid-private-token');
+      expect(res.body).not.toContain(expired);
+    }
+    for (const credentials of headers) {
+      expect((await request(sharedIp, credentials)).statusCode).toBe(429);
+      expect((await request(ip(), credentials)).statusCode).toBe(200);
+    }
+  });
+});

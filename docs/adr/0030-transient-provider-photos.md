@@ -73,3 +73,10 @@ rule 13 ("a price never leaves its unit behind") forbids rendering it.
 No migration, no event. Contract: new path + schemas (`1.0.0-alpha.62`),
 additive. Rollback: flag row `enabled = false` (instant), or revert the PR —
 nothing was stored, so nothing has to be cleaned up.
+
+## Amendment — GoGo-BE#822 (2026-11-09)
+
+[ADR-0052](0052-stored-submission-provider-photo.md) supersedes the photo timing,
+transient-only/cache and CMS no-provider guarantees for **one stored cover** at
+submit/CMS create. Approval reuses bytes; merge may attach; rejection retains and
+shows the cover for seven days. No other provider content rule is changed.

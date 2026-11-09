@@ -39,7 +39,9 @@ export class SubmissionDisplayService {
     this.budget = budget ?? new ProviderBudgetService(db);
   }
 
-  async get(providerId: string, deadline = performance.now() + 6000): Promise<Answer> {
+  async get(providerId: string, options: number | { photos?: boolean } = {}): Promise<Answer> {
+    const deadline = typeof options === 'number' ? options : performance.now() + 6000;
+    const includePhotos = typeof options === 'number' || options.photos !== false;
     const expires = Math.min(deadline, performance.now() + 6000);
     const controller = new AbortController();
     // Paid facts are published before optional taxonomy/photo work can time out.
@@ -47,7 +49,7 @@ export class SubmissionDisplayService {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const result = await Promise.race([
-        this.fetch(providerId, expires, controller.signal, bought),
+        this.fetch(providerId, expires, controller.signal, bought, includePhotos),
         new Promise<Answer>((resolve) => {
           timer = setTimeout(
             () => {
@@ -77,6 +79,7 @@ export class SubmissionDisplayService {
     expires: number,
     signal: AbortSignal,
     bought: { display?: Display },
+    includePhotos: boolean,
   ): Promise<Answer> {
     try {
       const grant = await this.budget.reserve(
@@ -97,10 +100,12 @@ export class SubmissionDisplayService {
         : undefined;
       if (!signal.aborted && performance.now() < expires) {
         if (active?.rows.length) bought.display = { ...bought.display, categoryKey: category!.key };
-        const photo = await this.photos.candidateReference(providerId, {
-          signal,
-          deadline: expires,
-        });
+        const photo = includePhotos
+          ? await this.photos.candidateReference(providerId, {
+              signal,
+              deadline: expires,
+            })
+          : undefined;
         if (photo && !signal.aborted && performance.now() < expires)
           bought.display = { ...bought.display, photo };
       }
