@@ -8531,6 +8531,66 @@ export interface components {
             source: string | null;
             campaign: string | null;
         };
+        /** @description Independently evidenced persistable GoGo text captured at event time. Provider origin requires non-Google independent evidence; a label or canonical column is insufficient. Private evidence references and actors are never returned. */
+        NotificationSourcedText: {
+            value: string;
+            /** @enum {string} */
+            sourceType: "gogo";
+            /** @enum {string} */
+            originType: "editorial" | "community" | "provider";
+            /** Format: date-time */
+            verifiedAt: string;
+            /** Format: date-time */
+            collectedAt?: string;
+        };
+        /** @description Event-time facts, never a composed countdown. This release emits only room_started, meaning the outing started, with scheduledFor=null and no leadTimeSeconds. scheduled is reserved for the separate advance-reminder scheduler (PR4). startsAt comes only from the current room_constraints.start_at; null means unknown. */
+        NotificationReminder: {
+            /** @enum {string} */
+            trigger: "room_started" | "scheduled";
+            /** Format: date-time */
+            triggeredAt: string;
+            /** Format: date-time */
+            scheduledFor: string | null;
+            /** Format: date-time */
+            startsAt: string | null;
+            leadTimeSeconds?: number;
+            scheduleRevision?: string;
+        };
+        /** @description Immutable event-time preview, not a promise of current plan or place availability. Opening resolves the current authorized plan. Missing provenance omits text; Google names/addresses/coordinates/photos/ratings/hours are never snapshotted. startAt is omitted when no confirmed instant exists or the plan's constraint version differs from the room's current constraints. Stop arrivals remain separate facts. Current access/resource availability can suppress the preview, stop text or media references. Resolve current authorized place media separately; never treat a media id as a URL. */
+        NotificationPlanPreview: {
+            /** Format: uuid */
+            planId: string;
+            planVersion: number;
+            constraintVersion: number;
+            /** Format: date-time */
+            capturedAt: string;
+            /** Format: date-time */
+            startAt?: string;
+            /** @enum {string} */
+            startAtSource?: "room_constraints";
+            stopCount: number;
+            /** @description First three stops in position order; stopCount counts the full plan. */
+            stops: {
+                position: number;
+                /** Format: date-time */
+                arriveAt?: string;
+                /** Format: uuid */
+                placeId: string;
+                name?: components["schemas"]["NotificationSourcedText"];
+                addressText?: components["schemas"]["NotificationSourcedText"];
+                /**
+                 * Format: uuid
+                 * @description Approved independently uploaded GoGo place_media id; provider photos excluded.
+                 */
+                mediaId?: string;
+            }[];
+        };
+        /** @description GoGo-owned processed public avatar reference captured at event time, never an external URL. Omitted when absent, replaced, deleted or the inviter is no longer accessible. Resolve current authorized member media separately. Contains no account or actor id. */
+        NotificationInviterAvatar: {
+            /** @enum {string} */
+            sourceType: "gogo";
+            mediaKey: string;
+        };
         /** @description Facts only — compose the display string client-side from `kind` + `payload`. */
         Notification: {
             /** Format: uuid */
@@ -8553,6 +8613,9 @@ export interface components {
                 roomName?: string;
                 /** @description Display name of the room member who created the invite used to join. */
                 inviterName?: string;
+                inviterAvatar?: components["schemas"]["NotificationInviterAvatar"];
+                reminder?: components["schemas"]["NotificationReminder"];
+                planPreview?: components["schemas"]["NotificationPlanPreview"];
                 /** @description Aggregate completion only; never contains a member's private selections. */
                 preferenceProgress?: {
                     completedCount: number;

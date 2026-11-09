@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { notificationFacts } from './notification-payload';
+import { roomStartedFacts } from '../../shared/notification-event-facts';
 
 const members = [
   { id: 'host-member', displayName: 'Minh Triet', selectionStatus: 'completed' },
@@ -7,6 +8,32 @@ const members = [
 ];
 
 describe('notificationFacts (#753)', () => {
+  it('projects event-time facts without rebuilding them from changed live values', () => {
+    const reminder = roomStartedFacts('2026-11-09T10:00:00Z', null);
+    const context = {
+      roomName: null,
+      members,
+      currentPlanCounts: { stopCount: 99, optionalStopCount: 0 },
+      eventPayload: { notificationFacts: { reminder } },
+    };
+    expect(notificationFacts('date_reminder', context)).toEqual({ reminder });
+    expect(notificationFacts('date_reminder', { ...context, eventPayload: {} })).toEqual({});
+    expect(
+      notificationFacts('invite', {
+        ...context,
+        eventPayload: {
+          inviterMemberId: 'host-member',
+          notificationFacts: { inviterName: 'Event-time name' },
+        },
+      }),
+    ).toEqual({ inviterName: 'Event-time name' });
+    expect(
+      notificationFacts('invite', {
+        ...context,
+        eventPayload: { inviterMemberId: 'host-member', notificationFacts: {} },
+      }),
+    ).toEqual({});
+  });
   it('returns the room and inviter facts for invite notifications', () => {
     expect(
       notificationFacts('invite', {

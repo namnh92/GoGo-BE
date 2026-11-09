@@ -24,6 +24,7 @@ import {
   readOperationDto,
   type ReadOperationRow,
 } from './inbox-read-operations';
+import { inboxPreviewPayload } from './inbox-preview-access';
 
 @Injectable()
 export class NotificationInboxService {
@@ -126,15 +127,17 @@ export class NotificationInboxService {
     const page = rows.slice(0, 20);
     const last = page.at(-1);
     return {
-      notifications: page.map((n) => ({
-        id: n.id,
-        kind: n.kind,
-        payload: n.payload,
-        // Raw execute timestamps are strings. Date is only for the public DTO;
-        // the cursor below retains PostgreSQL's full microsecond cursor_at.
-        readAt: n.read_at === null ? undefined : new Date(n.read_at).toISOString(),
-        createdAt: new Date(n.created_at).toISOString(),
-      })),
+      notifications: await Promise.all(
+        page.map(async (n) => ({
+          id: n.id,
+          kind: n.kind,
+          payload: await inboxPreviewPayload(this.db, userId, n.payload),
+          // Raw execute timestamps are strings. Date is only for the public DTO;
+          // the cursor below retains PostgreSQL's full microsecond cursor_at.
+          readAt: n.read_at === null ? undefined : new Date(n.read_at).toISOString(),
+          createdAt: new Date(n.created_at).toISOString(),
+        })),
+      ),
       nextCursor:
         rows.length > 20 && last
           ? token

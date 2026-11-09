@@ -439,6 +439,38 @@ requires a MAJOR and exact base/revision hashes in the exception file; unrelated
 structural findings still fail. Owner authorization is dated 2026-11-08; it does
 not assert CODEOWNER sign-off. Recompute the exception after a base/spec change.
 
-PR3 sourced facts and PR4 scheduled reminders/quiet hours remain separate.
+PR4 scheduled reminders/quiet hours remain separate.
 Verification evidence is reported by the implementation session; code presence
 does not establish deployment or acceptance.
+
+## PR3 implementation record — 2026-11-09
+
+Contract **8.1.0-alpha.1** (additive MINOR) implements §5 with optional reminder,
+planPreview and inviterAvatar facts; existing JSON storage needs no migration
+after **0094**. Plan-version writes capture the newly written plan/stops, with
+their identifiers and versions, inside the originating transaction. Publish,
+edit and regenerate share that seam. Room activation captures current confirmed
+start and trigger=`room_started`, scheduledFor=null; it does not schedule an
+advance reminder. Join captures permitted inviter display and GoGo avatar facts.
+
+Canonical place columns are projected only through field provenance: independent
+editorial/community names require an origin reference and verifiedAt; addresses
+use ADR-0031, and provider text also requires independently collected non-Google
+evidence. Private references/actors never enter public SourcedText. Unproven text
+is omitted. No Google place content, provider calls, or AI is added to snapshots.
+Optional stop mediaId identifies approved uploaded editorial/community place
+media without providerPhoto; approved Google photos are excluded even under #786.
+Inviter avatar is a processed GoGo mediaKey, never an external URL or account ID.
+
+Fan-out copies only stored new facts; legacy events/rows receive no reconstructed
+preview/reminder/avatar. Inbox reads recheck current account/room membership,
+inviter access, plan presence, place publication and media availability, stripping
+private membership evidence and suppressing sensitive/unavailable fields without
+rewriting stored JSON. Opening still resolves the current authorized plan.
+Metrics contain bounded kind/fact/presence labels only. Details and rollback
+boundary (retain the access-aware API when serving new snapshots) are in
+`docs/notification-inbox.md`. Tests cover producer transactions, delayed dispatch,
+supersede/retry, provenance omission, media/access revocation and legacy payloads.
+Executed gate results belong to the implementation report, not this design record.
+
+PR4 alone implements the approved 120-minute reminder and opt-in quiet hours.

@@ -2,7 +2,7 @@ openapi: 3.1.0
 x-gogo-notification-preference-semantics: master-and-five-categories-v1
 info:
   title: GoGo API
-  version: 8.0.0-alpha.1
+  version: 8.1.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -17011,6 +17011,85 @@ components:
             because it embeds the slug (for a room invite, the join credential).
         source: { type: [string, 'null'] }
         campaign: { type: [string, 'null'] }
+    NotificationSourcedText:
+      type: object
+      additionalProperties: false
+      required: [value, sourceType, originType, verifiedAt]
+      description: >-
+        Independently evidenced persistable GoGo text captured at event time.
+        Provider origin requires non-Google independent evidence; a label or canonical column
+        is insufficient. Private evidence references and actors are never returned.
+      properties:
+        value: { type: string }
+        sourceType: { type: string, enum: [gogo] }
+        originType: { type: string, enum: [editorial, community, provider] }
+        verifiedAt: { type: string, format: date-time }
+        collectedAt: { type: string, format: date-time }
+    NotificationReminder:
+      type: object
+      additionalProperties: false
+      required: [trigger, triggeredAt, scheduledFor, startsAt]
+      description: >-
+        Event-time facts, never a composed countdown. This release emits only room_started,
+        meaning the outing started, with scheduledFor=null and no leadTimeSeconds.
+        scheduled is reserved for the separate advance-reminder scheduler (PR4).
+        startsAt comes only from the current room_constraints.start_at; null means unknown.
+      properties:
+        trigger: { type: string, enum: [room_started, scheduled] }
+        triggeredAt: { type: string, format: date-time }
+        scheduledFor: { type: [string, 'null'], format: date-time }
+        startsAt: { type: [string, 'null'], format: date-time }
+        leadTimeSeconds: { type: integer, minimum: 0 }
+        scheduleRevision: { type: string }
+    NotificationPlanPreview:
+      type: object
+      additionalProperties: false
+      required: [planId, planVersion, constraintVersion, capturedAt, stopCount, stops]
+      description: >-
+        Immutable event-time preview, not a promise of current plan or place availability.
+        Opening resolves the current authorized plan. Missing provenance omits text;
+        Google names/addresses/coordinates/photos/ratings/hours are never snapshotted.
+        startAt is omitted when no confirmed instant exists or the plan's constraint version
+        differs from the room's current constraints. Stop arrivals remain separate facts.
+        Current access/resource availability can suppress the preview, stop text or media references.
+        Resolve current authorized place media separately; never treat a media id as a URL.
+      properties:
+        planId: { type: string, format: uuid }
+        planVersion: { type: integer, minimum: 1 }
+        constraintVersion: { type: integer, minimum: 1 }
+        capturedAt: { type: string, format: date-time }
+        startAt: { type: string, format: date-time }
+        startAtSource: { type: string, enum: [room_constraints] }
+        stopCount: { type: integer, minimum: 0 }
+        stops:
+          type: array
+          maxItems: 3
+          description: First three stops in position order; stopCount counts the full plan.
+          items:
+            type: object
+            additionalProperties: false
+            required: [position, placeId]
+            properties:
+              position: { type: integer, minimum: 0 }
+              arriveAt: { type: string, format: date-time }
+              placeId: { type: string, format: uuid }
+              name: { $ref: '#/components/schemas/NotificationSourcedText' }
+              addressText: { $ref: '#/components/schemas/NotificationSourcedText' }
+              mediaId:
+                type: string
+                format: uuid
+                description: Approved independently uploaded GoGo place_media id; provider photos excluded.
+    NotificationInviterAvatar:
+      type: object
+      additionalProperties: false
+      required: [sourceType, mediaKey]
+      description: >-
+        GoGo-owned processed public avatar reference captured at event time, never an external URL.
+        Omitted when absent, replaced, deleted or the inviter is no longer accessible.
+        Resolve current authorized member media separately. Contains no account or actor id.
+      properties:
+        sourceType: { type: string, enum: [gogo] }
+        mediaKey: { type: string, pattern: '^avatars/[a-f0-9]{32}\.webp$' }
     Notification:
       type: object
       description: Facts only — compose the display string client-side from `kind` + `payload`.
@@ -17045,6 +17124,9 @@ components:
             inviterName:
               type: string
               description: Display name of the room member who created the invite used to join.
+            inviterAvatar: { $ref: '#/components/schemas/NotificationInviterAvatar' }
+            reminder: { $ref: '#/components/schemas/NotificationReminder' }
+            planPreview: { $ref: '#/components/schemas/NotificationPlanPreview' }
             preferenceProgress:
               type: object
               required: [completedCount, memberCount]

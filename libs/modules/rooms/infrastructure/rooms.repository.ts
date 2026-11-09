@@ -18,6 +18,10 @@ import { schema, type Db } from '@gogo/database';
 import { pgArray } from '../../search/infrastructure/search.repository';
 import { DB } from '../../shared/tokens';
 import { writeOutbox, type DomainEventInput, type Tx } from '../../shared/outbox';
+import {
+  captureInviterFacts,
+  captureRoomStartedFacts,
+} from '../../shared/notification-event-facts';
 
 export type RoomRow = typeof schema.rooms.$inferSelect;
 export type ConstraintRow = typeof schema.roomConstraints.$inferSelect;
@@ -440,7 +444,15 @@ export class RoomsRepository {
         .update(schema.rooms)
         .set({ status, updatedAt: sql`now()` })
         .where(eq(schema.rooms.id, roomId));
-      await writeOutbox(tx, event);
+      await writeOutbox(tx, {
+        ...event,
+        payload: {
+          ...event.payload,
+          ...(event.eventType === 'room.status_active'
+            ? { notificationFacts: await captureRoomStartedFacts(tx, roomId) }
+            : {}),
+        },
+      });
       return true;
     });
   }
@@ -569,7 +581,21 @@ export class RoomsRepository {
         displayName: input.displayName,
       })
       .returning();
-    await writeOutbox(tx, input.event);
+    await writeOutbox(tx, {
+      ...input.event,
+      payload: {
+        ...input.event.payload,
+        ...(input.event.eventType === 'member.joined'
+          ? {
+              notificationFacts: await captureInviterFacts(
+                tx,
+                input.roomId,
+                input.event.payload.inviterMemberId,
+              ),
+            }
+          : {}),
+      },
+    });
     return { member: member!, created: true };
   }
 

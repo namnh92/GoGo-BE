@@ -3,6 +3,7 @@ import { and, asc, eq, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
 import { writeOutbox, type DomainEventInput } from '../../shared/outbox';
+import { capturePlanPreview } from '../../shared/notification-event-facts';
 import { DB } from '../../shared/tokens';
 import { pgArray } from '../../search/infrastructure/search.repository';
 import type { PlanStopDraft, PlanTotalsDraft } from '../../suggestions/domain/types';
@@ -252,7 +253,17 @@ export class PlansRepository {
               .returning()
           : [];
       for (const event of input.events) {
-        await writeOutbox(tx, event);
+        const planPreview =
+          event.eventType === 'plan.published' || event.eventType === 'plan.changed'
+            ? await capturePlanPreview(tx, input.roomId, plan!.id)
+            : undefined;
+        await writeOutbox(tx, {
+          ...event,
+          payload: {
+            ...event.payload,
+            ...(planPreview ? { notificationFacts: { planPreview } } : {}),
+          },
+        });
       }
       return { plan: plan!, stops };
     });

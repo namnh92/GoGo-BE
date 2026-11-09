@@ -34,6 +34,11 @@ describe('Notification payload contract (#753)', () => {
 
     expect(payload.properties?.roomName?.type).toBe('string');
     expect(payload.properties?.inviterName?.type).toBe('string');
+    expect(payload.properties).toMatchObject({
+      reminder: { $ref: '#/components/schemas/NotificationReminder' },
+      planPreview: { $ref: '#/components/schemas/NotificationPlanPreview' },
+      inviterAvatar: { $ref: '#/components/schemas/NotificationInviterAvatar' },
+    });
     expect(payload.properties?.preferenceProgress).toMatchObject({
       type: 'object',
       required: ['completedCount', 'memberCount'],
@@ -65,6 +70,9 @@ describe('Notification payload contract (#753)', () => {
     for (const field of [
       'roomName',
       'inviterName',
+      'inviterAvatar',
+      'reminder',
+      'planPreview',
       'preferenceProgress',
       'stopCount',
       'planChange',
@@ -73,6 +81,32 @@ describe('Notification payload contract (#753)', () => {
     ]) {
       expect(payload.required ?? []).not.toContain(field);
     }
+  });
+  it('defines sourced, bounded, fact-only structures while keeping historical payloads optional', () => {
+    const schemas = doc.components.schemas;
+    expect(schemas.NotificationReminder?.required).toEqual([
+      'trigger',
+      'triggeredAt',
+      'scheduledFor',
+      'startsAt',
+    ]);
+    expect(schemas.NotificationReminder?.properties?.trigger?.enum).toEqual([
+      'room_started',
+      'scheduled',
+    ]);
+    expect(schemas.NotificationSourcedText?.required).toEqual([
+      'value',
+      'sourceType',
+      'originType',
+      'verifiedAt',
+    ]);
+    expect(schemas.NotificationSourcedText?.properties?.sourceType?.enum).toEqual(['gogo']);
+    expect(schemas.NotificationSourcedText?.properties).not.toHaveProperty('sourceReference');
+    expect(schemas.NotificationPlanPreview?.properties?.stops).toMatchObject({
+      type: 'array',
+      maxItems: 3,
+    });
+    expect(schemas.NotificationInviterAvatar?.required).toEqual(['sourceType', 'mediaKey']);
   });
 });
 
@@ -101,7 +135,7 @@ function fixture() {
 }
 describe('shared inbox public contract', () => {
   it('retains shared inbox operations and statuses in the category MAJOR', () => {
-    expect(spec.info.version).toBe('8.0.0-alpha.1');
+    expect(spec.info.version).toBe('8.1.0-alpha.1');
     const read = spec.paths['/me/notifications/read-all'].post;
     expect(Object.keys(read.responses)).toEqual(
       expect.arrayContaining([

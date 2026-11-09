@@ -218,6 +218,7 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   system_notifications_reads_total: ['status'],
   system_notifications_writes_total: ['action'],
   notification_inbox_summary_total: [],
+  notification_event_facts_total: ['kind', 'fact', 'present'],
   notification_push_suppressed_total: ['kind', 'category', 'reason'],
   notification_push_enqueue_total: ['kind', 'category', 'outcome'],
   notification_push_outcome_total: ['kind', 'category', 'outcome'],

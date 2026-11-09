@@ -1,7 +1,8 @@
-# Notification inbox and category preferences — #811 PR1–2 / #809
+# Notification inbox, category preferences and sourced facts — #811 PR1–3 / #809
 
-ADR-0050 defines the four-PR shape. Contract **8.0.0-alpha.1** includes shared inbox
-storage/read APIs, category preferences, and server-side kinds filtering. Owner decisions dated **2026-11-08** are recorded in
+ADR-0050 defines the four-PR shape. Contract **8.1.0-alpha.1** includes shared inbox
+storage/read APIs, category preferences, server-side kinds filtering and optional
+event-time payload facts. Owner decisions dated **2026-11-08** are recorded in
 workspace `.claude/rules/execution-policy.md` §8 (BE#811) and ADR-0050 §6:
 one reminder **120 minutes** before confirmed start (no start, no reminder;
 reschedule/cancel on changes; newly confirmed inside the window sends once
@@ -15,6 +16,59 @@ and filtering, semantic contract **MAJOR 8.0.0**; (3) sourced payload facts;
 (4) approved scheduling and quiet-hour policies, with no emergency bypass or
 cleanup job. These product policies are implemented in **PR4**, not this release.
 Contract/migration CODEOWNER approval remains separate and required.
+
+## Dữ kiện tại thời điểm sự kiện — PR3
+
+Producer chụp `notificationFacts` trong cùng transaction ghi nghiệp vụ/outbox:
+`PlansRepository.createPlanVersion` cho publish/edit/regenerate, `RoomsRepository`
+cho lần chuyển sang active và lần thành viên mới tham gia bằng lời mời.
+Dispatcher chỉ chuyển các cấu trúc mới đã chụp sang inbox; retry không lấy kế hoạch,
+địa điểm hay người mời hiện tại để bù cấu trúc thiếu. Dữ kiện cũ vẫn đọc được,
+không backfill hàng lịch sử. Các trường cũ như route và roomName giữ hành vi cũ.
+
+- `planPreview`: ID/version của **kế hoạch vừa ghi**, constraintVersion,
+  capturedAt, stopCount toàn kế hoạch và tối đa ba stop đầu theo position.
+  startAt/startAtSource chỉ có khi `room_constraints` phiên bản hiện tại có
+  start_at và khớp constraintVersion của plan. arriveAt của stop là dữ kiện riêng;
+  scheduledDate không phải giờ hẹn đã xác nhận.
+- `reminder`: room.status_active ghi trigger=`room_started`, triggeredAt,
+  scheduledFor=`null`, startsAt từ constraints hiện tại hoặc `null`.
+  Không ghi leadTimeSeconds hay scheduleRevision cho sự kiện này. Không thể
+  suy ra “còn 2 tiếng”; scheduler 120 phút và quiet hours thuộc PR4.
+- name/addressText có SourcedText: value, sourceType=`gogo`, originType,
+  verifiedAt và collectedAt nếu có. Mỗi trường cần nguồn độc lập; address theo
+  contactOwnership/ADR-0031. Provider cần tham chiếu nguồn không phải Google và
+  thời điểm thu thập độc lập. Nhãn provider hoặc canonical column không đủ.
+  Thiếu/không rõ/Google-derived thì bỏ trường. Không có provider call hay AI.
+- Ảnh kế hoạch dùng `stops[].mediaId`: place_media đã approved, nguồn editorial
+  hoặc community, có mediaUploadId và không có providerPhoto. Không chụp byte,
+  URL, attribution hay ảnh Google (kể cả ảnh đã được ngoại lệ #786 cho lưu).
+  Client lấy media hiện còn được phép qua place/member API hiện tại.
+- inviterName được chụp lúc join; inviterAvatar chỉ gồm sourceType=`gogo` và
+  mediaKey trong namespace avatar đã xử lý của GoGo. Không có avatar thì bỏ.
+  Tham chiếu membership nội bộ chỉ dùng kiểm tra quyền; không trả actor/user ID
+  hoặc tham chiếu bằng chứng riêng trong response.
+
+GET inbox kiểm tra membership/account/room hiện tại trước khi trả preview;
+mất quyền thì bỏ dữ kiện nhạy cảm. Plan đã xóa bị bỏ preview; place không còn
+published bị bỏ text; ảnh bị gỡ/từ chối, avatar bị thay/xóa hoặc inviter không
+còn truy cập được thì bỏ tham chiếu tương ứng. Không thay bằng dữ liệu mới,
+không sửa snapshot đã lưu. Kiểm tra theo trang tối đa 20 hàng; không gọi provider.
+Mở hàng lịch sử luôn resolve kế hoạch hiện tại có quyền truy cập; preview không
+cam kết kế hoạch còn mới. Client tự ghép câu, giờ và countdown từ các dữ kiện.
+Push vẫn chỉ có routing ID và copy chung; không gửi venue/address/avatar snapshot.
+
+Metric `notification_event_facts_total{kind,fact,present}` đếm theo lần fan-out,
+gồm retry, với fact giới hạn reminder/planPreview/inviterAvatar. Không có payload,
+tên, địa chỉ, media key hoặc actor trong label/log. Không cần migration sau 0094.
+Rollback binary giữ nguyên JSON tùy chọn; worker cũ bỏ qua cấu trúc mới. API cũ
+không có kiểm tra quyền preview mới, nên phải giữ API có mapper kiểm tra quyền
+cho tới khi ngừng trả các trường này; không rollback API cũ để phục vụ snapshot.
+
+Kiểm chứng: `notification-event-facts.spec.ts`, `notification-payload.spec.ts`,
+`inbox-preview-access.spec.ts` và `notification-event-facts.int.spec.ts` kiểm tra
+producer → outbox → inbox, retry/supersede, provenance, media, quyền bị thu hồi,
+giờ bắt đầu không có hoặc nhiều phiên bản constraints, hàng cũ và rollback transaction.
 
 `GET /v1/me/notifications/summary` is the shared source for every unread badge,
 including #809. It counts all account-owned unread inbox rows, regardless of push

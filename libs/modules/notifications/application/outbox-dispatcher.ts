@@ -257,6 +257,13 @@ export class OutboxDispatcher {
         eventPayload: event.payload as Record<string, unknown>,
       }),
     };
+    for (const fact of ['reminder', 'planPreview', 'inviterAvatar'] as const) {
+      this.metrics?.increment('notification_event_facts_total', {
+        kind: mapping.kind,
+        fact,
+        present: String(Object.hasOwn(payload, fact)),
+      });
+    }
     const existing = await this.db
       .select({ userId: schema.notifications.userId })
       .from(schema.notifications)
