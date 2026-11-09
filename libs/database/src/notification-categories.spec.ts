@@ -44,6 +44,11 @@ describe('notification binary transition gates', () => {
       expect(statements[1]).toContain("or status = 'deferred'");
       // #817 F-01: a campaign a worker is still walking is in-flight work too.
       expect(statements[1]).toContain("notification_campaigns where status = 'sending'");
+      // F-04: draft test sends and ambiguous provider attempts remain durable work.
+      expect(statements[1]).toContain("from notifications where kind = 'campaign'");
+      expect(statements[1]).toContain('push_deferred_until is not null');
+      expect(statements[1]).toContain('push_sent_at is null and push_suppressed_at is null');
+      expect(statements[1]).not.toMatch(/push_deferred_until\s*<=|join notification_campaigns/);
       expect(
         statements.every((statement) => !/^\s*(update|delete|insert)\b/i.test(statement)),
       ).toBe(true);

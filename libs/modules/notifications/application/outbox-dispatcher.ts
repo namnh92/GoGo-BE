@@ -558,7 +558,14 @@ export class OutboxDispatcher {
             kind: mapping.kind,
             category: registration(mapping.kind).category,
           });
-        throw error;
+        else
+          this.metrics?.increment('notification_deferred_retry_total', {
+            kind: mapping.kind,
+            category: registration(mapping.kind).category,
+          });
+        // The durable ledger owns these retries. Finish staging/draining the
+        // remaining recipients and publish without spending the event budget.
+        continue;
       }
       this.metrics?.increment('notification_push_outcome_total', {
         kind: mapping.kind,

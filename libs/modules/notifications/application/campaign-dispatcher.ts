@@ -493,7 +493,7 @@ export class CampaignDispatcher {
         !campaign ||
         !isOpenableDestination(campaign.destination_type) ||
         (!test &&
-          (!['sending', 'sent'].includes(campaign.status) ||
+          (!['sending', 'sent', 'failed', 'scheduled'].includes(campaign.status) ||
             row.dedupe_key !== campaignDedupeKey(campaign.dispatch_key, row.user_id)))
       ) {
         await this.db.execute(
@@ -501,6 +501,10 @@ export class CampaignDispatcher {
         );
         continue;
       }
+      // A failed campaign can be rescheduled with the same dispatch key. Its
+      // deferred recipients remain owed, but wait for the operator's retry
+      // rather than sending ahead of it or consuming provider retry attempts.
+      if (!test && ['failed', 'scheduled'].includes(campaign.status)) continue;
       try {
         const outcome = await this.deliver(campaign, row.user_id, {
           dedupeKey: row.dedupe_key,

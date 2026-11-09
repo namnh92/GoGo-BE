@@ -138,11 +138,12 @@ describe('account campaign quiet hours', () => {
     expect(completion.params).not.toContain('sent');
   });
 
-  it.each(['due', 'quiet', 'cancelled', 'opt_out'])(
+  it.each(['due', 'quiet', 'cancelled', 'opt_out', 'failed', 'scheduled', 'replaced'])(
     'rechecks a deferred campaign at wake: %s',
     async (state) => {
       const statements: { sql: string; params: unknown[] }[] = [];
       const dedupeKey = `campaign:dispatch:${userId}`;
+      let status = ['failed', 'scheduled', 'cancelled'].includes(state) ? state : 'sending';
       const execute = vi.fn(async (query: SQL) => {
         const statement = new PgDialect().sqlToQuery(query);
         statements.push(statement);
@@ -160,7 +161,13 @@ describe('account campaign quiet hours', () => {
           };
         if (statement.sql.includes('destination_value, dispatch_key, status'))
           return {
-            rows: [{ ...campaign, status: state === 'cancelled' ? 'cancelled' : 'sending' }],
+            rows: [
+              {
+                ...campaign,
+                status,
+                dispatch_key: state === 'replaced' ? 'replacement' : campaign.dispatch_key,
+              },
+            ],
           };
         if (statement.sql.includes('select n.id, n.push_sent_at'))
           return { rows: [{ id: userId, push_sent_at: null, push_suppressed_at: null }] };
@@ -179,14 +186,15 @@ describe('account campaign quiet hours', () => {
         return { rows: [] };
       });
       const push = new FakePush();
-      await new CampaignDispatcher(
+      const worker = new CampaignDispatcher(
         {
           execute,
           transaction: async (fn: (tx: { execute: typeof execute }) => Promise<unknown>) =>
             fn({ execute }),
         } as unknown as Db,
         push,
-      ).dispatchDeferred();
+      );
+      await worker.dispatchDeferred();
       expect(push.sent).toHaveLength(state === 'due' ? 1 : 0);
       if (state === 'due') {
         expect(push.sent[0]?.idempotencyKey).toBeTruthy();
@@ -194,7 +202,20 @@ describe('account campaign quiet hours', () => {
         expect(eligible.sql).toContain('ns.push_enabled');
         expect(eligible.sql).toContain('ps.platform');
       }
-      if (state === 'cancelled' || state === 'opt_out')
+      if (state === 'failed' || state === 'scheduled') {
+        expect(statements.some((q) => q.sql.includes('set push_suppressed_at = now()'))).toBe(
+          false,
+        );
+        expect(
+          statements.some((q) =>
+            q.sql.includes('push_deferred_attempts = push_deferred_attempts + 1'),
+          ),
+        ).toBe(false);
+        status = 'sending';
+        await worker.dispatchDeferred();
+        expect(push.sent).toHaveLength(1);
+      }
+      if (state === 'cancelled' || state === 'opt_out' || state === 'replaced')
         expect(statements.some((q) => q.sql.includes('push_suppressed_at = now()'))).toBe(true);
     },
   );

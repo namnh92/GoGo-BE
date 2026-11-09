@@ -22,6 +22,8 @@ async function requireReconciledDeliveries(tx: Tx, eventTypes: string[]) {
   // or pending/deferred recipients also block a binary transition, and so does a campaign
   // a worker is still walking (#817 F-01): its recipients are decided one by one
   // and the binary that started it must be the one that finishes it.
+  // Campaign inbox deferrals (including draft test sends and ambiguous provider
+  // retries) must drain with their existing keys regardless of status/wake time.
   const unresolved = await tx.execute(sql`select 1 from outbox_events e
     where e.published_at is null and e.event_type in (${sql.join(
       eventTypes.map((k) => sql`${k}`),
@@ -30,6 +32,9 @@ async function requireReconciledDeliveries(tx: Tx, eventTypes: string[]) {
     union all select 1 from notification_push_deliveries where status in ('pending', 'attempting')
       or status = 'deferred'
     union all select 1 from notification_campaigns where status = 'sending'
+    union all select 1 from notifications where kind = 'campaign'
+      and push_deferred_until is not null
+      and push_sent_at is null and push_suppressed_at is null
     limit 1`);
   if (unresolved.rows[0])
     throw new Error(

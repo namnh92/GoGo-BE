@@ -39,6 +39,13 @@ export class ReminderWorker {
           for update skip locked`);
         const job = jobs.rows[0];
         if (!job) return 'cancelled';
+        // Keep room/job -> rollout lock order, matching business writers.
+        // Same lock as migration 0094's producer trigger. A freeze either wins
+        // before this read (leave the job pending) or waits for our atomic
+        // job -> outbox commit. It cannot race the insert and abort draining.
+        const gate = await tx.execute<{ producers_frozen: boolean }>(sql`
+          select producers_frozen from notification_category_rollout where singleton for share`);
+        if (!gate.rows[0] || gate.rows[0].producers_frozen) return 'frozen';
         const plans = await tx.execute<{
           id: string;
         }>(sql`select p.id from plans p join rooms r on r.id = p.room_id

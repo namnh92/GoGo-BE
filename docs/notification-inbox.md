@@ -58,13 +58,17 @@ Contract/migration CODEOWNER approval remains separate and required.
   Producer hiện có (#817) vẫn trả delivery về pending khi provider lỗi trước
   khi thực sự defer vì quiet hours; retry/backoff thuộc outbox event, không thêm
   timer độc lập. Reminder mới `room.reminder_due` và delivery đã defer dùng retry
-  ledger giới hạn sáu lần. Binary transition chặn cả deferred ledger, kể cả khi
+  ledger giới hạn sáu lần; lỗi provider không dừng recipient sau hoặc tiêu thêm
+  retry budget của event. Binary transition chặn cả deferred ledger, kể cả khi
   outbox đã publish và chưa tới giờ đánh thức; phải reconcile bằng key hiện có.
 - Account campaign cũng giữ inbox ngay và push_deferred_until trên inbox hiện có,
   giữ dedupe/provider key. Campaign chờ ở sending với quiet_pending, không báo sent
   hay tăng sent_count khi provider chưa nhận. Deferred tick tối đa 100 hàng,
   kiểm tra consent/targeting/campaign còn hợp lệ trước mỗi lần gửi và hoàn tất
-  campaign khi hết deferred. Test send chịu cùng quiet policy. Device-public
+  campaign khi hết deferred. Nếu recipient sau lỗi provider làm campaign failed,
+  deferred recipient vẫn chờ cùng dispatch qua failed/scheduled; không suppress
+  hoặc tiêu provider retry khi chờ operator chạy lại. Cancellation, replacement
+  và mất eligibility vẫn terminal. Test send chịu cùng quiet policy. Device-public
   identities không có account/timezone giữ consent hiện có; không suy ra timezone.
 - Không xóa/archive notification hoặc dedupe evidence tự động.
 
@@ -380,6 +384,10 @@ hashes after rebasing. CODEOWNER contract/migration review remains separate.
    the command waits for in-flight producer transactions to commit. Keep producers
    stopped/fenced throughout draining and switching. Plan a maintenance window for
    all outbox-producing business operations; the fence rolls back their transaction.
+   Reminder production reads this fence under the same transaction-level SHARE lock
+   as the insert trigger and leaves due jobs pending while frozen. Existing outbox,
+   deferred deliveries and campaigns continue draining, including when a freeze
+   races reminder production.
 3. Drain/reconcile **all** unresolved mapped events (dead letters included) with
    the currently running binary and its **existing provider keys**. Initial
    cutover/roll-forward from old workers uses event/locale keys; category-aware
@@ -391,7 +399,10 @@ hashes after rebasing. CODEOWNER contract/migration review remains separate.
    Run `pnpm inbox:backfill`, then
    `pnpm notifications:categories --enable-recipient-keys`. The gate requires the
    producer fence and zero unpublished mapped events **regardless of age**, plus
-   zero pending/attempting recipient deliveries even on published events. Only then
+   zero pending/attempting/deferred recipient deliveries even on published events,
+   zero sending campaigns, and zero unresolved campaign inbox deferrals. The last
+   check includes draft test sends and ambiguous retries, regardless of parent
+   status or future wake time; reconcile with their existing dedupe/provider keys. Only then
    deploy/start category-aware API/workers and run
    `pnpm notifications:categories --resume-producers`. Verify gates and the new API.
    Both gates also refuse while any campaign is `sending`: the binary that started

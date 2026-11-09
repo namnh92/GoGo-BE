@@ -7,7 +7,13 @@ import path from 'node:path';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { schema } from '@gogo/database';
+import {
+  schema,
+  enableNotificationRecipientKeys,
+  disableNotificationRecipientKeys,
+  quiesceNotificationProducers,
+} from '@gogo/database';
+import { CampaignDispatcher } from '../../../libs/modules/notifications/application/campaign-dispatcher';
 import { FakePush, ProviderUnavailableError } from '@gogo/providers';
 import { RoomsRepository } from '../../../libs/modules/rooms/infrastructure/rooms.repository';
 import { PlansRepository } from '../../../libs/modules/plans/infrastructure/plans.repository';
@@ -128,6 +134,105 @@ const totals = {
   uncertain: false,
   travelEstimated: false,
 };
+
+describe('campaign inbox binary reconciliation (F-04)', () => {
+  it.each(['quiet', 'ambiguous timeout'])(
+    'blocks both transitions for a future draft test send after %s and reuses its provider key',
+    async (reason) => {
+      const f = await fixture(null);
+      await db.insert(schema.pushSubscriptions).values({
+        userId: f.userId,
+        platform: 'ios',
+        subscriptionId: randomUUID(),
+      });
+      await mutateNotificationSettings(db, f.userId, {
+        quietHours: { enabled: true, timezone: quietZone() },
+      });
+      const [campaign] = await db
+        .insert(schema.notificationCampaigns)
+        .values({
+          name: randomUUID(),
+          title: 'Preview',
+          body: 'Preview body',
+          audienceType: 'all',
+          audienceFilter: {},
+          dispatchKey: randomUUID(),
+          createdByAdminId: randomUUID(),
+          testSendUserId: f.userId,
+          testSendRequestedAt: new Date(),
+        })
+        .returning();
+      const push = new FakePush();
+      const worker = new CampaignDispatcher(db, push);
+      await worker.deliverTestSends();
+      const row = (
+        await pool.query("select * from notifications where user_id=$1 and kind='campaign'", [
+          f.userId,
+        ])
+      ).rows[0];
+      expect(row.push_deferred_until).not.toBeNull();
+      const keys: string[] = [];
+      const original = push.sendToUser.bind(push);
+      vi.spyOn(push, 'sendToUser').mockImplementation(async (user, message) => {
+        keys.push(message.idempotencyKey!);
+        if (reason === 'ambiguous timeout' && keys.length === 1) {
+          await original(user, message);
+          throw new ProviderUnavailableError('fake.push', 'timeout after acceptance');
+        }
+        return original(user, message);
+      });
+      if (reason === 'ambiguous timeout') {
+        await mutateNotificationSettings(db, f.userId, { quietHours: { enabled: false } });
+        await worker.dispatchDeferred();
+      }
+      expect(
+        (await pool.query('select status from notification_campaigns where id=$1', [campaign!.id]))
+          .rows[0].status,
+      ).toBe('draft');
+      const unresolved = (await pool.query('select * from notifications where id=$1', [row.id]))
+        .rows[0];
+      expect(unresolved.push_sent_at).toBeNull();
+      expect(unresolved.push_suppressed_at).toBeNull();
+      expect(new Date(unresolved.push_deferred_until).getTime()).toBeGreaterThan(Date.now());
+      await quiesceNotificationProducers(db);
+      try {
+        for (const transition of [
+          enableNotificationRecipientKeys,
+          disableNotificationRecipientKeys,
+        ]) {
+          await expect(transition(db, ['room.reminder_due'])).rejects.toThrow(
+            'existing provider keys',
+          );
+          expect(
+            (
+              await pool.query(
+                'select recipient_keys_enabled, writes_frozen from notification_category_rollout',
+              )
+            ).rows[0],
+          ).toMatchObject({ recipient_keys_enabled: true, writes_frozen: false });
+        }
+        await mutateNotificationSettings(db, f.userId, { quietHours: { enabled: false } });
+        await pool.query('update notifications set push_deferred_until=now() where id=$1', [
+          row.id,
+        ]);
+        await worker.dispatchDeferred();
+        const done = (await pool.query('select * from notifications where id=$1', [row.id]))
+          .rows[0];
+        expect(done.push_sent_at).not.toBeNull();
+        expect(done.dedupe_key).toBe(row.dedupe_key);
+        expect(new Set(keys).size).toBe(1);
+        expect(keys).toHaveLength(reason === 'quiet' ? 1 : 2);
+        await enableNotificationRecipientKeys(db, ['room.reminder_due']);
+        await disableNotificationRecipientKeys(db, ['room.reminder_due']);
+      } finally {
+        await pool.query(
+          'update notification_category_rollout set producers_frozen=false, recipient_keys_enabled=true, writes_frozen=false',
+        );
+        await pool.query('delete from notifications where id=$1', [row.id]);
+      }
+    },
+  );
+});
 
 describe('durable advance reminders and send-time quiet hours', () => {
   it('schedules exactly two hours before start; date-only and past starts create no work', async () => {
@@ -358,5 +463,164 @@ describe('durable advance reminders and send-time quiet hours', () => {
     expect(attempts).toHaveLength(6);
     expect(new Set(attempts).size).toBe(1);
     expect((await ledger(f))[0]).toMatchObject({ status: 'failed', deferred_attempts: 6 });
+  });
+});
+
+describe('SA scheduling regressions', () => {
+  it.each(['before tick', 'racing due selection'])(
+    'keeps due reminders pending while fenced and drains existing deliveries: %s (F-01)',
+    async (freeze) => {
+      const draining = await fixture(60);
+      await new ReminderWorker(db).runTick();
+      const pending = await fixture(60);
+      const push = new FakePush();
+      const original = db.transaction.bind(db);
+      let frozen = false;
+      const spy = vi.spyOn(db, 'transaction').mockImplementation(async (run, config) => {
+        // Freeze after the due-job read but before its production transaction.
+        if (freeze === 'racing due selection' && !frozen) {
+          await quiesceNotificationProducers(db);
+          frozen = true;
+        }
+        return original(run, config);
+      });
+      try {
+        if (freeze === 'before tick') await quiesceNotificationProducers(db);
+        await expect(new ReminderWorker(db).runTick()).resolves.toBe(0);
+        await new OutboxDispatcher(db, push).dispatchBatch(1000);
+        await new OutboxDispatcher(db, push).dispatchDeferredBatch(1000);
+        await new CampaignDispatcher(db, push).tick();
+        expect((await jobs(pending))[0].status).toBe('pending');
+        expect(push.sent.some((call) => call.userIds.includes(draining.userId))).toBe(true);
+      } finally {
+        spy.mockRestore();
+        await pool.query('update notification_category_rollout set producers_frozen=false');
+      }
+    },
+  );
+
+  it('publishes a reminder and delivers later recipients while the first exhausts only its ledger budget (F-02)', async () => {
+    const f = await fixture(60);
+    const [later] = await db
+      .insert(schema.users)
+      .values({ displayName: 'Later member' })
+      .returning();
+    await db
+      .insert(schema.roomMembers)
+      .values({ roomId: f.roomId, userId: later!.id, role: 'member', displayName: 'Later' });
+    await new ReminderWorker(db).runTick();
+    const push = new FakePush();
+    const keys: string[] = [];
+    // Whichever UUID orders first must fail, reproducing starvation of the next row.
+    const first = [f.userId, later!.id].sort()[0];
+    const second = first === f.userId ? later!.id : f.userId;
+    const original = push.sendToUsers.bind(push);
+    vi.spyOn(push, 'sendToUsers').mockImplementation(async (users, message) => {
+      if (users.includes(first!)) {
+        keys.push(message.idempotencyKey!);
+        throw new ProviderUnavailableError('fake.push', 'timeout');
+      }
+      return original(users, message);
+    });
+    await new OutboxDispatcher(db, push).dispatchBatch(1000);
+    const eventId = (await jobs(f))[0].id;
+    expect(
+      (
+        await pool.query(
+          'select published_at, attempts, failed_at from outbox_events where id=$1',
+          [eventId],
+        )
+      ).rows[0],
+    ).toMatchObject({ published_at: expect.any(Date), attempts: 0, failed_at: null });
+    expect(push.sent.filter((call) => call.userIds.includes(second))).toHaveLength(1);
+    for (let attempt = 1; attempt < 6; attempt++) {
+      await pool.query(
+        "update notification_push_deliveries set deferred_until=now() where event_id=$1 and status='deferred'",
+        [eventId],
+      );
+      await new OutboxDispatcher(db, push).dispatchDeferredBatch(1000);
+    }
+    expect((await ledger(f)).find((row) => row.user_id === first)).toMatchObject({
+      status: 'failed',
+      deferred_attempts: 6,
+    });
+    expect((await ledger(f)).find((row) => row.user_id === second)).toMatchObject({
+      status: 'sent',
+    });
+    expect(keys).toHaveLength(6);
+    expect(new Set(keys).size).toBe(1);
+  });
+
+  it('preserves a quiet recipient through a later provider failure and rescheduling of the same dispatch (F-03)', async () => {
+    const users = await db
+      .insert(schema.users)
+      .values([{ displayName: 'A' }, { displayName: 'B' }])
+      .returning();
+    users.sort((a, b) => a.id.localeCompare(b.id));
+    const [a, b] = users;
+    await db.insert(schema.pushSubscriptions).values(
+      users.map((u) => ({
+        userId: u.id,
+        platform: 'android' as const,
+        subscriptionId: randomUUID(),
+      })),
+    );
+    await mutateNotificationSettings(db, a!.id, {
+      quietHours: { enabled: true, timezone: quietZone() },
+    });
+    const [campaign] = await db
+      .insert(schema.notificationCampaigns)
+      .values({
+        name: randomUUID(),
+        title: 'Campaign',
+        body: 'Body',
+        audienceType: 'platform',
+        audienceFilter: { platform: 'android' },
+        dispatchKey: randomUUID(),
+        createdByAdminId: randomUUID(),
+        status: 'scheduled',
+        scheduledAt: new Date(),
+      })
+      .returning();
+    const push = new FakePush();
+    const original = push.sendToUser.bind(push);
+    vi.spyOn(push, 'sendToUser').mockImplementation(async (user, message) => {
+      if (user === b!.id) throw new ProviderUnavailableError('fake.push', 'timeout');
+      return original(user, message);
+    });
+    const worker = new CampaignDispatcher(db, push);
+    await worker.dispatchDue();
+    expect(
+      (await pool.query('select status from notification_campaigns where id=$1', [campaign!.id]))
+        .rows[0].status,
+    ).toBe('failed');
+    const key = `campaign:${campaign!.dispatchKey}:${a!.id}`;
+    await mutateNotificationSettings(db, a!.id, { quietHours: { enabled: false } });
+    for (const status of ['failed', 'scheduled']) {
+      await pool.query('update notification_campaigns set status=$2 where id=$1', [
+        campaign!.id,
+        status,
+      ]);
+      await pool.query('update notifications set push_deferred_until=now() where dedupe_key=$1', [
+        key,
+      ]);
+      await worker.dispatchDeferred();
+      expect(
+        (await pool.query('select * from notifications where dedupe_key=$1', [key])).rows[0],
+      ).toMatchObject({
+        push_sent_at: null,
+        push_suppressed_at: null,
+        push_deferred_until: expect.any(Date),
+        push_deferred_attempts: 0,
+      });
+    }
+    vi.mocked(push.sendToUser).mockImplementation(original);
+    await worker.dispatchDue();
+    expect(
+      (await pool.query('select * from notifications where dedupe_key=$1', [key])).rows[0],
+    ).toMatchObject({ push_sent_at: expect.any(Date), push_suppressed_at: null, dedupe_key: key });
+    expect(push.sent.filter((call) => call.userIds.includes(a!.id))).toHaveLength(1);
+    await worker.dispatchDeferred();
+    expect(push.sent.filter((call) => call.userIds.includes(a!.id))).toHaveLength(1);
   });
 });

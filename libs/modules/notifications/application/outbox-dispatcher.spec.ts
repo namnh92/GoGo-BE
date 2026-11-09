@@ -28,7 +28,9 @@ const event = {
 /** Isolate delivery from inbox staging; PostgreSQL cohort/publication coverage
  * remains in notification-settings.int.spec.ts. No provider or database I/O.
  */
-function fixture(options: { deferred?: boolean; enabled?: boolean; missing?: boolean } = {}) {
+function fixture(
+  options: { deferred?: boolean; enabled?: boolean; missing?: boolean; recipients?: string[] } = {},
+) {
   const statements: { sql: string; params: unknown[] }[] = [];
   let eligible = true;
   const execute = vi.fn(async (query: SQL) => {
@@ -36,7 +38,10 @@ function fixture(options: { deferred?: boolean; enabled?: boolean; missing?: boo
     statements.push(statement);
     if (statement.sql.includes('select user_id'))
       return {
-        rows: [{ user_id: userId, deferred_until: options.deferred ? '2026-11-09' : null }],
+        rows: (options.recipients ?? [userId]).map((id) => ({
+          user_id: id,
+          deferred_until: options.deferred ? '2026-11-09' : null,
+        })),
       };
     if (statement.sql.includes('returning user_id')) return { rows: [{ user_id: userId }] };
     if (statement.sql.includes('select u.id, u.locale'))
@@ -132,18 +137,38 @@ describe('ADR-0050 existing-producer retry ownership (#817)', () => {
     );
   });
 
-  it('retains ledger retry ownership after quiet hours are disabled', async () => {
+  it('retains ledger retry ownership after quiet hours are disabled (F-02)', async () => {
     const { push, run, statements } = fixture({ deferred: true });
     push.unavailable = true;
-    await expect(run()).rejects.toBeInstanceOf(ProviderUnavailableError);
-    expect(statements.at(-1)!.sql).toContain('deferred_attempts = deferred_attempts + 1');
+    await expect(run()).resolves.toBeUndefined();
+    expect(
+      statements.some((q) => q.sql.includes('deferred_attempts = deferred_attempts + 1')),
+    ).toBe(true);
   });
 
   it('preserves PR4 advance-reminder bounded ledger retries', async () => {
     const { push, run, statements } = fixture();
     push.unavailable = true;
-    await expect(run('room.reminder_due')).rejects.toBeInstanceOf(ProviderUnavailableError);
-    expect(statements.at(-1)!.sql).toContain('deferred_attempts = deferred_attempts + 1');
-    expect(statements.at(-1)!.params).toContain(6);
+    await expect(run('room.reminder_due')).resolves.toBeUndefined();
+    const retry = statements.find((q) =>
+      q.sql.includes('deferred_attempts = deferred_attempts + 1'),
+    )!;
+    expect(retry.params).toContain(6);
   });
+});
+
+it('drains later reminder recipients after a ledger-owned provider failure (F-02)', async () => {
+  const later = '00000000-0000-4000-8000-000000000004';
+  const { push, run, statements } = fixture({ recipients: [userId, later] });
+  const original = push.sendToUsers.bind(push);
+  vi.spyOn(push, 'sendToUsers').mockImplementation(async (users, message) => {
+    if (users[0] === userId) throw new ProviderUnavailableError('fake.push', 'timeout');
+    return original(users, message);
+  });
+  await expect(run('room.reminder_due')).resolves.toBeUndefined();
+  expect(push.sent.map((s) => s.userIds)).toEqual([[later]]);
+  expect(statements.some((q) => q.sql.includes('deferred_attempts = deferred_attempts + 1'))).toBe(
+    true,
+  );
+  expect(statements.at(-1)!.sql).toContain("status in ('pending', 'attempting')");
 });
