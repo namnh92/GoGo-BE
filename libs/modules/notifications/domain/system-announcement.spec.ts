@@ -72,6 +72,16 @@ describe('system announcement input and canonical routing', () => {
 });
 
 describe('system notification tuple cursor', () => {
+  it.each(['public', 'cms'] as const)('accepts PostgreSQL year boundaries for %s', (purpose) => {
+    for (const at of ['0001-01-01T00:00:00.000001Z', '9999-12-31T23:59:59.999999Z']) {
+      const cursor = systemNotificationCursor(at, id, purpose);
+      expect(parseSystemNotificationCursor(cursor, purpose)).toEqual({ at, id });
+    }
+  });
+  it.each(['public', 'cms'] as const)('rejects year zero for %s', (purpose) => {
+    const cursor = systemNotificationCursor('0000-01-01T00:00:00.123456Z', id, purpose);
+    expect(() => parseSystemNotificationCursor(cursor, purpose)).toThrow('Cursor is not valid');
+  });
   it('retains microseconds and binds the list purpose', () => {
     const at = '2026-11-09T10:00:00.123456Z';
     const cursor = systemNotificationCursor(at, id, 'public');

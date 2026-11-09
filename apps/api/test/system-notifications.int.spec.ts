@@ -137,6 +137,24 @@ beforeEach(async () => {
   await pool.query("delete from idempotency_keys where endpoint like '%cms/system-notifications%'");
 });
 
+describe.sequential('system notification cursor validation (#815)', () => {
+  it.each(['public', 'cms'] as const)(
+    'returns 400 INVALID_CURSOR for year zero in %s pagination',
+    async (purpose) => {
+      await seed();
+      const cursor = Buffer.from(
+        JSON.stringify([purpose, '0000-01-01T00:00:00.123456Z', randomUUID()]),
+      ).toString('base64url');
+      const res = await get(
+        `${purpose === 'public' ? PUBLIC : CMS}?cursor=${cursor}`,
+        purpose === 'cms' ? auth() : {},
+      );
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ code: 'INVALID_CURSOR', retryable: false });
+    },
+  );
+});
+
 describe.sequential('public system notifications (#815)', () => {
   it('is anonymous, filters drafts, archives, future publications and expired rows, and exposes facts only', async () => {
     const visible = await seed({ kind: 'future_kind' });

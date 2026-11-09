@@ -31,7 +31,12 @@ export type SystemNotificationQuery = z.infer<typeof cmsSystemNotificationQuery>
 
 // Preserve PostgreSQL microseconds. The purpose prevents a CMS createdAt cursor
 // from accidentally being used as a public publishedAt cursor.
-const position = z.tuple([z.enum(['public', 'cms']), z.string().datetime(), z.string().uuid()]);
+// Zod limits datetime years to four digits but permits PostgreSQL's invalid year zero.
+const cursorTimestamp = z
+  .string()
+  .datetime()
+  .refine((at) => !at.startsWith('0000-'), 'Timestamp year must be between 0001 and 9999');
+const position = z.tuple([z.enum(['public', 'cms']), cursorTimestamp, z.string().uuid()]);
 export function systemNotificationCursor(at: string, id: string, purpose: 'public' | 'cms') {
   return Buffer.from(JSON.stringify([purpose, at, id])).toString('base64url');
 }
