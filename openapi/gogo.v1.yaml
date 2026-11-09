@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoGo API
-  version: 7.7.0-alpha.1
+  version: 7.8.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -4684,6 +4684,182 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /system-notifications:
+    get:
+      operationId: listSystemNotifications
+      tags: [profile]
+      summary: Public system announcements, available while signed out
+      security: []
+      description: >
+        Published announcements with publishedAt <= server time and no expiry or
+        expiresAt > server time. Ordered by (publishedAt DESC, id DESC), with
+        opaque full-precision tuple cursors. No account-specific fields or read
+        state. CMS-authored title/body are editorial copy, not composed facts.
+        Clients display this section above the personal inbox for signed-in
+        users; no duplication into /me/notifications or its unread summary.
+        Rate limit is 60 requests/minute per IP, including conditional GETs.
+        The shared cache can serve a representation for up to 60 seconds after
+        expiry, edit or archive. Revalidation evaluates current visibility.
+      parameters:
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 20 },
+          }
+        - { name: cursor, in: query, schema: { type: string, minLength: 1, maxLength: 2048 } }
+        - {
+            name: If-None-Match,
+            in: header,
+            schema: { type: string },
+            description: 'Entity tags (including weak tags or a list), or *.',
+          }
+      responses:
+        '200':
+          description: Visible announcements
+          headers:
+            Cache-Control: { schema: { type: string, const: 'public, max-age=60' } }
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SystemNotificationPage' }
+        '304':
+          description: Current page matches If-None-Match; no response body
+          headers:
+            Cache-Control: { schema: { type: string, const: 'public, max-age=60' } }
+            ETag: { schema: { type: string } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /cms/system-notifications:
+    get:
+      operationId: cmsListSystemNotifications
+      tags: [cms]
+      summary: 'Ops/super admin: list announcements including drafts and archived rows'
+      description: Ordered by (createdAt DESC, id DESC). Cache-Control is private, no-store.
+      parameters:
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 20 },
+          }
+        - { name: cursor, in: query, schema: { type: string, minLength: 1, maxLength: 2048 } }
+        - { name: status, in: query, schema: { type: string, enum: [draft, published, archived] } }
+      responses:
+        '200':
+          description: Announcement page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsSystemNotificationPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: cmsCreateSystemNotification
+      tags: [cms]
+      summary: 'Ops/super admin: create a draft announcement'
+      description: >
+        Idempotency-Key is mandatory (8-128 ASCII word/hyphen characters).
+        Creation, append-only audit and 24-hour replay record commit together.
+        Same actor/key/body replays the original 201 even after later edits;
+        changed body returns 422. Locale defaults to vi. No inbox/push rows.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, minLength: 8, maxLength: 128, pattern: '^[A-Za-z0-9_-]+$' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CmsSystemNotificationCreate' }
+      responses:
+        '201':
+          description: Created draft (or original replay)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsSystemNotification' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422':
+          description: Idempotency-Key reused with a different body
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+  /cms/system-notifications/{id}:
+    patch:
+      operationId: cmsPatchSystemNotification
+      tags: [cms]
+      summary: 'Ops/super admin: edit draft or published announcement copy'
+      description: >
+        Row-locked update and append-only audit commit together. Does not change
+        status or publishedAt. Archived rows cannot be edited (409).
+        Null deepLink/expiresAt clears the field; expiry must follow publication.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CmsSystemNotificationPatch' }
+      responses:
+        '200':
+          description: Updated announcement
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsSystemNotification' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /cms/system-notifications/{id}/publish:
+    post:
+      operationId: cmsPublishSystemNotification
+      tags: [cms]
+      summary: 'Ops/super admin: publish announcement'
+      description: >
+        Publishes a draft immediately with a server-owned publishedAt. Expired drafts return 400. Archived rows cannot be published (409).
+        Repeating the same transition is a no-op returning 200 without another
+        audit row or changing publishedAt. State and append-only audit commit
+        together under a row lock. Creates no personal inbox or push records.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Announcement in the requested state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsSystemNotification' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /cms/system-notifications/{id}/archive:
+    post:
+      operationId: cmsArchiveSystemNotification
+      tags: [cms]
+      summary: 'Ops/super admin: archive announcement'
+      description: >
+        Archives a draft or published row. Archived is terminal; data and audit history remain.
+        Repeating the same transition is a no-op returning 200 without another
+        audit row or changing publishedAt. State and append-only audit commit
+        together under a row lock. Creates no personal inbox or push records.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Announcement in the requested state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsSystemNotification' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
 
   /me/notifications:
     get:
@@ -12719,6 +12895,103 @@ components:
         maximum: 100
         default: 20
   schemas:
+    SystemNotificationKind:
+      type: string
+      x-extensible-enum: [maintenance, update, general]
+      description: Consumers must tolerate future system announcement kinds.
+    SystemNotificationDeepLink:
+      type: [string, 'null']
+      description: Canonical gogo app route only; no query, fragment, encoding or credentials. Null means no destination.
+      pattern: '^gogo://(?:(?:place|room|plan)/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|invite/[A-Za-z0-9_-]{6,64}|l/[A-Za-z0-9_-]{4,32}|saved|notifications|profile)$'
+    SystemNotification:
+      type: object
+      additionalProperties: false
+      required: [id, kind, title, body, deepLink, publishedAt, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { $ref: '#/components/schemas/SystemNotificationKind' }
+        title:
+          { type: string, minLength: 1, maxLength: 200, description: CMS-authored editorial copy }
+        body:
+          { type: string, minLength: 1, maxLength: 10000, description: CMS-authored editorial copy }
+        deepLink: { $ref: '#/components/schemas/SystemNotificationDeepLink' }
+        publishedAt: { type: string, format: date-time }
+        expiresAt: { type: [string, 'null'], format: date-time }
+    CmsSystemNotification:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          kind,
+          title,
+          body,
+          deepLink,
+          publishedAt,
+          expiresAt,
+          locale,
+          status,
+          createdBy,
+          updatedBy,
+          createdAt,
+          updatedAt,
+        ]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { $ref: '#/components/schemas/SystemNotificationKind' }
+        title:
+          { type: string, minLength: 1, maxLength: 200, description: CMS-authored editorial copy }
+        body:
+          { type: string, minLength: 1, maxLength: 10000, description: CMS-authored editorial copy }
+        deepLink: { $ref: '#/components/schemas/SystemNotificationDeepLink' }
+        publishedAt: { type: [string, 'null'], format: date-time }
+        expiresAt: { type: [string, 'null'], format: date-time }
+        locale: { type: string, enum: [vi] }
+        status: { type: string, enum: [draft, published, archived] }
+        createdBy: { type: string, format: uuid }
+        updatedBy: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CmsSystemNotificationCreate:
+      type: object
+      additionalProperties: false
+      required: [kind, title, body]
+      properties:
+        kind: { type: string, enum: [maintenance, update, general] }
+        title: { type: string, minLength: 1, maxLength: 200 }
+        body: { type: string, minLength: 1, maxLength: 10000 }
+        locale: { type: string, enum: [vi], default: vi }
+        deepLink: { $ref: '#/components/schemas/SystemNotificationDeepLink' }
+        expiresAt: { type: [string, 'null'], format: date-time }
+    CmsSystemNotificationPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        kind: { $ref: '#/components/schemas/CmsSystemNotificationCreate/properties/kind' }
+        title: { $ref: '#/components/schemas/CmsSystemNotificationCreate/properties/title' }
+        body: { $ref: '#/components/schemas/CmsSystemNotificationCreate/properties/body' }
+        locale: { $ref: '#/components/schemas/CmsSystemNotificationCreate/properties/locale' }
+        deepLink: { $ref: '#/components/schemas/CmsSystemNotificationCreate/properties/deepLink' }
+        expiresAt: { $ref: '#/components/schemas/CmsSystemNotificationCreate/properties/expiresAt' }
+    SystemNotificationPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/SystemNotification' }
+        nextCursor: { type: [string, 'null'] }
+    CmsSystemNotificationPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CmsSystemNotification' }
+        nextCursor: { type: [string, 'null'] }
     NotificationSummary:
       type: object
       required: [unreadCount, asOf, readThroughCursor]

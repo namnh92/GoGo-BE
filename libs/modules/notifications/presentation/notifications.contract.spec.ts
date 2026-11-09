@@ -101,7 +101,7 @@ function fixture() {
 }
 describe('shared inbox public contract', () => {
   it('publishes additive MINOR operations, statuses and required retry header', () => {
-    expect(spec.info.version).toBe('7.7.0-alpha.1');
+    expect(spec.info.version).toBe('7.8.0-alpha.1');
     const read = spec.paths['/me/notifications/read-all'].post;
     expect(Object.keys(read.responses)).toEqual(
       expect.arrayContaining([

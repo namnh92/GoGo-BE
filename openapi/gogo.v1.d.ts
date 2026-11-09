@@ -2200,6 +2200,110 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/system-notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Public system announcements, available while signed out
+         * @description Published announcements with publishedAt <= server time and no expiry or expiresAt > server time. Ordered by (publishedAt DESC, id DESC), with opaque full-precision tuple cursors. No account-specific fields or read state. CMS-authored title/body are editorial copy, not composed facts. Clients display this section above the personal inbox for signed-in users; no duplication into /me/notifications or its unread summary. Rate limit is 60 requests/minute per IP, including conditional GETs. The shared cache can serve a representation for up to 60 seconds after expiry, edit or archive. Revalidation evaluates current visibility.
+         */
+        get: operations["listSystemNotifications"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/system-notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ops/super admin: list announcements including drafts and archived rows
+         * @description Ordered by (createdAt DESC, id DESC). Cache-Control is private, no-store.
+         */
+        get: operations["cmsListSystemNotifications"];
+        put?: never;
+        /**
+         * Ops/super admin: create a draft announcement
+         * @description Idempotency-Key is mandatory (8-128 ASCII word/hyphen characters). Creation, append-only audit and 24-hour replay record commit together. Same actor/key/body replays the original 201 even after later edits; changed body returns 422. Locale defaults to vi. No inbox/push rows.
+         */
+        post: operations["cmsCreateSystemNotification"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/system-notifications/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Ops/super admin: edit draft or published announcement copy
+         * @description Row-locked update and append-only audit commit together. Does not change status or publishedAt. Archived rows cannot be edited (409). Null deepLink/expiresAt clears the field; expiry must follow publication.
+         */
+        patch: operations["cmsPatchSystemNotification"];
+        trace?: never;
+    };
+    "/cms/system-notifications/{id}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ops/super admin: publish announcement
+         * @description Publishes a draft immediately with a server-owned publishedAt. Expired drafts return 400. Archived rows cannot be published (409). Repeating the same transition is a no-op returning 200 without another audit row or changing publishedAt. State and append-only audit commit together under a row lock. Creates no personal inbox or push records.
+         */
+        post: operations["cmsPublishSystemNotification"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cms/system-notifications/{id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ops/super admin: archive announcement
+         * @description Archives a draft or published row. Archived is terminal; data and audit history remain. Repeating the same transition is a no-op returning 200 without another audit row or changing publishedAt. State and append-only audit commit together under a row lock. Creates no personal inbox or push records.
+         */
+        post: operations["cmsArchiveSystemNotification"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/me/notifications": {
         parameters: {
             query?: never;
@@ -5955,6 +6059,80 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description Consumers must tolerate future system announcement kinds. */
+        SystemNotificationKind: string;
+        /** @description Canonical gogo app route only; no query, fragment, encoding or credentials. Null means no destination. */
+        SystemNotificationDeepLink: string | null;
+        SystemNotification: {
+            /** Format: uuid */
+            id: string;
+            kind: components["schemas"]["SystemNotificationKind"];
+            /** @description CMS-authored editorial copy */
+            title: string;
+            /** @description CMS-authored editorial copy */
+            body: string;
+            deepLink: components["schemas"]["SystemNotificationDeepLink"];
+            /** Format: date-time */
+            publishedAt: string;
+            /** Format: date-time */
+            expiresAt: string | null;
+        };
+        CmsSystemNotification: {
+            /** Format: uuid */
+            id: string;
+            kind: components["schemas"]["SystemNotificationKind"];
+            /** @description CMS-authored editorial copy */
+            title: string;
+            /** @description CMS-authored editorial copy */
+            body: string;
+            deepLink: components["schemas"]["SystemNotificationDeepLink"];
+            /** Format: date-time */
+            publishedAt: string | null;
+            /** Format: date-time */
+            expiresAt: string | null;
+            /** @enum {string} */
+            locale: "vi";
+            /** @enum {string} */
+            status: "draft" | "published" | "archived";
+            /** Format: uuid */
+            createdBy: string;
+            /** Format: uuid */
+            updatedBy: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        CmsSystemNotificationCreate: {
+            /** @enum {string} */
+            kind: "maintenance" | "update" | "general";
+            title: string;
+            body: string;
+            /**
+             * @default vi
+             * @enum {string}
+             */
+            locale: "vi";
+            deepLink?: components["schemas"]["SystemNotificationDeepLink"];
+            /** Format: date-time */
+            expiresAt?: string | null;
+        };
+        CmsSystemNotificationPatch: {
+            kind?: components["schemas"]["CmsSystemNotificationCreate"]["kind"];
+            title?: components["schemas"]["CmsSystemNotificationCreate"]["title"];
+            body?: components["schemas"]["CmsSystemNotificationCreate"]["body"];
+            locale?: components["schemas"]["CmsSystemNotificationCreate"]["locale"];
+            deepLink?: components["schemas"]["CmsSystemNotificationCreate"]["deepLink"];
+            expiresAt?: components["schemas"]["CmsSystemNotificationCreate"]["expiresAt"];
+        };
+        SystemNotificationPage: {
+            items: components["schemas"]["SystemNotification"][];
+            nextCursor: string | null;
+        };
+        CmsSystemNotificationPage: {
+            items: components["schemas"]["CmsSystemNotification"][];
+            nextCursor: string | null;
+        };
         NotificationSummary: {
             unreadCount: number;
             /** Format: date-time */
@@ -15694,6 +15872,196 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
+        };
+    };
+    listSystemNotifications: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: {
+                /** @description Entity tags (including weak tags or a list), or *. */
+                "If-None-Match"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Visible announcements */
+            200: {
+                headers: {
+                    "Cache-Control"?: "public, max-age=60";
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemNotificationPage"];
+                };
+            };
+            /** @description Current page matches If-None-Match; no response body */
+            304: {
+                headers: {
+                    "Cache-Control"?: "public, max-age=60";
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    cmsListSystemNotifications: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+                status?: "draft" | "published" | "archived";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Announcement page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsSystemNotificationPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    cmsCreateSystemNotification: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmsSystemNotificationCreate"];
+            };
+        };
+        responses: {
+            /** @description Created draft (or original replay) */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsSystemNotification"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            /** @description Idempotency-Key reused with a different body */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    cmsPatchSystemNotification: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CmsSystemNotificationPatch"];
+            };
+        };
+        responses: {
+            /** @description Updated announcement */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsSystemNotification"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    cmsPublishSystemNotification: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Announcement in the requested state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsSystemNotification"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    cmsArchiveSystemNotification: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Announcement in the requested state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsSystemNotification"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
         };
     };
     listNotifications: {

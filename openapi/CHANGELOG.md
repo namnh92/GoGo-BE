@@ -8,6 +8,19 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 7.8.0-alpha.1 — public system announcements (GoGo-BE#815)
+
+Additive MINOR: anonymous `GET /system-notifications`, cursor-paged by
+(publishedAt DESC, id DESC), published/unexpired rows only. Shared cache is
+`public, max-age=60`; ETag/304 revalidates the current page. DTOs carry seven
+public facts; title/body are CMS-authored editorial copy. Extensible response
+kinds initially include maintenance/update/general. No account read state.
+Ops/super admins can list, create drafts (mandatory transactional Idempotency-Key),
+edit, publish and archive with append-only audits. Migration 0093 and ADR-0051.
+Signed-in clients show the public section above the personal inbox; no duplicate
+inbox/push rows or changes to unread counts, preferences or delivery semantics.
+Regenerate clients; existing paths and schemas retain their guarantees.
+
 ## 7.7.0-alpha.1 — shared notification inbox (GoGo-BE#811 PR1, #809)
 
 Additive MINOR: shared unread summary, signed account-bound cutoff, durable bounded

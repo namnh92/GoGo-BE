@@ -1,3 +1,5 @@
+import { NotificationsModule } from '../../notifications/presentation/notifications.module';
+import { CmsSystemNotificationsController } from './cms-system-notifications.controller';
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { IdentityModule } from '../../identity/presentation/identity.module';
@@ -66,6 +68,7 @@ import {
 
 @Module({
   imports: [
+    NotificationsModule,
     IdentityModule,
     IngestionModule,
     SuggestionsModule,
@@ -74,6 +77,7 @@ import {
     AdministrativeModule,
   ],
   controllers: [
+    CmsSystemNotificationsController,
     CmsAreasController,
     CmsAuditController,
     CmsAuthController,
