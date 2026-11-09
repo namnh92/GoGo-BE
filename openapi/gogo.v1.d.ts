@@ -18145,11 +18145,9 @@ export interface operations {
             content: {
                 "application/json": {
                     pushEnabled: boolean;
-                    quietHours?: components["schemas"]["NotificationQuietHoursPatch"];
                     categories?: components["schemas"]["NotificationCategoryPatch"];
                 } | {
                     pushEnabled?: boolean;
-                    quietHours?: components["schemas"]["NotificationQuietHoursPatch"];
                     categories: components["schemas"]["NotificationCategoryChanges"];
                 } | {
                     pushEnabled?: boolean;

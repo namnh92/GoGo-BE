@@ -6971,14 +6971,12 @@ paths:
                   required: [pushEnabled]
                   properties:
                     pushEnabled: { type: boolean }
-                    quietHours: { $ref: '#/components/schemas/NotificationQuietHoursPatch' }
                     categories: { $ref: '#/components/schemas/NotificationCategoryPatch' }
                 - type: object
                   additionalProperties: false
                   required: [categories]
                   properties:
                     pushEnabled: { type: boolean }
-                    quietHours: { $ref: '#/components/schemas/NotificationQuietHoursPatch' }
                     categories: { $ref: '#/components/schemas/NotificationCategoryChanges' }
                 - type: object
                   additionalProperties: false

@@ -15,6 +15,8 @@ response; PATCH nhận enabled/timezone, giữ giá trị bị bỏ qua. Mặc �
 bật cần timezone IANA hợp lệ đã lưu hoặc trong request (thiếu/sai trả 400
 VALIDATION_FAILED). Cùng ETag/version, If-Match, idempotency và audit hiện có.
 PUT cũ giữ nguyên giờ yên lặng. Export tài khoản gồm cấu hình mới.
+Hai nhánh `anyOf` PATCH từ 9.0.0 giữ nguyên nội dung và thứ tự; giờ yên lặng
+được thêm bằng nhánh thứ ba, hỗ trợ cả cập nhật riêng và kết hợp master/category.
 
 Một date_reminder theo confirmed start từ room_constraints, trước 120 phút;
 không start thì không nhắc. Trong cửa sổ gửi ngay một lần khi còn trước start.

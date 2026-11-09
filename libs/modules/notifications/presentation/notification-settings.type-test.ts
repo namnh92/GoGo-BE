@@ -13,6 +13,8 @@ const valid: Patch[] = [
   { categories: { date_reminder: true, plan_ready: false } },
   { pushEnabled: true, categories: {} },
   { pushEnabled: true, categories: { plan_changed: false } },
+  { pushEnabled: false, categories: {}, quietHours: { enabled: false } },
+  { categories: { invite: true }, quietHours: { timezone: 'Asia/Ho_Chi_Minh' } },
 ];
 const invalid: Patch[] = [
   // @ts-expect-error Empty quiet-hours mutation is not a change.

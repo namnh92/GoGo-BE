@@ -4,7 +4,7 @@ import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fa
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { UserContentController } from '../../../libs/modules/reviews/presentation/user-content.controller';
 import { UserContentService } from '../../../libs/modules/reviews/application/user-content.service';
 import { DEFAULT_CATEGORIES } from '../../../libs/modules/notifications/domain/notification-registry';
@@ -78,6 +78,56 @@ describe('PR4 settings HTTP response without database infrastructure', () => {
   });
   beforeEach(() => {
     stored = initial();
+  });
+
+  it('validates legacy, quiet-only and combined PATCH bodies before calling the service', async () => {
+    const patch = vi.spyOn(service, 'patchNotificationSettings').mockResolvedValue({
+      version: '1',
+    } as Awaited<ReturnType<UserContentService['patchNotificationSettings']>>);
+    const request = (payload: object) =>
+      app.inject({
+        method: 'PATCH',
+        url: '/v1/me/notification-settings',
+        headers: { 'if-match': '"notification-settings-0"', 'idempotency-key': 'compat-test-826' },
+        payload,
+      });
+    try {
+      for (const payload of [
+        { pushEnabled: false },
+        { pushEnabled: true, categories: {} },
+        { categories: { invite: false } },
+        { pushEnabled: true, categories: { plan_ready: true, date_reminder: false } },
+        { quietHours: { enabled: false } },
+        { quietHours: { enabled: true, timezone: 'Asia/Ho_Chi_Minh' } },
+        { quietHours: { timezone: 'America/New_York' } },
+        { pushEnabled: false, categories: {}, quietHours: { enabled: false } },
+        { categories: { invite: true }, quietHours: { timezone: 'Asia/Ho_Chi_Minh' } },
+      ]) {
+        patch.mockClear();
+        expect((await request(payload)).statusCode, JSON.stringify(payload)).toBe(200);
+        expect(patch).toHaveBeenCalledWith(
+          actor,
+          payload,
+          '"notification-settings-0"',
+          expect.any(Object),
+        );
+      }
+      for (const payload of [
+        {},
+        { categories: {} },
+        { quietHours: {} },
+        { pushEnabled: true, quietHours: {} },
+        { quietHours: { timezone: null } },
+        { quietHours: { timezone: 'Mars/Olympus' } },
+        { pushEnabled: true, unexpected: true },
+      ]) {
+        patch.mockClear();
+        expect((await request(payload)).statusCode, JSON.stringify(payload)).toBe(400);
+        expect(patch).not.toHaveBeenCalled();
+      }
+    } finally {
+      patch.mockRestore();
+    }
   });
 
   it('returns default-off quietHours through the canonical GET settings reader', async () => {
