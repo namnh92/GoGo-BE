@@ -1,3 +1,4 @@
+import { NOTIFICATION_KINDS, type NotificationKind } from '../domain/notification-registry';
 import { Body, Controller, Get, Headers, Param, Post, Put, Query, Req, Res } from '@nestjs/common';
 import { z } from 'zod';
 import type { FastifyReply, FastifyRequest } from 'fastify';
@@ -31,8 +32,21 @@ export class NotificationsController {
   ) {}
 
   @Get('notifications')
-  list(@CurrentActor() actor: Actor, @Query('cursor') cursor?: string) {
-    return this.inbox.list(requireUser(actor), cursor);
+  list(
+    @CurrentActor() actor: Actor,
+    @Query('cursor', new ZodValidationPipe(z.string().max(2048).optional())) cursor?: string,
+    @Query(
+      'kinds',
+      new ZodValidationPipe(
+        z.preprocess(
+          (v) => (v === undefined ? [] : Array.isArray(v) ? v : [v]),
+          z.array(z.enum(NOTIFICATION_KINDS as [NotificationKind, ...NotificationKind[]])).max(100),
+        ),
+      ),
+    )
+    kinds: NotificationKind[] = [],
+  ) {
+    return this.inbox.list(requireUser(actor), cursor, kinds);
   }
 
   @Get('notifications/summary')

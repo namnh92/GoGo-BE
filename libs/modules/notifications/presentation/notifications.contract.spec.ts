@@ -100,8 +100,8 @@ function fixture() {
   return { inbox, controller, reply: reply as unknown as FastifyReply, headers: reply };
 }
 describe('shared inbox public contract', () => {
-  it('publishes additive MINOR operations, statuses and required retry header', () => {
-    expect(spec.info.version).toBe('7.8.0-alpha.1');
+  it('retains shared inbox operations and statuses in the category MAJOR', () => {
+    expect(spec.info.version).toBe('8.0.0-alpha.1');
     const read = spec.paths['/me/notifications/read-all'].post;
     expect(Object.keys(read.responses)).toEqual(
       expect.arrayContaining([
@@ -123,7 +123,7 @@ describe('shared inbox public contract', () => {
     expect(spec.paths['/me/notifications/{id}/read'].post.responses['201']).toBeDefined();
     expect(spec.components.schemas.NotificationKind.type).toBe('string');
     expect(spec.components.schemas.NotificationKind.enum).toBeUndefined();
-    expect(spec.paths['/me/notification-settings'].patch).toBeUndefined();
+    expect(spec.paths['/me/notification-settings'].patch).toBeDefined();
   });
   it('delegates summary with private/no-store, read-all with 202 and Location', async () => {
     const { controller, inbox, reply, headers } = fixture();
@@ -164,7 +164,38 @@ describe('shared inbox public contract', () => {
   it('keeps old list and single-read request and success shapes', async () => {
     const { controller, inbox } = fixture();
     await controller.list(account, '2026-11-08T00:00:00.000Z');
-    expect(inbox.list).toHaveBeenCalledWith(account.id, '2026-11-08T00:00:00.000Z');
+    expect(inbox.list).toHaveBeenCalledWith(account.id, '2026-11-08T00:00:00.000Z', []);
     expect(await controller.markRead(account, account.id)).toEqual({ read: true });
+  });
+});
+
+describe('PR2 notification preferences and kinds contract', () => {
+  it('publishes only five categories, optimistic/retry headers, and repeatable validated kinds', () => {
+    const patch = spec.paths['/me/notification-settings'].patch;
+    expect(patch.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'If-Match', required: true }),
+        expect.objectContaining({ name: 'Idempotency-Key', required: true }),
+      ]),
+    );
+    expect(Object.keys(patch.responses)).toEqual(
+      expect.arrayContaining(['200', '400', '412', '422', '428', '503']),
+    );
+    expect(
+      Object.keys(spec.components.schemas.NotificationCategoryPatch.properties).sort(),
+    ).toEqual(['date_reminder', 'invite', 'plan_changed', 'plan_ready', 'preference_reminder']);
+    expect(spec.components.schemas.NotificationCategoryPatch.additionalProperties).toBe(false);
+    expect(spec.paths['/me/notification-settings'].get.responses['200'].headers.ETag).toBeDefined();
+    expect(spec.paths['/me/notification-settings'].put.parameters ?? []).toEqual([]);
+    const kinds = spec.paths['/me/notifications'].get.parameters.find(
+      (p: { name?: string }) => p.name === 'kinds',
+    );
+    expect(kinds).toMatchObject({
+      in: 'query',
+      style: 'form',
+      explode: true,
+      schema: { type: 'array' },
+    });
+    expect(spec['x-gogo-notification-preference-semantics']).toBe('master-and-five-categories-v1');
   });
 });

@@ -2313,7 +2313,7 @@ export interface paths {
         };
         /**
          * In-app notification inbox (createdAt and id descending)
-         * @description New opaque signed cursors bind the account, all-kinds filter and committed sequence snapshot for 24 hours. Equal timestamps use id as a tie breaker. Previously issued ISO timestamp cursors remain accepted during transition; these retain their original exclusive timestamp boundary. Before backfill opens the rollout gate, this endpoint stays available, includes historical rows, and issues full-precision unsigned (createdAt,id) fallback cursors. Fallback continuations retain that boundary across gate activation without acquiring a sequence snapshot; only summary/read-all are gated. No category filter is activated in this release. All inbox kinds remain visible. Invalid/foreign/purpose-mismatched cursors return INVALID_NOTIFICATION_CURSOR; expired signed cursors return NOTIFICATION_CURSOR_EXPIRED.
+         * @description New opaque signed cursors bind the account, canonical kinds filter and committed sequence snapshot for 24 hours. Equal timestamps use id as a tie breaker. Previously issued ISO timestamp cursors remain accepted during transition; these retain their original exclusive timestamp boundary. Before backfill opens the rollout gate, this endpoint stays available, includes historical rows, and issues full-precision unsigned (createdAt,id) fallback cursors. Fallback continuations retain that boundary across gate activation without acquiring a sequence snapshot; only summary/read-all are gated. Optional repeatable kinds query parameters select NotificationKind values server-side. Unknown values return 400 VALIDATION_FAILED. Order and duplicates are ignored; changing the filter on a cursor returns 400 INVALID_NOTIFICATION_CURSOR. Timestamp and old unfiltered fallback cursors belong to the all-kinds filter. Summary unreadCount always counts the unfiltered inbox. Invalid/foreign/purpose-mismatched cursors return INVALID_NOTIFICATION_CURSOR; expired signed cursors return NOTIFICATION_CURSOR_EXPIRED.
          */
         get: operations["listNotifications"];
         put?: never;
@@ -3258,12 +3258,12 @@ export interface paths {
         };
         /**
          * Per-channel, per-kind notification opt-ins (legacy clients)
-         * @description Kept for clients released before NTF-BE-014 (#572). Push is now one switch per account (`GET /me/notification-settings`, ADR-0025), so every push kind here reports that switch's value; email rows are returned as stored. New clients read the settings resource instead.
+         * @description ADR-0050 supersedes ADR-0025: each push kind reports its effective permission (registered push support AND master AND category). Email rows remain stored choices. Moderation has no authorized push producer. New clients use the versioned settings resource to distinguish configured choices from suspension.
          */
         get: operations["getNotificationPreferences"];
         /**
          * Opt in/out of one notification kind on one channel (legacy clients)
-         * @description Kept for clients released before NTF-BE-014 (#572). The row is stored, but only a push opt-out changes delivery: it turns the account's push switch off (`source: legacy`), since a single kind can no longer be stopped on its own. `enabled: true` never turns push back on — that is `PUT /me/notification-settings`.
+         * @description Push opt-out disables the master (source legacy), retaining category choices. Push opt-in never enables the master or overrides a disabled category. Effective push mirrors are maintained atomically; email behavior is unchanged. No new headers are required on this existing PUT.
          */
         put: operations["setNotificationPreference"];
         post?: never;
@@ -3281,20 +3281,24 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * The account's one push switch (NTF-BE-014)
-         * @description ADR-0025. `pushEnabled` is what this account asked GoGo to do and nothing more: it is not this device's OS notification permission, not a registered push subscription (`PUT /me/push-subscriptions`), and never evidence that anything was delivered. The in-app inbox is written whatever it says.
+         * Account master and five category preferences (ADR-0050)
+         * @description ADR-0050. Master suspends all push including non-configurable other; each of five categories independently suppresses its registered push kinds. Missing category rows default true; existing master/default consent is preserved. Inbox and email are independent. Not OS permission, subscription or delivery. Returns a strong ETag over the decimal-string resource version.
          */
         get: operations["getNotificationSettings"];
         /**
          * Turn every push notification kind on or off
-         * @description Idempotent. `true` allows every push kind GoGo sends, CMS campaigns included; `false` stops all of them. Once set, per-kind rows written by older clients no longer affect delivery (ADR-0025). A client should keep showing the previous value until this returns, and restore it on failure.
+         * @description Existing global-enable semantics preserved: true enables master and all five categories atomically; false disables master and remembers category choices. Does not newly require If-Match or Idempotency-Key. During rollback freeze, preference mutations return 503 NOTIFICATION_PREFERENCES_FROZEN.
          */
         put: operations["setNotificationSettings"];
         post?: never;
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Change master and/or category choices atomically
+         * @description At least one field or category is required; omitted choices remain unchanged. Master changes retain category choices. Changing a category never enables master. Enable all submits all five categories true and leaves master unchanged. If-Match must equal the current strong ETag. Idempotency replay precedes stale version rejection and returns the original response/ETag without another write. Mutation, version increment, effective legacy mirrors, audit and replay commit together under the account lock. Suppressed push is terminal; opt-in never replays backlog. A change after the final eligibility check may race an already-starting provider call.
+         */
+        patch: operations["patchNotificationSettings"];
         trace?: never;
     };
     "/docs": {
@@ -8305,20 +8309,63 @@ export interface components {
             decision: "published" | "rejected" | "approved" | "actioned" | "dismissed";
             reason: string;
         };
-        /** @description ADR-0025. One app-level push switch per account. Deliberately carries no OS permission, subscription or delivery field: the device knows its own permission, `PUT /me/push-subscriptions` records reachability, and only the provider knows about delivery. */
+        /** @description ADR-0050. Account master plus five remembered category choices. Carries no OS permission, subscription or delivery field: the device knows its own permission, `PUT /me/push-subscriptions` records reachability, and only the provider knows about delivery. */
         NotificationSettings: {
-            /** @description Whether GoGo may ask the provider to push to this account, for every kind. */
+            /** @description Account master gate; registered kind and category must also permit push. */
             pushEnabled: boolean;
             /**
              * @description `default` — never chosen, so on. `explicit` — set through `PUT /me/notification-settings`. `migrated` — derived once by migration 0064 from per-kind choices: on only if every stored push kind was on. `legacy` — an older client turned one kind off, which turns push off.
              * @enum {string}
              */
             source: "default" | "explicit" | "migrated" | "legacy";
+            /** @description Monotonic resource version represented without JavaScript precision loss. */
+            version?: string;
+            categories?: components["schemas"]["NotificationCategoryPatch"] & unknown;
             /**
              * Format: date-time
              * @description When the switch was last stored; null while it is the default.
              */
             updatedAt: string | null;
+        };
+        /** @description Five configurable categories only. Other is non-configurable and follows master. */
+        NotificationCategoryPatch: {
+            invite?: boolean;
+            preference_reminder?: boolean;
+            plan_ready?: boolean;
+            plan_changed?: boolean;
+            date_reminder?: boolean;
+        };
+        /** @description At least one category choice; all supplied values are booleans. */
+        NotificationCategoryChanges: {
+            invite: boolean;
+            preference_reminder?: boolean;
+            plan_ready?: boolean;
+            plan_changed?: boolean;
+            date_reminder?: boolean;
+        } | {
+            invite?: boolean;
+            preference_reminder: boolean;
+            plan_ready?: boolean;
+            plan_changed?: boolean;
+            date_reminder?: boolean;
+        } | {
+            invite?: boolean;
+            preference_reminder?: boolean;
+            plan_ready: boolean;
+            plan_changed?: boolean;
+            date_reminder?: boolean;
+        } | {
+            invite?: boolean;
+            preference_reminder?: boolean;
+            plan_ready?: boolean;
+            plan_changed: boolean;
+            date_reminder?: boolean;
+        } | {
+            invite?: boolean;
+            preference_reminder?: boolean;
+            plan_ready?: boolean;
+            plan_changed?: boolean;
+            date_reminder: boolean;
         };
         /** @description Declared extensible (alpha.69): a client treats a kind it does not know as an opaque notification it cannot render specially — never as a malformed item — so a new kind is not a breaking change on the inbox or the preference list. `privacy_export_ready` (GoGo-BE#256) is in-app only: its payload is `{ exportId, expiresAt }` and is never pushed. */
         NotificationKind: string;
@@ -16069,6 +16116,8 @@ export interface operations {
             query?: {
                 /** @description Opaque cursor from a previous page. */
                 cursor?: components["parameters"]["Cursor"];
+                /** @description Known NotificationKind values only; repeat for multiple kinds. Omit for all kinds. */
+                kinds?: (components["schemas"]["NotificationKind"] & ("invite" | "preference_reminder" | "plan_ready" | "plan_changed" | "date_reminder" | "moderation_update" | "campaign" | "privacy_export_ready"))[];
             };
             header?: never;
             path?: never;
@@ -17906,7 +17955,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Every push kind carrying the switch's value, then stored email rows */
+            /** @description Effective permission per legacy push kind, then stored email rows */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -17963,6 +18012,9 @@ export interface operations {
             /** @description The switch as the server applies it */
             200: {
                 headers: {
+                    /** @description Strong notification settings resource ETag */
+                    ETag?: string;
+                    "Cache-Control"?: "private, no-store";
                     [name: string]: unknown;
                 };
                 content: {
@@ -18012,6 +18064,90 @@ export interface operations {
                 content?: never;
             };
             503: components["responses"]["SessionLookupUnavailable"];
+        };
+    };
+    patchNotificationSettings: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    pushEnabled: boolean;
+                    categories?: components["schemas"]["NotificationCategoryPatch"];
+                } | {
+                    pushEnabled?: boolean;
+                    categories: components["schemas"]["NotificationCategoryChanges"];
+                };
+            };
+        };
+        responses: {
+            /** @description Updated settings or original idempotent replay */
+            200: {
+                headers: {
+                    ETag?: string;
+                    "Cache-Control"?: "private, no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationSettings"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description IDEMPOTENT_REQUEST_IN_FLIGHT */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description NOTIFICATION_SETTINGS_VERSION_MISMATCH */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description IDEMPOTENCY_KEY_REUSED */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description PRECONDITION_REQUIRED */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            /** @description NOTIFICATION_PREFERENCES_FROZEN or dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     getDocsPage: {

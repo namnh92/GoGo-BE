@@ -218,11 +218,14 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   system_notifications_reads_total: ['status'],
   system_notifications_writes_total: ['action'],
   notification_inbox_summary_total: [],
+  notification_push_suppressed_total: ['kind', 'category', 'reason'],
+  notification_push_enqueue_total: ['kind', 'category', 'outcome'],
+  notification_push_outcome_total: ['kind', 'category', 'outcome'],
   notification_read_all_requests_total: ['status'],
   notification_read_all_batches_total: ['status'],
   notification_read_all_changed_total: [],
   campaign_dispatched_total: ['result'],
-  // #193 — one provider call per event; `kind` is the notification kind enum.
+  // #811 PR2 — one provider call per event/recipient; `kind` is a registry key.
   // `sent` counts provider-accepted calls, `unknown_user` the ids the provider
   // had no subscription for (never logged in on any device, or logged out),
   // `failed` a permanent refusal (configuration or payload) the dispatcher does

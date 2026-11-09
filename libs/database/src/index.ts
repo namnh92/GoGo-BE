@@ -26,3 +26,12 @@ export {
   backfillNotificationInboxBatch,
   finishNotificationInboxRollout,
 } from './notification-inbox';
+export {
+  enableNotificationRecipientKeys,
+  disableNotificationRecipientKeys,
+  quiesceNotificationProducers,
+  resumeNotificationProducers,
+  freezeNotificationPreferenceWrites,
+  collapseNotificationCategoriesBatch,
+  unfreezeNotificationPreferenceWrites,
+} from './notification-categories';

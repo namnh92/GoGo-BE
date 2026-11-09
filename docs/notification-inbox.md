@@ -1,7 +1,7 @@
-# Shared notification inbox — #811 PR1 / #809
+# Notification inbox and category preferences — #811 PR1–2 / #809
 
-ADR-0050 defines the four-PR shape. Contract **7.7.0-alpha.1** implements only shared inbox
-storage and read APIs. Owner decisions dated **2026-11-08** are recorded in
+ADR-0050 defines the four-PR shape. Contract **8.0.0-alpha.1** includes shared inbox
+storage/read APIs, category preferences, and server-side kinds filtering. Owner decisions dated **2026-11-08** are recorded in
 workspace `.claude/rules/execution-policy.md` §8 (BE#811) and ADR-0050 §6:
 one reminder **120 minutes** before confirmed start (no start, no reminder;
 reschedule/cancel on changes; newly confirmed inside the window sends once
@@ -123,7 +123,7 @@ Indexes built outside the transactional migration runner:
 Read-through and page tokens are signed with a domain-separated key derived from
 `AUTH_JWT_SECRET` (at least 32 characters). An unavailable key fails closed with
 503; rotation invalidates existing tokens and clients should refetch. Tokens bind
-account, purpose, schema version, all-kinds filter, committed sequence cutoff,
+account, purpose, schema version, canonical kinds filter (all for read-through), committed sequence cutoff,
 capture time and a 24-hour expiry. Page tokens also carry `(createdAt,id)`.
 Before cutover, the list requires no signing key and returns unsigned, strictly
 validated `before:<full-precision UTC timestamp>:<UUID>` tuple cursors. These retain
@@ -175,3 +175,142 @@ resumable on roll-forward. Do not reverse readAt or resequence rows. A physical
 schema removal needs a later maintenance migration after clients and operations
 have drained. This PR does not activate category policies or ADR-0050's later
 category rollback procedure.
+
+## Category preferences — PR2
+
+Five configurable categories default true: `invite`, `preference_reminder`,
+`plan_ready`, `plan_changed`, `date_reminder`. Absent rows mean true. Migration
+0094 preserves master/default consent and does not reconstruct choices from legacy
+mirrors. `other` covers campaign/moderation/privacy/unknown kinds and has no switch.
+Campaign follows master; moderation gains no push producer; privacy and unknown
+kinds never push. The exhaustive notification registry owns channel/event decisions.
+Email and inbox remain independent of push preferences.
+
+| Operation                       | Master              | Five choices              |
+| ------------------------------- | ------------------- | ------------------------- |
+| PATCH master false/true         | Set requested value | Retained                  |
+| PATCH one category              | Retained            | Only supplied keys change |
+| Enable all: PATCH all five true | Retained            | All true atomically       |
+| Existing PUT true               | True                | All true atomically       |
+| Existing PUT false              | False               | Retained                  |
+| Legacy push opt-out             | False               | Retained                  |
+| Legacy push opt-in              | Retained            | Retained                  |
+
+GET `/v1/me/notification-settings` returns `version` as a decimal string,
+`categories`, and strong `ETag: "notification-settings-12"`; private/no-store.
+PATCH accepts optional `pushEnabled` and partial `categories`, requiring at least
+one change, `If-Match` and `Idempotency-Key`. Never send `other`. A successful replay
+returns the original result and ETag before stale-version rejection. A new stale
+write returns 412 NOTIFICATION_SETTINGS_VERSION_MISMATCH; absent If-Match returns
+428 PRECONDITION_REQUIRED. Reusing a key with a different body returns 422.
+Refetch after replay to obtain current state. Existing PUT routes gain no header
+requirements. Account lock, version, effective legacy mirrors, audit and replay
+completion share one transaction. No-op explicit writes preserve version/time.
+Export includes configured categories/version; hard deletion cascades, and soft
+account erasure explicitly removes preferences and delivery state.
+
+## Kinds filtering
+
+Use `/v1/me/notifications?kinds=invite&kinds=plan_ready` (repeatable query parameter,
+form/explode). Filtering happens in SQL before the page limit. Unknown/empty/comma-
+joined values return 400 VALIDATION_FAILED. Omission selects all kinds; order and
+duplicates have no effect. Cursors bind the canonical set: a different set, including
+all versus filtered, returns 400 INVALID_NOTIFICATION_CURSOR. Existing signed page
+cursors remain all-kinds. Legacy timestamps and old unsigned tuple cursors belong
+to all kinds. Before inbox cutover, filtered tuple fallback cursors retain their
+filter and no-snapshot continuation semantics across cutover. Filtered signed pages
+retain the same committed sequence cutoff and microsecond/id ordering as all-kinds
+pages. Summary and read-through tokens remain unfiltered. Use the existing
+`pnpm inbox:backfill` rollout CLI to build/repair
+`notifications_inbox_kind_page_idx(user_id,kind,created_at DESC,id DESC)` concurrently;
+0094 contains no concurrent index DDL or fleet-wide data backfill.
+
+## Category rollout and conservative rollback
+
+**Rebase/merge #815 (0093) first, then this PR (0094).** Refresh exact contract
+hashes after rebasing. CODEOWNER contract/migration review remains separate.
+
+1. Apply 0094 after 0093 (#816). Its additive DDL uses a 5s lock timeout;
+   retry after contention clears. The `notification_settings.version` CHECK is
+   added `NOT VALID` so nothing is scanned under ACCESS EXCLUSIVE; after
+   `db:migrate` returns, run `scripts/ops/validate-notification-settings-version.sql`
+   (SHARE UPDATE EXCLUSIVE, retry-safe) to validate existing rows. Existing GET
+   remains available. Category-aware preference mutations and outbox dispatch fail
+   closed until the key gate opens.
+2. Before **every worker binary transition**, stop API/jobs that produce outbox
+   events and run `pnpm notifications:categories --quiesce-producers`. This durable
+   database fence rejects **all outbox inserts**, including from old binaries;
+   the command waits for in-flight producer transactions to commit. Keep producers
+   stopped/fenced throughout draining and switching. Plan a maintenance window for
+   all outbox-producing business operations; the fence rolls back their transaction.
+3. Drain/reconcile **all** unresolved mapped events (dead letters included) with
+   the currently running binary and its **existing provider keys**. Initial
+   cutover/roll-forward from old workers uses event/locale keys; category-aware
+   workers use recipient keys. Reconcile ambiguous provider acceptance using the
+   original request/cohort/locale and key; if the result cannot be established,
+   **abort the switch and keep the fence**. Never re-key, delete delivery state,
+   clear terminal suppression, or mark work published merely to open a gate.
+   Once reconciled, stop all old workers and confirm no calls remain in flight.
+   Run `pnpm inbox:backfill`, then
+   `pnpm notifications:categories --enable-recipient-keys`. The gate requires the
+   producer fence and zero unpublished mapped events **regardless of age**, plus
+   zero pending/attempting recipient deliveries even on published events. Only then
+   deploy/start category-aware API/workers and run
+   `pnpm notifications:categories --resume-producers`. Verify gates and the new API.
+   Both gates also refuse while any campaign is `sending`: the binary that started
+   walking its recipients finishes it.
+4. Recipient delivery state is durable (pending/attempting/sent/suppressed/failed/no_target).
+   Every cohort is preference-gated before pending work, then eligibility is
+   rechecked immediately before every provider call/retry. Each attempt resolves
+   **every ledger row of the event**, not only today's members: a recipient staged
+   by an earlier attempt who has since left the room or been erased fails the final
+   check and ends `suppressed`; an event publishes only when no row is left
+   pending/attempting, otherwise it backs off and retries. Per-recipient stable UUID
+   keys survive retries and changing locales/cohorts. A 2-minute claim lease allows
+   crash recovery; provider idempotency handles acceptance before a DB failure.
+   Suppression is terminal and opt-in never replays it. Campaign provider keys and
+   public-device consent stay unchanged; account campaigns recheck live audience
+   and master before each send and persist terminal suppression. Composer previews
+   require a live account/subscription and master consent, but ignore campaign
+   room/platform targeting.
+5. A preference commit before the final check governs the attempt. A later commit
+   can race a provider request already starting/accepted. No transaction spans a
+   provider call; a saved preference cannot retract a push. Metrics distinguish
+   enqueue, suppression, acceptance/no-target, retry and dead-letter outcomes;
+   account/event identifiers and payloads are never metric labels.
+
+For rollback to a pre-category binary, **quiesce/fence producers first** with
+`--quiesce-producers`, while leaving the current category-aware workers running to
+finish delivery. Drain/reconcile using the current recipient keys: after partial
+acceptance retry only unresolved recipients with those same keys; keep sent and
+terminally suppressed recipients terminal. Ambiguous acceptance blocks rollback.
+Stop the category-aware workers only after reconciliation, then run
+`pnpm notifications:categories --rollback-collapse`. This repeats the full delivery
+gate, commits the preference write freeze and **disables recipient-key dispatch**,
+then collapses at most one account per subsequent transaction. Any disabled category
+becomes master=false and all legacy push mirrors=false. The same collapse applies to
+an account holding a **terminally suppressed campaign delivery an old binary could
+still resume** — a `campaign:<dispatch_key>:<user>` inbox row with `push_sent_at`
+null and `push_suppressed_at` set, whose campaign is `scheduled`/`sending`/`failed`
+with that dispatch key (`failed → scheduled` keeps the key). The old campaign worker
+reads only `push_sent_at` and the master, so master=false is the only form it
+respects; `sent` dispatches (no outgoing transition) and cancelled ones (key cleared)
+collapse nobody. Such an account rolls back to push off even if it had re-enabled
+everything, and roll-forward does not restore it. Category rows, versions,
+inbox/read markers, published events, campaign rows and delivery ledgers remain intact.
+The operator-only transaction-local `gogo.notification_rollback` bypass is used by
+this command; APIs never set it. Database triggers reject INSERT/UPDATE from old
+binaries while frozen; deletes remain possible for erasure. New APIs report
+503 NOTIFICATION_PREFERENCES_FROZEN. Keep mutation routes unavailable on old binaries
+(their DB error may map to 500). Verify collapse reaches zero, switch to old workers,
+then run `--resume-producers`; it refuses an incomplete collapse. Re-running is safe.
+Do not reopen reconciled published events: old workers do not understand recipient
+terminal suppression, and their event/locale keys differ from recipient keys.
+
+On roll-forward, **repeat the producer fence and full drain with the old workers
+and their event/locale keys**. Events created after the original cutover timestamp
+are included. Stop old workers, run `--enable-recipient-keys`, restore/start the
+category-aware binary, then `--unfreeze` and `--resume-producers`. Unfreeze requires
+the cutover gate and **never restores master=true automatically**. Normally roll
+back to a category-aware revision instead. Do not drop additive tables/columns on
+binary rollback.

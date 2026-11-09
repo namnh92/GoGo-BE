@@ -1,4 +1,22 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Put } from '@nestjs/common';
+import type { FastifyReply, FastifyRequest } from 'fastify';
+import { ManualIdempotency, idempotencyScope } from '../../shared/idempotency.interceptor';
+import {
+  settingsEtag,
+  type SettingsPatch,
+} from '../../notifications/application/category-preferences';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Put,
+  Headers,
+  Req,
+  Res,
+} from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import type { Actor } from '../../identity/domain/actor';
@@ -27,6 +45,22 @@ const reviewPatchSchema = z.object({
 });
 
 /** NTF-BE-014 (#572) — the one push switch; nothing else is accepted. */
+const categoryPatch = z
+  .object({
+    invite: z.boolean().optional(),
+    preference_reminder: z.boolean().optional(),
+    plan_ready: z.boolean().optional(),
+    plan_changed: z.boolean().optional(),
+    date_reminder: z.boolean().optional(),
+  })
+  .strict();
+const settingsPatch = z
+  .object({ pushEnabled: z.boolean().optional(), categories: categoryPatch.optional() })
+  .strict()
+  .refine(
+    (v) => v.pushEnabled !== undefined || Object.keys(v.categories ?? {}).length > 0,
+    'At least one change required',
+  );
 const notifSettingsSchema = z.object({ pushEnabled: z.boolean() }).strict();
 
 // eslint-disable-next-line no-useless-assignment -- used in decorator below
@@ -106,10 +140,35 @@ export class UserContentController {
     return this.service.deleteAccount(actor);
   }
 
-  /** NTF-BE-014 (#572), ADR-0025 — one app-level push switch. */
+  /** ADR-0050 — versioned master plus five independent category preferences. */
   @Get('me/notification-settings')
-  notificationSettings(@CurrentActor() actor: Actor) {
-    return this.service.getNotificationSettings(actor);
+  async notificationSettings(
+    @CurrentActor() actor: Actor,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ) {
+    const result = await this.service.getNotificationSettings(actor);
+    reply.header('ETag', settingsEtag(result.version)).header('Cache-Control', 'private, no-store');
+    return result;
+  }
+
+  @ManualIdempotency()
+  @Patch('me/notification-settings')
+  async patchNotificationSettings(
+    @CurrentActor() actor: Actor,
+    @Headers('if-match') ifMatch: string | undefined,
+    @Headers('idempotency-key') key: string | undefined,
+    @Body(new ZodValidationPipe(settingsPatch)) body: SettingsPatch,
+    @Req() req: FastifyRequest,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ) {
+    const result = await this.service.patchNotificationSettings(
+      actor,
+      body,
+      ifMatch,
+      idempotencyScope(Object.assign(req, { actor }), key ?? ''),
+    );
+    reply.header('ETag', settingsEtag(result.version)).header('Cache-Control', 'private, no-store');
+    return result;
   }
 
   @Put('me/notification-settings')

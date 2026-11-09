@@ -66,7 +66,9 @@ export class CampaignDispatcher {
   constructor(
     private readonly db: Db,
     private readonly push: NotificationProviderPort,
-    private readonly metrics?: { increment(name: string, labels?: Record<string, string>): void },
+    private readonly metrics?: {
+      increment(name: string, labels?: Record<string, string>, by?: number): void;
+    },
     /**
      * Where public media is readable in this environment. The provider fetches
      * the picture itself at delivery time, so what it needs is the durable
@@ -139,6 +141,23 @@ export class CampaignDispatcher {
       const predicate = audiencePredicate(campaign.audience_type, campaign.audience_filter);
       const preference = respectsPushPreference();
 
+      // A retry must terminally suppress previously materialized work whose
+      // account no longer qualifies, even when enumeration now excludes it.
+      // This touches existing inbox rows only and never broadens inbox audience.
+      const suppressed = await this.db.execute<{ n: number }>(sql`with changed as (
+        update notifications n set push_suppressed_at = now() from users u
+        where n.user_id = u.id and n.kind = 'campaign' and n.push_sent_at is null
+          and n.push_suppressed_at is null
+          and n.dedupe_key = 'campaign:' || ${campaign.dispatch_key} || ':' || u.id::text
+          and not (${predicate} and ${preference}) returning n.id
+      ) select count(*)::int as n from changed`);
+      if (suppressed.rows[0]?.n)
+        this.metrics?.increment(
+          'notification_push_suppressed_total',
+          { kind: 'campaign', category: 'other', reason: 'final_eligibility' },
+          suppressed.rows[0].n,
+        );
+
       // Resolved here rather than at schedule time: the audience is whoever
       // qualifies when the send happens, and an estimate taken days earlier
       // would quietly exclude everyone who joined since.
@@ -160,6 +179,7 @@ export class CampaignDispatcher {
         const batch = (recipients as { id: string }[]).slice(offset, offset + RECIPIENT_BATCH);
         for (const recipient of batch) {
           const delivered = await this.deliver(campaign, recipient.id, {
+            mode: 'campaign',
             dedupeKey: campaignDedupeKey(campaign.dispatch_key, recipient.id),
           });
           // `already_sent` is a push an earlier run of this same dispatch got
@@ -349,7 +369,7 @@ export class CampaignDispatcher {
   private async deliver(
     campaign: DueCampaign,
     userId: string,
-    options: { dedupeKey: string },
+    options: { dedupeKey: string; mode: 'campaign' | 'test' },
   ): Promise<'sent' | 'already_sent' | 'no_target'> {
     const payload = {
       campaignId: campaign.id,
@@ -366,14 +386,36 @@ export class CampaignDispatcher {
       on conflict (dedupe_key) where dedupe_key is not null do nothing
     `);
     const { rows } = await this.db.execute(sql`
-      select n.id, n.push_sent_at from notifications n join users u on u.id = n.user_id
+      select n.id, n.push_sent_at, n.push_suppressed_at from notifications n join users u on u.id = n.user_id
       where n.dedupe_key = ${options.dedupeKey} and u.status <> 'deleted'
     `);
-    const row = rows[0] as { id: string; push_sent_at: Date | string | null } | undefined;
+    const row = rows[0] as
+      | { id: string; push_sent_at: Date | string | null; push_suppressed_at: string | null }
+      | undefined;
     // The audience may have been erased since it was selected. The common
     // insert trigger also suppresses a concurrent erasure before allocation.
     if (!row) return 'no_target';
     if (row.push_sent_at !== null) return 'already_sent';
+    if (row.push_suppressed_at !== null) return 'no_target';
+    // A composer previews on their own eligible account, regardless of the
+    // campaign's platform/room targeting. Consent and reachability still apply.
+    const audience =
+      options.mode === 'test'
+        ? audiencePredicate('all', {})
+        : audiencePredicate(campaign.audience_type, campaign.audience_filter);
+    const eligible = await this.db.execute(sql`select u.id from users u where u.id = ${userId}::uuid
+      and ${audience} and ${respectsPushPreference()}`);
+    if (!eligible.rows[0]) {
+      await this.db.execute(
+        sql`update notifications set push_suppressed_at = now() where id = ${row.id}::uuid`,
+      );
+      this.metrics?.increment('notification_push_suppressed_total', {
+        kind: 'campaign',
+        category: 'other',
+        reason: 'final_eligibility',
+      });
+      return 'no_target';
+    }
 
     // #193: addressed by user id; the provider owns the device list. A thrown
     // provider error propagates to `send`, which marks the campaign `failed`
@@ -433,6 +475,7 @@ export class CampaignDispatcher {
       }
       try {
         await this.deliver(row, row.test_send_user_id, {
+          mode: 'test',
           // Unique per request, so a composer can preview a campaign as many
           // times as they need without the dedupe key silencing the second one.
           dedupeKey: `campaign_test:${row.id}:${row.test_send_user_id}:${Date.now()}`,

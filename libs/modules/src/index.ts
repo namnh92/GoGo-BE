@@ -70,6 +70,7 @@ export { NotificationsModule } from '../notifications/presentation/notifications
 export { UserContentService } from '../reviews/application/user-content.service';
 export {
   OutboxDispatcher,
+  EVENT_TO_NOTIFICATION,
   MAX_DELIVERY_ATTEMPTS,
   RETRY_BACKOFF_SECONDS,
 } from '../notifications/application/outbox-dispatcher';

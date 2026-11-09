@@ -18,7 +18,13 @@ import {
   type ExportActor,
   type NotificationSettingsView,
 } from './user-export';
-import { pushAllowed } from '../../notifications/application/push-preference';
+import {
+  mutateNotificationSettings,
+  mutateNotificationEmail,
+  type SettingsPatch,
+} from '../../notifications/application/category-preferences';
+import { effectivePush } from '../../notifications/domain/notification-registry';
+import type { IdempotencyScope } from '../../shared/idempotency.interceptor';
 import { activeDataset } from '../../administrative/application/unit-lookup';
 import {
   UNKNOWN_AREA,
@@ -48,48 +54,6 @@ const LEGACY_PUSH_KINDS = [
   'date_reminder',
   'moderation_update',
 ] as const;
-
-type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
-
-/**
- * One account's notification writes run one at a time. The switch and the
- * per-kind rows below must agree when a transaction commits; two writers
- * interleaving could otherwise leave the switch off and a per-kind row on.
- * `for no key update` does not block the foreign-key checks of rows that
- * reference the account (inbox, subscriptions).
- */
-async function lockNotificationChoices(tx: Tx, userId: string): Promise<void> {
-  await tx.execute(sql`select 1 from users where id = ${userId}::uuid for no key update`);
-}
-
-/**
- * ADR-0025, rollback compatibility. The release before the switch decides push
- * from per-kind `push` rows alone: the outbox skips a kind whose row is off, and
- * campaigns skip a `campaign` row that is off. Writing the switch's value into
- * every kind's row, campaign included, means a rolled-back release pushes to
- * this account exactly when this release does. This release ignores these rows
- * once a switch row exists, so they cannot override the switch here.
- */
-async function mirrorPushChoice(tx: Tx, userId: string, enabled: boolean): Promise<void> {
-  await tx
-    .insert(schema.notificationPreferences)
-    .values(
-      schema.notificationKind.enumValues.map((kind) => ({
-        userId,
-        channel: 'push' as const,
-        kind,
-        enabled,
-      })),
-    )
-    .onConflictDoUpdate({
-      target: [
-        schema.notificationPreferences.userId,
-        schema.notificationPreferences.channel,
-        schema.notificationPreferences.kind,
-      ],
-      set: { enabled },
-    });
-}
 
 export type { NotificationSettingsView };
 
@@ -694,6 +658,12 @@ export class UserContentService {
         .delete(schema.notificationPreferences)
         .where(eq(schema.notificationPreferences.userId, userId));
       await tx
+        .delete(schema.notificationCategoryPreferences)
+        .where(eq(schema.notificationCategoryPreferences.userId, userId));
+      await tx.execute(
+        sql`delete from notification_push_deliveries where user_id = ${userId}::uuid`,
+      );
+      await tx
         .delete(schema.notificationSettings)
         .where(eq(schema.notificationSettings.userId, userId));
       // The membership row stays so a room still adds up for the people left
@@ -737,9 +707,9 @@ export class UserContentService {
     return { deleted: true };
   }
 
-  // --- notification settings (NTF-BE-014, ADR-0025) -------------------------
+  // --- notification settings (ADR-0050) -------------------------
 
-  /** The one app-level push switch for this account. */
+  /** Account master plus five independent, remembered category choices. */
   async getNotificationSettings(actor: Actor): Promise<NotificationSettingsView> {
     return this.notificationSettingsFor(requireUser(actor));
   }
@@ -748,19 +718,19 @@ export class UserContentService {
     actor: Actor,
     input: { pushEnabled: boolean },
   ): Promise<NotificationSettingsView> {
-    const userId = requireUser(actor);
-    await this.db.transaction(async (tx) => {
-      await lockNotificationChoices(tx, userId);
-      await tx
-        .insert(schema.notificationSettings)
-        .values({ userId, pushEnabled: input.pushEnabled, source: 'explicit' })
-        .onConflictDoUpdate({
-          target: schema.notificationSettings.userId,
-          set: { pushEnabled: input.pushEnabled, source: 'explicit', updatedAt: sql`now()` },
-        });
-      await mirrorPushChoice(tx, userId, input.pushEnabled);
+    return mutateNotificationSettings(this.db, requireUser(actor), input, { legacyPut: true });
+  }
+
+  async patchNotificationSettings(
+    actor: Actor,
+    input: SettingsPatch,
+    ifMatch: string | undefined,
+    scope: IdempotencyScope,
+  ) {
+    return mutateNotificationSettings(this.db, requireUser(actor), input, {
+      ...(ifMatch === undefined ? {} : { ifMatch }),
+      scope,
     });
-    return this.notificationSettingsFor(userId);
   }
 
   private notificationSettingsFor(userId: string): Promise<NotificationSettingsView> {
@@ -770,9 +740,9 @@ export class UserContentService {
   // --- legacy per-kind preferences (FR-USER-004, older clients) -------------
 
   /**
-   * ADR-0025: push is one switch now, so every push kind reads as that switch.
-   * An older client showing a kind as on while nothing is pushed would be
-   * telling the person something untrue. Email rows come back as stored.
+   * ADR-0050: legacy clients see each kind's effective push permission.
+   * Configured category choices stay separate from master suspension.
+   * Email rows come back as stored.
    */
   async getNotificationPreferences(actor: Actor) {
     const userId = requireUser(actor);
@@ -787,7 +757,7 @@ export class UserContentService {
       ...LEGACY_PUSH_KINDS.map((kind) => ({
         channel: 'push' as const,
         kind,
-        enabled: settings.pushEnabled,
+        enabled: effectivePush(kind, settings.pushEnabled, settings.categories),
       })),
       ...rows
         .filter((r) => r.channel === 'email')
@@ -806,50 +776,14 @@ export class UserContentService {
     input: { channel: 'push' | 'email'; kind: string; enabled: boolean },
   ) {
     const userId = requireUser(actor);
-    await this.db.transaction(async (tx) => {
-      await lockNotificationChoices(tx, userId);
-      const row = {
+    if (input.channel === 'email') await mutateNotificationEmail(this.db, userId, input);
+    else
+      await mutateNotificationSettings(
+        this.db,
         userId,
-        channel: input.channel,
-        kind: input.kind as never,
-        enabled: input.enabled,
-      };
-      const upsertRow = () =>
-        tx
-          .insert(schema.notificationPreferences)
-          .values(row)
-          .onConflictDoUpdate({
-            target: [
-              schema.notificationPreferences.userId,
-              schema.notificationPreferences.channel,
-              schema.notificationPreferences.kind,
-            ],
-            set: { enabled: input.enabled },
-          });
-
-      if (input.channel === 'email') {
-        await upsertRow();
-        return;
-      }
-      if (!input.enabled) {
-        await tx
-          .insert(schema.notificationSettings)
-          .values({ userId, pushEnabled: false, source: 'legacy' })
-          .onConflictDoUpdate({
-            target: schema.notificationSettings.userId,
-            set: { pushEnabled: false, source: 'legacy', updatedAt: sql`now()` },
-          });
-        await mirrorPushChoice(tx, userId, false);
-        return;
-      }
-      // A push opt-in is stored only while push is allowed. Stored while push is
-      // off, it would make a rolled-back release push a kind this release does
-      // not — the one outcome ADR-0025 rules out.
-      const { rows } = await tx.execute(
-        sql`select ${pushAllowed(sql`${userId}::uuid`)} as allowed`,
+        input.enabled ? {} : { pushEnabled: false },
+        { source: 'legacy', legacyOptIn: input.enabled },
       );
-      if ((rows[0] as { allowed: boolean }).allowed) await upsertRow();
-    });
     return { updated: true };
   }
 }

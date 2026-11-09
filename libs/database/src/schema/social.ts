@@ -16,6 +16,7 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 import { users } from './identity';
+import { outboxEvents } from './platform';
 import { places } from './places';
 import { plans } from './plans';
 
@@ -166,6 +167,7 @@ export const notifications = pgTable(
      * rows with it, which is what makes a reschedule after an outage safe.
      */
     pushSentAt: timestamp('push_sent_at', { withTimezone: true }),
+    pushSuppressedAt: timestamp('push_suppressed_at', { withTimezone: true }),
     pushMessageId: text('push_message_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -176,6 +178,12 @@ export const notifications = pgTable(
       .on(t.userId, t.inboxSequence)
       .where(sql`${t.readAt} is null`),
     index('notifications_inbox_page_idx').on(t.userId, t.createdAt.desc(), t.id.desc()),
+    index('notifications_inbox_kind_page_idx').on(
+      t.userId,
+      t.kind,
+      t.createdAt.desc(),
+      t.id.desc(),
+    ),
     // Delivery is at-least-once, so a retry has to be a no-op rather than a
     // second push. The column existed and was never unique.
     uniqueIndex('notifications_dedupe_unique')
@@ -218,6 +226,7 @@ export const notificationSettings = pgTable(
       .primaryKey()
       .references(() => users.id, { onDelete: 'cascade' }),
     pushEnabled: boolean('push_enabled').notNull(),
+    version: bigint('version', { mode: 'bigint' }).notNull().default(0n),
     /**
      * `explicit` — set through the switch; `migrated` — the 0064 backfill;
      * `legacy` — an older client turned one kind off, which turns push off.
@@ -514,5 +523,53 @@ export const notificationReadOperations = pgTable(
     index('notification_read_operations_running_idx')
       .on(t.actionAt, t.id)
       .where(sql`${t.status} = 'running'`),
+  ],
+);
+
+export const notificationCategoryPreferences = pgTable(
+  'notification_category_preferences',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    category: text('category').notNull(),
+    enabled: boolean('enabled').notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.category] }),
+    check(
+      'notification_category_preferences_category',
+      sql`${t.category} in ('invite', 'preference_reminder', 'plan_ready', 'plan_changed', 'date_reminder')`,
+    ),
+  ],
+);
+
+export const notificationCategoryRollout = pgTable('notification_category_rollout', {
+  singleton: boolean('singleton').primaryKey().default(true),
+  writesFrozen: boolean('writes_frozen').notNull().default(false),
+  producersFrozen: boolean('producers_frozen').notNull().default(false),
+  recipientKeysEnabled: boolean('recipient_keys_enabled').notNull().default(false),
+  cutoverAt: timestamp('cutover_at', { withTimezone: true }).notNull().defaultNow(),
+});
+export const notificationPushDeliveries = pgTable(
+  'notification_push_deliveries',
+  {
+    eventId: uuid('event_id')
+      .notNull()
+      .references(() => outboxEvents.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    status: text('status').notNull(),
+    leaseUntil: timestamp('lease_until', { withTimezone: true }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.eventId, t.userId] }),
+    check(
+      'notification_push_deliveries_status',
+      sql`${t.status} in ('pending', 'attempting', 'sent', 'suppressed', 'failed', 'no_target')`,
+    ),
   ],
 );

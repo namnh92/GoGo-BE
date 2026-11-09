@@ -88,3 +88,31 @@ describe('inbox signed cursors', () => {
       expect(legacyInboxTimestamp(value)).toBeNull();
   });
 });
+
+describe('kinds filter cursor binding', () => {
+  it('binds signed pages and leaves read-through tokens all-kinds', () => {
+    const page: InboxCursor = {
+      ...through,
+      type: 'page',
+      filter: 'invite,plan_ready',
+      before: { createdAt: through.asOf, id: randomUUID() },
+    };
+    const raw = codec.seal(page);
+    expect(codec.open(raw, account, 'page', now, 'invite,plan_ready')).toEqual(page);
+    for (const filter of ['all', 'invite', 'plan_ready'])
+      expect(() => codec.open(raw, account, 'page', now, filter)).toThrow(
+        expect.objectContaining({ code: 'INVALID_NOTIFICATION_CURSOR' }),
+      );
+    expect(() =>
+      codec.open(codec.seal({ ...through, filter: 'invite' }), account, 'through', now),
+    ).toThrow(expect.objectContaining({ code: 'INVALID_NOTIFICATION_CURSOR' }));
+  });
+  it('binds fallback pages before and after snapshot activation', () => {
+    const position = { createdAt: through.asOf, id: randomUUID() };
+    const raw = fallbackInboxCursor(position, 'invite');
+    expect(fallbackInboxPosition(raw, 'invite')).toEqual(position);
+    expect(fallbackInboxPosition(raw)).toBeNull();
+    expect(fallbackInboxPosition(raw, 'plan_ready')).toBeNull();
+    expect(fallbackInboxPosition(fallbackInboxCursor(position), 'invite')).toBeNull();
+  });
+});

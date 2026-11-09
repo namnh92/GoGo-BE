@@ -645,6 +645,13 @@
       "when": 1794009600093,
       "tag": "0093_system-announcements",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1794009600094,
+      "tag": "0094_notification-category-preferences",
+      "breakpoints": true
     }
   ]
 }

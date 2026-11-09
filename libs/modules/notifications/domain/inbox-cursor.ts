@@ -1,3 +1,4 @@
+import { inboxFilter, NOTIFICATION_KINDS, type NotificationKind } from './notification-registry';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { AppError } from '../../shared/app-error';
@@ -18,10 +19,19 @@ type InboxPosition = z.infer<typeof positionSchema>;
 // Pre-cutover pagination must include unsequenced historical rows and remain
 // available without signing material, like the legacy timestamp path. Keep
 // this mode explicit so activation cannot turn it into a sequence snapshot.
-export function fallbackInboxCursor(position: InboxPosition): string {
-  return `before:${position.createdAt}:${position.id}`;
+export function fallbackInboxCursor(position: InboxPosition, filter = 'all'): string {
+  return filter === 'all'
+    ? `before:${position.createdAt}:${position.id}`
+    : `filtered:${Buffer.from(filter).toString('base64url')}:${position.createdAt}:${position.id}`;
 }
-export function fallbackInboxPosition(raw: string): InboxPosition | null {
+export function fallbackInboxPosition(raw: string, filter = 'all'): InboxPosition | null {
+  const filtered = /^filtered:([A-Za-z0-9_-]+):(.+):([\da-f-]+)$/i.exec(raw);
+  if (filtered) {
+    if (Buffer.from(filtered[1]!, 'base64url').toString() !== filter) return null;
+    const parsed = positionSchema.safeParse({ createdAt: filtered[2], id: filtered[3] });
+    return parsed.success ? parsed.data : null;
+  }
+  if (filter !== 'all') return null;
   const match = /^before:(.+):([\da-f-]+)$/i.exec(raw);
   if (!match) return null;
   const parsed = positionSchema.safeParse({ createdAt: match[1], id: match[2] });
@@ -34,7 +44,15 @@ const tokenSchema = z.object({
   asOf: instant,
   expires: z.number().int(),
   type: z.enum(['through', 'page']),
-  filter: z.literal('all'),
+  filter: z
+    .string()
+    .max(256)
+    .refine(
+      (value) =>
+        value === 'all' ||
+        (value.split(',').every((k) => NOTIFICATION_KINDS.includes(k as NotificationKind)) &&
+          inboxFilter(value.split(',') as NotificationKind[]) === value),
+    ),
   before: positionSchema.optional(),
 });
 export type InboxCursor = z.infer<typeof tokenSchema>;
@@ -55,7 +73,13 @@ export class InboxCursorCodec {
     const body = Buffer.from(JSON.stringify(value)).toString('base64url');
     return `${body}.${this.mac(body).toString('base64url')}`;
   }
-  open(raw: string, account: string, type: InboxCursor['type'], now = Date.now()): InboxCursor {
+  open(
+    raw: string,
+    account: string,
+    type: InboxCursor['type'],
+    now = Date.now(),
+    filter = 'all',
+  ): InboxCursor {
     if (raw.length > 2048) throw invalid();
     const parts = raw.split('.');
     if (parts.length !== 2 || !parts.every((p) => /^[A-Za-z0-9_-]+$/.test(p))) throw invalid();
@@ -71,7 +95,12 @@ export class InboxCursorCodec {
     const parsed = tokenSchema.safeParse(decoded);
     if (!parsed.success) throw invalid();
     const value = parsed.data;
-    if (value.account !== account || value.type !== type || (type === 'page' && !value.before))
+    if (
+      value.account !== account ||
+      value.type !== type ||
+      value.filter !== filter ||
+      (type === 'page' && !value.before)
+    )
       throw invalid();
     if (value.expires <= now)
       throw AppError.gone('NOTIFICATION_CURSOR_EXPIRED', 'Notification cursor expired');

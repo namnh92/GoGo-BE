@@ -39,6 +39,7 @@ beforeAll(async () => {
   pool.on('error', () => undefined);
   db = drizzle(pool, { schema });
   await migrate(db, { migrationsFolder: path.resolve(__dirname, '../../../migrations') });
+  await pool.query('update notification_category_rollout set recipient_keys_enabled = true');
 }, 180_000);
 
 afterAll(async () => {

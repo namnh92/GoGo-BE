@@ -1,4 +1,5 @@
 import { sql, type SQL } from 'drizzle-orm';
+import { registration } from '../domain/notification-registry';
 
 /**
  * NTF-BE-014 (#572), ADR-0025 — may GoGo ask the provider to push to this
@@ -22,4 +23,17 @@ export function pushAllowed(userId: SQL): SQL {
       where np.user_id = ${userId} and np.channel = 'push' and np.enabled = false
     )
   )`;
+}
+
+/** Unknown/unregistered push kinds fail closed; other still follows master. */
+export function kindPushAllowed(userId: SQL, kind: string): SQL {
+  const entry = registration(kind);
+  if (!entry.channels.includes('push')) return sql`false`;
+  return sql`(${pushAllowed(userId)}) and ${
+    entry.category === 'other'
+      ? sql`true`
+      : sql`coalesce(
+    (select cp.enabled from notification_category_preferences cp
+      where cp.user_id = ${userId} and cp.category = ${entry.category}), true)`
+  }`;
 }

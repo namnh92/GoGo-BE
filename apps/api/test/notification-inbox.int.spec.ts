@@ -170,6 +170,7 @@ beforeAll(async () => {
     [historicalDeleted],
   );
   await migrate(db, { migrationsFolder: migrations });
+  await pool.query('update notification_category_rollout set recipient_keys_enabled = true');
   inbox = new NotificationInboxService(db, config);
   process.env.DATABASE_URL = container.getConnectionUri();
   process.env.REDIS_URL = 'redis://localhost:6380';
@@ -659,10 +660,21 @@ describe.sequential('shared inbox upgrade and concurrency', () => {
       })
       .returning();
     const push = new FakePush();
+    // Leave real pending delivery work before erasure. Successfully accepted
+    // recipients are terminal under PR2 and must not be sent again on replay.
+    push.unavailable = true;
     const send = vi.spyOn(push, 'sendToUsers');
     const worker = new OutboxDispatcher(db, push);
     await worker.dispatchBatch();
     expect(await counts(erasedId)).toEqual({ read: 0, unread: 1 });
+    expect(
+      (
+        await pool.query(
+          'select status from notification_push_deliveries where event_id=$1 and user_id=$2',
+          [event!.id, liveId],
+        )
+      ).rows,
+    ).toEqual([{ status: 'pending' }]);
     const removed = await api().inject({ method: 'DELETE', url: '/v1/me', headers });
     expect(removed.statusCode).toBe(200);
     expect((await pool.query('select status from users where id=$1', [erasedId])).rows).toEqual([
@@ -676,9 +688,13 @@ describe.sequential('shared inbox upgrade and concurrency', () => {
         ])
       ).rows,
     ).toEqual([{ removed_at: null }]);
+    push.unavailable = false;
     send.mockClear();
     // Same event retries after deletion; retained membership must not resurrect inbox state.
-    await pool.query('update outbox_events set published_at=null where id=$1', [event!.id]);
+    await pool.query(
+      'update outbox_events set published_at=null,next_attempt_at=null where id=$1',
+      [event!.id],
+    );
     await worker.dispatchBatch();
     expect(send).toHaveBeenCalledOnce();
     expect(send.mock.calls[0]![0]).toEqual([liveId]);
@@ -869,5 +885,96 @@ describe.sequential('shared inbox upgrade and concurrency', () => {
     expect(invalid.json().code).toBe('INVALID_NOTIFICATION_CURSOR');
     const unauth = await api().inject({ method: 'GET', url: '/v1/me/notifications/summary' });
     expect(unauth.statusCode).toBe(401);
+  });
+});
+
+describe('server-side kinds filter with bound pagination', () => {
+  it('selects multiple kinds across equal timestamps, preserves the snapshot and leaves summary unfiltered', async () => {
+    const account = await registeredUser();
+    await finishNotificationInboxRollout(pool);
+    await pool.query(
+      `insert into notifications(user_id, kind, payload, created_at)
+      select $1, case when i % 3=0 then 'plan_ready'::notification_kind
+        when i % 3=1 then 'invite'::notification_kind else 'privacy_export_ready'::notification_kind end,
+        '{}', '2026-11-08T10:00:00.123456Z' from generate_series(1,65) i`,
+      [account.userId],
+    );
+    const list = (query = '') =>
+      api().inject({
+        method: 'GET',
+        url: '/v1/me/notifications' + query,
+        headers: account.headers,
+      });
+    const first = await list('?kinds=plan_ready&kinds=invite');
+    expect(first.statusCode).toBe(200);
+    expect(first.json().notifications).toHaveLength(20);
+    expect(
+      first
+        .json()
+        .notifications.every((n: { kind: string }) => ['invite', 'plan_ready'].includes(n.kind)),
+    ).toBe(true);
+    const token = first.json().nextCursor as string;
+    await pool.query(
+      "insert into notifications(user_id,kind,payload,created_at) values($1,'invite','{}','2000-01-01')",
+      [account.userId],
+    );
+    const seen = [...first.json().notifications];
+    let cursor: string | null = token;
+    while (cursor) {
+      const page = await list(
+        `?kinds=invite&kinds=plan_ready&kinds=invite&cursor=${encodeURIComponent(cursor)}`,
+      );
+      expect(page.statusCode).toBe(200);
+      seen.push(...page.json().notifications);
+      cursor = page.json().nextCursor;
+    }
+    expect(seen).toHaveLength(43);
+    expect(new Set(seen.map((n) => n.id)).size).toBe(43);
+    const summary = await api().inject({
+      method: 'GET',
+      url: '/v1/me/notifications/summary',
+      headers: account.headers,
+    });
+    expect(summary.json().unreadCount).toBe(66);
+    for (const filter of ['', '&kinds=invite', '&kinds=plan_changed']) {
+      const mismatch = await list(`?cursor=${encodeURIComponent(token)}${filter}`);
+      expect(mismatch.statusCode).toBe(400);
+      expect(mismatch.json().code).toBe('INVALID_NOTIFICATION_CURSOR');
+    }
+    const allPage = await list();
+    const mismatch = await list(
+      `?kinds=invite&cursor=${encodeURIComponent(allPage.json().nextCursor)}`,
+    );
+    expect(mismatch.json().code).toBe('INVALID_NOTIFICATION_CURSOR');
+    for (const query of [
+      '?kinds=unknown',
+      '?kinds=invite&kinds=unknown',
+      '?kinds=invite,plan_ready',
+      '?kinds=',
+    ])
+      expect((await list(query)).statusCode).toBe(400);
+  });
+  it('keeps fallback filter binding through cutover and rejects unbound legacy timestamps for filtered lists', async () => {
+    const userId = await user();
+    await insert(userId, 22);
+    await pool.query('update notification_inbox_rollout set ready=false');
+    try {
+      const first = await inbox.list(userId, undefined, ['invite']);
+      expect(first.notifications).toHaveLength(20);
+      await finishNotificationInboxRollout(pool);
+      const next = await inbox.list(userId, first.nextCursor!, ['invite']);
+      expect(next.notifications).toHaveLength(2);
+      await expect(inbox.list(userId, first.nextCursor!, ['plan_ready'])).rejects.toMatchObject({
+        code: 'INVALID_NOTIFICATION_CURSOR',
+      });
+      await expect(inbox.list(userId, first.nextCursor!)).rejects.toMatchObject({
+        code: 'INVALID_NOTIFICATION_CURSOR',
+      });
+      await expect(
+        inbox.list(userId, '2026-11-08T10:00:00.123Z', ['invite']),
+      ).rejects.toMatchObject({ code: 'INVALID_NOTIFICATION_CURSOR' });
+    } finally {
+      await finishNotificationInboxRollout(pool);
+    }
   });
 });

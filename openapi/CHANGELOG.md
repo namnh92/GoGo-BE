@@ -8,6 +8,36 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 8.0.0-alpha.1 — Category preferences and server-side inbox kinds (#811 PR2)
+
+**Semantic MAJOR**, owner approved **2026-11-08**; contract/migration CODEOWNER
+sign-off is separate and still required. ADR-0050 supersedes the ADR-0025 guarantee
+that every push kind reports the account switch: legacy GET now returns effective
+registered-kind/master/category permission. Five independently remembered choices
+are `invite`, `preference_reminder`, `plan_ready`, `plan_changed`, `date_reminder`;
+`other` is non-configurable. Moderation gains no push producer; privacy exports
+remain in-app only. No PR3 payload facts or PR4 scheduling/quiet hours are added.
+
+GET settings adds optional `version` (decimal string), `categories`, and a strong
+ETag. PATCH requires If-Match and Idempotency-Key; replay wins over stale-version
+rejection. Existing PUT true enables master and all categories; PUT false retains
+categories. Legacy opt-out disables master; opt-in never overrides category/master.
+Clients regenerate from 8.0.0-alpha.1 and use PATCH for independent controls;
+legacy clients remain callable but cannot represent mixed settings fully.
+
+GET `/me/notifications?kinds=invite&kinds=plan_ready` filters on the server using
+repeatable form/explode parameters validated against known NotificationKind values.
+Unknown values return 400. Opaque cursors bind the canonical filter and the existing
+sequence snapshot; changing a cursor's filter returns INVALID_NOTIFICATION_CURSOR.
+Summary unreadCount remains unfiltered. Timestamp cursors belong to all kinds.
+
+The compatibility gate adds the precise ADR-0050 semantic diagnostic even when
+structural oasdiff is clean, demands a MAJOR, and consumes an exact-base/head-hash
+entry in `.github/oasdiff-exceptions.json`. This records owner authorization, never
+CODEOWNER approval or a waiver for unrelated structural errors. Built on **7.8.0-alpha.1 / #816** (migration 0093 system announcements);
+this slice adds migration 0094 and retains both contract additions. Refresh hashes
+and rerun the gate after any further base or contract edit.
+
 ## 7.8.0-alpha.1 — public system announcements (GoGo-BE#815)
 
 Additive MINOR: anonymous `GET /system-notifications`, cursor-paged by

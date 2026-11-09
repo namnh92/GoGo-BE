@@ -96,6 +96,10 @@ export async function finishNotificationInboxRollout(pool: Pool): Promise<void> 
       'notifications_inbox_page_idx',
       'CREATE INDEX CONCURRENTLY notifications_inbox_page_idx ON notifications(user_id, created_at DESC, id DESC)',
     ],
+    [
+      'notifications_inbox_kind_page_idx',
+      'CREATE INDEX CONCURRENTLY notifications_inbox_kind_page_idx ON notifications(user_id, kind, created_at DESC, id DESC)',
+    ],
   ]) {
     const { rows } = await pool.query(
       'select indisvalid from pg_index where indexrelid = to_regclass($1)',

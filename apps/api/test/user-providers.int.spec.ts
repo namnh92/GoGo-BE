@@ -1,3 +1,4 @@
+import { recipientPushKey } from '../../../libs/modules/notifications/application/outbox-dispatcher';
 import { finishNotificationInboxRollout } from '@gogo/database';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
@@ -69,6 +70,7 @@ beforeAll(async () => {
   pool.on('error', () => undefined);
   db = drizzle(pool, { schema });
   await migrate(db, { migrationsFolder: path.resolve(__dirname, '../../../migrations') });
+  await pool.query('update notification_category_rollout set recipient_keys_enabled = true');
   await finishNotificationInboxRollout(pool);
 
   await db.insert(schema.serviceAreas).values({
@@ -388,7 +390,7 @@ describe('outbox dispatcher (BE-BFF-010)', () => {
     expect(push.sent[0]!.data).toEqual({
       type: 'plan_ready',
       version: '1',
-      notificationId: push.sent[0]!.idempotencyKey,
+      notificationId: expect.any(String),
       route: `gogo://room/${room!.id}`,
       entityType: 'room',
       entityId: room!.id,
@@ -739,14 +741,15 @@ describe('outbox delivery: retry, dead-letter, dedupe', () => {
     const push = new FakePush();
     await new OutboxDispatcher(db as never, push).dispatchBatch();
 
-    // One provider call per language; Vietnamese first, under the bare event id
-    // every earlier release used, so a retry across the deploy is a replay.
-    expect(push.sent).toHaveLength(2);
-    const [vi, en] = push.sent;
-    expect([...vi!.userIds].sort()).toEqual([hostId, viMember].sort());
-    expect(en!.userIds).toEqual([enMember]);
-    expect(vi!.idempotencyKey).toBe(event.id);
-    expect(en!.idempotencyKey).toBe(`${event.id}:en`);
+    // Locale still controls copy, with one stable provider key per recipient.
+    expect(push.sent).toHaveLength(3);
+    const vi = push.sent.find((call) => call.userIds.includes(hostId));
+    const en = push.sent.find((call) => call.userIds.includes(enMember));
+    expect(push.sent.flatMap((call) => call.userIds).sort()).toEqual(
+      [hostId, viMember, enMember].sort(),
+    );
+    for (const call of push.sent)
+      expect(call.idempotencyKey).toBe(recipientPushKey(event.id, call.userIds[0]!));
     expect(vi!.headings).toEqual({ vi: 'Kế hoạch đã sẵn sàng', en: 'Kế hoạch đã sẵn sàng' });
     expect(en!.headings).toEqual({ en: 'Your plan is ready' });
 
@@ -847,13 +850,15 @@ describe('outbox delivery: retry, dead-letter, dedupe', () => {
         optionalChangedStopCount: 0,
       },
     });
-    expect(push.sent).toHaveLength(2);
-    const [vi, en] = push.sent;
-    expect([...vi!.userIds].sort()).toEqual([hostId, viMember].sort());
-    expect(en!.userIds).toEqual([enMember]);
+    expect(push.sent).toHaveLength(3);
+    const vi = push.sent.find((call) => call.userIds.includes(hostId));
+    const en = push.sent.find((call) => call.userIds.includes(enMember));
+    expect(push.sent.flatMap((call) => call.userIds).sort()).toEqual(
+      [hostId, viMember, enMember].sort(),
+    );
     expect(push.sent.flatMap((call) => call.userIds)).not.toContain(enOptedOut);
-    expect(vi!.idempotencyKey).toBe(event!.id);
-    expect(en!.idempotencyKey).toBe(`${event!.id}:en`);
+    for (const call of push.sent)
+      expect(call.idempotencyKey).toBe(recipientPushKey(event!.id, call.userIds[0]!));
     expect(vi!.headings).toEqual({ vi: 'Kế hoạch có thay đổi', en: 'Kế hoạch có thay đổi' });
     expect(en!.headings).toEqual({ en: 'Plan updated' });
     for (const call of push.sent) {
@@ -959,9 +964,9 @@ describe('outbox delivery: retry, dead-letter, dedupe', () => {
     await new OutboxDispatcher(db as never, push).dispatchBatch();
 
     expect(await inboxCounts(userIds, roomId)).toEqual([1, 1, 1]);
-    // Still one provider call for the whole event, addressed to all three.
-    expect(push.sent).toHaveLength(1);
-    expect([...push.sent[0]!.userIds].sort()).toEqual([...userIds].sort());
+    // One stable provider call per recipient, covering all three.
+    expect(push.sent).toHaveLength(userIds.length);
+    expect(push.sent.flatMap((call) => call.userIds).sort()).toEqual([...userIds].sort());
   });
 
   it('a redelivery after a complete fan-out adds no row for anyone (#584)', async () => {
@@ -1071,7 +1076,7 @@ describe('outbox delivery: retry, dead-letter, dedupe', () => {
       .where(eq(schema.outboxEvents.id, event.id));
     expect(dead!.failedAt).not.toBeNull();
     // Kept, not deleted: the failure is the thing worth having.
-    expect(dead!.lastError).toContain('database unavailable');
+    expect(dead!.lastError).toBe('notification_dispatch_failed');
 
     // A newer event behind it still gets through.
     const fresh = await queueEvent(roomId);
@@ -1179,7 +1184,7 @@ describe('outbox delivery: retry, dead-letter, dedupe', () => {
     expect(recovered!.publishedAt).not.toBeNull();
     expect(push.sent).toHaveLength(1);
     // Same provider key as the first attempt would have carried: a replay.
-    expect(push.sent[0]!.idempotencyKey).toBe(event.id);
+    expect(push.sent[0]!.idempotencyKey).toBe(recipientPushKey(event.id, userId));
     const after = await db
       .select()
       .from(schema.notifications)
