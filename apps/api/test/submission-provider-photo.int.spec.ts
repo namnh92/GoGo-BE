@@ -23,7 +23,10 @@ import {
 } from '@gogo/providers';
 import { SubmissionPhotoService } from '../../../libs/modules/ingestion/application/submission-photo.service';
 import { PlaceDedupService } from '../../../libs/modules/ingestion/application/place-dedup.service';
-import { MediaCleanupService } from '../../../libs/modules/profile/application/media-cleanup.service';
+import {
+  MEDIA_CLEANUP_MAX_ATTEMPTS,
+  MediaCleanupService,
+} from '../../../libs/modules/profile/application/media-cleanup.service';
 import { DbPhotoBackfillStore } from '../../../libs/modules/places/application/place-provider-photo-backfill';
 import { PROVIDER_PHOTO_RESERVATION_ACTION } from '../../../libs/modules/places/application/provider-photo-reservation';
 import { cmsAccessHeaders } from './support/cms-access';
@@ -575,12 +578,61 @@ describe('ADR-0052 S1 provider cover', () => {
     expect((await view()).json().photo).toBeUndefined();
     await db.delete(schema.mediaCleanupQueue);
     expect(await cleanup.reconcileRetirements()).toBe(1);
+    const restored = await db.select().from(schema.mediaCleanupQueue);
+    expect(restored).toHaveLength(1);
+    expect(restored[0]).toMatchObject({
+      bucket: 'public',
+      objectKey: key,
+      attempts: 0,
+      failedAt: null,
+    });
+    expect(await cleanup.reconcileRetirements()).toBe(0);
     const purge = vi.spyOn(app.get(CACHE_PURGE), 'purgeUrls');
     await cleanup.runDue(100);
     expect(purge).toHaveBeenCalledWith([`https://assets.gogo.test/${key}`]);
     expect(storage.objects.has(key)).toBe(false);
     expect((await row(c.id)).providerPhoto).toBeNull();
     expect(await cleanup.reconcileRetirements()).toBe(0);
+  });
+  it('keeps an exhausted retirement dead-lettered across reconciliation ticks (#825 F-02)', async () => {
+    const c = await contribute();
+    await decide(c.id, 'rejected');
+    const retired = (await row(c.id)).providerPhoto!;
+    const key = retired.storageKey;
+    await db
+      .update(schema.placeSubmissions)
+      .set({
+        providerPhoto: { ...retired, deleteAfter: new Date(Date.now() - 1000).toISOString() },
+      })
+      .where(eq(schema.placeSubmissions.id, c.id));
+    const deletion = vi
+      .spyOn(storage, 'deleteObject')
+      .mockRejectedValue(new Error('storage unavailable'));
+    for (let attempt = 1; attempt <= MEDIA_CLEANUP_MAX_ATTEMPTS; attempt++) {
+      await db.update(schema.mediaCleanupQueue).set({ nextAttemptAt: new Date(0) });
+      expect(await cleanup.runDue(100)).toMatchObject({
+        attempted: 1,
+        retried: attempt < MEDIA_CLEANUP_MAX_ATTEMPTS ? 1 : 0,
+        deadLettered: attempt === MEDIA_CLEANUP_MAX_ATTEMPTS ? 1 : 0,
+      });
+    }
+    const exhausted = await db.select().from(schema.mediaCleanupQueue);
+    expect(exhausted).toHaveLength(1);
+    expect(exhausted[0]).toMatchObject({
+      attempts: MEDIA_CLEANUP_MAX_ATTEMPTS,
+      failedAt: expect.any(Date),
+    });
+    for (let tick = 0; tick < 2; tick++) {
+      expect(await cleanup.reconcileRetirements()).toBe(0);
+      expect(await cleanup.runDue(100)).toMatchObject({ attempted: 0 });
+    }
+    expect(await db.select().from(schema.mediaCleanupQueue)).toEqual(exhausted);
+    expect((await row(c.id)).providerPhoto).toEqual({
+      ...retired,
+      deleteAfter: expect.any(String),
+    });
+    expect(storage.objects.has(key)).toBe(true);
+    expect(deletion).toHaveBeenCalledTimes(MEDIA_CLEANUP_MAX_ATTEMPTS);
   });
   it('CMS final detach retires the submission reference and replaces an open rewrite intent', async () => {
     const c = await contribute();

@@ -26,7 +26,9 @@ gate. Consumer checks and DEV acceptance are not claimed by backend unit tests.
 Pending cover stays until decided. Approve reuses key. Merge uses #797 eligibility
 or retires immediately. Rejection shows photo only before decidedAt + seven days;
 marker and delayed cleanup commit together. Worker defers future markers instead
-of dropping jobs. Hourly reconciler restores missing past-due jobs. Final CMS
+of dropping jobs. Hourly reconciler restores past-due jobs only when no public
+queue row exists for the object. Dead-lettered jobs retain their obligation
+after six failures and require explicit operator retry. Final CMS
 detach retires submission references. Account erasure keeps the submission photo.
 Photo metadata is cleared only after origin delete + CDN purge succeed.
 

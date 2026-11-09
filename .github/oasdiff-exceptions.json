@@ -203,9 +203,9 @@
       "baseSha256": "4dc3eb679681e9139420cdf5cf4237c2a1e369da7656f28b72987a9890f67684",
       "revisionSha256": "9aec23d77f526c33f1b3c9baa390ceb630320c9d21fd2d1e414bc940b5a146b9",
       "revisionBasis": "S1 uncommitted YAML bytes in be-822; no git command or commit created",
-      "diagnostic": "error [api-path-removed-without-deprecation] at openapi/gogo.v1.yaml in API GET /places/{id}/provider-photos",
+      "diagnostic": "error [api-path-removed-without-deprecation] at .oasdiff-base.yaml in API GET /places/{id}/provider-photos API path removed without deprecation",
       "reason": "Owner Q6 removes the transient gallery in #822 on unreleased re-design. Stored cover in PlaceDetail.photos replaces it; ADR-0052. MAJOR 9.0.0-alpha.1 also withdraws the CMS no-provider guarantee for implicit cover acquisition.",
-      "note": "Check/file/method/path prefix from the authorized shape; fresh oasdiff report unavailable in sandbox (no oasdiff binary, Docker prohibited). The exception is pinned to exact base/revision YAML SHA-256 and one diagnostic. Synthetic matcher tests verify admission mechanics only; replace/confirm the verbatim diagnostic from fresh oasdiff before PR and rerun --expect=BE-822-provider-photos-path-removed. No fresh structural compatibility pass or CODEOWNER approval is claimed."
+      "note": "The full diagnostic is retained from the captured PR #825 CI oasdiff report with CI's filenames (base .oasdiff-base.yaml, revision openapi/gogo.v1.yaml), saved as scripts/fixtures/be-822-oasdiff-ci.txt. Both SHA-256 values use the raw YAML bytes, exactly as scripts/check-contract-compat.ts does. Replay with --expect=BE-822-provider-photos-path-removed must admit it exactly once. Changing either contract or adding another finding still fails. CODEOWNER sign-off remains separate and pending."
     }
   ]
 }

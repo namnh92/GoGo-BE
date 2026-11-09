@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { MediaCleanupService } from './media-cleanup.service';
 
 describe('media cleanup live provider image guard (#786)', () => {
@@ -83,7 +85,7 @@ it.each([true, false])(
 );
 
 it('reconciler recreates a missing schedule from a past-due obligation', async () => {
-  const execute = vi.fn(async () => ({
+  const execute = vi.fn(async (_query: SQL) => ({
     rows: [{ id: 'submission', key: 'places/provider/a.jpg' }],
   }));
   const db = { transaction: async (fn: (tx: unknown) => unknown) => fn({ execute }) };
@@ -95,4 +97,28 @@ it('reconciler recreates a missing schedule from a past-due obligation', async (
     expect.objectContaining({ objectKey: 'places/provider/a.jpg', bucket: 'public' }),
     expect.any(Date),
   );
+});
+
+it('reconciler keeps dead-lettered obligations for explicit operator retry (#825 F-02)', async () => {
+  // PostgreSQL excludes the obligation when any matching public queue row exists.
+  // Check the SQL boundary too: an empty mocked result alone missed this regression.
+  const execute = vi.fn(async (_query: SQL) => ({ rows: [] }));
+  const db = { transaction: async (fn: (tx: unknown) => unknown) => fn({ execute }) };
+  const metrics = { increment: vi.fn() };
+  const cleanup = new MediaCleanupService(
+    db as never,
+    {} as never,
+    {} as never,
+    '',
+    metrics as never,
+  );
+  const schedule = vi.spyOn(cleanup, 'scheduleRetirement').mockResolvedValue(['job']);
+  expect(await cleanup.reconcileRetirements()).toBe(0);
+  const query = new PgDialect().sqlToQuery(execute.mock.calls[0]![0]).sql;
+  const queueCheck = query.match(/not exists \(select 1 from media_cleanup_queue q[^)]+\)/)?.[0];
+  expect(queueCheck).toContain("q.bucket = 'public'");
+  expect(queueCheck).toContain("q.object_key = s.provider_photo->>'storageKey'");
+  expect(queueCheck).not.toContain('failed_at');
+  expect(schedule).not.toHaveBeenCalled();
+  expect(metrics.increment).toHaveBeenCalledWith('provider_photo_reconciled_total', undefined, 0);
 });

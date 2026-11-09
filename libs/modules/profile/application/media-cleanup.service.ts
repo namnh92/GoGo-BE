@@ -73,13 +73,13 @@ export class MediaCleanupService {
     return scheduleRetirement(writer, entry, at);
   }
 
-  /** Re-derive lost schedules from durable, expired retirement obligations. */
+  /** Re-derive lost schedules; dead-lettered jobs still require operator retry. */
   async reconcileRetirements(limit = 100): Promise<number> {
     return this.db.transaction(async (tx) => {
       const due = await tx.execute(sql`select s.id, s.provider_photo->>'storageKey' as key
         from place_submissions s
         where (s.provider_photo->>'deleteAfter')::timestamptz <= now()
-          and not exists (select 1 from media_cleanup_queue q where q.bucket = 'public' and q.object_key = s.provider_photo->>'storageKey' and q.failed_at is null)
+          and not exists (select 1 from media_cleanup_queue q where q.bucket = 'public' and q.object_key = s.provider_photo->>'storageKey')
           and not exists (select 1 from place_media m where m.storage_key = s.provider_photo->>'storageKey')
           and not exists (select 1 from users u where u.avatar_key = s.provider_photo->>'storageKey')
           and not exists (select 1 from place_submissions n where n.provider_photo->>'storageKey' = s.provider_photo->>'storageKey'
