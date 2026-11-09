@@ -13,6 +13,24 @@ export type CleanupBucket = 'private' | 'public';
 
 export type CleanupEntry = { bucket: CleanupBucket; objectKey: string; reason: string };
 
+/** A retirement replaces any maintenance intent under the same open-object identity. */
+export async function scheduleRetirement(
+  writer: QueueWriter,
+  entry: CleanupEntry,
+  at: Date,
+): Promise<string[]> {
+  const rows = await writer
+    .insert(schema.mediaCleanupQueue)
+    .values({ ...entry, nextAttemptAt: at })
+    .onConflictDoUpdate({
+      target: [schema.mediaCleanupQueue.bucket, schema.mediaCleanupQueue.objectKey],
+      targetWhere: sql`failed_at is null`,
+      set: { reason: entry.reason, nextAttemptAt: at, attempts: 0 },
+    })
+    .returning({ id: schema.mediaCleanupQueue.id });
+  return rows.map((r) => r.id);
+}
+
 /** After this many failures a row is dead-lettered and needs a person. */
 export const MEDIA_CLEANUP_MAX_ATTEMPTS = 6;
 
@@ -51,6 +69,38 @@ export class MediaCleanupService {
    * remove — is one job, because of the partial unique index; the second
    * insert returns nothing and nothing is lost.
    */
+  scheduleRetirement(writer: QueueWriter, entry: CleanupEntry, at: Date): Promise<string[]> {
+    return scheduleRetirement(writer, entry, at);
+  }
+
+  /** Re-derive lost schedules; dead-lettered jobs still require operator retry. */
+  async reconcileRetirements(limit = 100): Promise<number> {
+    return this.db.transaction(async (tx) => {
+      const due = await tx.execute(sql`select s.id, s.provider_photo->>'storageKey' as key
+        from place_submissions s
+        where (s.provider_photo->>'deleteAfter')::timestamptz <= now()
+          and not exists (select 1 from media_cleanup_queue q where q.bucket = 'public' and q.object_key = s.provider_photo->>'storageKey')
+          and not exists (select 1 from place_media m where m.storage_key = s.provider_photo->>'storageKey')
+          and not exists (select 1 from users u where u.avatar_key = s.provider_photo->>'storageKey')
+          and not exists (select 1 from place_submissions n where n.provider_photo->>'storageKey' = s.provider_photo->>'storageKey'
+            and (n.provider_photo->>'deleteAfter' is null or (n.provider_photo->>'deleteAfter')::timestamptz > now()))
+        order by s.id limit ${limit} for update of s skip locked`);
+      for (const row of due.rows as { id: string; key: string }[]) {
+        await this.scheduleRetirement(
+          tx,
+          {
+            bucket: 'public',
+            objectKey: row.key,
+            reason: 'submission_provider_photo_retirement_reconciled',
+          },
+          new Date(),
+        );
+      }
+      this.metrics.increment('provider_photo_reconciled_total', undefined, due.rows.length);
+      return due.rows.length;
+    });
+  }
+
   async enqueue(
     writer: QueueWriter,
     entries: CleanupEntry[],
@@ -145,7 +195,7 @@ export class MediaCleanupService {
    * never at enqueue time: a retry that succeeded after the row was written is
    * exactly the case this exists for.
    */
-  private async isLiveAvatar(objectKey: string): Promise<boolean> {
+  private async isLiveObject(objectKey: string): Promise<false | true | Date> {
     const [referenced] = await this.db
       .select({ id: schema.users.id })
       .from(schema.users)
@@ -157,14 +207,29 @@ export class MediaCleanupService {
       .from(schema.placeMedia)
       .where(eq(schema.placeMedia.storageKey, objectKey))
       .limit(1);
-    return media !== undefined;
+    if (media !== undefined) return true;
+    const refs = await this.db.execute(sql`select provider_photo->>'deleteAfter' as until
+      from place_submissions where provider_photo->>'storageKey' = ${objectKey}
+        and (provider_photo->>'deleteAfter' is null or (provider_photo->>'deleteAfter')::timestamptz > now())`);
+    const rows = refs.rows as { until: string | null }[];
+    if (rows.some((r) => r.until === null)) return true;
+    return rows.length ? new Date(Math.max(...rows.map((r) => Date.parse(r.until!)))) : false;
   }
 
   private async attempt(
     row: typeof schema.mediaCleanupQueue.$inferSelect,
   ): Promise<'done' | 'retried' | 'deadLettered' | 'skipped'> {
     const bucket = row.bucket as CleanupBucket;
-    if (bucket === 'public' && (await this.isLiveAvatar(row.objectKey))) {
+    const live = bucket === 'public' ? await this.isLiveObject(row.objectKey) : false;
+    if (live instanceof Date) {
+      await this.db
+        .update(schema.mediaCleanupQueue)
+        .set({ nextAttemptAt: live })
+        .where(eq(schema.mediaCleanupQueue.id, row.id));
+      this.metrics.increment('media_cleanup_attempt_total', { bucket, outcome: 'deferred' });
+      return 'skipped';
+    }
+    if (live) {
       await this.db.delete(schema.mediaCleanupQueue).where(eq(schema.mediaCleanupQueue.id, row.id));
       this.metrics.increment('media_cleanup_attempt_total', { bucket, outcome: 'referenced' });
       return 'skipped';
@@ -177,6 +242,9 @@ export class MediaCleanupService {
         const url = this.publicUrl(row.objectKey);
         if (url) await this.purge.purgeUrls([url]);
       }
+      if (bucket === 'public')
+        await this.db.execute(sql`update place_submissions set provider_photo = null
+        where provider_photo->>'storageKey' = ${row.objectKey} and (provider_photo->>'deleteAfter')::timestamptz <= now()`);
       await this.db.delete(schema.mediaCleanupQueue).where(eq(schema.mediaCleanupQueue.id, row.id));
       this.metrics.increment('media_cleanup_attempt_total', { bucket, outcome: 'done' });
       return 'done';

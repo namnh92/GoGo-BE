@@ -1,3 +1,8 @@
+import {
+  PROVIDER_PHOTO_RESERVATION_ACTION,
+  providerPhotoUnattempted,
+  providerPhotoEligible,
+} from './provider-photo-reservation';
 import { sql } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
 import { listCostMicros } from '@gogo/cost-observability';
@@ -82,7 +87,7 @@ export async function backfillProviderPhotos(
               counts.stopped = options.signal?.aborted ? 'signal' : 'disabled';
               break;
             }
-            const prepared = await persistence.prepare(place.externalId);
+            const prepared = await persistence.prepare(place.externalId, 'backfill');
             if (!prepared) {
               if (!(await photos.enabled())) {
                 counts.stopped = 'disabled';
@@ -144,17 +149,8 @@ function identity(unified: boolean) {
     order by (canon.id is not null) desc, src.fetched_at desc nulls last, src.external_id
     limit 1`;
 }
-function eligible() {
-  return sql`p.status = 'published' and not exists
-    (select 1 from place_media m where m.place_id = p.id
-      and (m.moderation in ('pending', 'approved') or m.is_cover))`;
-}
-const attemptAction = 'place.provider_photo_backfill_attempt';
-function unattempted() {
-  return sql`not exists (select 1 from audit_logs a
-    where a.resource_type = 'place' and a.resource_id = p.id::text
-      and a.action = ${attemptAction})`;
-}
+const eligible = () => providerPhotoEligible(true);
+const unattempted = providerPhotoUnattempted;
 
 export class DbPhotoBackfillStore implements PhotoBackfillStore {
   constructor(
@@ -187,10 +183,10 @@ export class DbPhotoBackfillStore implements PhotoBackfillStore {
         if (!current.rows.length) return false;
         await writeAudit(tx, {
           actorType: 'system',
-          action: attemptAction,
+          action: PROVIDER_PHOTO_RESERVATION_ACTION,
           resourceType: 'place',
           resourceId: place.id,
-          diff: { sourceType: 'google_derived' },
+          diff: { source: 'backfill_797', sourceType: 'google_derived' },
         });
         return true;
       },

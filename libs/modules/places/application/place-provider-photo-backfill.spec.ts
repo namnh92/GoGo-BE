@@ -6,6 +6,18 @@ function setup() {
   const photo = {
     key: 'places/provider/test.jpg',
     cleanupId: 'cleanup',
+    stored: {
+      provider: 'google' as const,
+      storageKey: 'places/provider/test.jpg',
+      contentType: 'image/jpeg' as const,
+      width: null,
+      height: null,
+      fetchedAt: new Date().toISOString(),
+      sourceReference: candidate.externalId,
+      attribution: 'Google Maps' as const,
+      authorAttributions: [],
+      googleMapsUri: null,
+    },
     metadata: {
       provider: 'google' as const,
       sourceReference: candidate.externalId,

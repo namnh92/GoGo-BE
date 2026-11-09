@@ -141,11 +141,17 @@ export const FEATURE_FLAGS = {
   // Detail view would become a paid Google call, so the code shipping must not
   // be what turns it on. Deploy-time default `FLAG_PLACE_PROVIDER_PHOTOS`; this
   // row is the incident switch.
+  'place_provider_photo_acquire.enabled': {
+    valueType: 'boolean',
+    defaultValue: false,
+    description: 'Acquire one stored Google cover at submission and CMS create (ADR-0052).',
+    platformScoped: false,
+  },
   'place_provider_photos.enabled': {
     valueType: 'boolean',
     defaultValue: false,
     description:
-      'Show transient Google photos on Place Detail (fetched per view, never stored; Place Details Photos is billed per photo).',
+      'Enable resolve photo preview, approval fallback and explicit published-place backfill.',
     platformScoped: false,
   },
   // GoGo-BE#713 (ADR-0036). The GoGo AI kill switch, default **off**: every

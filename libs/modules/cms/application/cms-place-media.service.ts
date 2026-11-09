@@ -1,3 +1,4 @@
+import { scheduleRetirement } from '../../profile/application/media-cleanup.service';
 import { isSubmissionPhotoKey, communityPhotoUrl } from '../../shared/submission-photo-url';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { and, eq, ne, sql } from 'drizzle-orm';
@@ -377,7 +378,21 @@ export class CmsPlaceMediaService {
         )
         .then((r) => r.rows)) as [{ refs: number }];
       if (Number(refs) === 0) {
-        if (queuesCleanup) {
+        if (row.providerPhoto) {
+          const at = new Date();
+          await tx.execute(sql`update place_submissions set provider_photo = provider_photo ||
+            jsonb_build_object('retiredAt', ${at.toISOString()}::text, 'deleteAfter', ${at.toISOString()}::text)
+            where provider_photo->>'storageKey' = ${row.storageKey}`);
+          await scheduleRetirement(
+            tx,
+            {
+              bucket: 'public',
+              objectKey: row.storageKey,
+              reason: 'submission_provider_photo_detached',
+            },
+            at,
+          );
+        } else if (queuesCleanup) {
           await tx
             .insert(schema.mediaCleanupQueue)
             .values({

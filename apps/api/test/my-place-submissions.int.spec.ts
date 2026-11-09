@@ -487,9 +487,9 @@ describe('GET /v1/me/place-submissions (#788)', () => {
           'createdAt',
           'updatedAt',
           ...(item.status === 'pending' ? [] : ['decidedAt']),
-          ...(item.status === 'rejected' ? ['rejectionReason'] : []),
+          ...(item.status === 'rejected' ? ['rejectionReason', 'updateDeadline'] : []),
           ...(item.status === 'approved' || item.status === 'merged'
-            ? ['placeId', 'photoUrl']
+            ? ['placeId', 'photoUrl', 'photo']
             : []),
         ].sort(),
       );
@@ -498,7 +498,10 @@ describe('GET /v1/me/place-submissions (#788)', () => {
         expect(item.name).toBe('GoGo Café');
         expect(item.photoUrl).toBe('https://assets.example.test/places/approved.jpg');
       } else expect(item.name).toBe('Reviewed name');
-      if (item.status === 'rejected') expect(item.rejectionReason).toBe('incorrect_location');
+      if (item.status === 'rejected') {
+        expect(item.rejectionReason).toBe('incorrect_location');
+        expect(item.updateDeadline).toBe('2026-11-14T01:00:00.000Z');
+      }
     }
     expect(provider.tiersRequested).toEqual([]);
   });
@@ -600,7 +603,7 @@ describe('#801 contribution cards and shared pending detail', () => {
     (app.get(PLACE_PROVIDER) as FakePlaceProvider).failing = false;
   });
 
-  it('persists submitted facts and renders list/detail with zero provider calls and a lazy proxy reference', async () => {
+  it('persists submitted facts and renders list/detail with zero provider calls and no lazy proxy reference', async () => {
     const googlePlaceId = seedProvider();
     (app.get(PLACE_PROVIDER) as FakePlaceProvider).seed({
       providerPlaceId: googlePlaceId,
@@ -663,10 +666,6 @@ describe('#801 contribution cards and shared pending detail', () => {
         googleRating: 4.6,
         googleRatingCount: 980,
         openingHours: [{ dayOfWeek: 1, openMinute: 480, closeMinute: 1320, isOvernight: false }],
-        photo: {
-          url: `/v1/places/google-provider-photo/${googlePlaceId}`,
-          authorAttributions: [],
-        },
       },
     });
     expect(card).not.toHaveProperty('contribution');
@@ -692,7 +691,7 @@ describe('#801 contribution cards and shared pending detail', () => {
   });
 
   it.each(['unconfigured', 'disabled', 'not forwarded'] as const)(
-    'keeps Pro fallback and lazy photo when attestation is %s',
+    'keeps Pro fallback without lazy photo when attestation is %s',
     async (mode) => {
       if (mode === 'unconfigured') config.PLACE_RESOLUTION_ATTESTATION_SECRET = '';
       if (mode === 'disabled') {
@@ -762,12 +761,6 @@ describe('#801 contribution cards and shared pending detail', () => {
         providerStatus: 'ok',
         providerDisplay: {
           ...fallbackFacts,
-          photo: {
-            url: `/v1/places/google-provider-photo/${googlePlaceId}`,
-            provider: 'google',
-            attribution: 'Google Maps',
-            authorAttributions: [],
-          },
         },
       };
       expect(response.json().items[0]).toMatchObject(expected);
@@ -930,11 +923,6 @@ describe('#801 contribution cards and shared pending detail', () => {
       expect(row!.enrichment).toEqual(enrichment);
       const displayed = {
         ...facts,
-        photo: {
-          url: `/v1/places/google-provider-photo/${googlePlaceId}`,
-          provider: 'google',
-          attribution: 'Google Maps',
-        },
       };
       const cards = await list();
       expect(cards.statusCode, cards.body).toBe(200);
@@ -959,7 +947,7 @@ describe('#801 contribution cards and shared pending detail', () => {
       expect(fetchGoogle).toHaveBeenCalledTimes(1);
       expect(photos.refCalls.length).toBe(refsBefore);
       expect(photos.mediaCalls.length).toBe(mediaBefore);
-      // Google photos stay lazy BFF references, never snapshot content or user uploads.
+      // Submission views emit no lazy photo; resolve preview remains transient.
       expect(row!.displaySnapshot).not.toHaveProperty('photo');
       expect(await db.select().from(schema.placeSubmissionPhotos)).toEqual([]);
       expect(await db.select().from(schema.placeMedia)).toEqual([]);

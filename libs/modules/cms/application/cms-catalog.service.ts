@@ -1,3 +1,5 @@
+import { SubmissionPhotoService } from '../../ingestion/application/submission-photo.service';
+import { acquireCmsProviderPhoto } from '../../places/application/provider-photo-reservation';
 import { isSubmissionPhotoKey, communityPhotoUrl } from '../../shared/submission-photo-url';
 import {
   readVenueVerification,
@@ -897,6 +899,7 @@ export class CmsCatalogService {
     private readonly config?: ProvenanceConfig & Partial<MediaConfig>,
     /** ADM-010 (#463): approval decisions are counted by their closed reason. */
     @Optional() @Inject(METRICS) private readonly metrics?: MetricsPort,
+    @Optional() private readonly submissionPhotos?: SubmissionPhotoService,
   ) {}
 
   /** Default on: off is the state that serves ingestion places unattributed. */
@@ -1633,6 +1636,15 @@ export class CmsCatalogService {
       throw err;
     }
     // Committed: from here a failure is a replay on retry, never a second row.
+    if (input.googlePlaceId && this.submissionPhotos) {
+      await acquireCmsProviderPhoto(
+        this.db,
+        this.submissionPhotos,
+        place.id,
+        input.googlePlaceId,
+        adminId,
+      );
+    }
     return { replayed: false, place: await this.getPlace(place.id) };
   }
 
@@ -1644,8 +1656,8 @@ export class CmsCatalogService {
    * visible are separate decisions, and the existing status workflow owns the
    * second one.
    *
-   * **No provider content (#440).** This route calls no Google provider and
-   * persists nothing a provider said. A `googlePlaceId` is identity only — a
+   * **ADR-0052 photo-only amendment.** createPlaceOnce may acquire one stored
+   * Google cover after commit. This transaction persists no other provider fact. A `googlePlaceId` is identity only — a
    * `place_sources` row that puts the place inside dedup. Every canonical fact
    * carries an independent `sourceReferences` entry and is recorded
    * `editorial`; a field declared as applied from the Google preview is

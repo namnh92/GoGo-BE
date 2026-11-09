@@ -21,8 +21,10 @@ Backend BFF for GoGo (couple/group date planning). Modular monolith: `apps/api` 
   with Google provenance and author attribution; see [ADR-0043](docs/adr/0043-approved-submission-provider-photo.md).
   Owner extension #797 also permits the explicit ops backfill for published
   places with no approved media, through the same pipeline and attribution.
-  No persistence during resolve, preview or pending submission. This exception
-  changes no other Google content rules.
+  ADR-0052 (#822, owner 2026-11-09) extends this to one bounded cover at mobile
+  submit and implicit CMS create with Google identity. Approval reuses those bytes;
+  rejected submissions show the cover during their seven-day update window.
+  Resolve/preview remain transient. No other Google content rule is changed.
 - **No new persistent Google content outside that exception.** Place IDs may be stored indefinitely; a
   provider object reused inside one execution persists nothing. Adding a
   provider-response snapshot, a new provider-derived column, or a cache of

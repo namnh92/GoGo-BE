@@ -397,6 +397,21 @@ export type SubmissionDisplaySnapshot = {
   }[];
 };
 
+export type SubmissionProviderPhoto = {
+  provider: 'google';
+  storageKey: string;
+  contentType: 'image/jpeg' | 'image/png' | 'image/webp';
+  width: number | null;
+  height: number | null;
+  fetchedAt: string;
+  sourceReference: string;
+  attribution: 'Google Maps';
+  authorAttributions: { displayName: string; uri: string | null; photoUri: string | null }[];
+  googleMapsUri: string | null;
+  retiredAt?: string | undefined;
+  deleteAfter?: string | undefined;
+};
+
 export const placeSubmissions = pgTable(
   'place_submissions',
   {
@@ -414,6 +429,10 @@ export const placeSubmissions = pgTable(
     vibeKeys: jsonb('vibe_keys').$type<string[]>().notNull().default([]),
     note: text('note'),
     displaySnapshot: jsonb('display_snapshot').$type<SubmissionDisplaySnapshot>(),
+    providerPhoto: jsonb('provider_photo').$type<SubmissionProviderPhoto>(),
+    providerPhotoClaimId: uuid('provider_photo_claim_id'),
+    providerPhotoClaimedAt: timestamp('provider_photo_claimed_at', { withTimezone: true }),
+    providerPhotoAttempts: integer('provider_photo_attempts').notNull().default(0),
     displayRefreshStartedAt: timestamp('display_refresh_started_at', { withTimezone: true }),
     status: submissionStatus('status').notNull().default('pending'),
     /** Same link from many users bumps this instead of creating drafts. */
@@ -444,6 +463,9 @@ export const placeSubmissions = pgTable(
     uniqueIndex('place_submissions_pending_unique')
       .on(t.googlePlaceId)
       .where(sql`${t.status} = 'pending'`),
+    index('place_submissions_provider_photo_key_idx')
+      .on(sql`(${t.providerPhoto}->>'storageKey')`)
+      .where(sql`${t.providerPhoto} is not null`),
     index('place_submissions_status_idx').on(t.status, t.createdAt),
     check(
       'place_submissions_rejection_reason_check',

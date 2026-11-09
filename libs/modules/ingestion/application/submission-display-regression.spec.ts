@@ -53,3 +53,21 @@ it('F-02: paid facts survive optional photo timeout at the remaining deadline', 
   });
   expect(answer.providerDisplay).not.toHaveProperty('photo');
 });
+
+it('ADR-0052 photos:false refreshes facts without any candidateReference/photo call', async () => {
+  const provider = new FakePlaceProvider();
+  provider.seed({ providerPlaceId: 'facts-only', name: 'Facts' });
+  const candidateReference = vi.fn();
+  const service = new SubmissionDisplayService(
+    { execute: vi.fn().mockResolvedValue({ rows: [] }) } as unknown as Db,
+    provider,
+    { candidateReference } as unknown as ProviderPhotosService,
+    {},
+    undefined,
+    { reserve: vi.fn().mockResolvedValue({ ok: true }) } as unknown as ProviderBudgetService,
+  );
+  const result = await service.get('facts-only', { photos: false });
+  expect(result.providerStatus).toBe('ok');
+  expect(result.providerDisplay).not.toHaveProperty('photo');
+  expect(candidateReference).not.toHaveBeenCalled();
+});

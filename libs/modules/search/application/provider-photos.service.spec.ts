@@ -12,7 +12,6 @@ import { PROVIDER_PHOTOS_DEADLINE_MS, ProviderPhotosService } from './provider-p
  * F-02 one fresh-name retry, F-04 exactly one terminal outcome per request.
  */
 
-const PLACE = '11111111-1111-4111-8111-111111111111';
 const GOOGLE_ID = 'ChIJ-svc';
 const JPEG: ProviderPhotoMedia = { contentType: 'image/jpeg', bytes: new Uint8Array([1, 2, 3]) };
 
@@ -24,15 +23,11 @@ const ref = (name: string, author = 'Lan'): ProviderDisplayPhotoRef => ({
   googleMapsUri: null,
 });
 
-/** `googleIdOf` first, then the flag lookup — the order the service asks in. */
 function fakeDb() {
-  let call = 0;
   return {
-    execute: vi.fn(async () => {
-      call += 1;
-      if (call === 1) return { rows: [{ provider_id: GOOGLE_ID, legacy_id: null }] };
-      return { rows: [{ environment: 'all', platform: 'all', enabled: true, payload: null }] };
-    }),
+    execute: vi.fn(async () => ({
+      rows: [{ environment: 'all', platform: 'all', enabled: true, payload: null }],
+    })),
   };
 }
 
@@ -63,7 +58,7 @@ function setup(port: PlacePhotoDisplayPort, grants = Infinity) {
     CONFIG,
     {
       increment: (name: string, labels?: Record<string, unknown>) => {
-        if (name === 'place_provider_photos_total') outcomes.push(String(labels?.['outcome']));
+        if (name === 'provider_photo_requests_total') outcomes.push(String(labels?.['outcome']));
       },
       observe: () => undefined,
     } as never,
@@ -97,7 +92,7 @@ describe('ProviderPhotosService', () => {
     } as PlacePhotoDisplayPort;
     const { service, outcomes, reserve } = setup(port);
 
-    const pending = service.photos(PLACE);
+    const pending = service.firstForProvider(GOOGLE_ID);
     await flush();
     await vi.advanceTimersByTimeAsync(PROVIDER_PHOTOS_DEADLINE_MS);
     expect(await pending).toMatchObject({ status: 'unavailable', photos: [] });
@@ -132,120 +127,13 @@ describe('ProviderPhotosService', () => {
     } as PlacePhotoDisplayPort;
     const { service, outcomes, reserve } = setup(port);
 
-    const result = await service.photos(PLACE);
+    const result = await service.firstForProvider(GOOGLE_ID);
     expect(result.status).toBe('ok');
     expect(result.photos).toHaveLength(1);
     expect(result.photos[0]!.authorAttributions[0]!.displayName).toBe('New');
     expect(refsCalls).toHaveLength(2);
     // The retried media call is billed, so it is reserved.
     expect(reserve).toHaveBeenCalledTimes(2);
-    expect(outcomes).toEqual(['served']);
-  });
-
-  it('F-06: a reordered fresh list replaces the stale photo, never re-serves a good one', async () => {
-    const keep = { ...ref('Keep', 'Kim'), googleMapsUri: 'https://www.google.com/maps/photo/keep' };
-    const stale = { ...ref('Stale', 'Old'), googleMapsUri: 'https://www.google.com/maps/photo/s' };
-    let refs = 0;
-    const mediaCalls: string[] = [];
-    const port: PlacePhotoDisplayPort = {
-      photoRefs: async () => {
-        refs += 1;
-        return {
-          providerPlaceId: GOOGLE_ID,
-          photos:
-            refs === 1
-              ? [keep, stale]
-              : // Fresh names, and Google put the photos in the other order.
-                [
-                  { ...stale, reference: `places/${GOOGLE_ID}/photos/StaleNew` },
-                  { ...keep, reference: `places/${GOOGLE_ID}/photos/KeepNew` },
-                ],
-        };
-      },
-      photoMedia: async (reference: string) => {
-        mediaCalls.push(reference);
-        if (reference.endsWith('/Stale')) {
-          throw new ProviderInvalidRequestError('google.places', 'NOT_FOUND');
-        }
-        return JPEG;
-      },
-    } as PlacePhotoDisplayPort;
-    const { service } = setup(port);
-    const result = await service.photos(PLACE);
-    expect(result.photos.map((p) => p.googleMapsUri)).toEqual([
-      'https://www.google.com/maps/photo/keep',
-      'https://www.google.com/maps/photo/s',
-    ]);
-    // The good photo is not bought a second time.
-    expect(mediaCalls.filter((r) => r.includes('Keep'))).toHaveLength(1);
-  });
-
-  it('F-07: a photo that failed for another reason is not bought again by the retry', async () => {
-    const broken = {
-      ...ref('Broken', 'Bao'),
-      googleMapsUri: 'https://www.google.com/maps/photo/b',
-    };
-    const stale = { ...ref('Stale', 'Old'), googleMapsUri: 'https://www.google.com/maps/photo/s' };
-    let refs = 0;
-    const mediaCalls: string[] = [];
-    const port: PlacePhotoDisplayPort = {
-      photoRefs: async () => {
-        refs += 1;
-        return {
-          providerPlaceId: GOOGLE_ID,
-          photos:
-            refs === 1
-              ? [broken, stale]
-              : // Fresh names; the stale photo is gone, the broken one is first.
-                [{ ...broken, reference: `places/${GOOGLE_ID}/photos/BrokenNew` }],
-        };
-      },
-      photoMedia: async (reference: string) => {
-        mediaCalls.push(reference);
-        if (reference.endsWith('/Stale')) {
-          throw new ProviderInvalidRequestError('google.places', 'NOT_FOUND');
-        }
-        // Image host answered 5xx / wrong type / too large → no bytes.
-        return null;
-      },
-    } as PlacePhotoDisplayPort;
-    const { service, reserve } = setup(port);
-    expect(await service.photos(PLACE)).toMatchObject({ status: 'unavailable', photos: [] });
-    expect(mediaCalls.filter((r) => r.includes('Broken'))).toHaveLength(1);
-    expect(reserve).toHaveBeenCalledTimes(2);
-  });
-
-  it('F-09 (SA): a deadline during the retry still serves the photos already bought', async () => {
-    let refsCalls = 0;
-    const port: PlacePhotoDisplayPort = {
-      photoRefs: (_id: string) => {
-        refsCalls += 1;
-        if (refsCalls === 1) {
-          return Promise.resolve({
-            providerPlaceId: GOOGLE_ID,
-            photos: [ref('A'), ref('B'), ref('Stale')],
-          });
-        }
-        // The fresh lookup for the expired name never answers in time.
-        return new Promise(() => undefined);
-      },
-      photoMedia: async (reference: string) => {
-        if (reference.endsWith('/Stale')) {
-          throw new ProviderInvalidRequestError('google.places', 'NOT_FOUND');
-        }
-        return JPEG;
-      },
-    } as PlacePhotoDisplayPort;
-    const { service, outcomes, reserve } = setup(port);
-
-    const pending = service.photos(PLACE);
-    await flush();
-    await vi.advanceTimersByTimeAsync(PROVIDER_PHOTOS_DEADLINE_MS);
-    const result = await pending;
-
-    expect(result.status).toBe('ok');
-    expect(result.photos).toHaveLength(2);
-    expect(reserve).toHaveBeenCalledTimes(3);
     expect(outcomes).toEqual(['served']);
   });
 
@@ -261,7 +149,10 @@ describe('ProviderPhotosService', () => {
       },
     } as PlacePhotoDisplayPort;
     const { service, outcomes } = setup(port);
-    expect(await service.photos(PLACE)).toMatchObject({ status: 'unavailable', photos: [] });
+    expect(await service.firstForProvider(GOOGLE_ID)).toMatchObject({
+      status: 'unavailable',
+      photos: [],
+    });
     expect(refs).toBe(2);
     expect(outcomes).toEqual(['provider_error']);
   });
@@ -272,22 +163,8 @@ describe('ProviderPhotosService', () => {
       photoMedia: async () => JPEG,
     } as PlacePhotoDisplayPort;
     const { service, outcomes } = setup(port);
-    expect(await service.photos(PLACE)).toMatchObject({ status: 'ok', photos: [] });
+    expect(await service.firstForProvider(GOOGLE_ID)).toMatchObject({ status: 'ok', photos: [] });
     expect(outcomes).toEqual(['empty']);
-  });
-
-  it('F-04: a budget that runs out part-way is one `served`, not `served` + `refused_budget`', async () => {
-    const port = {
-      photoRefs: async () => ({
-        providerPlaceId: GOOGLE_ID,
-        photos: [ref('A'), ref('B'), ref('C')],
-      }),
-      photoMedia: async () => JPEG,
-    } as PlacePhotoDisplayPort;
-    const { service, outcomes } = setup(port, 1);
-    const result = await service.photos(PLACE);
-    expect(result.photos).toHaveLength(1);
-    expect(outcomes).toEqual(['served']);
   });
 
   it('F-04: a budget refused before any photo is one `refused_budget`', async () => {
@@ -296,7 +173,7 @@ describe('ProviderPhotosService', () => {
       photoMedia: async () => JPEG,
     } as PlacePhotoDisplayPort;
     const { service, outcomes } = setup(port, 0);
-    expect(await service.photos(PLACE)).toMatchObject({ status: 'budget_exhausted' });
+    expect(await service.firstForProvider(GOOGLE_ID)).toMatchObject({ status: 'budget_exhausted' });
     expect(outcomes).toEqual(['refused_budget']);
   });
 });

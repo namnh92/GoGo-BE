@@ -368,6 +368,45 @@ describe('BE-793 exception location (PR #794 F-03)', () => {
   });
 });
 
+describe('BE-822 captured CI path-removal report (PR #825 F-01)', () => {
+  const report = readFileSync(path.resolve(__dirname, 'fixtures/be-822-oasdiff-ci.txt'), 'utf8');
+  const replay = (reportText = report) =>
+    evaluate({
+      report: reportText,
+      baseSha256: '4dc3eb679681e9139420cdf5cf4237c2a1e369da7656f28b72987a9890f67684',
+      revisionSha256: '9aec23d77f526c33f1b3c9baa390ceb630320c9d21fd2d1e414bc940b5a146b9',
+      exceptions: parseExceptions(
+        readFileSync(path.resolve(__dirname, '../.github/oasdiff-exceptions.json'), 'utf8'),
+      ),
+      oasdiffOutcome: 'success',
+      expect: 'BE-822-provider-photos-path-removed',
+    });
+
+  it('admits exactly one finding from the captured CI report', () => {
+    expect(parseReport(report).findings).toHaveLength(1);
+    const verdict = replay();
+    expect(verdict.ok).toBe(true);
+    expect(
+      verdict.lines.filter((line) => line.includes('BE-822-provider-photos-path-removed')),
+    ).toHaveLength(1);
+  });
+
+  it('refuses the provisional revision filename', () => {
+    expect(replay(report.replace('.oasdiff-base.yaml', 'openapi/gogo.v1.yaml'))).toMatchObject({
+      ok: false,
+      code: 1,
+    });
+  });
+
+  it('refuses a second identical finding', () => {
+    const finding = report.slice(report.indexOf('error\t'));
+    expect(replay(`2 changes: 2 error, 0 warning, 0 info\n${finding}${finding}`)).toMatchObject({
+      ok: false,
+      code: 1,
+    });
+  });
+});
+
 describe('parseArgs (#703 F-02)', () => {
   const FOUR = ['base.yaml', 'rev.yaml', 'report.txt', 'success'];
 

@@ -519,6 +519,10 @@ const envSchema = z
      * shipping the code must not start spending. A `feature_flags` row
      * overrides this without a deploy.
      */
+    FLAG_PLACE_PROVIDER_PHOTO_ACQUIRE: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
     FLAG_PLACE_PROVIDER_PHOTOS: z
       .enum(['true', 'false'])
       .default('false')

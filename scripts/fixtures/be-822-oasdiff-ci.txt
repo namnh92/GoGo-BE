@@ -1,0 +1,4 @@
+1 changes: 1 error, 0 warning, 0 info
+error	[api-path-removed-without-deprecation] at .oasdiff-base.yaml
+	in API GET /places/{id}/provider-photos
+		API path removed without deprecation
