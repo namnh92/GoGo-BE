@@ -22,6 +22,7 @@
  */
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
+import { parse } from 'yaml';
 
 export interface OasdiffException {
   id: string;
@@ -139,8 +140,33 @@ export function sha256(contents: string | Buffer): string {
 
 export type Verdict = { ok: true; lines: string[] } | { ok: false; code: 1 | 2; lines: string[] };
 
+/** oasdiff measures structure; ADR-0050 withdraws a published behavioral guarantee. */
+export const CATEGORY_SEMANTIC_DIAGNOSTIC =
+  'in API GET /me/notification-preferences push kinds no longer all report the master switch; independent category suppression changes effective permission (ADR-0050)';
+export function notificationPreferenceBreak(
+  base: string,
+  revision: string,
+): { diagnostic: string; majorBump: boolean } | undefined {
+  const before = parse(base) as {
+    info?: { version?: string };
+    'x-gogo-notification-preference-semantics'?: string;
+  };
+  const after = parse(revision) as typeof before;
+  const oldMode = before?.['x-gogo-notification-preference-semantics'];
+  const newMode = after?.['x-gogo-notification-preference-semantics'];
+  if (newMode !== 'master-and-five-categories-v1' || oldMode === newMode) return undefined;
+  const major = (version: string | undefined) => /^(0|[1-9]\d*)\./.exec(version ?? '')?.[1];
+  const a = major(before?.info?.version),
+    b = major(after?.info?.version);
+  return {
+    diagnostic: CATEGORY_SEMANTIC_DIAGNOSTIC,
+    majorBump: a !== undefined && b !== undefined && BigInt(b) > BigInt(a),
+  };
+}
+
 export function evaluate(input: {
   report: string;
+  semanticBreak?: { diagnostic: string; majorBump: boolean } | undefined;
   baseSha256: string;
   revisionSha256: string;
   exceptions: OasdiffException[];
@@ -239,7 +265,14 @@ export function evaluate(input: {
     };
   }
 
+  if (input.semanticBreak && !input.semanticBreak.majorBump)
+    return {
+      ok: false,
+      code: 1,
+      lines: ['✖ ADR-0050 category semantics require a MAJOR contract version.'],
+    };
   const errors = parsed.findings.filter((f) => f.severity === 'error');
+  if (input.semanticBreak) errors.push({ severity: 'error', text: input.semanticBreak.diagnostic });
 
   if (errors.length === 0) {
     if (expect !== undefined) {
@@ -311,6 +344,9 @@ export function evaluate(input: {
     ok: true,
     lines: [
       `✔ ${admitted.length} breaking change(s), all admitted by a recorded owner decision:`,
+      ...(input.semanticBreak
+        ? ['  ADR-0050 preference semantics classified MAJOR; CODEOWNER review remains separate.']
+        : []),
       ...admitted.map((e) => `  · ${e.id} (${e.issue}, decided ${e.decidedAt})`),
     ],
   };
@@ -476,6 +512,10 @@ function main(): void {
 
   const verdict = evaluate({
     report,
+    semanticBreak: notificationPreferenceBreak(
+      readFileSync(basePath, 'utf8'),
+      readFileSync(revisionPath, 'utf8'),
+    ),
     baseSha256: sha256(readFileSync(basePath)),
     revisionSha256: sha256(readFileSync(revisionPath)),
     exceptions,

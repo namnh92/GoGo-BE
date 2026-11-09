@@ -39,7 +39,8 @@
     "typecheck:scripts": "tsc --noEmit --project scripts/cost-baseline/tsconfig.json && tsc --noEmit --project scripts/cost-backfill/tsconfig.json",
     "cost:backfill": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register scripts/cost-backfill/index.ts",
     "api:version": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register scripts/check-openapi-version.ts",
-    "inbox:backfill": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register apps/worker/src/backfill-notification-inbox.ts"
+    "inbox:backfill": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register apps/worker/src/backfill-notification-inbox.ts",
+    "notifications:categories": "SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register apps/worker/src/rollout-notification-categories.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -111,12 +111,22 @@ An unmodified ADR-0025 worker ignores category choices. Rolling it back with mas
 
 Therefore, rollback to `18ca7f4d` requires:
 
-1. Stop notification workers and temporarily freeze preference mutations.
+1. Fence outbox producers (`--quiesce-producers`), drain/reconcile all unresolved
+   mapped events and pending/attempting deliveries with the current binary and
+   existing provider keys, then stop workers. Ambiguous acceptance blocks either
+   binary transition; never re-key accepted work or clear terminal suppression.
+   `--rollback-collapse` checks this gate, disables recipient-key dispatch and
+   freezes preference mutations before collapsing any accounts.
 2. For accounts with any disabled category, conservatively set master=false and all legacy push mirrors=false.
 3. Retain category rows, versions, read states, and additive schema.
 4. Keep preference mutations frozen until a category-aware release returns.
 
-This may suppress additional categories; it must never resume an opted-out category. On roll-forward, do not automatically restore master=true. Normal rollback should target a category-aware revision once one exists.
+This may suppress additional categories; it must never resume an opted-out category. Before resuming producers on an old binary, verify collapse is complete. Keep
+reconciled published events and terminal delivery ledgers intact: old workers
+cannot interpret recipient suppression. Roll-forward repeats the producer fence
+and reconciliation using old event/locale keys for every unresolved event,
+including events newer than the original cutover. On roll-forward, do not
+automatically restore master=true. Normal rollback should target a category-aware revision once one exists.
 
 **3. API and shared unread/read-all contract**
 
@@ -393,3 +403,33 @@ Consequences: old clients retain callable endpoints but cannot fully represent m
 - **[R-07] Duplicate/lost delivery — breaks when** provider keys change across deploy/retry, or an event-wide key is reused for a changed recipient cohort.
 - **[R-08] False dependency readiness — breaks when** Sol assumes the handoff’s #753 payload fields exist at `18ca7f4d`, or Group 10 starts UI before the agreed BE contract is ready.
 - **[R-09] Retention destroys correctness — breaks when** cleanup deletes all seven-day-old notifications, removes dedupe evidence needed by retries, or treats a member-joined notice as an expired invitation.
+
+## PR2 implementation record — 2026-11-09
+
+Owner addition: server-side `kinds` on GET `/v1/me/notifications`, repeatable
+form/explode, known NotificationKind validation (unknown => 400). Canonical filter
+sets bind signed and pre-cutover fallback cursors; a different filter => 400
+INVALID_NOTIFICATION_CURSOR. The sequence snapshot and microsecond/id ordering
+are preserved. Summary unreadCount remains all-kinds. The filtered index is built
+CONCURRENTLY by the existing inbox rollout CLI, outside transactional migration.
+
+Contract **8.0.0-alpha.1** implements §1–4 preference behavior: five configurable
+choices and non-configurable other, default-true sparse rows, strong ETag/versioned
+PATCH with transactional manual idempotency, legacy PUT compatibility, effective
+legacy mirrors, export/erasure, recipient-level delivery state and stable provider
+keys, final attempt/retry eligibility checks, explicit old-key drain gate, terminal
+suppression, and bounded rollback collapse with a durable DB write freeze.
+Migration **0094** follows #815/0093: rebase **#815 first, then this PR**. No fleet
+backfill is needed for default-true categories. Normal API changes are blocked until
+the recipient-key cutover gate opens. See `docs/notification-inbox.md` for commands,
+lease/crash behavior, rollback and the unavoidable provider-call race window.
+
+The compatibility checker produces a separate exact ADR-0050 semantic diagnostic
+when the structural diff cannot observe the withdrawn one-switch guarantee. It
+requires a MAJOR and exact base/revision hashes in the exception file; unrelated
+structural findings still fail. Owner authorization is dated 2026-11-08; it does
+not assert CODEOWNER sign-off. Recompute the exception after a base/spec change.
+
+PR3 sourced facts and PR4 scheduled reminders/quiet hours remain separate.
+Verification evidence is reported by the implementation session; code presence
+does not establish deployment or acceptance.

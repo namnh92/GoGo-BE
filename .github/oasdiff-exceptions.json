@@ -1,5 +1,5 @@
 {
-  "$schema-note": "GoGo-BE#694. Each entry admits ONE oasdiff ERR, and only on the exact pair of contract files it was decided for. Both sha256 values must match the bytes being compared, and the finding text must contain `diagnostic`. Nothing else is admitted — a new breaking change, the same change on different bytes, or an unparseable report all still fail. Read by scripts/check-contract-compat.ts.",
+  "$schema-note": "GoGo-BE#694. Each entry admits ONE oasdiff ERR, and only on the exact pair of contract files it was decided for. Both sha256 values must match the bytes being compared, and the finding text must contain `diagnostic`. Nothing else is admitted \u2014 a new breaking change, the same change on different bytes, or an unparseable report all still fail. Read by scripts/check-contract-compat.ts.",
   "exceptions": [
     {
       "id": "BE-694-room-events-resync-oneof",
@@ -25,7 +25,7 @@
       "revisionSha256": "840aba4b94afc144f06501dddf389f24883a06b1a5b2eb1f1fb47d33be0fa04d",
       "reason": "Taxonomy labels are shown to people and read by the assistant's models as data, so a label must be one line of plain text. Refusing other characters withdraws the old 'any string' guarantee; the contract moves to 3.0.0-alpha.1 and openapi/CHANGELOG.md carries the consumer-facing note. Rule from Astra (dev/handoffs/sa-question-GoGo-BE-740-f01.astra.out).",
       "note": "revisionCommit is the reviewed PR head that CI run 41189461106 judged; a later commit that only edits this file leaves openapi/gogo.v1.yaml byte-identical.",
-      "diagnostic": "in API POST /cms/taxonomies added the pattern `^[\\p{L}\\p{M}\\p{N}\\p{Zs}'\"‘’“”()&+,./\\-–—]*$` to the request property `labels/additionalProperties/`"
+      "diagnostic": "in API POST /cms/taxonomies added the pattern `^[\\p{L}\\p{M}\\p{N}\\p{Zs}'\"\u2018\u2019\u201c\u201d()&+,./\\-\u2013\u2014]*$` to the request property `labels/additionalProperties/`"
     },
     {
       "id": "BE-737-taxonomy-label-pattern-update",
@@ -38,7 +38,7 @@
       "revisionSha256": "840aba4b94afc144f06501dddf389f24883a06b1a5b2eb1f1fb47d33be0fa04d",
       "reason": "Taxonomy labels are shown to people and read by the assistant's models as data, so a label must be one line of plain text. Refusing other characters withdraws the old 'any string' guarantee; the contract moves to 3.0.0-alpha.1 and openapi/CHANGELOG.md carries the consumer-facing note. Rule from Astra (dev/handoffs/sa-question-GoGo-BE-740-f01.astra.out).",
       "note": "revisionCommit is the reviewed PR head that CI run 41189461106 judged; a later commit that only edits this file leaves openapi/gogo.v1.yaml byte-identical.",
-      "diagnostic": "in API PATCH /cms/taxonomies/{id} added the pattern `^[\\p{L}\\p{M}\\p{N}\\p{Zs}'\"‘’“”()&+,./\\-–—]*$` to the request property `labels/additionalProperties/`"
+      "diagnostic": "in API PATCH /cms/taxonomies/{id} added the pattern `^[\\p{L}\\p{M}\\p{N}\\p{Zs}'\"\u2018\u2019\u201c\u201d()&+,./\\-\u2013\u2014]*$` to the request property `labels/additionalProperties/`"
     },
     {
       "id": "BE-747-campaign-audience-public-list",
@@ -161,7 +161,7 @@
       "id": "BE-793-submission-photos-decide-oneof",
       "issue": "https://github.com/namnh92/GoGo-BE/issues/793",
       "decidedAt": "2026-11-07",
-      "decidedBy": "product owner (CODEOWNER for openapi/gogo.v1.yaml), in session on PR #794: \"Ghi exception, giữ MINOR\"",
+      "decidedBy": "product owner (CODEOWNER for openapi/gogo.v1.yaml), in session on PR #794: \"Ghi exception, gi\u1eef MINOR\"",
       "baseCommit": "facd5cedb91f9b93b86bedffc79da906ff2dd425",
       "baseSha256": "dfa9f14fd0a98b23c0cc6c31f1cf236f460d30c2379ef137774a5139620a4d99",
       "revisionBasis": "Final rebased working-tree openapi/gogo.v1.yaml; identified by revisionSha256 (no commit created)",
@@ -182,6 +182,18 @@
       "diagnostic": "error [response-property-became-not-enum] at openapi/gogo.v1.yaml in API GET /cms/users/{id}/assistant-credits removed the enum constraint from the `items/items/delta` response property for the response status `200`",
       "reason": "ADR-0048 Contract compatibility exception (2026-11-07): retain MINOR 7.4.0-alpha.1 by explicit owner decision. CmsAssistantCreditEntry.delta becomes an integer with x-extensible-enum [50, 70, -1]. CMS must regenerate its client and tolerate unknown integer deltas before receiving +70; openapi/CHANGELOG.md carries the migration note.",
       "note": "The base is origin/re-design at ae88f63c4b5049ea921ace54aa9121f091847b07. Both SHA-256 values use the raw YAML bytes, exactly as scripts/check-contract-compat.ts does. The full diagnostic is retained from the CI-shaped oasdiff stable report generated from the repository root with CI's filenames (base .oasdiff-base.yaml, revision openapi/gogo.v1.yaml) and saved at dev/handoffs/be-796-oasdiff-ci-shaped.txt in the GoGo workspace. Replay with --expect=BE-796-credit-delta-extensible must admit it exactly once. Changing either contract or adding another finding still fails."
+    },
+    {
+      "id": "BE-811-category-effective-permission",
+      "issue": "https://github.com/namnh92/GoGo-BE/issues/811",
+      "decidedAt": "2026-11-08",
+      "decidedBy": "product owner: semantic MAJOR 8.0.0 approved in session; CODEOWNER sign-off remains separate and pending",
+      "baseCommit": "514b999315408ba5e74e72c9bf031759a89ddc7c",
+      "baseSha256": "e8e31612928808fe447b52e596d86c50c542fc96ec8dd904281ab60021b0df77",
+      "revisionSha256": "71fcd0bd297bcbf979e393fa8df239a181eadb9a02d5cabd84f6bc933f87cc6f",
+      "diagnostic": "in API GET /me/notification-preferences push kinds no longer all report the master switch; independent category suppression changes effective permission (ADR-0050)",
+      "reason": "ADR-0050 replaces ADR-0025 single-switch semantics with five independently suppressible categories. Legacy GET reports effective permission. Contract 8.0.0-alpha.1 and openapi/CHANGELOG.md coordinate consumers. This is a semantic finding produced by check-contract-compat in addition to structural oasdiff.",
+      "note": "Owner authorization records the product/contract version decision only, not CODEOWNER sign-off. Exact uncommitted revision bytes after rebase onto #816 (514b9993, contract 7.8.0-alpha.1 and migration 0093); refresh hashes after any further base or spec edit. No unrelated oasdiff ERR is admitted."
     }
   ]
 }

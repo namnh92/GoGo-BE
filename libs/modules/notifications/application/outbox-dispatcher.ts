@@ -1,36 +1,36 @@
+import { NOTIFICATION_REGISTRY, registration } from '../domain/notification-registry';
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import {
   ProviderUnavailableError,
+  idempotencyKeyFrom,
   type NotificationProviderPort,
-  type PushLocale,
   type UserNotification,
 } from '@gogo/providers';
 import {
-  DEFAULT_PUSH_LOCALE,
-  PUSH_LOCALES,
   inboxTarget,
   opensPlan,
-  pushIdempotencyKey,
   pushLocaleOf,
   pushTarget,
   renderPushNotification,
   type PushKind,
 } from './notification-templates';
-import { pushAllowed } from './push-preference';
+import { kindPushAllowed } from './push-preference';
 import { notificationFacts } from './notification-payload';
 
 /** Which domain events fan out to which member notifications (BE-BFF-010). */
-export const EVENT_TO_NOTIFICATION: Record<
-  string,
-  { kind: PushKind; audience: 'host' | 'members' }
-> = {
-  'member.joined': { kind: 'invite', audience: 'host' },
-  'preferences.completed': { kind: 'preference_reminder', audience: 'host' },
-  'plan.published': { kind: 'plan_ready', audience: 'members' },
-  'plan.changed': { kind: 'plan_changed', audience: 'members' },
-  'room.status_active': { kind: 'date_reminder', audience: 'members' },
-};
+export const EVENT_TO_NOTIFICATION = Object.fromEntries(
+  Object.entries(NOTIFICATION_REGISTRY).flatMap(([kind, entry]) =>
+    'audience' in entry && entry.producer
+      ? [[entry.producer, { kind: kind as PushKind, audience: entry.audience }]]
+      : [],
+  ),
+) as Record<string, { kind: PushKind; audience: 'host' | 'members' }>;
+
+/** Stable UUID provider key, independent of locale and changing recipient cohorts. */
+export function recipientPushKey(eventId: string, userId: string): string {
+  return idempotencyKeyFrom(`gogo:notification:${eventId}:${userId}`);
+}
 
 /**
  * Exponential backoff with a ceiling: 5s, 20s, 80s, 320s, 20m, 20m…
@@ -63,8 +63,8 @@ export const outboxDedupeKey = (eventId: string, userId: string): string =>
  * Outbox consumer: at-least-once, so fan-out has to be repeatable rather than
  * merely rare. Every notification carries the event and its recipient as a
  * dedupe key, which makes a redelivery a no-op instead of a duplicate in
- * someone's inbox, and every push carries the event id as the provider's
- * idempotency key for the same reason.
+ * someone's inbox. Push state and provider keys are per event/recipient
+ * after the explicit legacy-key drain gate (ADR-0050).
  *
  * Plain class — the worker process wires it without Nest.
  */
@@ -79,6 +79,10 @@ export class OutboxDispatcher {
 
   /** Process one batch. Returns number of events handled. */
   async dispatchBatch(limit = 50): Promise<number> {
+    const gate = await this.db.execute<{ recipient_keys_enabled: boolean; writes_frozen: boolean }>(
+      sql`select recipient_keys_enabled, writes_frozen from notification_category_rollout where singleton`,
+    );
+    if (!gate.rows[0]?.recipient_keys_enabled || gate.rows[0].writes_frozen) return 0;
     // Due, unpublished, not dead-lettered. Before `next_attempt_at` existed
     // this selected the same failing event on every tick.
     const events = await this.db
@@ -109,7 +113,10 @@ export class OutboxDispatcher {
           .update(schema.outboxEvents)
           .set({
             attempts,
-            lastError: String(err).slice(0, 500),
+            lastError:
+              err instanceof ProviderUnavailableError
+                ? 'provider_unavailable'
+                : 'notification_dispatch_failed',
             nextAttemptAt: exhausted
               ? null
               : sql`now() + make_interval(secs => ${RETRY_BACKOFF_SECONDS(attempts)})`,
@@ -126,7 +133,9 @@ export class OutboxDispatcher {
   }
 
   private async fanOut(event: typeof schema.outboxEvents.$inferSelect): Promise<void> {
-    const mapping = EVENT_TO_NOTIFICATION[event.eventType];
+    const mapping = Object.hasOwn(EVENT_TO_NOTIFICATION, event.eventType)
+      ? EVENT_TO_NOTIFICATION[event.eventType]
+      : undefined;
     if (!mapping) return; // analytics-only event
 
     // Resolve the room whichever resource the event hangs off.
@@ -159,15 +168,13 @@ export class OutboxDispatcher {
     if (targets.length === 0) return;
 
     const memberIds = targets.map((t) => t.userId!) as string[];
-    // NTF-BE-014 (#572), ADR-0025: one switch per account decides push for
-    // every kind. The in-app row below is written regardless of it.
+    // Master and category gate push work independently of the inbox below.
     // #594: the same read carries each recipient's account locale, which
     // decides the copy below (spec §39).
     const pushRows = await this.db
       .select({
         id: schema.users.id,
         locale: schema.users.locale,
-        allowed: sql<boolean>`${pushAllowed(sql`${schema.users.id}`)}`,
       })
       .from(schema.users)
       .where(and(inArray(schema.users.id, memberIds), sql`${schema.users.status} <> 'deleted'`));
@@ -176,7 +183,6 @@ export class OutboxDispatcher {
     const liveIds = new Set(pushRows.map((row) => row.id));
     const userIds = memberIds.filter((id) => liveIds.has(id));
     if (userIds.length === 0) return;
-    const optedOutOfPush = new Set(pushRows.filter((row) => !row.allowed).map((row) => row.id));
     const localeOf = new Map(pushRows.map((row) => [row.id, pushLocaleOf(row.locale)]));
 
     // A plan kind opens the room's current plan. An edit or a regenerate writes
@@ -271,32 +277,84 @@ export class OutboxDispatcher {
         .onConflictDoNothing();
     }
 
-    // #193: one provider call for the whole event, addressed by user id. The
-    // provider owns the device list (spec §26), so there is no per-token loop
-    // and no `device_tokens` read on this path any more.
-    const recipients = userIds.filter((id) => !optedOutOfPush.has(id));
-    if (recipients.length === 0) return;
-
-    // #594: copy follows each recipient's account locale, so an event whose
-    // recipients read different languages is one call per language. Every
-    // account that exists today is `vi`, which is still exactly one call under
-    // the event id. Across a release boundary `en` recipients can get a
-    // duplicate or no push: see docs/verification/NTF-BE-015.md.
-    const byLocale = new Map<PushLocale, string[]>();
-    for (const userId of recipients) {
-      const locale = localeOf.get(userId) ?? DEFAULT_PUSH_LOCALE;
-      byLocale.set(locale, [...(byLocale.get(locale) ?? []), userId]);
-    }
-
-    for (const locale of PUSH_LOCALES) {
-      const group = byLocale.get(locale);
-      if (!group || group.length === 0) continue;
-      await this.sendPush(group, mapping.kind, {
-        ...renderPushNotification({ kind: mapping.kind, locale, event, roomId, currentPlanId }),
-        // Derived from the event, so a retry of this fan-out is a replay at the
-        // provider rather than a second push (30-day window).
-        idempotencyKey: pushIdempotencyKey(event.id, locale),
+    for (const userId of userIds) {
+      // Preference gating happens before pending delivery work is created. A
+      // suppression is durable, so a later opt-in cannot resurrect a retry.
+      const staged = await this.db.transaction(async (tx) => {
+        const live = await tx.execute(
+          sql`select id from users where id = ${userId}::uuid and status <> 'deleted' for share`,
+        );
+        if (!live.rows[0]) return;
+        const inserted = await tx.execute<{
+          status: string;
+        }>(sql`insert into notification_push_deliveries(event_id, user_id, status)
+          select ${event.id}::uuid, ${userId}::uuid,
+            case when ${kindPushAllowed(sql`${userId}::uuid`, mapping.kind)} then 'pending' else 'suppressed' end
+          on conflict do nothing returning status`);
+        return inserted.rows[0]?.status;
       });
+      if (staged)
+        this.metrics?.increment('notification_push_enqueue_total', {
+          kind: mapping.kind,
+          category: registration(mapping.kind).category,
+          outcome: staged,
+        });
+      if (staged === 'suppressed')
+        this.metrics?.increment('notification_push_suppressed_total', {
+          kind: mapping.kind,
+          category: registration(mapping.kind).category,
+          reason: 'preference',
+        });
+    }
+    // Stage the entire cohort before the first provider attempt: an early
+    // outage must not allow a later opt-in to resurrect another recipient.
+    for (const userId of userIds) {
+      const claimed = await this.db.execute(sql`update notification_push_deliveries
+        set status = 'attempting', lease_until = now() + interval '2 minutes', updated_at = now()
+        where event_id = ${event.id}::uuid and user_id = ${userId}::uuid and
+          (status = 'pending' or (status = 'attempting' and lease_until < now())) returning user_id`);
+      if (!claimed.rows[0]) {
+        const active = await this.db.execute(sql`select 1 from notification_push_deliveries
+          where event_id = ${event.id}::uuid and user_id = ${userId}::uuid and status = 'attempting'`);
+        if (active.rows[0]) throw new ProviderUnavailableError('notification_delivery_in_flight');
+        continue;
+      }
+      // Final eligibility snapshot immediately before the provider call, on every
+      // retry. No transaction/lock is held across the external request.
+      const eligible = await this.db.execute(sql`select u.id from users u
+        where u.id = ${userId}::uuid and u.status <> 'deleted'
+          and ${kindPushAllowed(sql`u.id`, mapping.kind)}
+          and exists (select 1 from room_members rm where rm.user_id = u.id
+            and rm.room_id = ${roomId}::uuid and rm.removed_at is null
+            ${mapping.audience === 'host' ? sql`and rm.role = 'host'` : sql``})`);
+      let status = 'suppressed';
+      try {
+        if (eligible.rows[0]) {
+          const locale = localeOf.get(userId) ?? 'vi';
+          status = await this.sendPush([userId], mapping.kind, {
+            ...renderPushNotification({ kind: mapping.kind, locale, event, roomId, currentPlanId }),
+            idempotencyKey: recipientPushKey(event.id, userId),
+          });
+        } else
+          this.metrics?.increment('notification_push_suppressed_total', {
+            kind: mapping.kind,
+            category: registration(mapping.kind).category,
+            reason: 'final_eligibility',
+          });
+      } catch (error) {
+        await this.db
+          .execute(sql`update notification_push_deliveries set status = 'pending', lease_until = null, updated_at = now()
+          where event_id = ${event.id}::uuid and user_id = ${userId}::uuid and status = 'attempting'`);
+        throw error;
+      }
+      this.metrics?.increment('notification_push_outcome_total', {
+        kind: mapping.kind,
+        category: registration(mapping.kind).category,
+        outcome: status,
+      });
+      await this.db
+        .execute(sql`update notification_push_deliveries set status = ${status}, lease_until = null, updated_at = now()
+        where event_id = ${event.id}::uuid and user_id = ${userId}::uuid and status = 'attempting'`);
     }
   }
 
@@ -304,7 +362,7 @@ export class OutboxDispatcher {
     recipients: string[],
     pushKind: PushKind,
     notification: UserNotification,
-  ): Promise<void> {
+  ): Promise<'sent' | 'failed' | 'no_target'> {
     try {
       const result = await this.push.sendToUsers(recipients, notification);
       // Review fix (#193): "sent" is a message the provider created. A 200
@@ -331,6 +389,9 @@ export class OutboxDispatcher {
           result.unknownUserIds.length,
         );
       }
+      return result.providerMessageIds.length > 0 && !result.unknownUserIds.includes(recipients[0]!)
+        ? 'sent'
+        : 'no_target';
     } catch (err) {
       // Transient (the resilience wrapper gave up): let the outbox back off and
       // try the event again. The notification rows above are idempotent and the
@@ -340,6 +401,7 @@ export class OutboxDispatcher {
       // same answer. Count it, keep the in-app notification as the durable
       // half, and let the event publish.
       this.metrics?.increment('push_delivery_failed_total', { kind: pushKind });
+      return 'failed';
     }
   }
 }

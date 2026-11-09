@@ -1,3 +1,4 @@
+import { inboxFilter, type NotificationKind } from '../domain/notification-registry';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
@@ -78,17 +79,24 @@ export class NotificationInboxService {
     this.metrics.increment('notification_inbox_summary_total');
     return { unreadCount: s.unread, asOf: s.as_of, readThroughCursor };
   }
-  async list(userId: string, cursor?: string) {
+  async list(userId: string, cursor?: string, kinds: NotificationKind[] = []) {
+    const filter = inboxFilter(kinds);
     const legacy = cursor ? legacyInboxTimestamp(cursor) : null;
-    const fallback = cursor ? fallbackInboxPosition(cursor) : null;
+    const fallback = cursor ? fallbackInboxPosition(cursor, filter) : null;
+    if (legacy && filter !== 'all')
+      throw AppError.badRequest(
+        'INVALID_NOTIFICATION_CURSOR',
+        'Legacy cursor belongs to the unfiltered inbox',
+      );
     let token: InboxCursor | null = null;
-    if (cursor && !legacy && !fallback) token = this.cursors.open(cursor, userId, 'page');
+    if (cursor && !legacy && !fallback)
+      token = this.cursors.open(cursor, userId, 'page', Date.now(), filter);
     else if (!fallback) {
       const s = await this.snapshot(userId, false);
       // Keep the existing inbox callable while historical sequences/indexes
       // are backfilled. Until cutover it issues a full-precision tuple cursor and
       // includes historical rows with NULL sequences.
-      if (s.ready) token = this.token(userId, s.cutoff, s.as_of, 'page');
+      if (s.ready) token = { ...this.token(userId, s.cutoff, s.as_of, 'page'), filter };
     }
     const before = token?.before ?? fallback;
     const { rows } = await this.db.execute<{
@@ -102,6 +110,14 @@ export class NotificationInboxService {
       select id, kind, payload, read_at, created_at,
         to_char(created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cursor_at
       from notifications where user_id = ${userId}::uuid
+        ${
+          kinds.length
+            ? sql`and kind in (${sql.join(
+                [...new Set(kinds)].map((k) => sql`${k}::notification_kind`),
+                sql`, `,
+              )})`
+            : sql``
+        }
         ${token ? sql`and inbox_sequence <= ${token.cutoff}::bigint` : sql``}
         ${before ? sql`and (created_at, id) < (${before.createdAt}::timestamptz, ${before.id}::uuid)` : sql``}
         ${legacy ? sql`and created_at < ${legacy}::timestamptz` : sql``}
@@ -123,7 +139,7 @@ export class NotificationInboxService {
         rows.length > 20 && last
           ? token
             ? this.cursors.seal({ ...token, before: { createdAt: last.cursor_at, id: last.id } })
-            : fallbackInboxCursor({ createdAt: last.cursor_at, id: last.id })
+            : fallbackInboxCursor({ createdAt: last.cursor_at, id: last.id }, filter)
           : null,
     };
   }

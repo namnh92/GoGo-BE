@@ -5,41 +5,14 @@ import { schema, type Db } from '@gogo/database';
 import { writeAudit } from '../../shared/audit';
 import { publicMediaUrl } from '../../shared/media-url';
 import { pgArray } from '../../search/infrastructure/search.repository';
-import { pushAllowed } from '../../notifications/application/push-preference';
 import { ExportTooLargeError } from '../../privacy/domain/export-envelope';
 import { collectAssistantExport } from '../../assistant/application/assistant-privacy';
 
-export type NotificationSettingsView = {
-  pushEnabled: boolean;
-  source: 'default' | 'explicit' | 'migrated' | 'legacy';
-  updatedAt: string | null;
-};
-
-/**
- * No row means never chosen: on, unless an older client left a push opt-out
- * behind — the rule migration 0064 backfilled with, reported as `legacy` so
- * the client can tell a default from a choice it has not seen yet.
- */
-export async function readNotificationSettings(
-  db: Db,
-  userId: string,
-): Promise<NotificationSettingsView> {
-  const [row] = await db
-    .select()
-    .from(schema.notificationSettings)
-    .where(eq(schema.notificationSettings.userId, userId))
-    .limit(1);
-  if (row) {
-    return {
-      pushEnabled: row.pushEnabled,
-      source: row.source,
-      updatedAt: row.updatedAt.toISOString(),
-    };
-  }
-  const { rows } = await db.execute(sql`select ${pushAllowed(sql`${userId}::uuid`)} as allowed`);
-  const allowed = (rows[0] as { allowed: boolean }).allowed;
-  return { pushEnabled: allowed, source: allowed ? 'default' : 'legacy', updatedAt: null };
-}
+export {
+  readNotificationSettings,
+  type NotificationSettingsView,
+} from '../../notifications/application/category-preferences';
+import { readNotificationSettings } from '../../notifications/application/category-preferences';
 
 export type ExportActor = { actorType: 'user' | 'admin'; actorId: string; reason?: string };
 
@@ -324,6 +297,8 @@ export async function collectUserExport(
     notificationSettings: {
       pushEnabled: notificationSettings.pushEnabled,
       source: notificationSettings.source,
+      version: notificationSettings.version,
+      categories: notificationSettings.categories,
     },
     reviewReactions,
     placeSubmissions,
