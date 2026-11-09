@@ -651,6 +651,33 @@ export class UserContentService {
         .delete(schema.notificationReadOperations)
         .where(eq(schema.notificationReadOperations.userId, userId));
       await tx.delete(schema.notifications).where(eq(schema.notifications.userId, userId));
+      // ADR-0023: inviter profile snapshots are PII even in somebody else's
+      // inbox or an already-published outbox event. Retain event/dedupe records
+      // and every unrelated fact; absence selects the client's generic copy.
+      // Capture and fan-out share-lock this account before writing snapshots.
+      await tx.execute(sql`
+        update outbox_events e set payload = jsonb_set(e.payload, '{notificationFacts}',
+          (e.payload->'notificationFacts') - 'inviterName' - 'inviterAvatar')
+        where e.payload->'notificationFacts'->>'_inviterMemberId' in (
+          select id::text from room_members where user_id = ${userId}::uuid
+        )
+      `);
+      await tx.execute(sql`
+        update notifications n set payload = n.payload - 'inviterName' - 'inviterAvatar'
+        where n.payload->>'_inviterMemberId' in (
+          select id::text from room_members where user_id = ${userId}::uuid
+        )
+        or exists (
+          -- Legacy inbox facts predate the private membership marker. Their
+          -- retained outbox/dedupe evidence still identifies the inviter.
+          select 1 from outbox_events e join room_members m
+            on m.id::text = e.payload->>'inviterMemberId'
+          where m.user_id = ${userId}::uuid and (
+            n.dedupe_key = e.id::text
+            or n.dedupe_key = 'outbox:' || e.id::text || ':' || n.user_id::text
+          )
+        )
+      `);
       await tx
         .delete(schema.notificationInboxState)
         .where(eq(schema.notificationInboxState.userId, userId));

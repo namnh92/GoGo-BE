@@ -58,6 +58,15 @@ Mở hàng lịch sử luôn resolve kế hoạch hiện tại có quyền truy 
 cam kết kế hoạch còn mới. Client tự ghép câu, giờ và countdown từ các dữ kiện.
 Push vẫn chỉ có routing ID và copy chung; không gửi venue/address/avatar snapshot.
 
+Xóa tài khoản (self-service hoặc CMS) bỏ inviterName/inviterAvatar của mọi
+membership thuộc tài khoản khỏi outbox, kể cả sự kiện đã publish, và inbox của
+người khác trong cùng transaction xóa. Giữ event, dedupe key và dữ kiện khác;
+client dùng nội dung chung khi thiếu dữ kiện người mời. Capture khóa SHARE trên
+user trước khi đọc profile/membership; fan-out khóa các user theo thứ tự ID và
+kiểm tra lại trạng thái người mời trước khi ghi inbox. Erasure giữ khóa UPDATE
+trên cùng user tới commit: join/fan-out đi trước được dọn sau, đi sau không thể
+ghi lại snapshot cũ. Khóa không kéo dài qua lệnh gọi provider.
+
 Metric `notification_event_facts_total{kind,fact,present}` đếm theo lần fan-out,
 gồm retry, với fact giới hạn reminder/planPreview/inviterAvatar. Không có payload,
 tên, địa chỉ, media key hoặc actor trong label/log. Không cần migration sau 0094.

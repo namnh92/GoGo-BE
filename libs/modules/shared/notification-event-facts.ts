@@ -213,6 +213,16 @@ export async function captureInviterFacts(
   memberId: unknown,
 ): Promise<EventNotificationFacts> {
   if (typeof memberId !== 'string') return {};
+  // User first, then a fresh membership/profile read. Erasure holds UPDATE on
+  // this same account through membership pseudonymization and snapshot cleanup.
+  // A join that wins commits its event before cleanup; a waiting join sees the
+  // deleted status and captures no facts. Guests have no account to lock.
+  await tx.execute(sql`
+    select id from users where id = (
+      select user_id from room_members
+      where id = ${memberId}::uuid and room_id = ${roomId}::uuid
+    ) for share
+  `);
   const { rows } = await tx.execute<{ display_name: string; avatar_key: string | null }>(sql`
     select m.display_name, u.avatar_key from room_members m
     left join users u on u.id = m.user_id and u.status <> 'deleted'
