@@ -214,6 +214,9 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   realtime_stream_refusals_total: ['reason'],
 
   // --- notifications -------------------------------------------------------
+  // #815: status=200|304; action=created|updated|published|archived. No IDs/copy.
+  system_notifications_reads_total: ['status'],
+  system_notifications_writes_total: ['action'],
   notification_inbox_summary_total: [],
   notification_read_all_requests_total: ['status'],
   notification_read_all_batches_total: ['status'],

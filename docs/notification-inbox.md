@@ -22,6 +22,15 @@ settings or kind. Use one account-scoped client cache, clear it on account chang
 and invalidate/refetch after single-read or completed read-all. Responses are
 `Cache-Control: private, no-store`. A replayed mutation is never a current count.
 
+## Thông báo hệ thống công khai — #815
+
+Từ contract **7.8.0-alpha.1**, `GET /v1/system-notifications` dùng được khi chưa
+đăng nhập. Client hiển thị phần công khai này **phía trên hộp thư cá nhân** sau
+khi đăng nhập. Không sao chép thông báo hệ thống vào `notifications`, không gửi
+push và không cộng vào `/me/notifications/summary`. Không thêm trạng thái đã đọc
+cho thông báo công khai trong PR này. Xem [system-notifications.md](system-notifications.md).
+Các quy tắc hộp thư tài khoản và lộ trình ADR-0050 vẫn giữ nguyên.
+
 ## Storage and cutover
 
 Migration **0091_notification-shared-inbox** is short transactional DDL. It adds
