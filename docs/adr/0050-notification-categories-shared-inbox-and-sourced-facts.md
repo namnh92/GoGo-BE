@@ -28,7 +28,7 @@ The five configurable keys deliberately match the corresponding existing notific
 | Nhắc chọn sở thích   | `preference_reminder` | `preference_reminder` | `preferences.completed`; currently targets the host |
 | Kế hoạch đã sẵn sàng | `plan_ready`          | `plan_ready`          | `plan.published`; members                           |
 | Kế hoạch có thay đổi | `plan_changed`        | `plan_changed`        | `plan.changed`; members                             |
-| Nhắc lịch đi chơi    | `date_reminder`       | `date_reminder`       | `room.status_active`; members                       |
+| Nhắc lịch đi chơi    | `date_reminder`       | `date_reminder`       | `room.reminder_due`; members                        |
 
 These mappings classify existing behavior; they **do not establish that the existing events implement Stitch’s described invitation or reminder behavior**. See [current dispatcher mapping](/Users/maxnguyen/MyWorks/GoGo/dev/worktrees/be-811/libs/modules/notifications/application/outbox-dispatcher.ts:22).
 
@@ -304,7 +304,7 @@ Record bounded metrics for category, kind, suppression reason, enqueue/send outc
 
 **5. Reminder and preview facts**
 
-The existing `room.status_active → date_reminder` means **the outing started**, not “two hours remaining.” Keep this distinction explicit; the approved advance-reminder scheduler is implemented separately in PR4.
+The historical `room.status_active → date_reminder` means **the outing started**, not “two hours remaining.” PR4 replaces new sends with `room.reminder_due`: one advance reminder per confirmed start, no reminder when absent. Historical room_started payloads remain readable; already-staged room-started deliveries are terminally suppressed without new inbox fan-out.
 
 Add optional payload structures; historical rows remain valid without them:
 
@@ -366,13 +366,42 @@ Binding source: workspace `.claude/rules/execution-policy.md` §8, **2026-11-08 
 | Seven-day cleanup   | **No automatic cleanup**. Remove the seven-day cleanup claim from UI; no archive or deletion job is authorized.                                                                                                                    |
 | Contract staging    | PR1 is **MINOR**; independent category semantics in PR2 require **MAJOR 8.0.0**. Owner signs CODEOWNER after review.                                                                                                               |
 
-PR4 quiet-hour implementation must define DST handling, absent timezone behavior, expiry while deferred, and cancellation. The approved behavior defers push; replace Stitch's claim of automatically muting sound.
+PR4 implements these decisions in contract **9.1.0-alpha.1**, migration **0096**.
+Account settings store quiet_hours_enabled (default false) and nullable IANA timezone;
+enabling without a valid stored timezone is rejected. No timezone is inferred.
+The fixed half-open local window is [23:00,07:00). DST resumes at the first UTC
+instant outside the local window, including skipped/repeated hours; never add a
+fixed eight hours. Timezone/enable changes wake deferred work for re-evaluation.
+
+Durable reminder jobs are unique per room/confirmed start (current
+room_constraints.start_at), with stable job/event IDs. Writers synchronize jobs
+inside room/plan transactions; the existing lease-protected outbox worker handles
+bounded due/backfill batches, locking room before job and atomically emitting
+outbox + progress. Plan regeneration at the same start cannot duplicate a reminder;
+stale plans are omitted from new snapshots. Date-only scheduledDate is not authority.
+Collecting/matching/ready rooms with future confirmed starts qualify, even without
+a current plan; active/terminal rooms or absent/past starts do not.
+
+Quiet policy defers push only, including account campaigns and test sends. Inbox
+staging is immediate; outbox publishes independently of durable deferred delivery.
+Deferred attempts recheck current master/category, account/access, timezone and
+schedule; cancelled/moved/expired reminders are suppressed while inbox remains.
+Provider keys remain stable, retries are bounded to six failures and retained as
+dead letters. Campaigns awaiting quiet-hour wakeup remain sending; sent_count
+continues to mean provider acceptance. Device-public sends have no account timezone
+and retain existing consent behavior. No emergency bypass or cleanup job is added.
+
+Rollback must stop/drain workers and freeze preference writes, conservatively
+collapse master/legacy push off for quiet-enabled accounts before any PR3 worker
+can run, and suppress deferred work. Retain additive schema/jobs/dedupe evidence,
+keep a policy-aware API or freeze mutations, and never auto-restore master on
+roll-forward. See docs/notification-inbox.md for rollout and verification.
 
 No retention/archive job is part of PR4. A future change needs a new owner decision, real linked invitation/expiry where relevant, and replay/dedupe retention analysis; the current `invite` emitted for `member.joined` is insufficient.
 
 **Can proceed independently:** preference model/filtering, unread/read-all, provenance-safe payload structures, event-time snapshots, and compatibility work, subject to normal contract gates.
 
-**Staged for PR4:** approved advance-reminder scheduler and opt-in quiet-hour delivery behavior. No emergency exception or automatic cleanup is authorized. Group 10 UI still waits for the agreed BE scope; partial BE delivery does not waive the owner’s UI gate.
+**Implemented in PR4:** approved advance-reminder scheduler and opt-in quiet-hour delivery behavior. No emergency exception or automatic cleanup is authorized. Group 10 UI still waits for the agreed BE scope; partial BE delivery does not waive the owner’s UI gate.
 
 **7. Verification, PR sequence, and consequences**
 

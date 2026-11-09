@@ -2403,7 +2403,7 @@ describe('a repeated start is idempotent (#600, SRS §7.2)', () => {
       payload: { status },
     });
 
-  /** `room.status_active` fans out a `date_reminder` push to every member. */
+  /** Starting remains an idempotent business event; PR4 reminders use confirmed starts. */
   const startEvents = async (roomId: string) =>
     (
       await db.select().from(schema.outboxEvents).where(eq(schema.outboxEvents.resourceId, roomId))

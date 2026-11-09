@@ -1,6 +1,6 @@
-# Notification inbox, category preferences and sourced facts — #811 PR1–3 / #809
+# Notification inbox, category preferences, facts and scheduling — #811 PR1–4 / #809
 
-ADR-0050 defines the four-PR shape. Contract **8.1.0-alpha.1** includes shared inbox
+ADR-0050 defines the four-PR shape. Contract **9.1.0-alpha.1** includes scheduling, quiet hours, shared inbox
 storage/read APIs, category preferences, server-side kinds filtering and optional
 event-time payload facts. Owner decisions dated **2026-11-08** are recorded in
 workspace `.claude/rules/execution-policy.md` §8 (BE#811) and ADR-0050 §6:
@@ -14,8 +14,82 @@ Replace Stitch's automatic sound-muting and seven-day cleanup claims.
 The four PRs remain ordered: (1) shared inbox, **MINOR**; (2) category preferences
 and filtering, semantic contract **MAJOR 8.0.0**; (3) sourced payload facts;
 (4) approved scheduling and quiet-hour policies, with no emergency bypass or
-cleanup job. These product policies are implemented in **PR4**, not this release.
+cleanup job. These product policies are implemented in **PR4**.
 Contract/migration CODEOWNER approval remains separate and required.
+
+## Nhắc lịch và giờ yên lặng — PR4
+
+- `room_constraints.start_at` phiên bản hiện tại là confirmed start; không dùng
+  scheduledDate hoặc arriveAt của stop. Phòng collecting/matching/ready còn trong
+  tương lai có một durable job cho cặp room/start. Không đợi kế hoạch mới để nhắc
+  thời gian đã xác nhận; plan stale không được chụp làm preview mới.
+- Tạo phòng, đổi constraints, chuyển status và ghi phiên bản plan đồng bộ job
+  trong cùng transaction, cùng thứ tự khóa room → job. Đổi start hủy job pending
+  cũ và tạo/mở job của start mới. Regenerate cùng start giữ ID, kể cả đã gửi.
+  Quay lại start đã emit không gửi lại. Active/completed/cancelled/expired hoặc
+  thiếu/past start hủy pending. Không thay đổi state machine nghiệp vụ.
+- Worker theo tick outbox hiện có, dùng **WorkerLease** của startPeriodic, không
+  advisory lock. Mỗi tick tối đa 50 schedule cũ chưa có job và 50 job đến hạn.
+  Backfill này chỉ lập lịch hiện tại, không tạo lại payload lịch sử. Khóa room
+  rồi kiểm tra lại job/lịch; insert outbox với ID job và đánh dấu emitted cùng
+  transaction. Crash/restart hoặc lease chuyển process giữ nguyên event/provider
+  key; không có hàng đợi/progress chỉ trong RAM.
+- Due=max(lúc xác nhận, start−120 phút); nếu đến tick đã >=start thì skip.
+  Inbox facts dùng trigger=scheduled và scheduleRevision=job ID. Push có copy
+  chung “sắp đến giờ”, không giả định lúc giao vẫn còn đủ hai tiếng. Sự kiện
+  room_started lịch sử vẫn đọc được; PR4 không tạo inbox/push reminder khi active.
+  Delivery ledger cũ cho room.status_active được drain sang suppressed, không fan-out lại.
+- PATCH settings nhận `quietHours: {enabled?, timezone?}` không rỗng; timezone
+  IANA tối đa 100 ký tự, UTC được chấp nhận. Mặc định `{enabled:false,timezone:null}`;
+  bật cần timezone đã lưu, không đoán từ locale/IP/thiết bị. Giữ timezone khi tắt.
+  Validation, lock account, ETag/version, audit và idempotency dùng cùng transaction
+  với master/categories; PUT cũ không sửa quiet hours. Export gồm cấu hình này;
+  xóa account xóa settings cùng dữ liệu tài khoản hiện có.
+- Cửa sổ cố định 23:00 inclusive → 07:00 exclusive. Tính theo instant UTC và
+  timezone IANA: DST lặp/nhảy giờ vẫn chờ instant đầu tiên ngoài cửa sổ local,
+  không cộng cố định tám giờ. Đổi timezone/tắt quiet hours đánh thức deferred
+  work để kiểm tra lại ở tick sau. Không có emergency exception.
+- Outbox fan-out ghi inbox ngay; delivery ledger giữ status=deferred,
+  deferred_until, deferred_attempts. Outbox được publish khi inbox/staging xong;
+  deferred worker không fan-out lại. Khi gửi luôn kiểm tra account/membership,
+  master/category và lịch còn tương lai/khớp start. Hết hạn hoặc đổi/hủy lịch
+  suppress push, giữ inbox lịch sử. Provider key giữ event+recipient qua retry.
+  Sáu lỗi transient kết thúc failed, có metric dead letter, giữ bằng chứng.
+  Producer hiện có (#817) vẫn trả delivery về pending khi provider lỗi trước
+  khi thực sự defer vì quiet hours; retry/backoff thuộc outbox event, không thêm
+  timer độc lập. Reminder mới `room.reminder_due` và delivery đã defer dùng retry
+  ledger giới hạn sáu lần. Binary transition chặn cả deferred ledger, kể cả khi
+  outbox đã publish và chưa tới giờ đánh thức; phải reconcile bằng key hiện có.
+- Account campaign cũng giữ inbox ngay và push_deferred_until trên inbox hiện có,
+  giữ dedupe/provider key. Campaign chờ ở sending với quiet_pending, không báo sent
+  hay tăng sent_count khi provider chưa nhận. Deferred tick tối đa 100 hàng,
+  kiểm tra consent/targeting/campaign còn hợp lệ trước mỗi lần gửi và hoàn tất
+  campaign khi hết deferred. Test send chịu cùng quiet policy. Device-public
+  identities không có account/timezone giữ consent hiện có; không suy ra timezone.
+- Không xóa/archive notification hoặc dedupe evidence tự động.
+
+Migration **0096** chỉ additive DDL và index trên bảng job mới; không tạo
+index đồng bộ trên bảng inbox lớn. Sau db:migrate đã commit, chạy
+`scripts/ops/index-notification-deferred.sql` qua psql ngoài transaction để build
+partial index campaign deferred và delivery deferred/attempting CONCURRENTLY; kiểm tra indisvalid và repair như
+hướng dẫn trong script nếu một lần build bị ngắt. Chạy
+`scripts/ops/validate-notification-quiet-hours.sql` để validate CHECK riêng.
+Trước rollout, freeze preference writes bằng gate hiện có, dừng worker PR3 và
+drain in-flight provider requests. Chạy migration/index/validation, triển khai
+worker+API PR4 rồi mới unfreeze writes; không cho API mới bật quiet hours khi
+worker cũ còn gửi. Không rollback trực tiếp sang
+worker PR3 khi quiet hours đang bật: binary cũ không hiểu deferred/policy. Trước
+rollback dừng và drain worker/in-flight provider requests, freeze preference writes,
+đặt master=false và mọi legacy push mirror=false cho account quiet-enabled; giữ
+quiet settings/jobs/ledger/inbox. Suppress deferred work, giữ API hiểu quiet policy
+hoặc freeze mutations đến khi roll-forward. Không tự bật lại master hay replay
+suppressed jobs khi trở lại. Schema giữ nguyên; production dùng roll-forward.
+
+Kiểm chứng: quiet-hours.spec.ts (VN, UTC, fractional timezone, DST và biên 2h),
+notification-scheduling.int.spec.ts (schedule/reschedule/cancel, restart/race,
+inside-window, inbox immediate, quiet deferral/recheck và bounded retry),
+notification-settings.int.spec.ts (HTTP validation/version/idempotent replay),
+campaign-dispatcher.spec.ts (account campaign quiet policy).
 
 ## Dữ kiện tại thời điểm sự kiện — PR3
 

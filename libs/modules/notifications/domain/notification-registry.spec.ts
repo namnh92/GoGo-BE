@@ -20,6 +20,7 @@ describe('ADR-0050 notification registry and master/category truth table', () =>
       expect(registration(kind).producer).toBeTruthy();
     }
     expect(registration('campaign').category).toBe('other');
+    expect(registration('date_reminder').producer).toBe('room.reminder_due');
   });
   it.each([false, true])('master=%s governs every configurable kind and other', (master) => {
     for (const category of CONFIGURABLE_CATEGORIES)

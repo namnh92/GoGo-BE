@@ -175,7 +175,25 @@ export function renderPushNotification(input: {
 }): Pick<UserNotification, 'headings' | 'contents'> & { data: Record<string, string> } {
   const target = pushTarget(input.kind, input.roomId, input.currentPlanId);
   return {
-    ...renderPushCopy(input.kind, input.locale),
+    ...(input.event.eventType === 'room.reminder_due'
+      ? {
+          headings: {
+            [input.locale]:
+              input.locale === 'vi' ? 'Sắp đến giờ đi chơi' : 'Your outing is coming up',
+            en: input.locale === 'vi' ? 'Sắp đến giờ đi chơi' : 'Your outing is coming up',
+          },
+          contents: {
+            [input.locale]:
+              input.locale === 'vi'
+                ? 'Mở GoGo để xem lịch trình.'
+                : 'Open GoGo to see the itinerary.',
+            en:
+              input.locale === 'vi'
+                ? 'Mở GoGo để xem lịch trình.'
+                : 'Open GoGo to see the itinerary.',
+          },
+        }
+      : renderPushCopy(input.kind, input.locale)),
     data: renderPushData({ kind: input.kind, event: input.event, roomId: input.roomId, target }),
   };
 }

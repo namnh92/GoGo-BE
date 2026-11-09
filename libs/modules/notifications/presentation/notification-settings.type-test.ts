@@ -6,12 +6,21 @@ type Patch = operations['patchNotificationSettings']['requestBody']['content']['
 // assertions below fail, so generation cannot erase these constraints.
 const valid: Patch[] = [
   { pushEnabled: false },
+  { quietHours: { enabled: false } },
+  { quietHours: { enabled: true, timezone: 'Asia/Ho_Chi_Minh' } },
+  { quietHours: { timezone: 'America/New_York' } },
   { categories: { invite: false } },
   { categories: { date_reminder: true, plan_ready: false } },
   { pushEnabled: true, categories: {} },
   { pushEnabled: true, categories: { plan_changed: false } },
 ];
 const invalid: Patch[] = [
+  // @ts-expect-error Empty quiet-hours mutation is not a change.
+  { quietHours: {} },
+  // @ts-expect-error Timezone cannot be null on mutation.
+  { quietHours: { timezone: null } },
+  // @ts-expect-error Quiet hours must be an object.
+  { quietHours: false },
   // @ts-expect-error A change is required.
   {},
   // @ts-expect-error A category-only change cannot be empty.

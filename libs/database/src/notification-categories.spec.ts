@@ -40,6 +40,8 @@ describe('notification binary transition gates', () => {
       expect(statements[1]).toContain('e.published_at is null');
       expect(statements[1]).not.toMatch(/occurred_at|cutover_at|failed_at/);
       expect(statements[1]).toContain("status in ('pending', 'attempting')");
+      // Published quiet-hour work remains unresolved, even before its wake time.
+      expect(statements[1]).toContain("or status = 'deferred'");
       // #817 F-01: a campaign a worker is still walking is in-flight work too.
       expect(statements[1]).toContain("notification_campaigns where status = 'sending'");
       expect(

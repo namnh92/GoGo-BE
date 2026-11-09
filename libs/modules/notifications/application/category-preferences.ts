@@ -18,6 +18,7 @@ import {
   type CategoryPreferences,
 } from '../domain/notification-registry';
 import { pushAllowed } from './push-preference';
+import { validTimezone, type QuietHours } from '../domain/quiet-hours';
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
 export type NotificationSettingsView = {
@@ -26,8 +27,11 @@ export type NotificationSettingsView = {
   updatedAt: string | null;
   version: string;
   categories: CategoryPreferences;
+  quietHours: QuietHours;
 };
-export type SettingsPatch = PreferencePatch;
+export type SettingsPatch = PreferencePatch & {
+  quietHours?: { enabled?: boolean; timezone?: string };
+};
 export const settingsEtag = (version: string): string => `"notification-settings-${version}"`;
 
 /** One statement keeps version, master and categories in the same MVCC snapshot. */
@@ -41,9 +45,12 @@ export async function readNotificationSettings(
     updated_at: string | null;
     version: string;
     categories: Partial<CategoryPreferences> | null;
+    quiet_hours_enabled: boolean;
+    timezone: string | null;
   }>(sql`select ${pushAllowed(sql`u.id`)} as push_enabled,
       coalesce(ns.source, case when ${pushAllowed(sql`u.id`)} then 'default' else 'legacy' end) as source,
       ns.updated_at, coalesce(ns.version, 0)::text as version,
+      coalesce(ns.quiet_hours_enabled, false) as quiet_hours_enabled, ns.timezone,
       (select jsonb_object_agg(category, enabled) from notification_category_preferences where user_id = u.id) as categories
     from users u left join notification_settings ns on ns.user_id = u.id
     where u.id = ${userId}::uuid and u.status <> 'deleted'`);
@@ -55,6 +62,7 @@ export async function readNotificationSettings(
     updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null,
     version: row.version,
     categories: { ...DEFAULT_CATEGORIES, ...row.categories },
+    quietHours: { enabled: row.quiet_hours_enabled, timezone: row.timezone },
   };
 }
 
@@ -80,16 +88,34 @@ async function store(
   source: 'explicit' | 'legacy',
 ) {
   const { categories, pushEnabled: master } = applyPreferencePatch(before, patch);
+  const quietHours = { ...before.quietHours, ...patch.quietHours };
+  if (
+    (quietHours.timezone !== null && !validTimezone(quietHours.timezone)) ||
+    (quietHours.enabled && !quietHours.timezone)
+  )
+    throw AppError.badRequest('VALIDATION_FAILED', 'Quiet hours require a stored IANA timezone');
+  const quietChanged =
+    quietHours.enabled !== before.quietHours.enabled ||
+    quietHours.timezone !== before.quietHours.timezone;
   const changed =
+    quietChanged ||
     master !== before.pushEnabled ||
     CONFIGURABLE_CATEGORIES.some((k) => categories[k] !== before.categories[k]);
   // Metadata changes also get a new resource version: the strong ETag covers the whole response.
   const increment = changed || before.source !== source || before.updatedAt === null;
-  await tx.execute(sql`insert into notification_settings(user_id, push_enabled, source, version)
-    values (${userId}::uuid, ${master}, ${source}, ${increment ? 1 : 0})
+  await tx.execute(sql`insert into notification_settings(user_id, push_enabled, source, version, quiet_hours_enabled, timezone)
+    values (${userId}::uuid, ${master}, ${source}, ${increment ? 1 : 0}, ${quietHours.enabled}, ${quietHours.timezone})
     on conflict(user_id) do update set push_enabled = excluded.push_enabled, source = excluded.source,
+      quiet_hours_enabled = excluded.quiet_hours_enabled, timezone = excluded.timezone,
       version = notification_settings.version + ${increment ? 1 : 0},
       updated_at = case when ${increment} then now() else notification_settings.updated_at end`);
+  if (quietChanged) {
+    // Re-evaluate timezone/disable changes on the next tick, not the old night's end.
+    await tx.execute(sql`update notification_push_deliveries set deferred_until = now()
+      where user_id = ${userId}::uuid and status = 'deferred'`);
+    await tx.execute(sql`update notifications set push_deferred_until = now()
+      where user_id = ${userId}::uuid and push_deferred_until is not null and push_sent_at is null and push_suppressed_at is null`);
+  }
   for (const category of CONFIGURABLE_CATEGORIES) {
     if (patch.categories?.[category] === undefined) continue;
     await tx.execute(sql`insert into notification_category_preferences(user_id, category, enabled)
@@ -111,7 +137,7 @@ async function store(
       action: 'user.notification_settings_updated',
       resourceType: 'user',
       resourceId: userId,
-      diff: { pushEnabled: master, categories, version: result.version, source },
+      diff: { pushEnabled: master, categories, quietHours, version: result.version, source },
     });
   return result;
 }
@@ -142,7 +168,7 @@ export async function mutateNotificationSettings(
           412,
         );
     }
-    const applied = normalizePreferencePatch(patch, options.legacyPut);
+    const applied = { ...patch, ...normalizePreferencePatch(patch, options.legacyPut) };
     // A legacy opt-in retains all choices; its first mutation materializes the fallback master.
     const result = options.legacyOptIn
       ? before.updatedAt === null

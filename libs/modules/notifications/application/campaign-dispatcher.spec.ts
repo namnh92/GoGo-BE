@@ -24,6 +24,7 @@ function database(testSend: boolean, eligible = true, suppressed = false) {
   const execute = vi.fn(async (query: SQL) => {
     const statement = new PgDialect().sqlToQuery(query);
     statements.push(statement);
+    if (statement.sql.includes('select id from users')) return { rows: [{ id: userId }] };
     if (statement.sql.includes('returning id, title, body')) return { rows: [campaign] };
     if (statement.sql.includes('select n.id, n.push_sent_at'))
       return {
@@ -36,7 +37,14 @@ function database(testSend: boolean, eligible = true, suppressed = false) {
     return { rows: [] };
   });
   const push = new FakePush();
-  const dispatcher = new CampaignDispatcher({ execute } as unknown as Db, push);
+  const dispatcher = new CampaignDispatcher(
+    {
+      execute,
+      transaction: async (fn: (tx: { execute: typeof execute }) => Promise<unknown>) =>
+        fn({ execute }),
+    } as unknown as Db,
+    push,
+  );
   return {
     statements,
     push,
@@ -86,4 +94,108 @@ describe('composer test send eligibility', () => {
     expect(push.sent).toHaveLength(0);
     expect(statements.some((q) => q.sql.includes('where u.id ='))).toBe(false);
   });
+});
+
+describe('account campaign quiet hours', () => {
+  it('keeps the inbox immediate and waits in sending without claiming provider acceptance', async () => {
+    const statements: { sql: string; params: unknown[] }[] = [];
+    const execute = vi.fn(async (query: SQL) => {
+      const statement = new PgDialect().sqlToQuery(query);
+      statements.push(statement);
+      if (statement.sql.includes('select id from users')) return { rows: [{ id: userId }] };
+      if (statement.sql.includes('returning id, title, body')) return { rows: [campaign] };
+      if (statement.sql.includes('select n.id, n.push_sent_at'))
+        return { rows: [{ id: userId, push_sent_at: null, push_suppressed_at: null }] };
+      if (statement.sql.includes('select u.id from users u')) return { rows: [{ id: userId }] };
+      if (statement.sql.includes('select quiet_hours_enabled'))
+        return {
+          rows: [
+            {
+              quiet_hours_enabled: true,
+              timezone: 'Asia/Ho_Chi_Minh',
+              now: '2026-11-09T16:00:00Z',
+            },
+          ],
+        };
+      return { rows: [] };
+    });
+    const push = new FakePush();
+    await new CampaignDispatcher(
+      {
+        execute,
+        transaction: async (fn: (tx: { execute: typeof execute }) => Promise<unknown>) =>
+          fn({ execute }),
+      } as unknown as Db,
+      push,
+    ).dispatchDue();
+    expect(push.sent).toHaveLength(0);
+    expect(statements.some((q) => q.sql.includes('insert into notifications'))).toBe(true);
+    expect(statements.find((q) => q.sql.includes('set push_deferred_until'))?.params).toContain(
+      '2026-11-10T00:00:00.000Z',
+    );
+    const completion = statements.find((q) => q.sql.includes('quiet_pending ='))!;
+    expect(completion.params).toContain('sending');
+    expect(completion.params).not.toContain('sent');
+  });
+
+  it.each(['due', 'quiet', 'cancelled', 'opt_out'])(
+    'rechecks a deferred campaign at wake: %s',
+    async (state) => {
+      const statements: { sql: string; params: unknown[] }[] = [];
+      const dedupeKey = `campaign:dispatch:${userId}`;
+      const execute = vi.fn(async (query: SQL) => {
+        const statement = new PgDialect().sqlToQuery(query);
+        statements.push(statement);
+        if (statement.sql.includes('select id from users')) return { rows: [{ id: userId }] };
+        if (statement.sql.includes('returning id, user_id, dedupe_key, payload'))
+          return {
+            rows: [
+              {
+                id: userId,
+                user_id: userId,
+                dedupe_key: dedupeKey,
+                payload: { campaignId: campaign.id },
+              },
+            ],
+          };
+        if (statement.sql.includes('destination_value, dispatch_key, status'))
+          return {
+            rows: [{ ...campaign, status: state === 'cancelled' ? 'cancelled' : 'sending' }],
+          };
+        if (statement.sql.includes('select n.id, n.push_sent_at'))
+          return { rows: [{ id: userId, push_sent_at: null, push_suppressed_at: null }] };
+        if (statement.sql.includes('select u.id from users u'))
+          return { rows: state === 'opt_out' ? [] : [{ id: userId }] };
+        if (statement.sql.includes('select quiet_hours_enabled'))
+          return {
+            rows: [
+              {
+                quiet_hours_enabled: state === 'quiet',
+                timezone: 'Asia/Ho_Chi_Minh',
+                now: '2026-11-09T16:00:00Z',
+              },
+            ],
+          };
+        return { rows: [] };
+      });
+      const push = new FakePush();
+      await new CampaignDispatcher(
+        {
+          execute,
+          transaction: async (fn: (tx: { execute: typeof execute }) => Promise<unknown>) =>
+            fn({ execute }),
+        } as unknown as Db,
+        push,
+      ).dispatchDeferred();
+      expect(push.sent).toHaveLength(state === 'due' ? 1 : 0);
+      if (state === 'due') {
+        expect(push.sent[0]?.idempotencyKey).toBeTruthy();
+        const eligible = statements.find((q) => q.sql.includes('select u.id from users u'))!;
+        expect(eligible.sql).toContain('ns.push_enabled');
+        expect(eligible.sql).toContain('ps.platform');
+      }
+      if (state === 'cancelled' || state === 'opt_out')
+        expect(statements.some((q) => q.sql.includes('push_suppressed_at = now()'))).toBe(true);
+    },
+  );
 });

@@ -332,7 +332,14 @@ describe('producer → outbox → inbox sourced facts (#811 PR3)', () => {
       expect(await rooms.updateStatus(f.room.id, 'active', event)).toBe(true);
       expect(await rooms.updateStatus(f.room.id, 'active', event)).toBe(false);
       await dispatch();
-      const facts = (await payloads(f.member.id)).find((r) => r.kind === 'date_reminder')!.payload;
+      // The producer still captures honest room_started facts, but PR4 retires
+      // that notification: no start means no reminder, and start cannot send twice.
+      expect((await payloads(f.member.id)).filter((r) => r.kind === 'date_reminder')).toEqual([]);
+      const captured = await pool.query(
+        "select payload from outbox_events where resource_id=$1 and event_type='room.status_active'",
+        [f.room.id],
+      );
+      const facts = captured.rows[0].payload.notificationFacts;
       expect(facts.reminder).toMatchObject({
         trigger: 'room_started',
         scheduledFor: null,
@@ -392,7 +399,7 @@ describe('producer → outbox → inbox sourced facts (#811 PR3)', () => {
     });
     await dispatch();
     const legacy = (await payloads(f.member.id)).filter((r) => r.kind === 'date_reminder');
-    expect(legacy).toHaveLength(2);
+    expect(legacy).toHaveLength(1);
     for (const row of legacy) {
       expect(row.payload).not.toHaveProperty('reminder');
       expect(row.payload).not.toHaveProperty('planPreview');

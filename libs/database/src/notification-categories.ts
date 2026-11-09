@@ -19,7 +19,7 @@ async function requireReconciledDeliveries(tx: Tx, eventTypes: string[]) {
   if (!eventTypes.length) throw new Error('Notification event types are required');
   // No timestamp boundary: rollback-era events and dead letters need the same
   // reconciliation as the initial cutover. Published events with active leases
-  // or pending recipients also block a binary transition, and so does a campaign
+  // or pending/deferred recipients also block a binary transition, and so does a campaign
   // a worker is still walking (#817 F-01): its recipients are decided one by one
   // and the binary that started it must be the one that finishes it.
   const unresolved = await tx.execute(sql`select 1 from outbox_events e
@@ -28,6 +28,7 @@ async function requireReconciledDeliveries(tx: Tx, eventTypes: string[]) {
       sql`, `,
     )})
     union all select 1 from notification_push_deliveries where status in ('pending', 'attempting')
+      or status = 'deferred'
     union all select 1 from notification_campaigns where status = 'sending'
     limit 1`);
   if (unresolved.rows[0])

@@ -8,6 +8,28 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 9.1.0-alpha.1 — Nhắc lịch và giờ yên lặng (#811 PR4)
+
+MINOR: GET/PUT/PATCH notification settings thêm `quietHours` tùy chọn trong
+response; PATCH nhận enabled/timezone, giữ giá trị bị bỏ qua. Mặc định off;
+bật cần timezone IANA hợp lệ đã lưu hoặc trong request (thiếu/sai trả 400
+VALIDATION_FAILED). Cùng ETag/version, If-Match, idempotency và audit hiện có.
+PUT cũ giữ nguyên giờ yên lặng. Export tài khoản gồm cấu hình mới.
+
+Một date_reminder theo confirmed start từ room_constraints, trước 120 phút;
+không start thì không nhắc. Trong cửa sổ gửi ngay một lần khi còn trước start.
+Đổi/hủy lịch cập nhật job trong transaction. `room.reminder_due` ghi facts
+trigger=scheduled, scheduledFor, startsAt, leadTimeSeconds=7200, scheduleRevision;
+`room.status_active` vẫn lưu facts room_started cho sự kiện nghiệp vụ; PR4 ngừng
+fan-out reminder từ sự kiện này để không gửi nhắc lần hai/khi thiếu start.
+Payload room_started lịch sử vẫn đọc được; ledger cũ được suppress.
+
+Opt-in 23:00–07:00 theo timezone đã lưu chỉ hoãn push, inbox lập tức. Worker
+lưu deferred state và kiểm tra lại quyền, master/category, timezone và lịch khi
+gửi; nhắc đã quá giờ hoặc lịch bị đổi/hủy bị suppress. DST chọn instant UTC đầu
+ngoài cửa sổ giờ địa phương. Không emergency bypass, không cleanup bảy ngày.
+Migration 0096; chi tiết vận hành/rollback trong docs/notification-inbox.md.
+
 ## 9.0.0-alpha.1 — Stored provider cover (#822, ADR-0052)
 
 MAJOR: remove `GET /places/{id}/provider-photos` / `getPlaceProviderPhotos` and
