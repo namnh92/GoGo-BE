@@ -135,12 +135,15 @@ export class AuthGuard implements CanActivate {
     }
 
     if (claims.act === 'user') {
-      // Authoritative, fail-closed check: negative denylist caches can be stale.
+      // Authoritative check: negative denylist caches can be stale.
       let session;
       try {
         session = await this.repo.findAuthSessionById(claims.sid);
       } catch (error) {
         if (!operationalLookupFailure(error)) throw error;
+        // Optional public auth falls back to anonymous IP limiting; protected
+        // routes remain fail-closed when the session cannot be verified.
+        if (allowAnonymous) return true;
         throw AppError.serviceUnavailable(
           'SERVICE_UNAVAILABLE',
           'Session verification is temporarily unavailable',

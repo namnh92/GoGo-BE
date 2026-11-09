@@ -221,6 +221,45 @@ describe('optional authentication', () => {
     expect(h.request.actor).toBeUndefined();
   });
 
+  it.each([
+    Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }),
+    Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' }),
+    Object.assign(new Error('database unavailable'), { code: 'ECONNREFUSED' }),
+  ])(
+    'continues anonymously only on optional public routes for lookup failure %s',
+    async (cause) => {
+      for (const error of [cause, new Error('Drizzle wrapper', { cause })]) {
+        for (const [publicRoute, optional] of [
+          [true, true],
+          [false, false],
+          [false, true],
+        ] as const) {
+          const h = setup(publicRoute, optional, 'Bearer valid');
+          h.repo.findAuthSessionById.mockRejectedValue(error);
+          if (publicRoute) {
+            await expect(h.guard.canActivate(h.context)).resolves.toBe(true);
+          } else {
+            await expect(h.guard.canActivate(h.context)).rejects.toMatchObject({
+              code: 'SERVICE_UNAVAILABLE',
+              httpStatus: 503,
+              options: { retryable: true },
+            });
+          }
+          expect(h.request.actor).toBeUndefined();
+          expect(h.isRevoked).not.toHaveBeenCalled();
+        }
+      }
+    },
+  );
+
+  it('preserves unexpected lookup failures on optional public routes', async () => {
+    const h = setup(true, true, 'Bearer valid');
+    const error = new TypeError('unexpected lookup failure');
+    h.repo.findAuthSessionById.mockRejectedValue(error);
+    await expect(h.guard.canActivate(h.context)).rejects.toBe(error);
+    expect(h.request.actor).toBeUndefined();
+  });
+
   it('keeps invalid credentials rejected on protected routes', async () => {
     const h = setup(false, false, 'Bearer invalid');
     h.verifyAccessToken.mockImplementation(() => {

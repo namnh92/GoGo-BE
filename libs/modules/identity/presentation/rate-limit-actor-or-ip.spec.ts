@@ -82,6 +82,51 @@ describe('rate-limit key modes', () => {
     expect(recorded).toEqual(['photos|192.0.2.1', 'photos|192.0.2.1']);
   });
 
+  it('reaches the IP limiter when optional session lookup times out', async () => {
+    const recorded: string[] = [];
+    const handler = () => undefined;
+    Reflect.defineMetadata(IS_PUBLIC_KEY, true, handler);
+    Reflect.defineMetadata(OPTIONAL_AUTH_KEY, true, handler);
+    Reflect.defineMetadata(
+      RATE_LIMIT_KEY,
+      { action: 'photos', limit: 120, windowSeconds: 60, keyBy: 'actorOrIp' },
+      handler,
+    );
+    const auth = new AuthGuard(
+      new Reflector(),
+      { verifyAccessToken: () => ({ sid: 'session-1', sub: 'alice', act: 'user' }) } as never,
+      {} as never,
+      {
+        findAuthSessionById: async () => {
+          throw Object.assign(new Error('canceling statement due to statement timeout'), {
+            code: '57014',
+          });
+        },
+      } as never,
+    );
+    const limiter = new RateLimitGuard(
+      new Reflector(),
+      { hit: async (key) => (recorded.push(key), 1) },
+      { hit: async () => 1 },
+    );
+    const request = {
+      method: 'GET',
+      url: '/v1/photos',
+      ip: '192.0.2.1',
+      headers: { authorization: 'Bearer valid' },
+      actor: { ...actor },
+    };
+    const context = {
+      getHandler: () => handler,
+      getClass: () => class {},
+      switchToHttp: () => ({ getRequest: () => request }),
+    } as never;
+    expect(await auth.canActivate(context)).toBe(true);
+    expect(request.actor).toBeUndefined();
+    expect(await limiter.canActivate(context)).toBe(true);
+    expect(recorded).toEqual(['photos|192.0.2.1']);
+  });
+
   it.each([
     ['ip', true, ['photos|192.0.2.1', 'photos|192.0.2.2']],
     ['ip', false, ['photos|192.0.2.1', 'photos|192.0.2.2']],
