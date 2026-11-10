@@ -41,10 +41,11 @@ export class SubmissionPhotoService {
 
   async acquisitionEnabled(): Promise<boolean> {
     if (!this.configured || !this.config) return false;
+    if (this.config.FLAG_PLACE_PROVIDER_PHOTO_ACQUIRE === false) return false;
     const flag = await resolveFlag(this.db, 'place_provider_photo_acquire.enabled', {
       environment: flagEnvironmentOf(this.config.APP_ENV),
     });
-    return flag.isDefault ? this.config.FLAG_PLACE_PROVIDER_PHOTO_ACQUIRE === true : flag.enabled;
+    return flag.isDefault ? true : flag.enabled;
   }
 
   /** One shared, committed purchase protocol for submit, approve and future backfill. */

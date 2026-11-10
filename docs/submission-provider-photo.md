@@ -5,10 +5,16 @@ ADR: [0052](adr/0052-stored-submission-provider-photo.md). Migration:
 
 ## Rollout
 
-Apply migrations before API/worker. New flag `place_provider_photo_acquire.enabled`
-defaults off (env `FLAG_PLACE_PROVIDER_PHOTO_ACQUIRE=false`); enable by normal CMS
-feature-flag configuration. The existing `place_provider_photos.enabled` controls
-preview/approval fallback/#797 independently. Keep DEV budget caps unchanged.
+Apply migrations before API/worker. Per owner 2026-11-10 (GoGo-BE#827),
+`place_provider_photo_acquire.enabled` defaults **on** for submit/CMS acquisition
+when the DB flag row is absent (`isDefault`); env
+`FLAG_PLACE_PROVIDER_PHOTO_ACQUIRE` defaults to `true`. Explicit env `false`
+disables acquisition even if CMS enables it; CMS flag off also disables it.
+Catalogue storage must still be configured. The existing
+`place_provider_photos.enabled` controls preview/approval fallback/#797
+independently and still defaults off. Backfill remains an explicitly invoked
+manual CLI with opt-in apply; this default change does not start a backfill.
+Keep DEV budget caps unchanged.
 New uploads have public, max-age=31536000, immutable; existing objects require S3
 header rewrite, not implemented or executed by S1. No provider photo name or
 retrieval URL/key is persisted. Public CDN before moderation is owner-authorized

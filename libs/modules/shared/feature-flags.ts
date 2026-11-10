@@ -137,16 +137,15 @@ export const FEATURE_FLAGS = {
     description: 'Run the periodic Google Place ID liveness refresh (IDs-Only, billed at $0).',
     platformScoped: false,
   },
-  // GoGo-BE#509. Default **off**, like `place_refresh.enabled`: every Place
-  // Detail view would become a paid Google call, so the code shipping must not
-  // be what turns it on. Deploy-time default `FLAG_PLACE_PROVIDER_PHOTOS`; this
-  // row is the incident switch.
+  // #827: owner 2026-11-10 enables stored submit/CMS acquisition by default.
+  // Explicit env false and a disabled CMS row remain kill switches.
   'place_provider_photo_acquire.enabled': {
     valueType: 'boolean',
-    defaultValue: false,
+    defaultValue: true,
     description: 'Acquire one stored Google cover at submission and CMS create (ADR-0052).',
     platformScoped: false,
   },
+  // #509: preview/approval fallback/manual backfill remains opt-in.
   'place_provider_photos.enabled': {
     valueType: 'boolean',
     defaultValue: false,

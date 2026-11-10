@@ -19,6 +19,11 @@ describe('feature flag registry (BE-CMS-G3 #221)', () => {
     expect(FEATURE_FLAGS['push.device_identity.enabled'].defaultValue).toBe(false);
   });
 
+  it('defaults stored acquisition on while preview/backfill remains off (#827)', () => {
+    expect(FEATURE_FLAGS['place_provider_photo_acquire.enabled'].defaultValue).toBe(true);
+    expect(FEATURE_FLAGS['place_provider_photos.enabled'].defaultValue).toBe(false);
+  });
+
   it('every registered key ships a default of its own declared type', () => {
     for (const key of FEATURE_FLAG_KEYS) {
       const { valueType, defaultValue } = FEATURE_FLAGS[key];

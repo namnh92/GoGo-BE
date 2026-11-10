@@ -513,16 +513,17 @@ const envSchema = z
     PLACE_DISPLAY_DAILY_MAX_LIST_COST_USD: z.coerce.number().min(0).optional(),
     PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_DETAILS_QUALITY: z.coerce.number().int().min(0).optional(),
     PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_PHOTOMEDIA: z.coerce.number().int().min(0).optional(),
-    /**
-     * GoGo-BE#509 — the deploy-time default of the `place_provider_photos.enabled`
-     * kill switch. Off: transient Google photos are a paid call per view, so
-     * shipping the code must not start spending. A `feature_flags` row
-     * overrides this without a deploy.
+    /** #827 — owner 2026-11-10: acquire stored submit/CMS covers by default.
+     * Explicit false is a kill switch even when the CMS flag is enabled.
      */
     FLAG_PLACE_PROVIDER_PHOTO_ACQUIRE: z
       .enum(['true', 'false'])
-      .default('false')
+      .default('true')
       .transform((v) => v === 'true'),
+    /**
+     * GoGo-BE#509 — preview/approval fallback/manual backfill remains opt-in.
+     * A `feature_flags` row overrides this default without a deploy.
+     */
     FLAG_PLACE_PROVIDER_PHOTOS: z
       .enum(['true', 'false'])
       .default('false')
