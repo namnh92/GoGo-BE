@@ -1,3 +1,8 @@
+import {
+  lockCreditCutover,
+  lockCreditRecipients,
+  scrubCreditEventRecipients,
+} from '../../shared/credit-event-protocol';
 import { lockAssistantAccount } from '../../shared/assistant-credits';
 import { Inject, Injectable } from '@nestjs/common';
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
@@ -395,23 +400,30 @@ export class UserContentService {
     },
   ) {
     const userId = requireUser(actor);
-    const [row] = await this.db
-      .insert(schema.reviews)
-      .values({
-        userId,
-        placeId: input.placeId ?? null,
-        planId: input.planId ?? null,
-        rating: input.rating,
-        text: input.text ?? null,
-      })
-      .returning();
-    await writeOutbox(this.db, {
-      eventType: 'review.submitted',
-      resourceType: 'review',
-      resourceId: row!.id,
-      payload: { placeId: input.placeId ?? null },
+    return this.db.transaction(async (tx) => {
+      const cutover = await lockCreditCutover(tx);
+      const active = await lockCreditRecipients(tx, [userId]);
+      if (!active.has(userId))
+        throw AppError.conflict('CONTRIBUTOR_UNAVAILABLE', 'Contributor account is unavailable');
+      const [row] = await tx
+        .insert(schema.reviews)
+        .values({
+          userId,
+          placeId: input.placeId ?? null,
+          planId: input.planId ?? null,
+          rating: input.rating,
+          text: input.text ?? null,
+          creditEpoch: cutover.first_activated_at !== null ? cutover.epoch : null,
+        })
+        .returning();
+      await writeOutbox(tx, {
+        eventType: 'review.submitted',
+        resourceType: 'review',
+        resourceId: row!.id,
+        payload: { placeId: input.placeId ?? null },
+      });
+      return { id: row!.id, rating: row!.rating, status: row!.status };
     });
-    return { id: row!.id, rating: row!.rating, status: row!.status };
   }
 
   async updateReview(
@@ -699,6 +711,7 @@ export class UserContentService {
         .update(schema.roomMembers)
         .set({ displayName: 'Đã rời' })
         .where(eq(schema.roomMembers.userId, userId));
+      await scrubCreditEventRecipients(tx, userId);
       await writeAudit(tx, {
         actorType: by.actorType,
         actorId: by.actorId,

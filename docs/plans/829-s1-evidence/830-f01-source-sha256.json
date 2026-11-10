@@ -1,0 +1,13 @@
+{
+  "scope": "PR #830 Astra F-01 single fix round; listed filesystem bytes only",
+  "generated_at": "2026-11-10T04:00:33.193026+00:00",
+  "basis": "No Git state inspected; not a Git head or whole-worktree snapshot",
+  "exclusions": "All files outside the named scope, dependencies, generated files, and repository metadata",
+  "files": {
+    "libs/modules/cms/application/cms-users.service.ts": "192321b2e3e392b8d2d55cfd743e734ca9fff7383dd948051550358976f71144",
+    "libs/modules/rooms/infrastructure/rooms.repository.ts": "f9b9ef44eb95d48954b60c50662b521b0ecefa6cd70492c860af85bd0fdc6571",
+    "apps/api/test/credit-event-prerequisites.int.spec.ts": "23bb132faafb1c4f95c65196a354be411d16c0506ca861cab37717a46d0ce295",
+    "docs/credit-event-prerequisites.md": "f37b13e296de793f1ecd4f7895be181db42089117d0ea3d86e0262de184af821",
+    "docs/plans/829-s1-verification.md": "364f921c3c22105daae48956763edd5806d46ede87c708c097eb285ec149296b"
+  }
+}

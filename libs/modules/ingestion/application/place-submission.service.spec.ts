@@ -17,6 +17,7 @@ function fixture(over: Record<string, unknown> = {}) {
     status: 'pending',
     submissionRevision: 1,
     submissionCount: 1,
+    enrichment: null,
     resultPlaceId: null,
     rejectionReason: null,
     decisionReason: 'PRIVATE',
@@ -33,7 +34,9 @@ function fixture(over: Record<string, unknown> = {}) {
   // A submission row is not evidence that an unrelated user contributed.
   query.from.mockImplementation((table: unknown) => ({
     ...query,
-    limit: vi.fn(async () => (table === schema.placeSubmissions ? [row] : [])),
+    limit: vi.fn(async () =>
+      table === schema.placeSubmissions || table === schema.places ? [row] : [],
+    ),
   }));
   const written: { table: unknown; value: Record<string, unknown> }[] = [];
   const update = vi.fn((table: unknown) => ({
@@ -45,6 +48,9 @@ function fixture(over: Record<string, unknown> = {}) {
     }),
   }));
   const tx = {
+    execute: vi.fn(async () => ({
+      rows: [{ id: row.submittedByUserId, mode: 'sync', epoch: 0, first_activated_at: null }],
+    })),
     select: vi.fn(() => query),
     update,
     insert: (table: unknown) => ({
@@ -65,7 +71,7 @@ function fixture(over: Record<string, unknown> = {}) {
   const service = new PlaceSubmissionService(
     db as unknown as Db,
     null!,
-    null!,
+    { emitReindex: vi.fn() } as never,
     null!,
     null!,
     photos as unknown as SubmissionPhotosService,
@@ -73,6 +79,95 @@ function fixture(over: Record<string, unknown> = {}) {
   const owner = { id: row.submittedByUserId, type: 'user' } as Actor;
   return { row, owner, db, service, written, photos, tx };
 }
+
+/** Model separate database reads rather than sharing one mutable row object. */
+function snapshotReads({ db, row }: ReturnType<typeof fixture>) {
+  db.select.mockImplementation(() => {
+    const snapshot = structuredClone(row);
+    return {
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      for: vi.fn().mockReturnThis(),
+      limit: vi.fn(async () => [snapshot]),
+    };
+  });
+}
+
+describe('submission erasure during decision preparation (#829)', () => {
+  it.each(['rejected', 'merged'] as const)(
+    '%s rediscovers an erased owner before deciding without a recipient',
+    async (decision) => {
+      const setup = fixture({ enrichment: { visitTips: 'Erased tip' } });
+      const { row, db, service, tx, written } = setup;
+      snapshotReads(setup);
+      db.transaction.mockImplementationOnce(async (work) => {
+        // Erasure commits after discovery and before the account/domain locks.
+        Object.assign(row, {
+          submittedByUserId: null,
+          enrichment: null,
+          submissionRevision: row.submissionRevision + 2,
+        });
+        return work(tx);
+      });
+
+      await expect(
+        service.decide(randomUUID(), row.id, decision, 'Checked', randomUUID(), 'other'),
+      ).resolves.toMatchObject({ status: decision });
+      expect(db.transaction).toHaveBeenCalledTimes(2);
+      expect(
+        written.find((entry) => entry.table === schema.outboxEvents)?.value.payload,
+      ).toMatchObject({ recipientUserId: null, approvedEvidenceCount: 0 });
+      expect(written.some((entry) => entry.table === schema.assistantCreditLedger)).toBe(false);
+      expect(row.enrichment).toBeNull();
+    },
+  );
+
+  it('revalidates an enrichment selection against the erased row before any writes', async () => {
+    const setup = fixture({ enrichment: { visitTips: 'Erased tip' } });
+    const { row, db, service, tx, written, photos } = setup;
+    snapshotReads(setup);
+    Object.assign(photos, { list: vi.fn(async () => []) });
+    db.transaction.mockImplementationOnce(async (work) => {
+      Object.assign(row, {
+        submittedByUserId: null,
+        enrichment: null,
+        submissionRevision: row.submissionRevision + 2,
+      });
+      return work(tx);
+    });
+
+    await expect(
+      service.decide(
+        randomUUID(),
+        row.id,
+        'merged',
+        'Checked',
+        randomUUID(),
+        undefined,
+        undefined,
+        { keptFactKeys: ['visitTips'], keptPhotoMediaIds: [] },
+      ),
+    ).rejects.toMatchObject({ code: 'INVALID_ENRICHMENT_SELECTION' });
+    expect(row.status).toBe('pending');
+    expect(written).toEqual([]);
+    expect(photos.decide).not.toHaveBeenCalled();
+  });
+
+  it('still rejects a contributor/moderator revision change without retrying', async () => {
+    const setup = fixture();
+    const { row, db, service, tx, written } = setup;
+    snapshotReads(setup);
+    db.transaction.mockImplementationOnce(async (work) => {
+      row.submissionRevision++;
+      return work(tx);
+    });
+    await expect(
+      service.decide(randomUUID(), row.id, 'rejected', 'Checked', undefined, 'other'),
+    ).rejects.toMatchObject({ code: 'SUBMISSION_CHANGED' });
+    expect(db.transaction).toHaveBeenCalledOnce();
+    expect(written).toEqual([]);
+  });
+});
 
 // Exercise the actual HTTP body pipe; do not copy its Zod rules into the test.
 const routeArgs = Reflect.getMetadata(
@@ -157,7 +252,17 @@ describe('submission public response (#787)', () => {
         decision: 'rejected',
         rejectionReason: key,
       });
-      expect(written.find((entry) => entry.table === schema.outboxEvents)?.value.payload).toEqual({
+      expect(
+        written.find((entry) => entry.table === schema.outboxEvents)?.value.payload,
+      ).toMatchObject({
+        submissionId: row.id,
+        googlePlaceId: row.googlePlaceId,
+        venueIdentity: `google:${row.googlePlaceId}`,
+        variant: 'rejected',
+        recipientUserId: row.submittedByUserId,
+        grantOwner: 'sync',
+        approvedEvidenceCount: 0,
+        rejectionReason: key,
         decision: 'rejected',
         resultPlaceId: null,
       });

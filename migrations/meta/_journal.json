@@ -666,6 +666,13 @@
       "when": 1794182400096,
       "tag": "0096_notification-reminders-quiet-hours",
       "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1794268800097,
+      "tag": "0097_credit-event-prerequisites",
+      "breakpoints": true
     }
   ]
 }

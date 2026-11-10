@@ -1,3 +1,5 @@
+import { lockCreditRecipients } from '../../shared/credit-event-protocol';
+import { AppError } from '../../shared/app-error';
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
@@ -263,6 +265,22 @@ export class IdentityRepository {
    */
   async claimGuestSession(guestSessionId: string, userId: string): Promise<void> {
     await this.db.transaction(async (tx) => {
+      const active = await lockCreditRecipients(tx, [userId]);
+      if (!active.has(userId))
+        throw AppError.conflict('CONTRIBUTOR_UNAVAILABLE', 'Account is unavailable');
+      // Session room_id is immutable. Read it before touching either child row.
+      const [session] = await tx
+        .select({ roomId: schema.guestSessions.roomId })
+        .from(schema.guestSessions)
+        .where(eq(schema.guestSessions.id, guestSessionId))
+        .limit(1);
+      if (session)
+        await tx
+          .select({ id: schema.rooms.id })
+          .from(schema.rooms)
+          .where(eq(schema.rooms.id, session.roomId))
+          .for('share');
+
       await tx
         .update(schema.guestSessions)
         .set({ claimedByUserId: userId, claimedAt: sql`now()`, revokedAt: sql`now()` })

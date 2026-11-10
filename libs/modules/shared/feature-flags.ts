@@ -59,6 +59,13 @@ export type FlagDefinition = {
  * together, so a key can never sit in the console with nothing behind it.
  */
 export const FEATURE_FLAGS = {
+  'credit_events.enabled': {
+    valueType: 'boolean',
+    defaultValue: false,
+    description:
+      'Resume the credit evaluator; ownership is controlled by credit_cutover, never this pause switch.',
+    platformScoped: false,
+  },
   maintenance_mode: {
     valueType: 'boolean',
     defaultValue: false,

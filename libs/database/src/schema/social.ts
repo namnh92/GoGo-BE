@@ -65,12 +65,15 @@ export const reviews = pgTable(
     rating: smallint('rating').notNull(),
     text: text('text'),
     status: reviewStatus('status').notNull().default('pending'),
+    creditEpoch: integer('credit_epoch'),
+    firstPublishedAt: timestamp('first_published_at', { withTimezone: true }),
     moderatedByAdminId: uuid('moderated_by_admin_id'),
     moderationReason: text('moderation_reason'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    check('reviews_credit_epoch_positive', sql`${t.creditEpoch} is null or ${t.creditEpoch} > 0`),
     check('reviews_rating_range', sql`${t.rating} between 1 and 5`),
     check(
       'reviews_one_target',

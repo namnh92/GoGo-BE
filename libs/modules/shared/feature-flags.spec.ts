@@ -15,6 +15,14 @@ describe('feature flag registry (BE-CMS-G3 #221)', () => {
     expect(() => validateFlagValue('made.up.key', true)).toThrowError(/No such application flag/);
   });
 
+  it('credit evaluator ships paused independently of ownership (#829)', () => {
+    expect(FEATURE_FLAGS['credit_events.enabled']).toMatchObject({
+      defaultValue: false,
+      platformScoped: false,
+      valueType: 'boolean',
+    });
+  });
+
   it('the device identity flag ships off (GoGo-BE#747, Q8)', () => {
     expect(FEATURE_FLAGS['push.device_identity.enabled'].defaultValue).toBe(false);
   });
