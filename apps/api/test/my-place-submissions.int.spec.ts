@@ -580,6 +580,8 @@ describe('#801 contribution cards and shared pending detail', () => {
     PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_DETAILS_QUALITY: 1000,
     PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_PHOTOMEDIA: 1000,
     FLAG_PLACE_PROVIDER_PHOTOS: true,
+    // #801 measures display/attestation calls independently of cover acquisition.
+    FLAG_PLACE_PROVIDER_PHOTO_ACQUIRE: false,
   };
   beforeEach(async () => {
     config = app.get(APP_CONFIG);
