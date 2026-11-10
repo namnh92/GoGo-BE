@@ -36,6 +36,7 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // Consumer recovery: action is request | complete (failed also permits send).
   // adapter is sink | ses. No identity, proof, digest or free-text values.
   password_recovery_requested: [],
+  password_recovery_not_found: [],
   password_recovery_sent: ['adapter'],
   password_recovery_completed: [],
   password_recovery_throttled: ['action'],

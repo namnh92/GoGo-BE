@@ -1,0 +1,13 @@
+⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |unit| apps/api/src/sentry-request.spec.ts [ apps/api/src/sentry-request.spec.ts ]
+Error: listen EPERM: operation not permitted 127.0.0.1
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 301 passed (302)
+      Tests  3938 passed | 1 skipped (3939)
+   Start at  13:59:00
+   Duration  35.31s (transform 20.59s, setup 0ms, import 180.30s, tests 73.08s, environment 21ms)
+
+[ELIFECYCLE] Test failed. See above for more details.

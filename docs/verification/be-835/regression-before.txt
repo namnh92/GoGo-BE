@@ -1,0 +1,144 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v4.1.11 /Users/maxnguyen/MyWorks/GoGo/dev/worktrees/be-835
+
+ ❯ |unit| libs/modules/identity/application/password-recovery.service.spec.ts (37 tests | 4 failed | 33 skipped) 13ms
+     × returns generic not_found for missing, counts quotas and emits no identity labels 9ms
+     × returns generic not_found for passwordless, counts quotas and emits no identity labels 2ms
+     × returns generic not_found for disabled, counts quotas and emits no identity labels 1ms
+     × returns generic not_found for deleted, counts quotas and emits no identity labels 0ms
+ ❯ |unit| apps/api/test/password-recovery-http.spec.ts (8 tests | 4 failed | 4 skipped) 1108ms
+     × returns generic 404 and throttles ineligible identity 0 340ms
+     × returns generic 404 and throttles ineligible identity 1 256ms
+     × returns generic 404 and throttles ineligible identity 2 255ms
+     × returns generic 404 and throttles ineligible identity 3 256ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 8 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |unit| apps/api/test/password-recovery-http.spec.ts > password recovery HTTP privacy contract > returns generic 404 and throttles ineligible identity 0
+ FAIL  |unit| apps/api/test/password-recovery-http.spec.ts > password recovery HTTP privacy contract > returns generic 404 and throttles ineligible identity 1
+ FAIL  |unit| apps/api/test/password-recovery-http.spec.ts > password recovery HTTP privacy contract > returns generic 404 and throttles ineligible identity 2
+ FAIL  |unit| apps/api/test/password-recovery-http.spec.ts > password recovery HTTP privacy contract > returns generic 404 and throttles ineligible identity 3
+AssertionError: expected 202 to be 404 // Object.is equality
+
+- Expected
++ Received
+
+- 404
++ 202
+
+ ❯ envelope apps/api/test/password-recovery-http.spec.ts:170:33
+    168|     retryAfter?: string,
+    169|   ) {
+    170|     expect(response.statusCode).toBe(status);
+       |                                 ^
+    171|     expect(response.headers['retry-after']).toBe(retryAfter);
+    172|     const body = response.json();
+ ❯ apps/api/test/password-recovery-http.spec.ts:150:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/8]⎯
+
+ FAIL  |unit| libs/modules/identity/application/password-recovery.service.spec.ts > consumer password recovery > returns generic not_found for missing, counts quotas and emits no identity labels
+AssertionError: promise resolved "{ …(3) }" instead of rejecting
+
+- Expected
++ Received
+
+- Error {
+-   "message": "rejected promise",
++ {
++   "challengeId": "0bc58968-3a1c-44d1-bfce-20795b3511a4",
++   "expiresAt": "2026-11-10T06:59:21.862Z",
++   "resendAvailableAt": "2026-11-10T06:55:21.862Z",
+  }
+
+ ❯ libs/modules/identity/application/password-recovery.service.spec.ts:155:51
+    153|       const increment = vi.spyOn(metrics, 'increment');
+    154|       const hit = vi.spyOn(store, 'hit');
+    155|       await expect(service.request({ email }, ctx('not-found-1'))).rej…
+       |                                                   ^
+    156|         httpStatus: 404,
+    157|         code: 'RECOVERY_ACCOUNT_NOT_FOUND',
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/8]⎯
+
+ FAIL  |unit| libs/modules/identity/application/password-recovery.service.spec.ts > consumer password recovery > returns generic not_found for passwordless, counts quotas and emits no identity labels
+AssertionError: promise resolved "{ …(3) }" instead of rejecting
+
+- Expected
++ Received
+
+- Error {
+-   "message": "rejected promise",
++ {
++   "challengeId": "de840e33-cbbd-4443-9389-8233f46296e2",
++   "expiresAt": "2026-11-10T06:59:21.870Z",
++   "resendAvailableAt": "2026-11-10T06:55:21.870Z",
+  }
+
+ ❯ libs/modules/identity/application/password-recovery.service.spec.ts:155:51
+    153|       const increment = vi.spyOn(metrics, 'increment');
+    154|       const hit = vi.spyOn(store, 'hit');
+    155|       await expect(service.request({ email }, ctx('not-found-1'))).rej…
+       |                                                   ^
+    156|         httpStatus: 404,
+    157|         code: 'RECOVERY_ACCOUNT_NOT_FOUND',
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/8]⎯
+
+ FAIL  |unit| libs/modules/identity/application/password-recovery.service.spec.ts > consumer password recovery > returns generic not_found for disabled, counts quotas and emits no identity labels
+AssertionError: promise resolved "{ …(3) }" instead of rejecting
+
+- Expected
++ Received
+
+- Error {
+-   "message": "rejected promise",
++ {
++   "challengeId": "be80f917-bd92-44e1-be8e-f225c1fc5992",
++   "expiresAt": "2026-11-10T06:59:21.871Z",
++   "resendAvailableAt": "2026-11-10T06:55:21.871Z",
+  }
+
+ ❯ libs/modules/identity/application/password-recovery.service.spec.ts:155:51
+    153|       const increment = vi.spyOn(metrics, 'increment');
+    154|       const hit = vi.spyOn(store, 'hit');
+    155|       await expect(service.request({ email }, ctx('not-found-1'))).rej…
+       |                                                   ^
+    156|         httpStatus: 404,
+    157|         code: 'RECOVERY_ACCOUNT_NOT_FOUND',
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/8]⎯
+
+ FAIL  |unit| libs/modules/identity/application/password-recovery.service.spec.ts > consumer password recovery > returns generic not_found for deleted, counts quotas and emits no identity labels
+AssertionError: promise resolved "{ …(3) }" instead of rejecting
+
+- Expected
++ Received
+
+- Error {
+-   "message": "rejected promise",
++ {
++   "challengeId": "47c33528-1aaa-4acd-8a49-4d01b28cfab9",
++   "expiresAt": "2026-11-10T06:59:21.872Z",
++   "resendAvailableAt": "2026-11-10T06:55:21.872Z",
+  }
+
+ ❯ libs/modules/identity/application/password-recovery.service.spec.ts:155:51
+    153|       const increment = vi.spyOn(metrics, 'increment');
+    154|       const hit = vi.spyOn(store, 'hit');
+    155|       await expect(service.request({ email }, ctx('not-found-1'))).rej…
+       |                                                   ^
+    156|         httpStatus: 404,
+    157|         code: 'RECOVERY_ACCOUNT_NOT_FOUND',
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/8]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  8 failed | 37 skipped (45)
+   Start at  13:54:20
+   Duration  5.59s (transform 2.84s, setup 0ms, import 5.94s, tests 1.12s, environment 0ms)
+

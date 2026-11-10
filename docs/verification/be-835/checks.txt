@@ -1,0 +1,46 @@
+TYPECHECK exit=0
+$ turbo run typecheck
+• turbo 2.10.11
+
+   • Packages in scope: @gogo/api, @gogo/cost-observability, @gogo/database, @gogo/modules, @gogo/observability, @gogo/providers, @gogo/scripts, @gogo/worker
+   • Running typecheck in 8 packages
+   • Remote caching disabled, using shared worktree cache
+
+@gogo/database:typecheck: cache miss, executing e9dc8b3db97f7d33
+@gogo/observability:typecheck: cache miss, executing 098448cfeb89fb92
+@gogo/providers:typecheck: cache hit, replaying logs 1d098c4b46141617
+@gogo/providers:typecheck: $ tsc --noEmit
+@gogo/observability:typecheck: $ tsc --noEmit
+@gogo/database:typecheck: $ tsc --noEmit
+ WARNING  IO error: Operation not permitted (os error 1)
+@gogo/cost-observability:typecheck: cache miss, executing 27ed653950bdb11d
+ WARNING  IO error: Operation not permitted (os error 1)
+@gogo/cost-observability:typecheck: $ tsc --noEmit
+ WARNING  IO error: Operation not permitted (os error 1)
+@gogo/modules:typecheck: cache miss, executing 9367e1d45eb08425
+@gogo/modules:typecheck: $ tsc --noEmit
+ WARNING  IO error: Operation not permitted (os error 1)
+@gogo/scripts:typecheck: cache miss, executing 5d68b3556384ec03
+@gogo/worker:typecheck: cache miss, executing 2d9a54c6891822e9
+@gogo/api:typecheck: cache miss, executing fc8259aaf78f6430
+@gogo/worker:typecheck: $ tsc --noEmit
+@gogo/api:typecheck: $ tsc --noEmit
+@gogo/scripts:typecheck: $ tsc --noEmit
+ WARNING  IO error: Operation not permitted (os error 1)
+
+ Tasks:    8 successful, 8 total
+Cached:    1 cached, 8 total
+  Time:    51.81s 
+
+
+LINT exit=0
+$ eslint .
+
+API VERSION exit=0
+$ SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register scripts/check-openapi-version.ts /tmp/be-835-base.yaml openapi/gogo.v1.yaml
+✔ OpenAPI version bumped to 9.2.0-alpha.1
+
+API CHECK exit=0
+$ openapi-typescript openapi/gogo.v1.yaml -o /tmp/gogo.v1.d.ts && diff -q /tmp/gogo.v1.d.ts openapi/gogo.v1.d.ts
+✨ openapi-typescript 7.13.0
+🚀 openapi/gogo.v1.yaml → /tmp/gogo.v1.d.ts [850.9ms]

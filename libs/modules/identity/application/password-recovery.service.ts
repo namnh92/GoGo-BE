@@ -96,14 +96,14 @@ export class PasswordRecoveryService {
               Math.ceil((current.resendAvailableAt.getTime() - Date.now()) / 1000),
             );
           }
-          const stored = await tx.getReplay(replay.key);
-          if (stored) {
-            this.checkReplay(stored, replay.fingerprint);
-            return { body: stored.body!, deliver: false, user: null };
-          }
           const user = tx.user;
           const eligible =
             user?.status === 'active' && !!user.passwordHash && user.email?.toLowerCase() === email;
+          const stored = await tx.getReplay(replay.key);
+          if (stored) {
+            this.checkReplay(stored, replay.fingerprint);
+            return { body: stored.body!, deliver: false, user: null, notFound: !eligible };
+          }
           const challenge: RecoveryChallenge = {
             id,
             emailDigest: digest,
@@ -125,11 +125,11 @@ export class PasswordRecoveryService {
             body,
             expiresAt: new Date(Date.now() + 86_400_000),
           });
-          return { body, deliver: true, user: eligible ? user : null };
+          return { body, deliver: true, user: eligible ? user : null, notFound: !eligible };
         },
       );
       if (result.deliver) {
-        // Provider latency and failure invalidation must not reveal account eligibility.
+        // Keep provider latency outside the response for both eligible and decoy work.
         // The adapter bounds delivery; contain even reporting failures in this detached task.
         void this.deliver(
           digest,
@@ -144,6 +144,12 @@ export class PasswordRecoveryService {
               }
             : null,
         ).catch(() => undefined);
+      }
+      // Commit decoy work too: cooldown and bounded persistence remain equivalent.
+      if (result.notFound) {
+        throw new AppError('RECOVERY_ACCOUNT_NOT_FOUND', 'Tài khoản không tồn tại', 404, {
+          retryable: false,
+        });
       }
       return result.body;
     } catch (error) {
@@ -302,6 +308,8 @@ export class PasswordRecoveryService {
   private failed(action: 'request' | 'complete', error: unknown): void {
     if (error instanceof AppError && error.httpStatus === 429) {
       this.metrics.increment('password_recovery_throttled', { action });
+    } else if (error instanceof AppError && error.code === 'RECOVERY_ACCOUNT_NOT_FOUND') {
+      this.metrics.increment('password_recovery_not_found');
     } else {
       this.metrics.increment('password_recovery_failed', { action });
     }

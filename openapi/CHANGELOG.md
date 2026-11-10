@@ -8,6 +8,18 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 9.2.0-alpha.1 — Recovery account not found (#835, Refs #772)
+
+MINOR theo quyết định owner 2026-11-10: request recovery thêm response 404
+`RECOVERY_ACCOUNT_NOT_FOUND`, retryable false, message `Tài khoản không tồn tại`
+cho mọi email không có tài khoản mật khẩu hoạt động; không phân biệt lý do.
+Eligible vẫn 202 + challengeId, replay/cooldown và gửi mã như cũ. Mọi request,
+kể cả 404, chịu 1/phút + 3/giờ/email và 10/phút + 50/giờ/IP. Giữ padding
+250 ms, detached delivery và telemetry không email; thêm counter not_found.
+Chấp nhận rủi ro dò eligibility trong ADR-0041. Mobile#620 đồng bộ contract
+9.2.0-alpha.1, bỏ câu phụ đủ điều kiện, chỉ chuyển màn nhập mã sau 202;
+404 hiển thị message chung, 429 giữ Retry-After.
+
 ## 9.1.1-alpha.1 — Giữ ETag mạnh qua Cloudflare (#831, PR #833)
 
 PATCH: bổ sung `no-transform` vào Cache-Control của notification-settings

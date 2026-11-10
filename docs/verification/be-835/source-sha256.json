@@ -1,0 +1,19 @@
+{
+  "libs/modules/identity/application/password-recovery.service.ts": "b5991aef5aa9b349361c645c4b78a4aefdcd3529f503ec554cdd0239b0c26b9b",
+  "libs/modules/identity/application/password-recovery.service.spec.ts": "a1b67490f50005539af700c1b59bee5b8933ebf046de00bb4e25000c3bb4796b",
+  "libs/observability/src/metric-labels.ts": "83c81af90640a3a350b478b31b33f7661d4ba94ca1180b2ac2c6dcde46ba30db",
+  "apps/api/test/password-recovery-http.spec.ts": "c9a70fc125ceb50e431b5f4a2cd03c6749019d45363e5ebbabc9299cca483809",
+  "apps/api/test/password-recovery-enumeration.int.spec.ts": "538c72bee0df38680d008cc9b611aba06c5686a11e34686f1122432cf29ec2f7",
+  "apps/api/test/password-recovery-telemetry.int.spec.ts": "6c06cd553f32f485cd5be9b9b7571e2978a908303300fd0d3c100de532a0a932",
+  "openapi/gogo.v1.yaml": "275c2292a854e7989b3bcfef9072b94662d7616c4ed9a9ed3bb6a9ba26f3f5cc",
+  "openapi/gogo.v1.d.ts": "a931e0647d06a191b6b3c2b41c3e19ac0a3ca2110dcb59d619ad2b96e9ad6486",
+  "openapi/CHANGELOG.md": "e6f09af5abb9b5bd9affc8f97db9d4701029c3a5964731c854c9d3a5c4305f14",
+  "docs/adr/0041-recovery-mail-ses.md": "ce09ed04973da8783a6cfd31e24a74ac68598c29af24441c3139f37f122c79df",
+  "docs/infrastructure.md": "02b4be66f54a798787dc5dd5626139ff5163aa0a911ba18c442e6e0235e7f36e",
+  "libs/modules/reviews/presentation/place-list-ratings.contract.spec.ts": "e9e426526ff737812bd0a02c2bd417c3aca286f98304d3cc1b306c5a3651540a",
+  "libs/modules/reviews/presentation/saved-plan-conditions.contract.spec.ts": "776c466c8f5fa4217be69c426d236670917a1a431fd2769237c17f28c3de8d2b",
+  "libs/modules/ingestion/presentation/submission-provider-photo.contract.spec.ts": "ecb3f6f4986d3e9191c22e7fff3984a968afde72fdf872a733d2b67b82f09516",
+  "libs/modules/notifications/presentation/notifications.contract.spec.ts": "2e6bf4704c85c57a4d3f5b8642597334fedc87f7b532d4eb83eec95d2fc11648",
+  "libs/modules/ingestion/presentation/contribution-wizard.contract.spec.ts": "d5b5d8cf09b7be58b454ba3869cd39273b062c806f98ebc0a3605075f05d801c",
+  "docs/verification/be-835/mobile-620-body.md": "7be837f891bc002dbbaa306442dbb957a77930b59d61fa0d5ac5ab9a67f35e12"
+}

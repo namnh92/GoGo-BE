@@ -126,6 +126,10 @@ describe('I-4 forward migration, retention and disable rollback', () => {
   });
 
   it('invoked cleanup deletes at most 100 challenges expired plus 24h and 100 replays at their own expiry, retaining younger controls', async () => {
+    // Each cleanup invocation needs an eligible account and a fresh email so
+    // the request succeeds without hitting the per-email resend cooldown.
+    const firstTrigger = await f.register();
+    const secondTrigger = await f.register();
     await f.pool.query(
       "insert into password_recovery_challenges (email_digest,id,code_digest,expires_at,resend_available_at) select 'cleanup-old-'||n, gen_random_uuid(),'proof',now()-interval '25 hours',now()-interval '25 hours' from generate_series(1,105) n",
     );
@@ -144,7 +148,7 @@ describe('I-4 forward migration, retention and disable rollback', () => {
     await f.pool.query(
       "insert into password_recovery_replays (key,fingerprint,expires_at) values ('cleanup-live','fingerprint',now()+interval '1 hour')",
     );
-    await f.request(`cleanup-trigger-${randomUUID()}@example.test`);
+    await f.request(firstTrigger.email);
     for (const [table, column] of [
       ['password_recovery_challenges', 'email_digest'],
       ['password_recovery_replays', 'key'],
@@ -159,7 +163,7 @@ describe('I-4 forward migration, retention and disable rollback', () => {
         ),
       ).toBe(5);
     }
-    await f.request(`cleanup-trigger-${randomUUID()}@example.test`);
+    await f.request(secondTrigger.email);
     expect(
       (
         await f.pool.query(
