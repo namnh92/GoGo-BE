@@ -21,18 +21,18 @@
         .mail-footer {
           padding: 20px 16px !important;
         }
-        .mail-logo {
-          width: 96px !important;
-          height: auto !important;
-        }
         .recovery-code {
           font-size: 28px !important;
           letter-spacing: 2px !important;
         }
-      }
-      @media (max-width: 479px) {
-        .store-column {
-          max-width: 100% !important;
+        .store-badge {
+          padding: 8px 4px !important;
+        }
+        .store-caption {
+          font-size: 10px !important;
+        }
+        .store-name {
+          font-size: 14px !important;
         }
       }
     </style>
@@ -96,25 +96,44 @@
                   font-weight: bold;
                 "
               >
-                <img
-                  class="mail-logo"
-                  src="https://gogo.id.vn/brand/gogo-mail-logo.png"
-                  alt="GoGo"
-                  width="120"
-                  height="111"
-                  style="
-                    display: block;
-                    width: 120px;
-                    max-width: 100%;
-                    height: auto;
-                    border: 0;
-                    background-color: #20124a;
-                    color: #fff8f3;
-                    font-size: 30px;
-                    line-height: 36px;
-                    font-weight: bold;
-                  "
-                />
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                  <tr>
+                    <td width="64" valign="middle" style="width: 64px">
+                      <img
+                        class="mail-logo"
+                        src="https://gogo.id.vn/brand/gogo-mail-mark.png"
+                        alt="GoGo"
+                        width="64"
+                        height="45"
+                        style="display: block; width: 64px; height: 45px; border: 0"
+                      />
+                    </td>
+                    <td valign="middle" style="padding-left: 12px">
+                      <p
+                        style="
+                          margin: 0;
+                          font-size: 26px;
+                          line-height: 32px;
+                          font-weight: bold;
+                          color: #ffffff;
+                        "
+                      >
+                        GoGo
+                      </p>
+                      <p
+                        style="
+                          margin: 0;
+                          font-size: 13px;
+                          line-height: 20px;
+                          font-weight: normal;
+                          color: #e4def2;
+                        "
+                      >
+                        Gợi ý điểm đến cho bạn
+                      </p>
+                    </td>
+                  </tr>
+                </table>
               </td>
             </tr>
             <tr>
@@ -179,56 +198,100 @@
                   Ứng dụng giúp cặp đôi và nhóm bạn cùng chọn địa điểm, bình chọn và nhận một lịch
                   trình chung cho buổi đi chơi. Dự án startup Việt Nam, MVP đang kiểm thử.
                 </p>
-                <div style="font-size: 0; text-align: center">
-                  <div
-                    class="store-column"
-                    style="
-                      display: inline-block;
-                      vertical-align: top;
-                      width: 100%;
-                      max-width: 240px;
-                      font-size: 15px;
-                      line-height: 22px;
-                      text-align: center;
-                      color: #5a413b;
-                      background-color: #fff8f3;
-                    "
-                  >
-                    <span
-                      style="
-                        display: block;
-                        min-height: 44px;
-                        box-sizing: border-box;
-                        padding: 12px 8px;
-                      "
-                      >Sắp có trên App Store</span
+                <table
+                  class="store-row"
+                  role="presentation"
+                  width="100%"
+                  cellpadding="0"
+                  cellspacing="0"
+                  border="0"
+                  style="width: 100%; table-layout: fixed"
+                >
+                  <tr>
+                    <td
+                      class="store-column"
+                      width="50%"
+                      valign="middle"
+                      style="width: 50%; padding: 0 4px"
                     >
-                  </div>
-                  <div
-                    class="store-column"
-                    style="
-                      display: inline-block;
-                      vertical-align: top;
-                      width: 100%;
-                      max-width: 240px;
-                      font-size: 15px;
-                      line-height: 22px;
-                      text-align: center;
-                      color: #5a413b;
-                      background-color: #fff8f3;
-                    "
-                  >
-                    <span
-                      style="
-                        display: block;
-                        min-height: 44px;
-                        box-sizing: border-box;
-                        padding: 12px 8px;
-                      "
-                      >Sắp có trên Google Play</span
+                      <span
+                        class="store-badge"
+                        style="
+                          display: block;
+                          min-height: 44px;
+                          box-sizing: border-box;
+                          padding: 10px 6px;
+                          background-color: #171717;
+                          border-radius: 10px;
+                          color: #ffffff;
+                          text-align: center;
+                          text-decoration: none;
+                        "
+                        ><span
+                          class="store-caption"
+                          style="
+                            display: block;
+                            font-size: 11px;
+                            line-height: 16px;
+                            white-space: nowrap;
+                          "
+                          >Sắp có trên</span
+                        >
+                        <strong
+                          class="store-name"
+                          style="
+                            display: block;
+                            font-size: 16px;
+                            line-height: 22px;
+                            white-space: nowrap;
+                          "
+                          >App Store</strong
+                        ></span
+                      >
+                    </td>
+                    <td
+                      class="store-column"
+                      width="50%"
+                      valign="middle"
+                      style="width: 50%; padding: 0 4px"
                     >
-                  </div>
-                </div>
+                      <span
+                        class="store-badge"
+                        style="
+                          display: block;
+                          min-height: 44px;
+                          box-sizing: border-box;
+                          padding: 10px 6px;
+                          background-color: #171717;
+                          border-radius: 10px;
+                          color: #ffffff;
+                          text-align: center;
+                          text-decoration: none;
+                        "
+                        ><span
+                          class="store-caption"
+                          style="
+                            display: block;
+                            font-size: 11px;
+                            line-height: 16px;
+                            white-space: nowrap;
+                          "
+                          >Sắp có trên</span
+                        >
+                        <strong
+                          class="store-name"
+                          style="
+                            display: block;
+                            font-size: 16px;
+                            line-height: 22px;
+                            white-space: nowrap;
+                          "
+                          >Google Play</strong
+                        ></span
+                      >
+                    </td>
+                  </tr>
+                </table>
               </td>
             </tr>
             <tr>
