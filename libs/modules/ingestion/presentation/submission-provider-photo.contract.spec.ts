@@ -14,8 +14,8 @@ const entry = parseExceptions(
 ).find((e) => e.id === 'BE-822-provider-photos-path-removed')!;
 
 describe('ADR-0052 contract and exception guard (synthetic matcher fixture, not fresh oasdiff)', () => {
-  it('declares one MAJOR, removes the gallery operation and retains preview schemas', () => {
-    expect(doc.info.version).toBe('9.0.0-alpha.1');
+  it('declares the additive MINOR, retains the gallery removal and preview schemas', () => {
+    expect(doc.info.version).toBe('9.1.0-alpha.1');
     expect(doc.paths['/places/{id}/provider-photos']).toBeUndefined();
     expect(doc.paths['/places/google-provider-photo/{googlePlaceId}']).toBeDefined();
     expect(doc.components.schemas.PlaceProviderPhotos).toBeDefined();
@@ -51,8 +51,8 @@ describe('ADR-0052 contract and exception guard (synthetic matcher fixture, not 
     expect(s.SubmissionProviderDisplay.properties.photo.deprecated).toBe(true);
     expect(s.MyPlaceSubmissionDetail.properties.informationRemoved).toBeUndefined();
   });
-  it('admits exactly one recorded removal on the exact YAML pair and rejects another error or byte drift', () => {
-    expect(createHash('sha256').update(bytes).digest('hex')).toBe(entry.revisionSha256);
+  it('scopes the historical removal waiver to its recorded pair and rejects current revision drift', () => {
+    const currentRevisionSha256 = createHash('sha256').update(bytes).digest('hex');
     const input = {
       report: `1 changes: 1 error, 0 warning, 0 info\n${entry.diagnostic}\n`,
       baseSha256: entry.baseSha256,
@@ -62,6 +62,9 @@ describe('ADR-0052 contract and exception guard (synthetic matcher fixture, not 
       expect: entry.id,
     };
     expect(evaluate(input).ok).toBe(true);
+    // PR4 builds on the removal already shipped in 9.0.0. Keep its historical
+    // waiver unchanged; it must not authorize a removal against the 9.1.0 bytes.
+    expect(evaluate({ ...input, revisionSha256: currentRevisionSha256 }).ok).toBe(false);
     expect(evaluate({ ...input, revisionSha256: 'different' }).ok).toBe(false);
     expect(
       evaluate({

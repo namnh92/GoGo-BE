@@ -1479,3 +1479,47 @@ describe('campaign other/master final gate', () => {
     }
   });
 });
+
+describe('PR4 quiet-hour HTTP settings contract', () => {
+  it('defaults off, validates timezone, versions and replays a quiet-only change', async () => {
+    const { token } = await register('quiet-api');
+    const initial = await getSettings(token);
+    expect(initial.json().quietHours).toEqual({ enabled: false, timezone: null });
+    const etag = String(initial.headers.etag);
+    for (const quietHours of [
+      {},
+      { enabled: true },
+      { enabled: true, timezone: 'Mars/Olympus' },
+      { timezone: '+07:00' },
+      { enabled: true, timezone: null },
+      { start: '22:00' },
+    ]) {
+      expect((await patchSettings(token, { quietHours }, etag)).statusCode).toBe(400);
+    }
+    expect(String((await getSettings(token)).headers.etag)).toBe(etag);
+    const payload = { quietHours: { enabled: true, timezone: 'Asia/Ho_Chi_Minh' } };
+    const key = randomUUID();
+    const changed = await patchSettings(token, payload, etag, key);
+    expect(changed.statusCode).toBe(200);
+    expect(changed.json().quietHours).toEqual(payload.quietHours);
+    expect(changed.headers.etag).not.toBe(etag);
+    const newer = await patchSettings(
+      token,
+      { quietHours: { timezone: 'America/New_York' } },
+      String(changed.headers.etag),
+    );
+    expect(newer.statusCode).toBe(200);
+    expect(newer.json().quietHours).toEqual({ enabled: true, timezone: 'America/New_York' });
+    const replay = await patchSettings(token, payload, etag, key);
+    expect(replay.json()).toEqual(changed.json());
+    expect(replay.headers.etag).toBe(changed.headers.etag);
+    const legacy = await putSettings(token, { pushEnabled: true });
+    expect(legacy.json().quietHours).toEqual(newer.json().quietHours);
+    const off = await patchSettings(
+      token,
+      { quietHours: { enabled: false } },
+      String(legacy.headers.etag),
+    );
+    expect(off.json().quietHours).toEqual({ enabled: false, timezone: 'America/New_York' });
+  });
+});

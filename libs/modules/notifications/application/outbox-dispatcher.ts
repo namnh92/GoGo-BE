@@ -17,15 +17,21 @@ import {
 } from './notification-templates';
 import { kindPushAllowed } from './push-preference';
 import { notificationFacts } from './notification-payload';
+import { deferPushDuringQuiet } from './quiet-hours';
 
 /** Which domain events fan out to which member notifications (BE-BFF-010). */
-export const EVENT_TO_NOTIFICATION = Object.fromEntries(
-  Object.entries(NOTIFICATION_REGISTRY).flatMap(([kind, entry]) =>
-    'audience' in entry && entry.producer
-      ? [[entry.producer, { kind: kind as PushKind, audience: entry.audience }]]
-      : [],
+export const EVENT_TO_NOTIFICATION = {
+  ...Object.fromEntries(
+    Object.entries(NOTIFICATION_REGISTRY).flatMap(([kind, entry]) =>
+      'audience' in entry && entry.producer
+        ? [[entry.producer, { kind: kind as PushKind, audience: entry.audience }]]
+        : [],
+    ),
   ),
-) as Record<string, { kind: PushKind; audience: 'host' | 'members' }>;
+  // Drain already-staged legacy work to suppression, without new inbox or push.
+  // Historical room_started facts remain readable; only the advance job reminds.
+  'room.status_active': { kind: 'date_reminder', audience: 'members' },
+} as Record<string, { kind: PushKind; audience: 'host' | 'members' }>;
 
 /** Stable UUID provider key, independent of locale and changing recipient cohorts. */
 export function recipientPushKey(eventId: string, userId: string): string {
@@ -132,6 +138,48 @@ export class OutboxDispatcher {
     return events.length;
   }
 
+  async dispatchDeferredBatch(limit = 50): Promise<number> {
+    const gate = await this.db.execute(sql`select 1 from notification_category_rollout
+      where singleton and recipient_keys_enabled and not writes_frozen`);
+    if (!gate.rows[0]) return 0;
+    const due = await this.db.execute<{ event_id: string }>(sql`select distinct event_id
+      from notification_push_deliveries where
+        (status = 'deferred' and deferred_until <= now()) or
+        (status = 'attempting' and lease_until < now())
+      order by event_id limit ${limit}`);
+    for (const row of due.rows) {
+      const [event] = await this.db
+        .select()
+        .from(schema.outboxEvents)
+        .where(eq(schema.outboxEvents.id, row.event_id));
+      if (!event) continue;
+      const mapping = Object.hasOwn(EVENT_TO_NOTIFICATION, event.eventType)
+        ? EVENT_TO_NOTIFICATION[event.eventType]
+        : undefined;
+      if (!mapping) continue;
+      const roomId =
+        event.resourceType === 'room'
+          ? event.resourceId
+          : ((
+              await this.db
+                .select({ roomId: schema.plans.roomId })
+                .from(schema.plans)
+                .where(eq(schema.plans.id, event.resourceId))
+            )[0]?.roomId ?? null);
+      try {
+        await this.drainDeliveries(event, mapping, roomId, null);
+      } catch {
+        // No re-fanout, no reset of event retry budget while merely waiting.
+        // Failed deferred attempts retry with the SAME event/recipient provider key.
+        this.metrics?.increment('notification_deferred_retry_total', {
+          kind: mapping.kind,
+          category: registration(mapping.kind).category,
+        });
+      }
+    }
+    return due.rows.length;
+  }
+
   private async fanOut(event: typeof schema.outboxEvents.$inferSelect): Promise<void> {
     const mapping = Object.hasOwn(EVENT_TO_NOTIFICATION, event.eventType)
       ? EVENT_TO_NOTIFICATION[event.eventType]
@@ -154,7 +202,17 @@ export class OutboxDispatcher {
     // whoever the ledger holds for the event: a recipient an earlier attempt
     // staged who has since left the room or been erased is still owed a terminal
     // row, and the event publishes only when every ledger row is terminal.
-    const staged = roomId ? await this.stageCohort(event, mapping, roomId) : null;
+    const relevant =
+      event.eventType !== 'room.status_active' &&
+      (event.eventType !== 'room.reminder_due' ||
+        (
+          await this.db.execute(sql`
+      select 1 from notification_reminder_jobs j join rooms r on r.id = j.room_id
+      join room_constraints rc on rc.room_id = r.id and rc.version = r.constraint_version
+      where j.id = ${event.id}::uuid and j.status = 'emitted' and rc.start_at = j.starts_at
+        and r.status in ('collecting', 'matching', 'ready') and j.starts_at > clock_timestamp()`)
+        ).rows.length > 0);
+    const staged = roomId && relevant ? await this.stageCohort(event, mapping, roomId) : null;
     await this.drainDeliveries(event, mapping, roomId, staged);
   }
 
@@ -390,13 +448,14 @@ export class OutboxDispatcher {
   ): Promise<void> {
     const ledger = await this.db.execute<{
       user_id: string;
-    }>(sql`select user_id from notification_push_deliveries
-      where event_id = ${event.id}::uuid and status in ('pending', 'attempting') order by user_id`);
-    for (const { user_id: userId } of ledger.rows) {
+      deferred_until: string | null;
+    }>(sql`select user_id, deferred_until from notification_push_deliveries
+      where event_id = ${event.id}::uuid and (status in ('pending', 'attempting') or (status = 'deferred' and deferred_until <= now())) order by user_id`);
+    for (const { user_id: userId, deferred_until: deferredUntil } of ledger.rows) {
       const claimed = await this.db.execute(sql`update notification_push_deliveries
         set status = 'attempting', lease_until = now() + interval '2 minutes', updated_at = now()
         where event_id = ${event.id}::uuid and user_id = ${userId}::uuid and
-          (status = 'pending' or (status = 'attempting' and lease_until < now())) returning user_id`);
+          (status = 'pending' or (status = 'deferred' and deferred_until <= now()) or (status = 'attempting' and lease_until < now())) returning user_id`);
       if (!claimed.rows[0]) {
         const active = await this.db.execute(sql`select 1 from notification_push_deliveries
           where event_id = ${event.id}::uuid and user_id = ${userId}::uuid and status = 'attempting'`);
@@ -414,6 +473,17 @@ export class OutboxDispatcher {
           }>(sql`select u.id, u.locale from users u
           where u.id = ${userId}::uuid and u.status <> 'deleted'
             and ${kindPushAllowed(sql`u.id`, mapping.kind)}
+            and ${event.eventType !== 'room.status_active'}
+            ${
+              event.eventType === 'room.reminder_due'
+                ? sql`and exists (
+              select 1 from notification_reminder_jobs j join rooms r on r.id = j.room_id
+              join room_constraints rc on rc.room_id = r.id and rc.version = r.constraint_version
+              where j.id = ${event.id}::uuid and j.status = 'emitted' and rc.start_at = j.starts_at
+                and r.status in ('collecting', 'matching', 'ready') and j.starts_at > clock_timestamp()
+            )`
+                : sql``
+            }
             and exists (select 1 from room_members rm where rm.user_id = u.id
               and rm.room_id = ${roomId}::uuid and rm.removed_at is null
               ${mapping.audience === 'host' ? sql`and rm.role = 'host'` : sql``})`)
@@ -422,14 +492,38 @@ export class OutboxDispatcher {
       try {
         const recipient = eligible.rows[0];
         if (recipient && roomId) {
+          const until = await deferPushDuringQuiet(this.db, userId, (tx, until) =>
+            tx.execute(sql`update notification_push_deliveries
+              set status = 'deferred', deferred_until = ${until.toISOString()}::timestamptz,
+                lease_until = null, updated_at = now()
+              where event_id = ${event.id}::uuid and user_id = ${userId}::uuid and status = 'attempting'`),
+          );
+          if (until) {
+            this.metrics?.increment('notification_push_deferred_total', {
+              kind: mapping.kind,
+              category: registration(mapping.kind).category,
+              reason: 'quiet_hours',
+            });
+            continue;
+          }
           const locale = staged?.localeOf.get(userId) ?? pushLocaleOf(recipient.locale);
+          const currentPlanId =
+            staged?.currentPlanId ??
+            (
+              await this.db
+                .select({ id: schema.plans.id })
+                .from(schema.plans)
+                .where(and(eq(schema.plans.roomId, roomId), eq(schema.plans.status, 'current')))
+                .limit(1)
+            )[0]?.id ??
+            null;
           status = await this.sendPush([userId], mapping.kind, {
             ...renderPushNotification({
               kind: mapping.kind,
               locale,
               event,
               roomId,
-              currentPlanId: staged?.currentPlanId ?? null,
+              currentPlanId,
             }),
             idempotencyKey: recipientPushKey(event.id, userId),
           });
@@ -440,10 +534,38 @@ export class OutboxDispatcher {
             reason: 'final_eligibility',
           });
       } catch (error) {
-        await this.db
-          .execute(sql`update notification_push_deliveries set status = 'pending', lease_until = null, updated_at = now()
-          where event_id = ${event.id}::uuid and user_id = ${userId}::uuid and status = 'attempting'`);
-        throw error;
+        // Existing producers retain the event's retry/backoff budget until work
+        // has actually entered quiet-hour deferral. A provider outage alone must
+        // not move their pending cohort behind a second, independent timer
+        // (#817 F-04). PR4 advance reminders and already-deferred deliveries own
+        // their bounded retries in the ledger, including after outbox publication.
+        if (event.eventType !== 'room.reminder_due' && deferredUntil == null) {
+          await this.db.execute(sql`update notification_push_deliveries
+            set status = 'pending', lease_until = null, updated_at = now()
+            where event_id = ${event.id}::uuid and user_id = ${userId}::uuid and status = 'attempting'`);
+          throw error;
+        }
+        const failed = await this.db.execute<{
+          status: string;
+        }>(sql`update notification_push_deliveries
+          set deferred_attempts = deferred_attempts + 1,
+            status = case when deferred_attempts + 1 >= ${MAX_DELIVERY_ATTEMPTS} then 'failed' else 'deferred' end,
+            deferred_until = now() + make_interval(secs => least(1200, 20 * power(4, deferred_attempts))::int),
+            lease_until = null, updated_at = now()
+          where event_id = ${event.id}::uuid and user_id = ${userId}::uuid and status = 'attempting' returning status`);
+        if (failed.rows[0]?.status === 'failed')
+          this.metrics?.increment('notification_deferred_dead_letter_total', {
+            kind: mapping.kind,
+            category: registration(mapping.kind).category,
+          });
+        else
+          this.metrics?.increment('notification_deferred_retry_total', {
+            kind: mapping.kind,
+            category: registration(mapping.kind).category,
+          });
+        // The durable ledger owns these retries. Finish staging/draining the
+        // remaining recipients and publish without spending the event budget.
+        continue;
       }
       this.metrics?.increment('notification_push_outcome_total', {
         kind: mapping.kind,
@@ -454,9 +576,9 @@ export class OutboxDispatcher {
         .execute(sql`update notification_push_deliveries set status = ${status}, lease_until = null, updated_at = now()
         where event_id = ${event.id}::uuid and user_id = ${userId}::uuid and status = 'attempting'`);
     }
-    // Publishing is the claim that every recipient reached a terminal state. A
-    // row still pending or leased here belongs to another worker, or to a claim
-    // this loop could not take; the event backs off and retries instead.
+    // Inbox fan-out is complete. Deferred work is owned by its durable ledger,
+    // so waiting for morning does not consume the outbox failure budget. Pending
+    // or leased work still prevents publication until its staging attempt ends.
     const unresolved = await this.db.execute(sql`select 1 from notification_push_deliveries
       where event_id = ${event.id}::uuid and status in ('pending', 'attempting') limit 1`);
     if (unresolved.rows[0]) throw new ProviderUnavailableError('notification_delivery_in_flight');

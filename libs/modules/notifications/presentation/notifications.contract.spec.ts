@@ -135,7 +135,7 @@ function fixture() {
 }
 describe('shared inbox public contract', () => {
   it('retains shared inbox operations and statuses in the category MAJOR', () => {
-    expect(spec.info.version).toBe('9.0.0-alpha.1');
+    expect(spec.info.version).toBe('9.1.0-alpha.1');
     const read = spec.paths['/me/notifications/read-all'].post;
     expect(Object.keys(read.responses)).toEqual(
       expect.arrayContaining([
@@ -204,6 +204,40 @@ describe('shared inbox public contract', () => {
 });
 
 describe('PR2 notification preferences and kinds contract', () => {
+  it('preserves the 9.0.0 PATCH alternatives byte-for-byte before adding quiet hours', () => {
+    const yaml = readFileSync(SPEC, 'utf8');
+    const patchYaml = yaml.split('      operationId: patchNotificationSettings\n')[1]!;
+    const members = patchYaml.split('              anyOf:\n')[1]!.split('      responses:')[0]!;
+    const legacy = `                - type: object
+                  additionalProperties: false
+                  required: [pushEnabled]
+                  properties:
+                    pushEnabled: { type: boolean }
+                    categories: { $ref: '#/components/schemas/NotificationCategoryPatch' }
+                - type: object
+                  additionalProperties: false
+                  required: [categories]
+                  properties:
+                    pushEnabled: { type: boolean }
+                    categories: { $ref: '#/components/schemas/NotificationCategoryChanges' }
+`;
+    expect(members.slice(0, legacy.length)).toBe(legacy);
+    const alternatives =
+      spec.paths['/me/notification-settings'].patch.requestBody.content['application/json'].schema
+        .anyOf;
+    expect(alternatives).toHaveLength(3);
+    expect(alternatives[2]).toEqual({
+      type: 'object',
+      additionalProperties: false,
+      required: ['quietHours'],
+      properties: {
+        pushEnabled: { type: 'boolean' },
+        categories: { $ref: '#/components/schemas/NotificationCategoryPatch' },
+        quietHours: { $ref: '#/components/schemas/NotificationQuietHoursPatch' },
+      },
+    });
+  });
+
   it('publishes only five categories, optimistic/retry headers, and repeatable validated kinds', () => {
     const patch = spec.paths['/me/notification-settings'].patch;
     expect(patch.parameters).toEqual(

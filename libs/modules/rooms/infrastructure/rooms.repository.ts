@@ -1,3 +1,4 @@
+import { syncReminderSchedule } from '../../shared/reminder-schedule';
 import { AppError } from '../../shared/app-error';
 import {
   validateAreaSelection,
@@ -246,6 +247,7 @@ export class RoomsRepository {
       if (input.event) {
         await writeOutbox(tx, { ...input.event, resourceId: room!.id });
       }
+      await syncReminderSchedule(tx, room!.id);
       return { room: room!, member: member! };
     });
   }
@@ -390,6 +392,7 @@ export class RoomsRepository {
         .update(schema.plans)
         .set({ isStale: true, updatedAt: sql`now()` })
         .where(eq(schema.plans.roomId, input.roomId));
+      await syncReminderSchedule(tx, input.roomId);
       await writeOutbox(tx, input.event);
       return version;
     });
@@ -453,6 +456,7 @@ export class RoomsRepository {
             : {}),
         },
       });
+      await syncReminderSchedule(tx, roomId);
       return true;
     });
   }

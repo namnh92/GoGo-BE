@@ -1,4 +1,5 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import { validTimezone } from '../../notifications/domain/quiet-hours';
 import { ManualIdempotency, idempotencyScope } from '../../shared/idempotency.interceptor';
 import {
   settingsEtag,
@@ -55,10 +56,29 @@ const categoryPatch = z
   })
   .strict();
 const settingsPatch = z
-  .object({ pushEnabled: z.boolean().optional(), categories: categoryPatch.optional() })
+  .object({
+    pushEnabled: z.boolean().optional(),
+    categories: categoryPatch.optional(),
+    quietHours: z
+      .object({
+        enabled: z.boolean().optional(),
+        timezone: z
+          .string()
+          .min(1)
+          .max(100)
+          .refine(validTimezone, 'IANA timezone required')
+          .optional(),
+      })
+      .strict()
+      .refine((v) => Object.keys(v).length > 0, 'At least one quiet-hour change required')
+      .optional(),
+  })
   .strict()
   .refine(
-    (v) => v.pushEnabled !== undefined || Object.keys(v.categories ?? {}).length > 0,
+    (v) =>
+      v.pushEnabled !== undefined ||
+      Object.keys(v.categories ?? {}).length > 0 ||
+      v.quietHours !== undefined,
     'At least one change required',
   );
 const notifSettingsSchema = z.object({ pushEnabled: z.boolean() }).strict();
@@ -172,11 +192,14 @@ export class UserContentController {
   }
 
   @Put('me/notification-settings')
-  setNotificationSettings(
+  async setNotificationSettings(
     @CurrentActor() actor: Actor,
     @Body(new ZodValidationPipe(notifSettingsSchema)) body: { pushEnabled: boolean },
+    @Res({ passthrough: true }) reply: FastifyReply,
   ) {
-    return this.service.setNotificationSettings(actor, body);
+    const result = await this.service.setNotificationSettings(actor, body);
+    reply.header('ETag', settingsEtag(result.version)).header('Cache-Control', 'private, no-store');
+    return result;
   }
 
   @Get('me/notification-preferences')

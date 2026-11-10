@@ -1,3 +1,4 @@
+import { deferPushDuringQuiet } from './quiet-hours';
 import { sql } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
 import {
@@ -87,6 +88,7 @@ export class CampaignDispatcher {
 
   /** One tick: due campaigns first, then any pending test send. */
   async tick(): Promise<{ campaigns: number; testSends: number }> {
+    await this.dispatchDeferred();
     const campaigns = await this.dispatchDue();
     const testSends = await this.deliverTestSends();
     return { campaigns, testSends };
@@ -175,6 +177,7 @@ export class CampaignDispatcher {
 
       let sent = 0;
       let failed = 0;
+      let deferred = 0;
       for (let offset = 0; offset < recipients.length; offset += RECIPIENT_BATCH) {
         const batch = (recipients as { id: string }[]).slice(offset, offset + RECIPIENT_BATCH);
         for (const recipient of batch) {
@@ -186,6 +189,7 @@ export class CampaignDispatcher {
           // through before an outage; it counts toward the campaign's total.
           if (delivered === 'sent' || delivered === 'already_sent') sent += 1;
           else if (delivered === 'no_target') failed += 1;
+          else if (delivered === 'deferred') deferred += 1;
         }
         await this.db.execute(sql`
           update notification_campaigns
@@ -217,12 +221,15 @@ export class CampaignDispatcher {
       });
       await this.db.execute(sql`
         update notification_campaigns
-        set status = ${outcome.status}, completed_at = now(), sent_count = ${sent},
-            failed_count = ${failed}, last_error = ${outcome.lastError},
+        set status = ${deferred > 0 ? 'sending' : outcome.status}::campaign_status,
+            quiet_pending = ${deferred > 0}, completed_at = case when ${deferred > 0} then null else now() end, sent_count = ${sent},
+            failed_count = ${failed}, last_error = ${deferred > 0 ? null : outcome.lastError},
             updated_at = now()
         where id = ${campaign.id}::uuid
       `);
-      this.metrics?.increment('campaign_dispatched_total', { result: outcome.status });
+      this.metrics?.increment('campaign_dispatched_total', {
+        result: deferred > 0 ? 'deferred' : outcome.status,
+      });
     } catch (err) {
       // A provider outage must not leave the row in `sending` forever: `failed`
       // is a state an operator can re-schedule from, and the error is kept.
@@ -370,7 +377,7 @@ export class CampaignDispatcher {
     campaign: DueCampaign,
     userId: string,
     options: { dedupeKey: string; mode: 'campaign' | 'test' },
-  ): Promise<'sent' | 'already_sent' | 'no_target'> {
+  ): Promise<'sent' | 'already_sent' | 'no_target' | 'deferred'> {
     const payload = {
       campaignId: campaign.id,
       title: campaign.title,
@@ -417,6 +424,19 @@ export class CampaignDispatcher {
       return 'no_target';
     }
 
+    const until = await deferPushDuringQuiet(this.db, userId, (tx, until) =>
+      tx.execute(sql`update notifications set push_deferred_until = ${until.toISOString()}::timestamptz
+        where id = ${row.id}::uuid`),
+    );
+    if (until) {
+      this.metrics?.increment('notification_push_deferred_total', {
+        kind: 'campaign',
+        category: 'other',
+        reason: 'quiet_hours',
+      });
+      return 'deferred';
+    }
+
     // #193: addressed by user id; the provider owns the device list. A thrown
     // provider error propagates to `send`, which marks the campaign `failed`
     // with the reason kept — a refused credential or an outage is something an
@@ -439,10 +459,94 @@ export class CampaignDispatcher {
     if (messageId === null) return 'no_target';
     await this.db.execute(sql`
       update notifications
-      set push_sent_at = now(), push_message_id = ${messageId}
+      set push_sent_at = now(), push_message_id = ${messageId}, push_deferred_until = null
       where id = ${row.id}::uuid
     `);
     return 'sent';
+  }
+
+  /** Bounded restart-safe wakeup. The inbox row and original dedupe/provider key
+   * survive restarts. A short due-time claim recovers after a crashed worker.
+   * Account opt-outs, current targeting, cancellation and dispatch replacement
+   * are checked again, while public device-only sends keep their consent model.
+   */
+  async dispatchDeferred(limit = 100): Promise<number> {
+    const claimed = await this.db.execute<{
+      id: string;
+      user_id: string;
+      dedupe_key: string;
+      payload: { campaignId: string };
+    }>(sql`
+      update notifications n set push_deferred_until = now() + interval '2 minutes'
+      where id in (select id from notifications where kind = 'campaign' and push_deferred_until <= now()
+        and push_sent_at is null and push_suppressed_at is null
+        order by push_deferred_until, id limit ${limit} for update skip locked)
+      returning id, user_id, dedupe_key, payload`);
+    for (const row of claimed.rows) {
+      const campaigns = await this.db.execute<DueCampaign & { status: string }>(sql`
+        select id, title, body, image_key, audience_type, audience_filter, destination_type,
+          destination_value, dispatch_key, status from notification_campaigns
+        where id = ${row.payload.campaignId}::uuid`);
+      const campaign = campaigns.rows[0];
+      const test = row.dedupe_key.startsWith('campaign_test:');
+      if (
+        !campaign ||
+        !isOpenableDestination(campaign.destination_type) ||
+        (!test &&
+          (!['sending', 'sent', 'failed', 'scheduled'].includes(campaign.status) ||
+            row.dedupe_key !== campaignDedupeKey(campaign.dispatch_key, row.user_id)))
+      ) {
+        await this.db.execute(
+          sql`update notifications set push_suppressed_at = now(), push_deferred_until = null where id = ${row.id}::uuid`,
+        );
+        continue;
+      }
+      // A failed campaign can be rescheduled with the same dispatch key. Its
+      // deferred recipients remain owed, but wait for the operator's retry
+      // rather than sending ahead of it or consuming provider retry attempts.
+      if (!test && ['failed', 'scheduled'].includes(campaign.status)) continue;
+      try {
+        const outcome = await this.deliver(campaign, row.user_id, {
+          dedupeKey: row.dedupe_key,
+          mode: test ? 'test' : 'campaign',
+        });
+        if (outcome !== 'deferred') {
+          await this.db.execute(
+            sql`update notifications set push_deferred_until = null where id = ${row.id}::uuid`,
+          );
+        }
+      } catch {
+        const failures = await this.db.execute<{
+          push_deferred_attempts: number;
+        }>(sql`update notifications
+          set push_deferred_attempts = push_deferred_attempts + 1,
+            push_deferred_until = now() + interval '5 minutes',
+            push_suppressed_at = case when push_deferred_attempts + 1 >= 6 then now() else push_suppressed_at end
+          where id = ${row.id}::uuid returning push_deferred_attempts`);
+        this.metrics?.increment(
+          failures.rows[0]?.push_deferred_attempts === 6
+            ? 'notification_deferred_dead_letter_total'
+            : 'notification_deferred_retry_total',
+          { kind: 'campaign', category: 'other' },
+        );
+      }
+    }
+    // A deferred campaign stays sending, never falsely provider-accepted.
+    // Durable quiet_pending also recovers a crash after the final recipient update.
+    await this.db.execute(sql`update notification_campaigns c set
+      sent_count = (select count(*)::int from notifications n where n.dedupe_key = 'campaign:' || c.dispatch_key || ':' || n.user_id::text and n.push_sent_at is not null),
+      failed_count = c.recipient_count - (select count(*)::int from notifications n where n.dedupe_key = 'campaign:' || c.dispatch_key || ':' || n.user_id::text and n.push_sent_at is not null),
+      status = case when c.device_sent_count > 0 or exists (select 1 from notifications n
+        where n.dedupe_key = 'campaign:' || c.dispatch_key || ':' || n.user_id::text and n.push_sent_at is not null)
+        then 'sent'::campaign_status else 'failed'::campaign_status end,
+      last_error = case when c.device_sent_count > 0 or exists (select 1 from notifications n
+        where n.dedupe_key = 'campaign:' || c.dispatch_key || ':' || n.user_id::text and n.push_sent_at is not null)
+        then null else 'NO_RECIPIENTS_REACHED' end,
+      quiet_pending = false, completed_at = now(), updated_at = now()
+      where c.status = 'sending' and c.quiet_pending and not exists (select 1 from notifications n
+        where n.dedupe_key = 'campaign:' || c.dispatch_key || ':' || n.user_id::text
+          and n.push_deferred_until is not null and n.push_sent_at is null and n.push_suppressed_at is null)`);
+    return claimed.rows.length;
   }
 
   /**

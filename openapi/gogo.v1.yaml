@@ -2,7 +2,7 @@ openapi: 3.1.0
 x-gogo-notification-preference-semantics: master-and-five-categories-v1
 info:
   title: GoGo API
-  version: 9.0.0-alpha.1
+  version: 9.1.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -6919,6 +6919,10 @@ paths:
         '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200':
           description: The switch as stored
+          headers:
+            ETag:
+              { schema: { type: string }, description: Strong notification settings resource ETag }
+            Cache-Control: { schema: { type: string, const: 'private, no-store' } }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/NotificationSettings' }
@@ -6929,9 +6933,16 @@ paths:
     patch:
       operationId: patchNotificationSettings
       tags: [me]
-      summary: Change master and/or category choices atomically
+      summary: Change master, category and quiet-hour choices atomically
       description: >
         At least one field or category is required; omitted choices remain unchanged.
+        quietHours defaults off. If enabled, defer account push during 23:00–07:00
+        in the stored IANA timezone; enabling requires a timezone in this request
+        or already stored. Invalid timezone or enabled without timezone returns
+        VALIDATION_FAILED. Inbox stays immediate. No emergency exception.
+        Disabling or changing timezone wakes deferred work to recheck current settings;
+        expired/cancelled reminders are suppressed. Quiet-hour changes share the
+        same version, audit, concurrency and idempotency semantics as category changes.
         Master changes retain category choices. Changing a category never enables master.
         Enable all submits all five categories true and leaves master unchanged.
         If-Match must equal the current strong ETag. Idempotency replay precedes stale
@@ -6967,6 +6978,13 @@ paths:
                   properties:
                     pushEnabled: { type: boolean }
                     categories: { $ref: '#/components/schemas/NotificationCategoryChanges' }
+                - type: object
+                  additionalProperties: false
+                  required: [quietHours]
+                  properties:
+                    pushEnabled: { type: boolean }
+                    categories: { $ref: '#/components/schemas/NotificationCategoryPatch' }
+                    quietHours: { $ref: '#/components/schemas/NotificationQuietHoursPatch' }
       responses:
         '200':
           description: Updated settings or original idempotent replay
@@ -16684,10 +16702,50 @@ components:
           allOf:
             - $ref: '#/components/schemas/NotificationCategoryPatch'
             - required: [invite, preference_reminder, plan_ready, plan_changed, date_reminder]
+        quietHours:
+          type: object
+          additionalProperties: false
+          required: [enabled, timezone]
+          description: Fixed 23:00 inclusive to 07:00 exclusive in the account timezone. Default off; no inferred timezone. Across DST, resume at the first UTC instant outside the local window.
+          properties:
+            enabled: { type: boolean, default: false }
+            timezone:
+              {
+                type: [string, 'null'],
+                maxLength: 100,
+                description: Stored IANA timezone or null if never set.,
+              }
         updatedAt:
           type: [string, 'null']
           format: date-time
           description: When the switch was last stored; null while it is the default.
+    NotificationQuietHoursPatch:
+      description: At least one quiet-hour change. Enabled requires a valid stored timezone; omitted values are retained.
+      anyOf:
+        - type: object
+          additionalProperties: false
+          required: [enabled]
+          properties:
+            enabled: { type: boolean }
+            timezone:
+              {
+                type: string,
+                minLength: 1,
+                maxLength: 100,
+                examples: [Asia/Ho_Chi_Minh, America/New_York],
+              }
+        - type: object
+          additionalProperties: false
+          required: [timezone]
+          properties:
+            enabled: { type: boolean }
+            timezone:
+              {
+                type: string,
+                minLength: 1,
+                maxLength: 100,
+                examples: [Asia/Ho_Chi_Minh, America/New_York],
+              }
     NotificationCategoryPatch:
       type: object
       additionalProperties: false

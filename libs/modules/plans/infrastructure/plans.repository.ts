@@ -1,3 +1,4 @@
+import { syncReminderSchedule } from '../../shared/reminder-schedule';
 import { Inject, Injectable } from '@nestjs/common';
 import { and, asc, eq, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
@@ -265,6 +266,7 @@ export class PlansRepository {
           },
         });
       }
+      await syncReminderSchedule(tx, input.roomId);
       return { plan: plan!, stops };
     });
   }

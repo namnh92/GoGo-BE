@@ -299,6 +299,7 @@ export async function collectUserExport(
       source: notificationSettings.source,
       version: notificationSettings.version,
       categories: notificationSettings.categories,
+      quietHours: notificationSettings.quietHours,
     },
     reviewReactions,
     placeSubmissions,

@@ -3273,8 +3273,8 @@ export interface paths {
         options?: never;
         head?: never;
         /**
-         * Change master and/or category choices atomically
-         * @description At least one field or category is required; omitted choices remain unchanged. Master changes retain category choices. Changing a category never enables master. Enable all submits all five categories true and leaves master unchanged. If-Match must equal the current strong ETag. Idempotency replay precedes stale version rejection and returns the original response/ETag without another write. Mutation, version increment, effective legacy mirrors, audit and replay commit together under the account lock. Suppressed push is terminal; opt-in never replays backlog. A change after the final eligibility check may race an already-starting provider call.
+         * Change master, category and quiet-hour choices atomically
+         * @description At least one field or category is required; omitted choices remain unchanged. quietHours defaults off. If enabled, defer account push during 23:00–07:00 in the stored IANA timezone; enabling requires a timezone in this request or already stored. Invalid timezone or enabled without timezone returns VALIDATION_FAILED. Inbox stays immediate. No emergency exception. Disabling or changing timezone wakes deferred work to recheck current settings; expired/cancelled reminders are suppressed. Quiet-hour changes share the same version, audit, concurrency and idempotency semantics as category changes. Master changes retain category choices. Changing a category never enables master. Enable all submits all five categories true and leaves master unchanged. If-Match must equal the current strong ETag. Idempotency replay precedes stale version rejection and returns the original response/ETag without another write. Mutation, version increment, effective legacy mirrors, audit and replay commit together under the account lock. Suppressed push is terminal; opt-in never replays backlog. A change after the final eligibility check may race an already-starting provider call.
          */
         patch: operations["patchNotificationSettings"];
         trace?: never;
@@ -8299,11 +8299,34 @@ export interface components {
             /** @description Monotonic resource version represented without JavaScript precision loss. */
             version?: string;
             categories?: components["schemas"]["NotificationCategoryPatch"] & unknown;
+            /** @description Fixed 23:00 inclusive to 07:00 exclusive in the account timezone. Default off; no inferred timezone. Across DST, resume at the first UTC instant outside the local window. */
+            quietHours?: {
+                /** @default false */
+                enabled: boolean;
+                /** @description Stored IANA timezone or null if never set. */
+                timezone: string | null;
+            };
             /**
              * Format: date-time
              * @description When the switch was last stored; null while it is the default.
              */
             updatedAt: string | null;
+        };
+        /** @description At least one quiet-hour change. Enabled requires a valid stored timezone; omitted values are retained. */
+        NotificationQuietHoursPatch: {
+            enabled: boolean;
+            /**
+             * @example Asia/Ho_Chi_Minh
+             * @example America/New_York
+             */
+            timezone?: string;
+        } | {
+            enabled?: boolean;
+            /**
+             * @example Asia/Ho_Chi_Minh
+             * @example America/New_York
+             */
+            timezone: string;
         };
         /** @description Five configurable categories only. Other is non-configurable and follows master. */
         NotificationCategoryPatch: {
@@ -18088,6 +18111,9 @@ export interface operations {
             /** @description The switch as stored */
             200: {
                 headers: {
+                    /** @description Strong notification settings resource ETag */
+                    ETag?: string;
+                    "Cache-Control"?: "private, no-store";
                     [name: string]: unknown;
                 };
                 content: {
@@ -18123,6 +18149,10 @@ export interface operations {
                 } | {
                     pushEnabled?: boolean;
                     categories: components["schemas"]["NotificationCategoryChanges"];
+                } | {
+                    pushEnabled?: boolean;
+                    categories?: components["schemas"]["NotificationCategoryPatch"];
+                    quietHours: components["schemas"]["NotificationQuietHoursPatch"];
                 };
             };
         };

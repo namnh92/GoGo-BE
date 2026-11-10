@@ -619,4 +619,5 @@ export {
 export { SubmissionPhotoService } from '../ingestion/application/submission-photo.service';
 export { ProviderPhotosService } from '../search/application/provider-photos.service';
 
+export { ReminderWorker } from '../notifications/application/reminder-worker';
 export { InboxReadAllWorker } from '../notifications/application/inbox-read-operations';

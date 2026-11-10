@@ -659,6 +659,13 @@
       "when": 1794182400095,
       "tag": "0095_submission-provider-photo",
       "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1794182400096,
+      "tag": "0096_notification-reminders-quiet-hours",
+      "breakpoints": true
     }
   ]
 }

@@ -19,6 +19,7 @@ import { users } from './identity';
 import { outboxEvents } from './platform';
 import { places } from './places';
 import { plans } from './plans';
+import { rooms } from './rooms';
 
 /**
  * DB-007 — saved/review/report/notification schema.
@@ -168,11 +169,18 @@ export const notifications = pgTable(
      */
     pushSentAt: timestamp('push_sent_at', { withTimezone: true }),
     pushSuppressedAt: timestamp('push_suppressed_at', { withTimezone: true }),
+    pushDeferredUntil: timestamp('push_deferred_until', { withTimezone: true }),
+    pushDeferredAttempts: integer('push_deferred_attempts').notNull().default(0),
     pushMessageId: text('push_message_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index('notifications_user_idx').on(t.userId, t.createdAt),
+    index('notifications_campaign_deferred_idx')
+      .on(t.pushDeferredUntil, t.id)
+      .where(
+        sql`${t.kind} = 'campaign' and ${t.pushDeferredUntil} is not null and ${t.pushSentAt} is null and ${t.pushSuppressedAt} is null`,
+      ),
     uniqueIndex('notifications_user_sequence_unique').on(t.userId, t.inboxSequence),
     index('notifications_unread_sequence_idx')
       .on(t.userId, t.inboxSequence)
@@ -227,6 +235,8 @@ export const notificationSettings = pgTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     pushEnabled: boolean('push_enabled').notNull(),
     version: bigint('version', { mode: 'bigint' }).notNull().default(0n),
+    quietHoursEnabled: boolean('quiet_hours_enabled').notNull().default(false),
+    timezone: text('timezone'),
     /**
      * `explicit` — set through the switch; `migrated` — the 0064 backfill;
      * `legacy` — an older client turned one kind off, which turns push off.
@@ -236,6 +246,10 @@ export const notificationSettings = pgTable(
   },
   (t) => [
     check('notification_settings_source', sql`${t.source} in ('explicit', 'migrated', 'legacy')`),
+    check(
+      'notification_quiet_timezone',
+      sql`not ${t.quietHoursEnabled} or ${t.timezone} is not null`,
+    ),
   ],
 );
 
@@ -433,6 +447,7 @@ export const notificationCampaigns = pgTable(
     destinationType: campaignDestination('destination_type').notNull().default('home'),
     destinationValue: text('destination_value'),
     status: campaignStatus('status').notNull().default('draft'),
+    quietPending: boolean('quiet_pending').notNull().default(false),
     scheduledAt: timestamp('scheduled_at', { withTimezone: true }),
     startedAt: timestamp('started_at', { withTimezone: true }),
     completedAt: timestamp('completed_at', { withTimezone: true }),
@@ -563,13 +578,50 @@ export const notificationPushDeliveries = pgTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     status: text('status').notNull(),
     leaseUntil: timestamp('lease_until', { withTimezone: true }),
+    deferredUntil: timestamp('deferred_until', { withTimezone: true }),
+    deferredAttempts: integer('deferred_attempts').notNull().default(0),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     primaryKey({ columns: [t.eventId, t.userId] }),
+    index('notification_push_deliveries_deferred')
+      .on(t.deferredUntil, t.eventId)
+      .where(sql`${t.status} = 'deferred'`),
+    index('notification_push_deliveries_attempting')
+      .on(t.leaseUntil, t.eventId)
+      .where(sql`${t.status} = 'attempting'`),
     check(
       'notification_push_deliveries_status',
-      sql`${t.status} in ('pending', 'attempting', 'sent', 'suppressed', 'failed', 'no_target')`,
+      sql`${t.status} in ('pending', 'attempting', 'deferred', 'sent', 'suppressed', 'failed', 'no_target')`,
+    ),
+  ],
+);
+
+/** One advance reminder per confirmed room/start, retained for deduplication. */
+export const notificationReminderJobs = pgTable(
+  'notification_reminder_jobs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    roomId: uuid('room_id')
+      .notNull()
+      .references(() => rooms.id, { onDelete: 'cascade' }),
+    startsAt: timestamp('starts_at', { withTimezone: true }).notNull(),
+    scheduledFor: timestamp('scheduled_for', { withTimezone: true }).notNull(),
+    status: text('status')
+      .$type<'pending' | 'cancelled' | 'emitted'>()
+      .notNull()
+      .default('pending'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('notification_reminder_jobs_room_start').on(t.roomId, t.startsAt),
+    index('notification_reminder_jobs_due')
+      .on(t.scheduledFor, t.id)
+      .where(sql`${t.status} = 'pending'`),
+    check(
+      'notification_reminder_jobs_status',
+      sql`${t.status} in ('pending', 'cancelled', 'emitted')`,
     ),
   ],
 );

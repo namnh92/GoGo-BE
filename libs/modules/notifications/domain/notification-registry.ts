@@ -46,7 +46,7 @@ export const NOTIFICATION_REGISTRY = {
   date_reminder: {
     category: 'date_reminder',
     channels: ['in_app', 'push'],
-    producer: 'room.status_active',
+    producer: 'room.reminder_due',
     audience: 'members',
   },
   campaign: { category: 'other', channels: ['in_app', 'push'], producer: 'campaign' },
