@@ -10,9 +10,10 @@ import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import { schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
 import { writeAudit } from '../../shared/audit';
-import { APP_CONFIG, type MediaConfig } from '../../shared/config';
+import { APP_CONFIG, type MediaConfig, type PlatformConfig } from '../../shared/config';
 import { assertValidSelections } from '../../shared/taxonomy-selections';
 import { publicMediaUrl } from '../../shared/media-url';
+import { flagEnvironmentOf, resolveBooleanFlag } from '../../shared/feature-flags';
 import { DB } from '../../shared/tokens';
 import type { Actor } from '../../identity/domain/actor';
 import { AVATAR_STORAGE_CONFIGURED } from '../../uploads/application/tokens';
@@ -42,7 +43,7 @@ export type UserProfile = {
   usualBudget: { perPerson: number; currency: string } | null;
   /** PROF-BE-013 — calendar date `YYYY-MM-DD`, owner-only, never a timestamp. */
   dateOfBirth: string | null;
-  capabilities: { avatarUpload: 'available' | 'unavailable' };
+  capabilities: { avatarUpload: 'available' | 'unavailable'; assistantCredits: boolean };
 };
 
 /**
@@ -85,7 +86,7 @@ type ProfileRow = {
 export class ProfileService {
   constructor(
     @Inject(DB) private readonly db: Db,
-    @Inject(APP_CONFIG) private readonly config: MediaConfig,
+    @Inject(APP_CONFIG) private readonly config: MediaConfig & Partial<PlatformConfig>,
     @Inject(AVATAR_STORAGE_CONFIGURED) private readonly avatarConfigured: boolean,
   ) {}
 
@@ -243,7 +244,14 @@ export class ProfileService {
           ? null
           : { perPerson: user.usualBudgetPerPerson, currency: user.usualBudgetCurrency },
       dateOfBirth: user.dateOfBirth ?? null,
-      capabilities: { avatarUpload: this.avatarConfigured ? 'available' : 'unavailable' },
+      capabilities: {
+        avatarUpload: this.avatarConfigured ? 'available' : 'unavailable',
+        assistantCredits:
+          user.status === 'active' &&
+          (await resolveBooleanFlag(this.db, 'assistant_credits.display_enabled', {
+            environment: flagEnvironmentOf(this.config.APP_ENV ?? 'dev'),
+          })),
+      },
     };
   }
 }

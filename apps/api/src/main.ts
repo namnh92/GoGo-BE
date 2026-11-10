@@ -124,6 +124,13 @@ export async function createApp(
   fastify.addHook('onRequest', (req, _reply, done) => {
     runWithRequestContext({ requestId: String(req.id), ip: req.ip }, done);
   });
+  // Before guards and validation: private credit errors must not be cached either.
+  fastify.addHook('onRequest', (req, reply, done) => {
+    if (/^\/v1\/me\/credits(?:\/ledger)?\/?$/.test(req.url.split('?')[0]!)) {
+      reply.header('Cache-Control', 'private, no-store');
+    }
+    done();
+  });
   fastify.addHook('onSend', async (req, reply) => {
     reply.header('x-request-id', String(req.id));
   });

@@ -37,6 +37,9 @@ import {
   RedisFrameBuffer,
   BUFFER_COMMAND_TIMEOUT_MS,
 } from '../infrastructure/frame-buffer';
+import { AssistantCreditsService } from '../application/assistant-credits.service';
+import { AssistantCreditRepository } from '../infrastructure/assistant-credit.repository';
+import { MeCreditsController } from './me-credits.controller';
 import { AssistantController } from './assistant.controller';
 import {
   AssistantDocumentsCmsController,
@@ -64,12 +67,15 @@ type BufferConfig = { NODE_ENV: string; REDIS_URL?: string };
   ],
   controllers: [
     AssistantController,
+    MeCreditsController,
     AssistantDocumentsCmsController,
     AssistantFeedbackCmsController,
     AssistantGuideCoverageCmsController,
   ],
   providers: [
     AssistantRepository,
+    AssistantCreditRepository,
+    AssistantCreditsService,
     AssistantTaxonomyService,
     AssistantAvailabilityService,
     AssistantAreaResolver,

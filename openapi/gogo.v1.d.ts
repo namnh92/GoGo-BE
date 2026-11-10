@@ -294,6 +294,69 @@ export interface paths {
         patch: operations["updateProfile"];
         trace?: never;
     };
+    "/me/credits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Own posted credit balance and lifetime totals
+         * @description Active registered users only; guests and staff receive USER_ONLY.
+         *     Requires the independent default-off assistant_credits.display_enabled
+         *     flag. GET /me capabilities.assistantCredits advertises this release's
+         *     support; clients must treat absence as unavailable (contract before 9.4).
+         *     Reads never create an account. No account means zero facts.
+         *     One statement snapshot reads posted balance and lifetime ledger totals;
+         *     totals do not depend on history pagination, source/usage retention or
+         *     catalogue entitlements. Refunds reduce spent, never increase earned.
+         *     reserved is 0 and policyKey is legacy_allowance_v1 in slice V.
+         *     Existing daily allowance and one-credit charging stay unchanged.
+         *     A mismatch is monitored, never repaired during GET.
+         *     Rate limit: 60 requests per minute per actor.
+         *     Success and errors use Cache-Control: private, no-store.
+         */
+        get: operations["getMyCredits"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/credits/ledger": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Own credit ledger, ten entries per page
+         * @description Same active-user, display flag and private, no-store policy as /me/credits,
+         *     including errors. No user ID parameter is accepted. Fixed page size 10,
+         *     fetch 11, descending (created_at, id) with strict keyset pagination.
+         *     Cursor is opaque, versioned and bound to the authenticated user; it retains
+         *     all six timestamp digits. Invalid or another user's cursor returns
+         *     400 INVALID_CURSOR. Other query validation failures use VALIDATION_FAILED.
+         *     No-account history is empty. Source deletion and usage purge preserve
+         *     posted history. Refresh without cursor to see concurrent new entries;
+         *     pagination is not a frozen multi-request snapshot.
+         *     direction, eventKey and source.type are open strings: unknown keys need
+         *     a generic client label. No localized copy, venue/entitlement identity,
+         *     internal usage ID or provider billing data is returned. Rate: 60/minute/actor.
+         */
+        get: operations["getMyCreditLedger"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/me/avatar": {
         parameters: {
             query?: never;
@@ -6075,6 +6138,46 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        MyCredits: {
+            balance: number;
+            earned: number;
+            spent: number;
+            reserved: number;
+            availableBalance: number;
+            /** Format: date-time */
+            asOf: string;
+            /** @description Open policy key; legacy_allowance_v1 in V. Unknown values must be tolerated. */
+            policyKey: string;
+        };
+        MyCreditEntry: {
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            createdAt: string;
+            delta: number;
+            /** @description Open key; known earned, spent, adjustment. */
+            direction: string;
+            /** @description Open catalogue key or assistant_usage; never localized copy. */
+            eventKey: string;
+            source: {
+                /** @description Open key; contribution, review, event, assistant_usage, legacy. */
+                type: string;
+            };
+            /**
+             * Format: uuid
+             * @description Catalogue event ID when present; never an entitlement or source-subject key.
+             */
+            eventId?: string;
+            /**
+             * Format: uuid
+             * @description Optional only if still readable by this actor; omitted in V.
+             */
+            messageId?: string;
+        };
+        MyCreditPage: {
+            items: components["schemas"]["MyCreditEntry"][];
+            nextCursor: string | null;
+        };
         /** @description Consumers must tolerate future system announcement kinds. */
         SystemNotificationKind: string;
         /** @description Canonical gogo app route only; no query, fragment, encoding or credentials. Null means no destination. */
@@ -6980,6 +7083,8 @@ export interface components {
              */
             dateOfBirth?: string | null;
             capabilities?: {
+                /** @description Optional capability (9.4+); absence or false means unavailable. Independent default-off display flag; no grant or charging activation. */
+                assistantCredits?: boolean;
                 /**
                  * @description Known before a picker opens; the server still enforces it.
                  * @enum {string}
@@ -12561,6 +12666,78 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["SessionLookupUnavailable"];
+        };
+    };
+    getMyCredits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Posted credit facts at asOf */
+            200: {
+                headers: {
+                    "Cache-Control"?: "private, no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyCredits"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["AssistantUserOnly"];
+            /** @description CREDITS_DISPLAY_DISABLED — visibility is not enabled */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            503: components["responses"]["SessionLookupUnavailable"];
+        };
+    };
+    getMyCreditLedger: {
+        parameters: {
+            query?: {
+                limit?: 10;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Own ledger page */
+            200: {
+                headers: {
+                    "Cache-Control"?: "private, no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyCreditPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["AssistantUserOnly"];
+            /** @description CREDITS_DISPLAY_DISABLED — visibility is not enabled */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             429: components["responses"]["RateLimited"];
             503: components["responses"]["SessionLookupUnavailable"];
         };

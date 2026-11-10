@@ -15,6 +15,14 @@ describe('feature flag registry (BE-CMS-G3 #221)', () => {
     expect(() => validateFlagValue('made.up.key', true)).toThrowError(/No such application flag/);
   });
 
+  it('credit visibility ships off independently of evaluation (#832 V)', () => {
+    expect(FEATURE_FLAGS['assistant_credits.display_enabled']).toMatchObject({
+      defaultValue: false,
+      platformScoped: false,
+      valueType: 'boolean',
+    });
+  });
+
   it('credit evaluator ships paused independently of ownership (#829)', () => {
     expect(FEATURE_FLAGS['credit_events.enabled']).toMatchObject({
       defaultValue: false,
