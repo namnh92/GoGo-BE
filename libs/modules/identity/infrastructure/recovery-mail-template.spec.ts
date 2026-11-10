@@ -25,7 +25,7 @@ describe('recovery mail template (#837, #839)', () => {
     expect(mail.html).toContain(`<html lang="${locale}">`);
     expect(mail.html).toMatch(/<meta name="color-scheme" content="light"\s*\/?>/);
     expect(mail.html).toContain('max-width:560px');
-    expect(mail.html).toContain('letter-spacing:6px');
+    expect(mail.html).toContain('white-space:nowrap');
     const preheader = mail.html.match(/<div[^>]+>(.*?)<\/div>/s)?.[1]?.trim();
     expect(preheader).toBe(
       locale === 'vi'
@@ -50,6 +50,57 @@ describe('recovery mail template (#837, #839)', () => {
     );
   });
 
+  it.each(['vi', 'en'] as const)(
+    'provides a mobile layout and an inline fallback in %s',
+    (locale) => {
+      const { html } = renderRecoveryMail(
+        { ...sample, locale },
+        {
+          appStore: 'https://apps.apple.com/app/id123456',
+          googlePlay: 'https://play.google.com/store/apps/details?id=vn.gogo',
+        },
+      );
+      expect(html).toContain(
+        '<meta name="viewport" content="width=device-width, initial-scale=1" />',
+      );
+      expect(html).toContain('<meta name="x-apple-disable-message-reformatting" />');
+      expect(html).toMatch(/@media \(max-width:\s*600px\)[\s\S]*?padding:\s*12px 8px !important/);
+      expect(html).toMatch(/@media \(max-width:\s*479px\)[\s\S]*?\.store-column/);
+      expect(html).toMatch(/font-size:\s*28px !important;\s*letter-spacing:\s*2px !important;/);
+
+      // Gmail clients may remove head CSS: the base layout must still fit at 320px.
+      const inline = html.replace(/<style>[\s\S]*?<\/style>/g, '');
+      expect(inline).not.toContain('width="560"');
+      expect(inline).toContain('width:100%;max-width:560px');
+      expect(inline).toContain('width:120px;max-width:100%;height:auto;');
+      const codeStyle = inline.match(/class="recovery-code"\s+dir="ltr"\s+style="([^"]+)"/)![1]!;
+      const fontSize = Number(codeStyle.match(/font-size:(\d+)px/)![1]);
+      const spacing = Number(codeStyle.match(/letter-spacing:(\d+)px/)![1]);
+      // Conservative full-em digit widths, plus spacing, within all inline padding.
+      expect(6 * (fontSize + spacing)).toBeLessThanOrEqual(320 - 2 * (12 + 24 + 8));
+      const columns = [...inline.matchAll(/<div\s+class="store-column"\s+style="([^"]+)"/g)];
+      expect(columns).toHaveLength(2);
+      for (const column of columns) {
+        expect(column[1]).toContain('display:inline-block');
+        expect(column[1]).toContain('width:100%;max-width:240px');
+      }
+      const stores = inline.slice(
+        inline.indexOf('class="store-column"'),
+        inline.lastIndexOf('</div>'),
+      );
+      expect(stores).not.toContain('<td');
+      expect([...inline.matchAll(/<a\s+[^>]+style="([^"]+)"/g)]).toHaveLength(2);
+      for (const link of inline.matchAll(/<a\s+[^>]+style="([^"]+)"/g)) {
+        expect(link[1]).toContain('display:block;min-height:44px');
+        expect(link[1]).toContain('padding:12px 8px');
+      }
+      // Ignore the hidden preheader and zero-size whitespace suppression wrapper.
+      for (const size of inline.slice(inline.indexOf('<table')).matchAll(/font-size:(\d+)px/g)) {
+        expect(Number(size[1]) === 0 || Number(size[1]) >= 15).toBe(true);
+      }
+    },
+  );
+
   it.each([
     [
       'vi',
@@ -69,7 +120,7 @@ describe('recovery mail template (#837, #839)', () => {
       expect(mail.text).toContain(intro);
       expect(mail.html.indexOf(intro)).toBeGreaterThan(mail.html.indexOf(sample.code));
       expect(mail.html).toMatch(
-        /<img\s+src="https:\/\/gogo.id.vn\/brand\/gogo-mail-logo.png"\s+alt="GoGo"\s+width="120"\s+height="111"/,
+        /<img\s+class="mail-logo"\s+src="https:\/\/gogo.id.vn\/brand\/gogo-mail-logo.png"\s+alt="GoGo"\s+width="120"\s+height="111"/,
       );
       expect(mail.html.match(/<img\b/g)).toHaveLength(1);
       expect(mail.html).not.toMatch(/<a\b/i);
@@ -88,9 +139,9 @@ describe('recovery mail template (#837, #839)', () => {
         googlePlay: 'https://play.google.com/store/apps/details?id=vn.gogo&hl=en',
       };
       const mail = renderRecoveryMail({ ...sample, locale }, links);
-      expect(mail.html).toContain(`<a href="${links.appStore}"`);
+      expect(mail.html).toContain(`href="${links.appStore}"`);
       expect(mail.html).toContain(
-        '<a href="https://play.google.com/store/apps/details?id=vn.gogo&amp;hl=en"',
+        'href="https://play.google.com/store/apps/details?id=vn.gogo&amp;hl=en"',
       );
       expect(mail.html).toMatch(/>\s*App Store<\/a\s*>/);
       expect(mail.html).toMatch(/>\s*Google Play<\/a\s*>/);

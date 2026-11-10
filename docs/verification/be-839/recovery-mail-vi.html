@@ -3,9 +3,39 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="x-apple-disable-message-reformatting" />
     <meta name="color-scheme" content="light" />
     <meta name="supported-color-schemes" content="light" />
     <title>Mã khôi phục mật khẩu GoGo</title>
+    <style>
+      @media (max-width: 600px) {
+        .mail-outer {
+          padding: 12px 8px !important;
+        }
+        .mail-header {
+          padding: 20px 16px !important;
+        }
+        .mail-content {
+          padding: 24px 16px !important;
+        }
+        .mail-footer {
+          padding: 20px 16px !important;
+        }
+        .mail-logo {
+          width: 96px !important;
+          height: auto !important;
+        }
+        .recovery-code {
+          font-size: 28px !important;
+          letter-spacing: 2px !important;
+        }
+      }
+      @media (max-width: 479px) {
+        .store-column {
+          max-width: 100% !important;
+        }
+      }
+    </style>
   </head>
   <body
     bgcolor="#FFF8F3"
@@ -42,10 +72,10 @@
       style="background-color: #fff8f3"
     >
       <tr>
-        <td align="center" style="padding: 24px 12px">
+        <td class="mail-outer" align="center" style="padding: 24px 12px">
           <table
             role="presentation"
-            width="560"
+            width="100%"
             cellpadding="0"
             cellspacing="0"
             border="0"
@@ -54,6 +84,7 @@
           >
             <tr>
               <td
+                class="mail-header"
                 bgcolor="#20124A"
                 style="
                   padding: 24px;
@@ -66,6 +97,7 @@
                 "
               >
                 <img
+                  class="mail-logo"
                   src="https://gogo.id.vn/brand/gogo-mail-logo.png"
                   alt="GoGo"
                   width="120"
@@ -73,7 +105,8 @@
                   style="
                     display: block;
                     width: 120px;
-                    height: 111px;
+                    max-width: 100%;
+                    height: auto;
                     border: 0;
                     background-color: #20124a;
                     color: #fff8f3;
@@ -85,7 +118,7 @@
               </td>
             </tr>
             <tr>
-              <td style="padding: 28px 24px; color: #1d1b18">
+              <td class="mail-content" style="padding: 28px 24px; color: #1d1b18">
                 <h1 style="margin: 0 0 16px; font-size: 24px; line-height: 32px; color: #1d1b18">
                   Khôi phục mật khẩu
                 </h1>
@@ -103,18 +136,19 @@
                 >
                   <tr>
                     <td align="center" style="padding: 20px 8px; color: #a71e07">
-                      <p style="margin: 0 0 8px; font-size: 14px; line-height: 22px">
+                      <p style="margin: 0 0 8px; font-size: 15px; line-height: 22px">
                         Mã khôi phục của bạn
                       </p>
                       <p
+                        class="recovery-code"
                         dir="ltr"
                         style="
                           margin: 0;
                           font-family: Consolas, 'Courier New', monospace;
-                          font-size: 36px;
+                          font-size: 32px;
                           line-height: 48px;
                           font-weight: bold;
-                          letter-spacing: 6px;
+                          letter-spacing: 3px;
                           white-space: nowrap;
                           color: #a71e07;
                         "
@@ -124,13 +158,13 @@
                     </td>
                   </tr>
                 </table>
-                <p style="margin: 20px 0 24px; font-size: 14px; line-height: 24px; color: #5a413b">
+                <p style="margin: 20px 0 24px; font-size: 15px; line-height: 24px; color: #5a413b">
                   Mã hết hạn lúc 15:01, 10/11/2026 (giờ Việt Nam).
                 </p>
                 <p
                   style="
                     margin: 0 0 8px;
-                    font-size: 14px;
+                    font-size: 15px;
                     line-height: 24px;
                     color: #1d1b18;
                     font-weight: bold;
@@ -138,55 +172,76 @@
                 >
                   Không chia sẻ mã này với bất kỳ ai.
                 </p>
-                <p style="margin: 0; font-size: 14px; line-height: 24px; color: #5a413b">
+                <p style="margin: 0; font-size: 15px; line-height: 24px; color: #5a413b">
                   Nếu bạn không yêu cầu khôi phục mật khẩu, hãy bỏ qua email này.
                 </p>
-                <p style="margin: 24px 0 16px; font-size: 14px; line-height: 24px; color: #5a413b">
+                <p style="margin: 24px 0 16px; font-size: 15px; line-height: 24px; color: #5a413b">
                   Ứng dụng giúp cặp đôi và nhóm bạn cùng chọn địa điểm, bình chọn và nhận một lịch
                   trình chung cho buổi đi chơi. Dự án startup Việt Nam, MVP đang kiểm thử.
                 </p>
-                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-                  <tr>
-                    <td
-                      width="50%"
-                      valign="top"
+                <div style="font-size: 0; text-align: center">
+                  <div
+                    class="store-column"
+                    style="
+                      display: inline-block;
+                      vertical-align: top;
+                      width: 100%;
+                      max-width: 240px;
+                      font-size: 15px;
+                      line-height: 22px;
+                      text-align: center;
+                      color: #5a413b;
+                      background-color: #fff8f3;
+                    "
+                  >
+                    <span
                       style="
+                        display: block;
+                        min-height: 44px;
+                        box-sizing: border-box;
                         padding: 12px 8px;
-                        font-size: 14px;
-                        line-height: 22px;
-                        color: #5a413b;
-                        background-color: #fff8f3;
                       "
+                      >Sắp có trên App Store</span
                     >
-                      <span>Sắp có trên App Store</span>
-                    </td>
-                    <td
-                      width="50%"
-                      valign="top"
+                  </div>
+                  <div
+                    class="store-column"
+                    style="
+                      display: inline-block;
+                      vertical-align: top;
+                      width: 100%;
+                      max-width: 240px;
+                      font-size: 15px;
+                      line-height: 22px;
+                      text-align: center;
+                      color: #5a413b;
+                      background-color: #fff8f3;
+                    "
+                  >
+                    <span
                       style="
+                        display: block;
+                        min-height: 44px;
+                        box-sizing: border-box;
                         padding: 12px 8px;
-                        font-size: 14px;
-                        line-height: 22px;
-                        color: #5a413b;
-                        background-color: #fff8f3;
                       "
+                      >Sắp có trên Google Play</span
                     >
-                      <span>Sắp có trên Google Play</span>
-                    </td>
-                  </tr>
-                </table>
+                  </div>
+                </div>
               </td>
             </tr>
             <tr>
               <td
+                class="mail-footer"
                 bgcolor="#FFF8F3"
                 style="
                   padding: 20px 24px;
                   background-color: #fff8f3;
                   color: #5a413b;
                   border-radius: 0 0 20px 20px;
-                  font-size: 12px;
-                  line-height: 20px;
+                  font-size: 15px;
+                  line-height: 22px;
                 "
               >
                 Đây là email tự động. Vui lòng không trả lời.

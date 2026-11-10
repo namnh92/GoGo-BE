@@ -127,22 +127,25 @@ export function renderRecoveryMail(
     { label: 'App Store', url: storeUrl(storeLinks.appStore) },
     { label: 'Google Play', url: storeUrl(storeLinks.googlePlay) },
   ];
-  const storeCells = stores
+  const storeColumns = stores
     .map(({ label, url }) => {
       const content = {
         markup: url
-          ? html`<a href="${url}" style="color:${colors.accent};text-decoration:underline;"
+          ? html`<a
+              href="${url}"
+              style="display:block;min-height:44px;box-sizing:border-box;padding:12px 8px;color:${colors.accent};text-decoration:underline;"
               >${label}</a
             >`
-          : html`<span>${c.comingSoon} ${label}</span>`,
+          : html`<span style="display:block;min-height:44px;box-sizing:border-box;padding:12px 8px;"
+              >${c.comingSoon} ${label}</span
+            >`,
       };
-      return html`<td
-        width="50%"
-        valign="top"
-        style="padding:12px 8px;font-size:14px;line-height:22px;color:${colors.secondary};background-color:${colors.canvas};"
+      return html`<div
+        class="store-column"
+        style="display:inline-block;vertical-align:top;width:100%;max-width:240px;font-size:15px;line-height:22px;text-align:center;color:${colors.secondary};background-color:${colors.canvas};"
       >
         ${content}
-      </td>`;
+      </div>`;
     })
     .join('');
   return {
@@ -164,9 +167,39 @@ export function renderRecoveryMail(
         <head>
           <meta charset="UTF-8" />
           <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <meta name="x-apple-disable-message-reformatting" />
           <meta name="color-scheme" content="light" />
           <meta name="supported-color-schemes" content="light" />
           <title>${c.subject}</title>
+          <style>
+            @media (max-width: 600px) {
+              .mail-outer {
+                padding: 12px 8px !important;
+              }
+              .mail-header {
+                padding: 20px 16px !important;
+              }
+              .mail-content {
+                padding: 24px 16px !important;
+              }
+              .mail-footer {
+                padding: 20px 16px !important;
+              }
+              .mail-logo {
+                width: 96px !important;
+                height: auto !important;
+              }
+              .recovery-code {
+                font-size: 28px !important;
+                letter-spacing: 2px !important;
+              }
+            }
+            @media (max-width: 479px) {
+              .store-column {
+                max-width: 100% !important;
+              }
+            }
+          </style>
         </head>
         <body
           bgcolor="${colors.canvas}"
@@ -187,10 +220,10 @@ export function renderRecoveryMail(
             style="background-color:${colors.canvas};"
           >
             <tr>
-              <td align="center" style="padding:24px 12px;">
+              <td class="mail-outer" align="center" style="padding:24px 12px;">
                 <table
                   role="presentation"
-                  width="560"
+                  width="100%"
                   cellpadding="0"
                   cellspacing="0"
                   border="0"
@@ -199,20 +232,22 @@ export function renderRecoveryMail(
                 >
                   <tr>
                     <td
+                      class="mail-header"
                       bgcolor="${colors.brand}"
                       style="padding:24px;background-color:${colors.brand};color:${colors.canvas};border-radius:20px 20px 0 0;font-size:30px;line-height:36px;font-weight:bold;"
                     >
                       <img
+                        class="mail-logo"
                         src="https://gogo.id.vn/brand/gogo-mail-logo.png"
                         alt="GoGo"
                         width="120"
                         height="111"
-                        style="display:block;width:120px;height:111px;border:0;background-color:${colors.brand};color:${colors.canvas};font-size:30px;line-height:36px;font-weight:bold;"
+                        style="display:block;width:120px;max-width:100%;height:auto;border:0;background-color:${colors.brand};color:${colors.canvas};font-size:30px;line-height:36px;font-weight:bold;"
                       />
                     </td>
                   </tr>
                   <tr>
-                    <td style="padding:28px 24px;color:${colors.text};">
+                    <td class="mail-content" style="padding:28px 24px;color:${colors.text};">
                       <h1
                         style="margin:0 0 16px;font-size:24px;line-height:32px;color:${colors.text};"
                       >
@@ -234,12 +269,13 @@ export function renderRecoveryMail(
                       >
                         <tr>
                           <td align="center" style="padding:20px 8px;color:${colors.accent};">
-                            <p style="margin:0 0 8px;font-size:14px;line-height:22px;">
+                            <p style="margin:0 0 8px;font-size:15px;line-height:22px;">
                               ${c.codeLabel}
                             </p>
                             <p
+                              class="recovery-code"
                               dir="ltr"
-                              style="margin:0;font-family:Consolas,'Courier New',monospace;font-size:36px;line-height:48px;font-weight:bold;letter-spacing:6px;white-space:nowrap;color:${colors.accent};"
+                              style="margin:0;font-family:Consolas,'Courier New',monospace;font-size:32px;line-height:48px;font-weight:bold;letter-spacing:3px;white-space:nowrap;color:${colors.accent};"
                             >
                               ${input.code}
                             </p>
@@ -247,42 +283,33 @@ export function renderRecoveryMail(
                         </tr>
                       </table>
                       <p
-                        style="margin:20px 0 24px;font-size:14px;line-height:24px;color:${colors.secondary};"
+                        style="margin:20px 0 24px;font-size:15px;line-height:24px;color:${colors.secondary};"
                       >
                         ${expiry}
                       </p>
                       <p
-                        style="margin:0 0 8px;font-size:14px;line-height:24px;color:${colors.text};font-weight:bold;"
+                        style="margin:0 0 8px;font-size:15px;line-height:24px;color:${colors.text};font-weight:bold;"
                       >
                         ${c.safety}
                       </p>
                       <p
-                        style="margin:0;font-size:14px;line-height:24px;color:${colors.secondary};"
+                        style="margin:0;font-size:15px;line-height:24px;color:${colors.secondary};"
                       >
                         ${c.ignore}
                       </p>
                       <p
-                        style="margin:24px 0 16px;font-size:14px;line-height:24px;color:${colors.secondary};"
+                        style="margin:24px 0 16px;font-size:15px;line-height:24px;color:${colors.secondary};"
                       >
                         ${c.intro}
                       </p>
-                      <table
-                        role="presentation"
-                        width="100%"
-                        cellpadding="0"
-                        cellspacing="0"
-                        border="0"
-                      >
-                        <tr>
-                          ${{ markup: storeCells }}
-                        </tr>
-                      </table>
+                      <div style="font-size:0;text-align:center;">${{ markup: storeColumns }}</div>
                     </td>
                   </tr>
                   <tr>
                     <td
+                      class="mail-footer"
                       bgcolor="${colors.canvas}"
-                      style="padding:20px 24px;background-color:${colors.canvas};color:${colors.secondary};border-radius:0 0 20px 20px;font-size:12px;line-height:20px;"
+                      style="padding:20px 24px;background-color:${colors.canvas};color:${colors.secondary};border-radius:0 0 20px 20px;font-size:15px;line-height:22px;"
                     >
                       ${c.footer}
                     </td>
