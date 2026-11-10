@@ -1,3 +1,4 @@
+import { eraseCreditSubjectKeys } from '../../shared/credit-erasure';
 import { lockAssistantAccount } from '../../shared/assistant-credits';
 import { sql } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
@@ -32,6 +33,7 @@ export async function eraseAssistantDataForUser(tx: Exec, userId: string): Promi
   await tx.execute(
     sql`update place_submissions set submitted_by_user_id = null where submitted_by_user_id = ${userId}`,
   );
+  await eraseCreditSubjectKeys(tx, userId);
   await tx.execute(sql`delete from assistant_credit_accounts where user_id = ${userId}`);
   await tx.execute(
     sql`update assistant_credit_ledger set user_id = null where user_id = ${userId}`,

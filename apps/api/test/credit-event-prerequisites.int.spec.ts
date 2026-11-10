@@ -1,3 +1,4 @@
+import { creditIndexes } from './support/credit-events';
 import { PlaceSubmissionService } from '../../../libs/modules/ingestion/application/place-submission.service';
 import { PlaceDedupService } from '../../../libs/modules/ingestion/application/place-dedup.service';
 import { SubmissionPhotosService } from '../../../libs/modules/ingestion/application/submission-photos.service';
@@ -255,6 +256,7 @@ beforeAll(async () => {
       "insert into assistant_credit_ledger(delta,reason,submission_id,venue_identity) values (70,'submission_approved',gen_random_uuid(),'google:s1-legacy')",
     );
     await migrate(db, { migrationsFolder: migrations });
+    await creditIndexes(pool);
   } finally {
     await rm(folder, { recursive: true, force: true });
   }

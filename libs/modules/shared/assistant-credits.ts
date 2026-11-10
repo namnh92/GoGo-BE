@@ -1,6 +1,14 @@
 import { sql } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
 import { AppError } from './app-error';
+import { CREDIT_SEEDS, type CreditRule } from './credit-catalogue';
+import {
+  attributeLegacyCredit,
+  discoverLegacyCredits,
+  reserveCreditBudget,
+  writeCatalogueGrant,
+} from './credit-grants';
+import { CreditCandidateChanged } from './credit-event-protocol';
 
 type Exec = Pick<Db, 'execute'>;
 
@@ -21,11 +29,12 @@ export async function creditBalance(exec: Exec, userId: string): Promise<number>
 /** The sole award formula, also used by CMS previews. */
 export function submissionCreditFacts(approvedMenuBillPhotoCount = 0, grantBase = true) {
   const base = grantBase ? 50 : 0;
-  const photoBonus = approvedMenuBillPhotoCount > 0 ? 20 : 0;
+  const photoBonus = approvedMenuBillPhotoCount > 0 ? 10 : 0;
   return { base, photoBonus, total: base + photoBonus };
 }
 
-/** Caller holds account lock; source uniqueness survives source deletion. */
+/** Caller holds cutover -> BOTH seeded rules -> discovered accounts -> domain.
+ * Reconcile old-writer conflicts before either component can be paid. */
 export async function grantSubmissionCredits(
   tx: Exec,
   userId: string,
@@ -33,21 +42,42 @@ export async function grantSubmissionCredits(
   venueIdentity: string,
   approvedMenuBillPhotoCount = 0,
   grantBase = true,
+  lockedAccounts: ReadonlySet<string> = new Set([userId]),
 ): Promise<void> {
-  const { total: delta } = submissionCreditFacts(approvedMenuBillPhotoCount, grantBase);
-  if (!delta) return;
-  await lockAssistantAccount(tx, userId);
-  const active = await tx.execute(
-    sql`select id from users where id = ${userId} and status = 'active' for share`,
-  );
+  if (!grantBase && approvedMenuBillPhotoCount === 0) return;
+  const active = await tx.execute(sql`select id from users where id=${userId} and status='active'`);
   if (!active.rows.length)
     throw AppError.conflict('CONTRIBUTOR_UNAVAILABLE', 'Contributor account is unavailable');
-  const grant =
-    await tx.execute(sql`insert into assistant_credit_ledger(user_id,delta,reason,submission_id,venue_identity)
-    values (${userId},${delta},'submission_approved',${submissionId},${venueIdentity}) on conflict do nothing returning id`);
-  if (grant.rows.length) {
-    await tx.execute(sql`insert into assistant_credit_accounts(user_id,balance) values (${userId},${delta})
-      on conflict (user_id) do update set balance = assistant_credit_accounts.balance + ${delta}`);
+  for (const row of await discoverLegacyCredits(tx, submissionId, venueIdentity)) {
+    if (row.user_id && !lockedAccounts.has(row.user_id)) throw new CreditCandidateChanged();
+    if (!row.credit_event_id) await attributeLegacyCredit(tx, row);
+  }
+  const result = await tx.execute(sql`select * from credit_events where id in
+    (${CREDIT_SEEDS[0].id}::uuid,${CREDIT_SEEDS[1].id}::uuid)
+    and starts_at<=now() and (ends_at is null or now()<ends_at) order by id`);
+  for (const rule of result.rows as CreditRule[]) {
+    const base = rule.id === CREDIT_SEEDS[0].id;
+    if (
+      (base && !grantBase) ||
+      (!base && approvedMenuBillPhotoCount === 0) ||
+      rule.status !== 'active'
+    )
+      continue;
+    const key = base ? `venue:${venueIdentity}` : `submission:${submissionId}`;
+    const existing = await tx.execute(
+      sql`select ledger_id from credit_entitlements where event_id=${rule.id}::uuid and key=${key}`,
+    );
+    if (existing.rows.length) continue;
+    const capped = await tx.execute(
+      sql`select count(distinct e.ledger_id)::int as n from credit_entitlements e join assistant_credit_ledger l on l.id=e.ledger_id where e.event_id=${rule.id}::uuid and l.user_id=${userId}::uuid`,
+    );
+    if (
+      rule.max_per_user !== null &&
+      Number((capped.rows[0] as { n: number }).n) >= rule.max_per_user
+    )
+      continue;
+    if (!(await reserveCreditBudget(tx, rule, rule.amount))) continue;
+    await writeCatalogueGrant(tx, rule, userId, key, { submissionId, venueIdentity });
   }
 }
 

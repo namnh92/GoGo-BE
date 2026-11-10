@@ -2,7 +2,7 @@ import { Controller, Get, Inject } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import IORedis from 'ioredis';
 import { type Db } from '@gogo/database';
-import { AppError, DB, Public } from '@gogo/modules';
+import { AppError, DB, Public, assertCreditWriterReady } from '@gogo/modules';
 import { APP_CONFIG, type AppConfig } from '../config/env';
 
 @Controller('health')
@@ -35,6 +35,7 @@ export class HealthController {
 
     try {
       await this.db.execute(sql`select 1`);
+      await assertCreditWriterReady(this.db);
       checks.db = 'ok';
     } catch {
       checks.db = 'failed';

@@ -1,9 +1,10 @@
+import { grantLockedSubmissionCredits as grantSubmissionCredits } from './support/credit-events';
 import { SubmissionPhotosService } from '../../../libs/modules/ingestion/application/submission-photos.service';
 import { PlaceSubmissionService } from '../../../libs/modules/ingestion/application/place-submission.service';
 import { PlaceDedupService } from '../../../libs/modules/ingestion/application/place-dedup.service';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { migrateWithCreditIndexes as migrate } from './support/credit-events';
 import { eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -18,7 +19,6 @@ import {
 import { RoomsRepository } from '../../../libs/modules/rooms/infrastructure/rooms.repository';
 import {
   creditBalance,
-  grantSubmissionCredits,
   lockAssistantAccount,
   spendAssistantCredit,
 } from '../../../libs/modules/shared/assistant-credits';

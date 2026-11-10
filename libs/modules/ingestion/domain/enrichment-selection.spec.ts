@@ -70,8 +70,8 @@ describe('wizard keep/drop selection (#806)', () => {
     ).toEqual(selected);
     expect(submissionCreditFacts(selected.keptPhotoMediaIds.length)).toEqual({
       base: 50,
-      photoBonus: 20,
-      total: 70,
+      photoBonus: 10,
+      total: 60,
     });
   });
   it.each(['unknown', 'billPhotoPublicConsent', 'photos', 'purposeKeys', 'amenities:missing'])(

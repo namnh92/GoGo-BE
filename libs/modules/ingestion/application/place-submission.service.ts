@@ -1,8 +1,9 @@
+import { lockSyncCreditRules } from '../../shared/credit-catalogue';
+import { discoverLegacyCredits } from '../../shared/credit-grants';
 import {
   CreditCandidateChanged,
   lockCreditCutover,
   lockCreditRecipients,
-  requireSyncCreditWriter,
   retryCreditDiscovery,
 } from '../../shared/credit-event-protocol';
 import { updateDeadline } from '../domain/submission-provider-photo';
@@ -1589,8 +1590,13 @@ export class PlaceSubmissionService {
     const finalize = async (
       tx: Tx,
       resultPlaceId: string | null,
-      recipientUserId: string | null,
+      credit: {
+        recipientUserId: string | null;
+        grantOwner: 'sync' | 'evaluator';
+        lockedAccounts: Set<string>;
+      },
     ) => {
+      const { recipientUserId, grantOwner, lockedAccounts } = credit;
       const decidedAt = new Date();
       const [current] = await tx
         .select()
@@ -1666,14 +1672,15 @@ export class PlaceSubmissionService {
         approvedEvidenceCount = Number(
           (approvedEvidence?.rows[0] as { n: number } | undefined)?.n ?? 0,
         );
-        if (recipientUserId)
+        if (recipientUserId && grantOwner === 'sync')
           await grantSubmissionCredits(
             tx,
             recipientUserId,
             row.id,
             `google:${row.googlePlaceId}`,
             approvedEvidenceCount,
-            decision === 'approved' || selection !== undefined,
+            decision === 'approved',
+            lockedAccounts,
           );
       }
       await writeAudit(tx, {
@@ -1718,7 +1725,7 @@ export class PlaceSubmissionService {
           variant: decision,
           recipientUserId,
           approvedEvidenceCount,
-          grantOwner: 'sync',
+          grantOwner,
           // Keep the v1 fact for existing internal consumers.
           resultPlaceId,
           ...(resultPlaceId ? { placeId: resultPlaceId } : {}),
@@ -1740,7 +1747,7 @@ export class PlaceSubmissionService {
             decision,
             recipientUserId,
             approvedEvidenceCount,
-            grantOwner: 'sync',
+            grantOwner,
           },
         });
     };
@@ -1749,7 +1756,7 @@ export class PlaceSubmissionService {
       resultPlaceId = await this.createDraftFromSubmission(row, adminId, finalize);
     } else {
       resultPlaceId = await this.db.transaction(async (tx) => {
-        const recipientUserId = await this.lockCreditDecision(tx, row);
+        const credit = await this.lockCreditDecision(tx, row);
         await this.lockPendingSubmission(tx, row, true);
         let targetId: string | null = null;
         if (decision === 'merged') {
@@ -1766,7 +1773,7 @@ export class PlaceSubmissionService {
           targetId = mergeIntoPlaceId;
           await this.dedup.emitReindex(targetId, 'merged', tx);
         }
-        await finalize(tx, targetId, recipientUserId);
+        await finalize(tx, targetId, credit);
         return targetId;
       });
     }
@@ -1878,14 +1885,19 @@ export class PlaceSubmissionService {
 
   private async lockCreditDecision(tx: Tx, row: typeof schema.placeSubmissions.$inferSelect) {
     const cutover = await lockCreditCutover(tx);
-    requireSyncCreditWriter(cutover);
-    const active = await lockCreditRecipients(
-      tx,
-      row.submittedByUserId ? [row.submittedByUserId] : [],
-    );
-    return row.submittedByUserId && active.has(row.submittedByUserId)
-      ? row.submittedByUserId
-      : null;
+    await lockSyncCreditRules(tx);
+    const legacy = await discoverLegacyCredits(tx, row.id, `google:${row.googlePlaceId}`);
+    const candidates = [
+      ...(row.submittedByUserId ? [row.submittedByUserId] : []),
+      ...legacy.flatMap((r) => (r.user_id ? [r.user_id] : [])),
+    ];
+    const active = await lockCreditRecipients(tx, candidates);
+    return {
+      recipientUserId:
+        row.submittedByUserId && active.has(row.submittedByUserId) ? row.submittedByUserId : null,
+      grantOwner: cutover.mode,
+      lockedAccounts: new Set(candidates),
+    };
   }
 
   private async lockPendingSubmission(
@@ -1923,7 +1935,15 @@ export class PlaceSubmissionService {
   private async createDraftFromSubmission(
     row: typeof schema.placeSubmissions.$inferSelect,
     adminId: string,
-    finalize: (tx: Tx, placeId: string, recipientUserId: string | null) => Promise<void>,
+    finalize: (
+      tx: Tx,
+      placeId: string,
+      credit: {
+        recipientUserId: string | null;
+        grantOwner: 'sync' | 'evaluator';
+        lockedAccounts: Set<string>;
+      },
+    ) => Promise<void>,
   ): Promise<string> {
     const draft: SubmissionReviewDraft = row.reviewDraft ?? {};
     /**
@@ -2012,7 +2032,7 @@ export class PlaceSubmissionService {
     let photoAttached = false;
     return this.db
       .transaction(async (tx) => {
-        const recipientUserId = await this.lockCreditDecision(tx, row);
+        const credit = await this.lockCreditDecision(tx, row);
         const current = await this.lockPendingSubmission(tx, row, true);
         await this.dedup.lockGoogleIdentities(tx, [row.googlePlaceId]);
         await this.dedup.assertGoogleIdentityOwner(tx, row.googlePlaceId);
@@ -2165,7 +2185,7 @@ export class PlaceSubmissionService {
           tx,
         );
         await this.dedup.emitReindex(place!.id, 'published', tx);
-        await finalize(tx, place!.id, recipientUserId);
+        await finalize(tx, place!.id, credit);
         return place!.id;
       })
       .catch(async (error: unknown) => {

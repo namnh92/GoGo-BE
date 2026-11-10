@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { migrateWithCreditIndexes as migrate } from './support/credit-events';
 import { eq, sql } from 'drizzle-orm';
 import argon2 from 'argon2';
 import sharp from 'sharp';
@@ -389,7 +389,7 @@ describe('wizard menu evidence and approval credits (#796)', () => {
       expect(place.json().userPhotos[0].id).toBe(photos[0].id);
     },
   );
-  it('claims only owned evidence, keeps it private, and grants 70 exactly once only after explicit approval', async () => {
+  it('claims only owned evidence, keeps it private, and grants 50+10 exactly once only after explicit approval', async () => {
     await db
       .insert(schema.taxonomies)
       .values([
@@ -433,9 +433,16 @@ describe('wizard menu evidence and approval credits (#796)', () => {
     expect(placeDetail.photos).toEqual([]);
     expect(placeDetail.userPhotos).toHaveLength(1);
     expect(placeDetail.userPhotos[0].contributor.displayName).toBe('Mai');
-    expect((await ledger(submissionId)).map((row) => row.delta)).toEqual([70]);
+    const credits = (await ledger(submissionId)).sort((a, b) => b.delta - a.delta);
+    expect(
+      credits.map(({ reason, delta, entitlementKey }) => ({ reason, delta, entitlementKey })),
+    ).toEqual([
+      { reason: 'submission_approved', delta: 50, entitlementKey: `venue:google:${id}` },
+      { reason: 'submission_evidence', delta: 10, entitlementKey: `submission:${submissionId}` },
+    ]);
+    expect(credits.reduce((sum, row) => sum + row.delta, 0)).toBe(60);
     expect((await decide(submissionId, 'approved', [photos[0].id])).statusCode).toBe(409);
-    expect((await ledger(submissionId)).map((row) => row.delta)).toEqual([70]);
+    expect((await ledger(submissionId)).sort((a, b) => b.delta - a.delta)).toEqual(credits);
   });
   it.each(['approved', 'merged', 'rejected', 'dropped'])(
     'publishes all bill evidence only after selection (%s)',
@@ -532,11 +539,11 @@ describe('wizard menu evidence and approval credits (#796)', () => {
         (await api().inject({ method: 'GET', url: photo.url, headers: auth(moderator) }))
           .statusCode,
       ).toBe(404);
-      expect((await ledger(submissionId)).map((r) => r.delta)).toEqual(
+      expect((await ledger(submissionId)).map((r) => r.delta).sort((a, b) => a - b)).toEqual(
         decision === 'approved'
-          ? [70]
+          ? [10, 50]
           : decision === 'merged'
-            ? [20]
+            ? [10]
             : decision === 'dropped'
               ? [50]
               : [],
@@ -846,7 +853,7 @@ describe('wizard explicit keep/drop HTTP (#806)', () => {
     async (decision) => {
       const { id, menu, bill } = await proposal();
       const before = await detail(id);
-      expect(before.json().expectedCredit).toEqual({ base: 50, photoBonus: 20, total: 70 });
+      expect(before.json().expectedCredit).toEqual({ base: 50, photoBonus: 10, total: 60 });
       expect(before.json().enrichmentItems.factKeys).toContain('amenities:car_parking');
       let target: string | undefined;
       if (decision === 'merged') {
@@ -864,6 +871,8 @@ describe('wizard explicit keep/drop HTTP (#806)', () => {
         payload: { enrichmentSelection },
       });
       expect(preview.statusCode, preview.body).toBe(201);
+      // S2 keeps this approval preview; it has no decision input. The +50 seed
+      // matches only approved decisions (shape R2-06), never merged decisions.
       expect(preview.json().expectedCredit).toEqual(before.json().expectedCredit);
       const payload = {
         decision,
@@ -874,9 +883,41 @@ describe('wizard explicit keep/drop HTTP (#806)', () => {
       const key = randomUUID();
       const result = await request(id, payload, editor, key);
       expect(result.statusCode, result.body).toBe(201);
+      const ledger = () =>
+        db
+          .select()
+          .from(schema.assistantCreditLedger)
+          .where(eq(schema.assistantCreditLedger.submissionId, id))
+          .orderBy(
+            sql`${schema.assistantCreditLedger.delta} desc`,
+            schema.assistantCreditLedger.id,
+          );
+      const credits = await ledger();
+      const evidence = {
+        reason: 'submission_evidence',
+        delta: 10,
+        entitlementKey: `submission:${id}`,
+      };
+      const venueIdentity = `google:${before.json().googlePlaceId}`;
+      expect(
+        credits.map(({ reason, delta, entitlementKey }) => ({ reason, delta, entitlementKey })),
+      ).toEqual(
+        decision === 'approved'
+          ? [
+              {
+                reason: 'submission_approved',
+                delta: 50,
+                entitlementKey: `venue:${venueIdentity}`,
+              },
+              evidence,
+            ]
+          : [evidence],
+      );
+      expect(credits.reduce((sum, c) => sum + c.delta, 0)).toBe(decision === 'approved' ? 60 : 10);
       const again = await request(id, payload, editor, key);
       expect(again.statusCode, again.body).toBe(201);
       expect(again.json()).toEqual(result.json());
+      expect(await ledger()).toEqual(credits);
       const changed = await request(
         id,
         { ...payload, enrichmentSelection: { keptFactKeys: [], keptPhotoMediaIds: [] } },
@@ -884,6 +925,7 @@ describe('wizard explicit keep/drop HTTP (#806)', () => {
         key,
       );
       expect(changed.statusCode).toBe(422);
+      expect(await ledger()).toEqual(credits);
       const placeId = result.json().placeId;
       const place = (await api().inject({ method: 'GET', url: `/v1/places/${placeId}` })).json();
       expect(place.contributionFacts).toEqual({
@@ -918,11 +960,6 @@ describe('wizard explicit keep/drop HTTP (#806)', () => {
         status: 'rejected',
         placeId: null,
       });
-      const credits = await db
-        .select()
-        .from(schema.assistantCreditLedger)
-        .where(eq(schema.assistantCreditLedger.submissionId, id));
-      expect(credits.map((c) => c.delta)).toEqual([preview.json().expectedCredit.total]);
       const audit = await db.execute(
         sql`select diff from audit_logs where resource_id = ${id} and action = 'place_submission.decided'`,
       );
