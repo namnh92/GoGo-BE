@@ -44,11 +44,21 @@ function errorEnvelope(body: Record<string, unknown>, code: string, retryable: b
 }
 
 describe('I-2 real app enumeration, quota and replay contracts', () => {
-  it('validates equal 202 shapes, 300s/60s lifetimes, padding floor and equivalent logical persistence/send-discard work for eligible, missing, guest and passwordless identities', async () => {
+  it('returns 202 only for eligible identities, generic 404 otherwise, preserving padding and decoy persistence', async () => {
     const eligible = await f.register();
     const passwordless = `passwordless-${randomUUID()}@example.test`;
     await f.db.insert(schema.users).values({ email: passwordless, displayName: 'Passwordless' });
     const guest = await f.guest();
+    const disabled = await f.register();
+    const deleted = await f.register();
+    await f.db
+      .update(schema.users)
+      .set({ status: 'suspended' })
+      .where(eq(schema.users.id, disabled.userId));
+    await f.db
+      .update(schema.users)
+      .set({ status: 'deleted' })
+      .where(eq(schema.users.id, deleted.userId));
     const identities = [
       { email: eligible.email, headers: {}, eligible: true },
       { email: `missing-${randomUUID()}@example.test`, headers: {}, eligible: false },
@@ -58,6 +68,8 @@ describe('I-2 real app enumeration, quota and replay contracts', () => {
         eligible: false,
       },
       { email: passwordless, headers: {}, eligible: false },
+      { email: disabled.email, headers: {}, eligible: false },
+      { email: deleted.email, headers: {}, eligible: false },
     ];
     const operations: string[][] = [];
     const repo = f.a.get(RecoveryRepository);
@@ -86,7 +98,7 @@ describe('I-2 real app enumeration, quota and replay contracts', () => {
           }),
       );
     const send = vi.spyOn(f.a.get<RecoveryMailSender>(RecoveryMailSender), 'send');
-    const normalized: object[] = [];
+
     try {
       for (const identity of identities) {
         const started = Date.now();
@@ -98,22 +110,31 @@ describe('I-2 real app enumeration, quota and replay contracts', () => {
           { headers: identity.headers },
         );
         const ended = Date.now();
-        expect(response.statusCode).toBe(202);
+        expect(response.statusCode).toBe(identity.eligible ? 202 : 404);
         // A tolerant lower-bound smoke check of the configured 250ms policy;
         // no ceiling or branch timing-distribution comparison is claimed.
         expect(performance.now() - monotonic).toBeGreaterThanOrEqual(225);
-        const body = response.json<RecoveryResponse>();
-        expect(Object.keys(body).sort()).toEqual(['challengeId', 'expiresAt', 'resendAvailableAt']);
-        expect(body.challengeId).toMatch(
-          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
-        );
-        for (const [value, lifetime] of [
-          [body.expiresAt, 300_000],
-          [body.resendAvailableAt, 60_000],
-        ] as const) {
-          expect(new Date(value).toISOString()).toBe(value);
-          expect(Date.parse(value)).toBeGreaterThanOrEqual(started + lifetime);
-          expect(Date.parse(value)).toBeLessThanOrEqual(ended + lifetime);
+        const body = identity.eligible ? response.json<RecoveryResponse>() : undefined;
+        if (body) {
+          expect(Object.keys(body).sort()).toEqual([
+            'challengeId',
+            'expiresAt',
+            'resendAvailableAt',
+          ]);
+          expect(body.challengeId).toMatch(
+            /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+          );
+          for (const [value, lifetime] of [
+            [body.expiresAt, 300_000],
+            [body.resendAvailableAt, 60_000],
+          ] as const) {
+            expect(new Date(value).toISOString()).toBe(value);
+            expect(Date.parse(value)).toBeGreaterThanOrEqual(started + lifetime);
+            expect(Date.parse(value)).toBeLessThanOrEqual(ended + lifetime);
+          }
+        } else {
+          errorEnvelope(response.json(), 'RECOVERY_ACCOUNT_NOT_FOUND', false);
+          expect(response.json().message).toBe('Tài khoản không tồn tại');
         }
         const [challenge] = await f.db
           .select()
@@ -124,23 +145,17 @@ describe('I-2 real app enumeration, quota and replay contracts', () => {
               crypto.digest('email', identity.email),
             ),
           );
-        expect(challenge!.id).toBe(body.challengeId);
+        if (body) expect(challenge!.id).toBe(body.challengeId);
         expect(Boolean(challenge!.userId)).toBe(identity.eligible);
-        normalized.push({
-          challengeId: '<uuid>',
-          expiresAt: '<300s-iso>',
-          resendAvailableAt: '<60s-iso>',
-        });
       }
-      expect(
-        normalized.every((body) => JSON.stringify(body) === JSON.stringify(normalized[0])),
-      ).toBe(true);
-      expect(operations).toHaveLength(4);
+      expect(operations).toHaveLength(identities.length);
       for (const work of operations)
         expect(work).toEqual(['getChallenge', 'getReplay', 'replaceChallenge', 'saveReplay']);
-      expect(send).toHaveBeenCalledTimes(4);
+      expect(send).toHaveBeenCalledTimes(identities.length);
       expect(send.mock.calls[0]![0]).toMatchObject({ email: eligible.email });
-      expect(send.mock.calls.slice(1).map(([message]) => message)).toEqual([null, null, null]);
+      expect(send.mock.calls.slice(1).map(([message]) => message)).toEqual(
+        Array(identities.length - 1).fill(null),
+      );
     } finally {
       transaction.mockRestore();
       send.mockRestore();
@@ -193,7 +208,12 @@ describe('I-2 real app enumeration, quota and replay contracts', () => {
     const completionBodies: Record<string, unknown>[] = [];
     for (const email of [eligible.email, missing]) {
       await f.clearLimits();
-      const { body, proof } = await f.request(email);
+      const requested = await post(f.a, REQUEST, { email });
+      expect(requested.statusCode).toBe(email === eligible.email ? 202 : 404);
+      const [stored] = await f.db
+        .select()
+        .from(schema.passwordRecoveryChallenges)
+        .where(eq(schema.passwordRecoveryChallenges.emailDigest, crypto.digest('email', email)));
       const undo = await f.failWrite(
         'password_recovery_challenges',
         `NEW.email_digest = '${crypto.digest('email', email)}'`,
@@ -201,8 +221,13 @@ describe('I-2 real app enumeration, quota and replay contracts', () => {
       try {
         const response = await post(f.b, COMPLETE, {
           email,
-          challengeId: body.challengeId,
-          code: proof?.code === '000000' ? '111111' : '000000',
+          challengeId: stored!.id,
+          code: crypto.matches(
+            stored!.codeDigest,
+            crypto.digest('proof', crypto.digest('email', email), stored!.id, '000000'),
+          )
+            ? '111111'
+            : '000000',
           password: NEW_PASSWORD,
         });
         expect(response.statusCode).toBe(503);
@@ -234,7 +259,7 @@ describe('I-2 real app enumeration, quota and replay contracts', () => {
     try {
       const response = await post(f.a, REQUEST, { email: user.email });
       const missing = await post(f.a, REQUEST, { email: `missing-${randomUUID()}@example.test` });
-      expect([response.statusCode, missing.statusCode]).toEqual([202, 202]);
+      expect([response.statusCode, missing.statusCode]).toEqual([202, 404]);
       const [challenge] = await f.db
         .select()
         .from(schema.passwordRecoveryChallenges)
@@ -282,7 +307,9 @@ describe('I-2 real app enumeration, quota and replay contracts', () => {
             ? { email }
             : { email, challengeId: randomUUID(), code: '123456', password: NEW_PASSWORD };
         const first = await post(f.a, action === 'request' ? REQUEST : COMPLETE, payload, { ip });
-        expect(first.statusCode).toBe(action === 'request' ? 202 : 400);
+        expect(first.statusCode).toBe(
+          action === 'request' ? (email === eligible.email ? 202 : 404) : 400,
+        );
         expect(await f.redis.get(bucket)).toBe('1');
         expect(await f.redis.ttl(bucket)).toBeGreaterThan(0);
         expect(await f.redis.ttl(bucket)).toBeLessThanOrEqual(seconds);

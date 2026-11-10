@@ -51,6 +51,40 @@ lookup (ví dụ shared quota) vẫn là 503 `RECOVERY_UNAVAILABLE`. Recovery qu
 Redis phải fail closed; wrapper chỉ bỏ fallback local cho key `recovery|`,
 giữ behavior của các key khác. Không có migration dữ liệu hoặc đổi API.
 
+## Amendment 2026-11-10 — GoGo-BE#835, Refs #772
+
+Owner (decisions-log): "Bỏ câu phụ tài khoản đủ điều kiện. Cứ báo tài khoản không tồn tại như các app khác thôi. Khi tài khoản đủ điều kiện thì chuyển màn input mã".
+
+Quyết định mới thay phần anti-enumeration/luôn 202 ở trên cho request recovery.
+Email không có tài khoản mật khẩu active (missing, passwordless, disabled,
+deleted) trả cùng 404 `RECOVERY_ACCOUNT_NOT_FOUND`, retryable false, message
+`Tài khoản không tồn tại`; không trả lý do cụ thể. Active password account vẫn
+202 + challengeId; email chưa verify vẫn được recovery. Contract tăng MINOR
+9.1.1-alpha.1 → 9.2.0-alpha.1 theo quyết định owner. Mobile#620 bỏ câu phụ
+đủ điều kiện, ở lại màn email khi 404, chỉ sang màn mã khi 202.
+
+Rủi ro được owner chấp nhận: HTTP 202/404 công khai khả năng recovery của email,
+cho phép dò tập tài khoản có mật khẩu hoạt động. Padding không che được thông tin
+này. Phương án giữ luôn 202 bị loại theo quyết định trên. Không phân biệt missing
+với passwordless/disabled/deleted. Giữ 1/phút + 3/giờ/email, 10/phút + 50/giờ/IP
+trước lookup/replay, kể cả request 404 và retry cùng key; quota Redis fail closed.
+Giữ decoy challenge/replay trong DB với HMAC và cùng retention/cooldown 60 giây,
+code ngẫu nhiên, công việc send/discard và padding tối thiểu 250 ms. Throw 404
+sau commit decoy; không rollback cooldown, không gửi mail cho ineligible.
+
+Eligible idempotency giữ thứ tự quota → cooldown → replay/body-conflict. Replay
+đã lưu chỉ trả 202 khi account hiện vẫn eligible; account chuyển ineligible
+nhận cùng 404 sau cooldown. Đổi body cùng key vẫn 422. Không thêm retry delivery,
+không đổi complete, không đổi reset/session revocation hoặc DB schema.
+Counter `password_recovery_not_found` không có nhãn; không log email/lý do
+ineligible, không tính not_found vào generic failure. SES failure vẫn 202 cho
+eligible; global config/persistence/quota failures giữ 503 như trước.
+
+Rollout cùng Mobile#620 sau khi đồng bộ generated contract; xác minh các nhánh
+404/202/429 trên DEV. Rollback service về hành vi luôn 202 cần đồng bộ Mobile
+và công bố contract tương ứng; không cần rollback dữ liệu/migration. Tắt mail
+vẫn dùng adapter disabled và trả 503 như phần vận hành bên dưới.
+
 ## Required configuration
 
 Mapping phối hợp cho **GoGo-Infra#339** dưới đây là tên BE yêu cầu. Infra cần

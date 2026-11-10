@@ -121,6 +121,20 @@ describe('I-5 recovery telemetry on real HTTP requests', () => {
       // telemetry app's in-memory quota windows between explicitly aged cases.
       (telemetry.get(RATE_LIMIT_STORE) as { buckets: Map<string, number[]> }).buckets.clear();
     }
+    const missing = 'not-found-telemetry-private@example.test';
+    secrets.push(missing);
+    const notFound = await call(
+      REQUEST,
+      { email: missing },
+      'recovery-telemetry-not-found',
+      'telemetry-not-found',
+    );
+    expect(notFound.status).toBe(404);
+    expect(await notFound.json()).toMatchObject({
+      code: 'RECOVERY_ACCOUNT_NOT_FOUND',
+      message: 'Tài khoản không tồn tại',
+      retryable: false,
+    });
     const accepted = await call(
       REQUEST,
       { email },

@@ -144,6 +144,34 @@ describe('consumer password recovery', () => {
     vi.mocked(reportRecoveryMailFailure).mockClear();
   });
 
+  it.each(['missing', 'passwordless', 'disabled', 'deleted'])(
+    'returns generic not_found for %s, counts quotas and emits no identity labels',
+    async (kind) => {
+      if (kind === 'missing') user = undefined;
+      else if (kind === 'passwordless') user.passwordHash = null;
+      else user.status = kind;
+      const increment = vi.spyOn(metrics, 'increment');
+      const hit = vi.spyOn(store, 'hit');
+      await expect(service.request({ email }, ctx('not-found-1'))).rejects.toMatchObject({
+        httpStatus: 404,
+        code: 'RECOVERY_ACCOUNT_NOT_FOUND',
+        message: 'Tài khoản không tồn tại',
+        options: { retryable: false },
+      });
+      expect(hit).toHaveBeenCalledTimes(4);
+      expect(increment.mock.calls).toEqual([
+        ['password_recovery_requested'],
+        ['password_recovery_not_found'],
+      ]);
+      expect(sink.sent).toEqual([]);
+      expect(delay).toHaveBeenCalledWith(expect.any(Number));
+      await expect(service.request({ email }, ctx('not-found-1'))).rejects.toMatchObject({
+        code: 'RATE_LIMITED',
+        options: { retryAfterSeconds: 60 },
+      });
+    },
+  );
+
   it.each(['en', 'vi', 'unsupported', undefined])(
     'passes account locale %s with vi fallback',
     async (locale) => {
@@ -236,16 +264,24 @@ describe('consumer password recovery', () => {
         );
         const started = performance.now();
         let response;
-        const request = service.request({ email }, ctx('request-1')).then((body) => {
-          response = body;
-          return body;
-        });
+        const eligible = candidate?.status === 'active' && !!candidate.passwordHash;
+        const request = service.request({ email }, ctx('request-1')).then(
+          (body) => {
+            response = body;
+          },
+          (error) => {
+            response = error;
+          },
+        );
         await vi.advanceTimersByTimeAsync(249);
         expect(response).toBeUndefined();
         await vi.advanceTimersByTimeAsync(1);
-        expect(response).toMatchObject({ challengeId: challenge.id });
+        expect(response).toMatchObject(
+          eligible
+            ? { challengeId: challenge.id }
+            : { code: 'RECOVERY_ACCOUNT_NOT_FOUND', httpStatus: 404 },
+        );
         expect(performance.now() - started).toBe(250);
-        const eligible = candidate?.status === 'active' && !!candidate.passwordHash;
         expect(sendEmail).toHaveBeenCalledTimes(eligible ? 1 : 0);
         expect(repo.invalidate).not.toHaveBeenCalled();
         await vi.advanceTimersByTimeAsync(latency - 250);
@@ -309,7 +345,7 @@ describe('consumer password recovery', () => {
     expect(challenge.consumedAt).toBeNull();
   });
 
-  it('uses the same response and bounded sink work for eligible, unknown, disabled and passwordless identities', async () => {
+  it('keeps bounded decoy work but returns 404 for every ineligible identity', async () => {
     const active = { ...user };
     for (const candidate of [
       active,
@@ -324,6 +360,15 @@ describe('consumer password recovery', () => {
       setup(); // Rebuild the injected limiter, repository, mail and service together.
       user = candidate;
       const send = vi.spyOn(sink, 'send');
+      const eligible = candidate?.status === 'active' && !!candidate.passwordHash;
+      if (!eligible) {
+        await expect(service.request({ email }, ctx('request-1'))).rejects.toMatchObject({
+          code: 'RECOVERY_ACCOUNT_NOT_FOUND',
+          httpStatus: 404,
+        });
+        expect(send).toHaveBeenCalledExactlyOnceWith(null);
+        continue;
+      }
       const response = await service.request({ email }, ctx('request-1'));
       expect(Object.keys(response).sort()).toEqual([
         'challengeId',
@@ -465,7 +510,9 @@ describe('consumer password recovery', () => {
     expect(keys.join()).not.toContain(email);
     user = undefined;
     now += 60_001;
-    await service.request({ email }, ctx('request-2'));
+    await expect(service.request({ email }, ctx('request-2'))).rejects.toMatchObject({
+      code: 'RECOVERY_ACCOUNT_NOT_FOUND',
+    });
     now += 60_001;
     await expect(service.request({ email }, ctx('request-3'))).rejects.toMatchObject({
       code: 'RATE_LIMITED',
@@ -560,7 +607,9 @@ describe('consumer password recovery', () => {
     user = undefined;
     for (let i = 0; i < 10; i += 1) {
       challenge = undefined; // each email has its own row in the real repository
-      await service.request({ email: `missing-${i}@example.com` }, ctx(`request-key-${i}`));
+      await expect(
+        service.request({ email: `missing-${i}@example.com` }, ctx(`request-key-${i}`)),
+      ).rejects.toMatchObject({ code: 'RECOVERY_ACCOUNT_NOT_FOUND' });
     }
     await expect(
       service.request({ email: 'last@example.com' }, ctx('request-last')),
@@ -601,7 +650,9 @@ describe('consumer password recovery', () => {
   it('applies the same padding policy to missing identities and request failures', async () => {
     vi.spyOn(performance, 'now').mockReturnValue(1000);
     user = undefined;
-    await service.request({ email }, ctx('request-1'));
+    await expect(service.request({ email }, ctx('request-1'))).rejects.toMatchObject({
+      code: 'RECOVERY_ACCOUNT_NOT_FOUND',
+    });
     expect(delay).toHaveBeenCalledExactlyOnceWith(250);
 
     vi.mocked(delay).mockClear();

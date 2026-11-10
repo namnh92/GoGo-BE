@@ -125,14 +125,18 @@ export interface paths {
         put?: never;
         /**
          * Request an in-app password recovery code
-         * @description Always returns the same 202 shape for eligible, missing, guest,
-         *     passwordless, disabled and deleted accounts. No code is returned.
+         * @description Eligible active password accounts receive 202 with a challengeId.
+         *     Missing, passwordless, disabled and deleted accounts receive the same
+         *     404 RECOVERY_ACCOUNT_NOT_FOUND, retryable false, message "Tài khoản không tồn tại".
+         *     This intentionally reveals recovery eligibility (owner decision #835).
+         *     No code or ineligibility reason is returned.
          *     Active password accounts may recover even if email was unverified.
          *     Six-digit code expires after 300 seconds; resend replaces the proof.
-         *     Limits count all requests, including replays: 1/minute + 3/hour/email,
+         *     Limits count all requests, including 404 responses and replays: 1/minute + 3/hour/email,
          *     10/minute + 50/hour/IP. Cooldown is 60 seconds, also on replay.
          *     Idempotency is scoped to IP + operation + key for 24 hours; same key
-         *     and normalized body replays the original result even after resend.
+         *     and normalized body replays the original result even after resend for
+         *     accounts that remain eligible. Ineligible accounts receive the generic 404.
          *     A changed body returns 422. Account-specific delivery failure still
          *     returns 202 and invalidates the affected challenge internally.
          *     Production is disabled until mail and shared fail-closed quotas exist.
@@ -12181,7 +12185,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Accepted without confirming account eligibility or delivery */
+            /** @description Eligible account accepted; delivery is not confirmed */
             202: {
                 headers: {
                     [name: string]: unknown;
@@ -12198,6 +12202,22 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            /** @description RECOVERY_ACCOUNT_NOT_FOUND — Tài khoản không tồn tại; identical for all ineligible accounts, retryable false */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"] & {
+                        /** @constant */
+                        code?: "RECOVERY_ACCOUNT_NOT_FOUND";
+                        /** @constant */
+                        message?: "Tài khoản không tồn tại";
+                        /** @constant */
+                        retryable?: false;
+                    };
+                };
+            };
             /** @description IDEMPOTENCY_KEY_REUSED — key was used with a different normalized body */
             422: {
                 headers: {

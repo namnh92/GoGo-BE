@@ -41,12 +41,12 @@ describe('password recovery HTTP privacy contract', () => {
   });
 
   async function setup(user: any = active) {
-    let challenge: RecoveryChallenge | undefined;
+    const challenges = new Map<string, RecoveryChallenge>();
     const replays = new Map<string, RecoveryReplay>();
     const sink = new RecoveryMailSink();
     const store = new InMemoryRateLimitStore();
     const transaction = async <T>(
-      _digest: string,
+      digest: string,
       _email: string,
       _mode: string,
       _key: string,
@@ -54,27 +54,27 @@ describe('password recovery HTTP privacy contract', () => {
     ) =>
       work({
         user,
-        getChallenge: async () => challenge,
+        getChallenge: async () => challenges.get(digest),
         replaceChallenge: async (value) => {
-          challenge = value;
+          challenges.set(digest, value);
         },
         getReplay: async (key) => replays.get(key),
         saveReplay: async (key, value) => {
           replays.set(key, value);
         },
         failAttempt: async () => {
-          challenge!.attempts += 1;
+          challenges.get(digest)!.attempts += 1;
         },
         reset: async () => {
-          challenge!.consumedAt = new Date(now);
+          challenges.get(digest)!.consumedAt = new Date(now);
           return ['family-a', 'family-b'];
         },
       });
     const service = new PasswordRecoveryService(
       {
         transaction,
-        invalidate: async () => {
-          challenge!.consumedAt = new Date(now);
+        invalidate: async (digest: string) => {
+          challenges.get(digest)!.consumedAt = new Date(now);
         },
       } as unknown as RecoveryRepository,
       { hash: async () => 'new-hash' } as unknown as PasswordService,
@@ -122,22 +122,30 @@ describe('password recovery HTTP privacy contract', () => {
     return body;
   }
 
-  it('returns equal 202 shapes and exact lifetimes for verified, unverified and every ineligible identity', async () => {
-    for (const user of [
-      active,
-      { ...active, emailVerifiedAt: new Date(now) },
-      null,
-      { ...active, status: 'suspended' },
-      { ...active, status: 'banned' },
-      { ...active, status: 'deleted' },
-      { ...active, passwordHash: null },
-      { ...active, email: null, passwordHash: null },
-    ]) {
+  it('returns 202 and exact lifetimes for verified and unverified eligible identities', async () => {
+    for (const user of [active, { ...active, emailVerifiedAt: new Date(now) }]) {
       const { request } = await setup(user);
       const body = accepted(await request());
       expect(Date.parse(body.expiresAt) - now).toBe(300_000);
       expect(Date.parse(body.resendAvailableAt) - now).toBe(60_000);
     }
+  });
+
+  it.each([
+    null,
+    { ...active, passwordHash: null },
+    { ...active, status: 'disabled' },
+    { ...active, status: 'suspended' },
+    { ...active, status: 'banned' },
+    { ...active, status: 'deleted' },
+  ])('returns generic 404 and throttles ineligible identity %#', async (user) => {
+    const { request, sink } = await setup(user);
+    expect(envelope(await request(), 404, 'RECOVERY_ACCOUNT_NOT_FOUND')).toMatchObject({
+      message: 'Tài khoản không tồn tại',
+      retryable: false,
+    });
+    expect(sink.sent).toEqual([]);
+    envelope(await request(), 429, 'RATE_LIMITED', '60');
   });
 
   it('keeps eligible-only delivery failure at HTTP 202', async () => {
@@ -172,34 +180,64 @@ describe('password recovery HTTP privacy contract', () => {
     return body;
   }
 
-  it('keeps cooldown, replay, body conflict and quota envelopes equal across eligibility', async () => {
-    const outcomes = [];
-    for (const user of [active, null]) {
-      const { request, store } = await setup(user);
-      const first = accepted(await request());
-      const minute = envelope(await request(), 429, 'RATE_LIMITED', '60'); // replay counts before lookup
-      const hit = vi.spyOn(store, 'hit').mockResolvedValue(1);
-      const cooldown = envelope(await request(), 429, 'RATE_LIMITED', '60'); // independently hit the row cooldown
-      now += 60_001;
-      expect(accepted(await request())).toEqual(first); // durable replay after cooldown
-      const conflict = envelope(
-        await request('request-1', 'other@example.com'),
-        422,
-        'IDEMPOTENCY_KEY_REUSED',
-      );
-      hit.mockRestore();
-      const quota = await setup(user); // Quotas get an independent fixture; the replay refusal above counted.
-      accepted(await quota.request('quota-key-1'));
-      now += 60_001;
-      accepted(await quota.request('quota-key-2'));
-      now += 60_001;
-      accepted(await quota.request('quota-key-3'));
-      now += 60_001;
-      const hour = envelope(await quota.request('quota-key-4'), 429, 'RATE_LIMITED', '3600');
-      outcomes.push({ minute, cooldown, conflict, hour });
-    }
-    expect(outcomes[0]).toEqual(outcomes[1]);
+  it('preserves eligible cooldown, replay, body conflict and quota envelopes', async () => {
+    const { request, store } = await setup();
+    const first = accepted(await request());
+    envelope(await request(), 429, 'RATE_LIMITED', '60'); // replay counts before lookup
+    const hit = vi.spyOn(store, 'hit').mockResolvedValue(1);
+    envelope(await request(), 429, 'RATE_LIMITED', '60'); // independently hit the row cooldown
+    now += 60_001;
+    expect(accepted(await request())).toEqual(first); // durable replay after cooldown
+    envelope(await request('request-1', 'other@example.com'), 422, 'IDEMPOTENCY_KEY_REUSED');
+    hit.mockRestore();
+    const quota = await setup(); // Quotas get an independent fixture; the replay refusal above counted.
+    accepted(await quota.request('quota-key-1'));
+    now += 60_001;
+    accepted(await quota.request('quota-key-2'));
+    now += 60_001;
+    accepted(await quota.request('quota-key-3'));
+    now += 60_001;
+    envelope(await quota.request('quota-key-4'), 429, 'RATE_LIMITED', '3600');
   }, 10_000);
+
+  it('charges all four quota windows for 404, including repeat keys and distinct addresses', async () => {
+    const { request } = await setup(null);
+    for (let i = 0; i < 3; i++) {
+      envelope(await request(), 404, 'RECOVERY_ACCOUNT_NOT_FOUND');
+      now += 60_001;
+    }
+    envelope(await request(), 429, 'RATE_LIMITED', '3600');
+    const ipMinute = await setup(null);
+    for (let i = 0; i < 10; i++) {
+      envelope(
+        await ipMinute.request(`ip-minute-${i}`, `missing-${i}@example.com`),
+        404,
+        'RECOVERY_ACCOUNT_NOT_FOUND',
+      );
+    }
+    envelope(
+      await ipMinute.request('ip-minute-10', 'missing-10@example.com'),
+      429,
+      'RATE_LIMITED',
+      '60',
+    );
+    const ipHour = await setup(null);
+    for (let i = 0; i < 50; i++) {
+      if (i % 10 === 0) now += 60_001;
+      envelope(
+        await ipHour.request(`ip-hour-${i}`, `absent-${i}@example.com`),
+        404,
+        'RECOVERY_ACCOUNT_NOT_FOUND',
+      );
+    }
+    now += 60_001;
+    envelope(
+      await ipHour.request('ip-hour-50', 'absent-50@example.com'),
+      429,
+      'RATE_LIMITED',
+      '3600',
+    );
+  }, 25_000);
 
   it('maps invalid proof and password validation errors, then completes with an empty 204', async () => {
     const { app, request, sink } = await setup();
