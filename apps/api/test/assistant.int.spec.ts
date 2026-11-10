@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { PrivacyJobs } from '@gogo/modules';
+import { schema } from '@gogo/database';
 import { AssistantRepository } from '../../../libs/modules/assistant/infrastructure/assistant.repository';
 import { AssistantTurnRunner } from '../../../libs/modules/assistant/application/assistant-turn-runner.service';
 import {
@@ -304,6 +305,24 @@ describe('send, stream, stop', () => {
     expect(done.status).toBe('fallback');
     expect(done.notice).toMatchObject({ kind: 'fallback', reason: 'provider_unavailable' });
     expect(done.text).toContain('dữ liệu GoGo');
+    // #834: attach provider facts from the current place read, including on
+    // replay/history; the model output and stored card refs contain no ratings.
+    for (const placeId of Object.values(f.places)) {
+      await f.db.insert(schema.placeSources).values({
+        placeId,
+        provider: 'google',
+        externalId: `assistant-rating-${placeId}`,
+        attribution: 'Powered by Google',
+      });
+    }
+    const reread = await waitTerminal(bob, conversationId, body.assistantMessage.id);
+    for (const c of reread.cards) {
+      expect(c.facts).toMatchObject({
+        providerRating: 4.5,
+        providerRatingCount: 300,
+        providerRatingSource: 'google',
+      });
+    }
     // Budget 300k pp: the 900k fine-dining place is never a card; facts are re-read.
     const ids = done.cards.map((c: { placeId: string }) => c.placeId);
     expect(ids.length).toBeGreaterThan(0);
@@ -320,6 +339,36 @@ describe('send, stream, stop', () => {
     expect(s.frames.map((x) => Number(x.id))).toEqual(s.frames.map((_, i) => i + 1));
     const card = s.frames.find((x) => x.event === 'card')!;
     expect(card.data.card.facts.name).toBeTruthy();
+    expect(card.data.card.facts).toMatchObject({
+      providerRating: 4.5,
+      providerRatingCount: 300,
+      providerRatingSource: 'google',
+    });
+    // A later read sees current data; removing a rating removes its attribution
+    // triplet without changing the persisted assistant reply or card refs.
+    const ratedId = card.data.card.placeId;
+    await f.db.execute(
+      sql`update places set rating = 3.7, rating_count = 321 where id = ${ratedId}`,
+    );
+    const updated = await waitTerminal(bob, conversationId, body.assistantMessage.id);
+    expect(
+      updated.cards.find((c: { placeId: string }) => c.placeId === ratedId).facts,
+    ).toMatchObject({
+      providerRating: 3.7,
+      providerRatingCount: 321,
+      providerRatingSource: 'google',
+    });
+    await f.db.execute(sql`update places set rating = null where id = ${ratedId}`);
+    const missing = await waitTerminal(bob, conversationId, body.assistantMessage.id);
+    const missingFacts = missing.cards.find(
+      (c: { placeId: string }) => c.placeId === ratedId,
+    ).facts;
+    for (const key of ['providerRating', 'providerRatingCount', 'providerRatingSource']) {
+      expect(missingFacts).not.toHaveProperty(key);
+    }
+    await f.db.execute(
+      sql`update places set rating = 4.5, rating_count = 300 where id = ${ratedId}`,
+    );
     // Resume after a dropped connection: only the frames after Last-Event-ID.
     const resumed = await streamOf(
       bob,
@@ -346,8 +395,8 @@ describe('send, stream, stop', () => {
       sql`select frames::text as frames, cards::text as cards from assistant_messages where id = ${body.assistantMessage.id}`,
     );
     const stored = row.rows[0] as { frames: string; cards: string };
-    expect(stored.frames).not.toMatch(/priceMin|priceMax|"facts"|openNow/);
-    expect(stored.cards).not.toMatch(/priceMin|name/);
+    expect(stored.frames).not.toMatch(/priceMin|priceMax|"facts"|openNow|providerRating/);
+    expect(stored.cards).not.toMatch(/priceMin|name|providerRating/);
 
     // A-R-04: no place name is stored anywhere a reply is kept — the text,
     // its frames, the conversation preview. Readers see today's names.

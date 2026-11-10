@@ -176,7 +176,16 @@ describe('GoGo AI contract (GoGo-BE#713)', () => {
   it('result cards carry ids and verified facts, never free text from the model', () => {
     const place = schema('AssistantPlaceCard');
     expect(place.required).toEqual(expect.arrayContaining(['placeId', 'facts']));
-    expect(place.properties!.facts!.properties).toHaveProperty('checkedAt');
+    const facts = place.properties!.facts!;
+    expect(facts.properties).toHaveProperty('checkedAt');
+    expect(facts.required).toEqual(['name']);
+    expect(facts.properties!.providerRating).toMatchObject({
+      type: 'number',
+      minimum: 0,
+      maximum: 5,
+    });
+    expect(facts.properties!.providerRatingCount).toMatchObject({ type: 'integer', minimum: 0 });
+    expect(facts.properties!.providerRatingSource!.enum).toEqual(['google']);
     const plan = schema('AssistantPlanCard');
     expect(plan.required).toEqual(expect.arrayContaining(['planId', 'facts']));
   });

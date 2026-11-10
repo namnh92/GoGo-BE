@@ -11274,6 +11274,9 @@ export interface components {
          *         "priceMin": 45000,
          *         "priceMax": 90000,
          *         "currency": "VND",
+         *         "providerRating": 4.6,
+         *         "providerRatingCount": 980,
+         *         "providerRatingSource": "google",
          *         "openNow": true,
          *         "checkedAt": "2026-10-20T03:00:00Z"
          *       }
@@ -11299,6 +11302,15 @@ export interface components {
                 priceMin?: number;
                 priceMax?: number;
                 currency?: string;
+                /** @description Google rating from the same verified PlaceDetail.rating read and freshness rules. Omitted together with count/source when the rating or Google provenance is missing. Never supplied by AI or stored in conversation history. Render with a visible Google mark and its own count; never merge with gogoRating (core rule 14, ADR-0020). */
+                providerRating?: number;
+                /** @description PlaceDetail.ratingCount, accompanying providerRating. */
+                providerRatingCount?: number;
+                /**
+                 * @description Attribution source accompanying providerRating and providerRatingCount.
+                 * @enum {string}
+                 */
+                providerRatingSource?: "google";
                 /** @description Present under the same rule as `PlaceDetail.gogoRating` (5+ reviews). */
                 gogoRating?: number;
                 gogoRatingCount?: number;

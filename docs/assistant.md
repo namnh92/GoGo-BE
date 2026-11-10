@@ -713,3 +713,27 @@ by owner order O-7 (a), reviewed on the PR. Source of the mechanism: `astra-sugg
    rows. Fine at 90-day volume; revisit if a user's history gets large.
 3. **Attachment export scope.** Excluded until the owner approves what of an
    image (bytes, metadata) is portable.
+
+## Provider rating facts (GoGo-BE#834, contract 9.3.0-alpha.1)
+
+Assistant place cards reuse `SearchService.placeDetail` on every read (including
+history and SSE replay). `facts.providerRating`, `providerRatingCount`, and
+`providerRatingSource: google` project its provider `rating`/`ratingCount` when
+a rating and Google provenance exist. Missing values omit the triplet. The
+existing place read maps `freshnessCheckedAt` to `facts.checkedAt`; it has no
+rating-specific expiry cutoff, so this projection introduces no new TTL.
+Google provenance already reconciles `place_sources`/`place_provider_sources`;
+see ADR-0020 and its amendments. No new provider call or persistent content.
+
+Core rule 14 requires a visible Google mark and sample size, separately from
+GoGo's thresholded community rating. AI supplies neither rating; only validated
+card IDs reach the hydrator, and history persists refs rather than facts.
+MobileApp#617 renders the fields through PlaceCardSmall/RatingChips separately.
+
+Verification: hydrator unit spec, assistant contract spec, existing search
+place-detail specs; `apps/api/test/assistant.int.spec.ts` covers history, SSE,
+current-record updates, omission, and ref-only storage. Also run
+`apps/api/test/place-gogo-rating.int.spec.ts` and
+`apps/api/test/search.int.spec.ts` against Docker/PostGIS. No new telemetry:
+existing place-detail read/error metrics remain the source. Rollback removes
+the optional projection; no database migration is involved.
