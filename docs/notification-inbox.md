@@ -338,7 +338,9 @@ Email and inbox remain independent of push preferences.
 | Legacy push opt-in              | Retained            | Retained                  |
 
 GET `/v1/me/notification-settings` returns `version` as a decimal string,
-`categories`, and strong `ETag: "notification-settings-12"`; private/no-store.
+`categories`, and strong `ETag: "notification-settings-12"`.
+GET/PATCH/PUT responses use `Cache-Control: private, no-store, no-transform`.
+`no-transform` prevents Cloudflare from weakening strong ETags when compressing responses.
 PATCH accepts optional `pushEnabled` and partial `categories`, requiring at least
 one change, `If-Match` and `Idempotency-Key`. Never send `other`. A successful replay
 returns the original result and ETag before stale-version rejection. A new stale
