@@ -44,15 +44,36 @@ describe('Assistant verified provider rating facts (#834)', () => {
   it.each([
     { rating: null },
     { rating: undefined },
-    { sources: [] },
-    { sources: [{ provider: 'other' }] },
-  ])('omits all provider facts when data or Google provenance is absent: %j', async (row) => {
+    { rating: 'NaN' },
+    { rating: 'Infinity' },
+    { rating: '-Infinity' },
+  ])('omits all provider facts when the rating is absent or non-finite: %j', async (row) => {
     const { hydrator } = fixture(row);
     const { facts } = await hydrator.placeCard(placeId);
     expect(facts).not.toHaveProperty('providerRating');
     expect(facts).not.toHaveProperty('providerRatingCount');
     expect(facts).not.toHaveProperty('providerRatingSource');
     expect(facts.gogoRating).toBe(4.3);
+  });
+
+  it.each([
+    { name: 'The Workshop Coffee', rating: '4.50', rating_count: '2100', sources: [] },
+    { name: 'Cà phê Đỗ Phủ', rating: '4.60', rating_count: 980, sources: [] },
+    { rating: '4.567', sources: [{ provider: 'other' }] },
+  ])('projects stored provider ratings without a Google source row: %j', async (row) => {
+    const { search, hydrator } = fixture(row);
+    const detail = await search.placeDetail(placeId);
+    const { facts } = await hydrator.placeCard(placeId);
+    expect(facts).toMatchObject({
+      providerRating: Number(row.rating),
+      providerRatingCount: detail.ratingCount,
+      providerRatingSource: 'google',
+      gogoRating: 4.3,
+      gogoRatingCount: 5,
+      checkedAt: detail.freshnessCheckedAt,
+    });
+    expect(facts.providerRating).toBe(detail.rating);
+    expect(typeof facts.providerRatingCount).toBe('number');
   });
 
   it.each([0, 5])(

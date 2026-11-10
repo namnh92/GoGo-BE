@@ -11437,7 +11437,7 @@ export interface components {
                 priceMin?: number;
                 priceMax?: number;
                 currency?: string;
-                /** @description Google rating from the same verified PlaceDetail.rating read and freshness rules. Omitted together with count/source when the rating or Google provenance is missing. Never supplied by AI or stored in conversation history. Render with a visible Google mark and its own count; never merge with gogoRating (core rule 14, ADR-0020). */
+                /** @description Google rating from the same verified PlaceDetail.rating read and freshness rules, including stored ratings without Google source rows, matching PlaceSummary. Omitted together with count/source when the rating is absent or non-finite. Never supplied by AI or stored in conversation history. Render with a visible Google mark and its own count; never merge with gogoRating (core rule 14, ADR-0020). */
                 providerRating?: number;
                 /** @description PlaceDetail.ratingCount, accompanying providerRating. */
                 providerRatingCount?: number;

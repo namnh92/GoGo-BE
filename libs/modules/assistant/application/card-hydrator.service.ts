@@ -125,9 +125,9 @@ export class AssistantCardHydrator {
           : {}),
         // Reuse PlaceDetail's verified provider values and freshness mapping.
         // ADR-0020 / core rule 14: keep attribution and count with the score;
-        // no model value, provider fetch, snapshot, or independent TTL here.
-        ...(detail.rating != null &&
-        detail.sources.some((source) => source.provider === GOOGLE_PROVIDER_PUBLIC)
+        // Stored ratings also cover editor/seeded places without source rows,
+        // just like PlaceSummary; no extra coercion, rounding, or TTL here.
+        ...(detail.rating != null && Number.isFinite(detail.rating)
           ? {
               providerRating: detail.rating,
               providerRatingCount: detail.ratingCount,
