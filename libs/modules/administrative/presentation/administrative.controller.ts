@@ -1,3 +1,4 @@
+import { setStrongEtagHeaders } from '../../shared/strong-etag-headers';
 import { Controller, Get, Headers, Param, Query, Res } from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
 import { z } from 'zod';
@@ -122,10 +123,9 @@ export class AdministrativeController {
     const snapshot = await this.activeSnapshot();
 
     const etag = administrativeEtag(snapshot.datasetVersion, route, parts);
-    void reply.header('ETag', etag);
     // Immutable per version, but the *active version* can change under a
     // client, so revalidation rather than a long max-age.
-    void reply.header('Cache-Control', 'public, max-age=0, must-revalidate');
+    setStrongEtagHeaders(reply, etag, 'public, max-age=0, must-revalidate');
     if (ifNoneMatchSatisfied(ifNoneMatch, etag)) {
       void reply.status(304).send();
       return undefined;

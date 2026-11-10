@@ -1,3 +1,4 @@
+import { setStrongEtagHeaders } from '../../shared/strong-etag-headers';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { validTimezone } from '../../notifications/domain/quiet-hours';
 import { ManualIdempotency, idempotencyScope } from '../../shared/idempotency.interceptor';
@@ -167,7 +168,7 @@ export class UserContentController {
     @Res({ passthrough: true }) reply: FastifyReply,
   ) {
     const result = await this.service.getNotificationSettings(actor);
-    reply.header('ETag', settingsEtag(result.version)).header('Cache-Control', 'private, no-store');
+    setStrongEtagHeaders(reply, settingsEtag(result.version));
     return result;
   }
 
@@ -187,7 +188,7 @@ export class UserContentController {
       ifMatch,
       idempotencyScope(Object.assign(req, { actor }), key ?? ''),
     );
-    reply.header('ETag', settingsEtag(result.version)).header('Cache-Control', 'private, no-store');
+    setStrongEtagHeaders(reply, settingsEtag(result.version));
     return result;
   }
 
@@ -198,7 +199,7 @@ export class UserContentController {
     @Res({ passthrough: true }) reply: FastifyReply,
   ) {
     const result = await this.service.setNotificationSettings(actor, body);
-    reply.header('ETag', settingsEtag(result.version)).header('Cache-Control', 'private, no-store');
+    setStrongEtagHeaders(reply, settingsEtag(result.version));
     return result;
   }
 

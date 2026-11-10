@@ -693,6 +693,7 @@ describe('ADR-0050 category preference mutations', () => {
     const initial = await getSettings(account.token);
     expect(initial.json()).toMatchObject({ categories: DEFAULT_CATEGORIES, version: '0' });
     expect(initial.headers.etag).toBe('"notification-settings-0"');
+    expect(initial.headers['cache-control']).toBe('private, no-store, no-transform');
     await putSettings(account.token, { pushEnabled: false });
     expect((await getSettings(account.token)).json()).toMatchObject({
       pushEnabled: false,
@@ -761,6 +762,7 @@ describe('ADR-0050 category preference mutations', () => {
     const payload = { categories: { invite: false } };
     const first = await patchSettings(token, payload, etag, firstKey);
     expect(first.statusCode).toBe(200);
+    expect(first.headers['cache-control']).toBe('private, no-store, no-transform');
     const second = await patchSettings(
       token,
       { categories: { plan_ready: false } },
@@ -770,6 +772,7 @@ describe('ADR-0050 category preference mutations', () => {
     const replay = await patchSettings(token, payload, etag, firstKey);
     expect(replay.json()).toEqual(first.json());
     expect(replay.headers.etag).toBe(first.headers.etag);
+    expect(replay.headers['cache-control']).toBe('private, no-store, no-transform');
     expect((await getSettings(token)).json()).toEqual(second.json());
     expect((await patchSettings(token, { pushEnabled: false }, etag)).statusCode).toBe(412);
     expect((await patchSettings(token, { pushEnabled: false }, etag, firstKey)).statusCode).toBe(

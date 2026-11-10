@@ -165,7 +165,7 @@ describe.sequential('public system notifications (#815)', () => {
     const expiring = await seed({ expiresAt: '2099-01-01T00:00:00Z' });
     const res = await get();
     expect(res.statusCode).toBe(200);
-    expect(res.headers['cache-control']).toBe('public, max-age=60');
+    expect(res.headers['cache-control']).toBe('public, max-age=60, no-transform');
     expect(
       res
         .json()
@@ -214,7 +214,7 @@ describe.sequential('public system notifications (#815)', () => {
       expect(fresh.statusCode).toBe(304);
       expect(fresh.body).toBe('');
       expect(fresh.headers.etag).toBe(live.headers.etag);
-      expect(fresh.headers['cache-control']).toBe('public, max-age=60');
+      expect(fresh.headers['cache-control']).toBe('public, max-age=60, no-transform');
     }
     expect(
       (await write('PATCH', `${CMS}/${draft.id}`, { body: 'Nội dung đã sửa' })).statusCode,
@@ -256,7 +256,7 @@ describe.sequential('public system notifications (#815)', () => {
     expect(limited.statusCode).toBe(429);
     expect(limited.json()).toMatchObject({ code: 'RATE_LIMITED', retryable: true });
     expect(limited.headers['retry-after']).toBeDefined();
-    expect(limited.headers['cache-control']).not.toBe('public, max-age=60');
+    expect(limited.headers['cache-control']).not.toBe('public, max-age=60, no-transform');
     expect((await get()).statusCode).toBe(200);
   });
 });

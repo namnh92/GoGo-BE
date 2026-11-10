@@ -2,7 +2,7 @@ openapi: 3.1.0
 x-gogo-notification-preference-semantics: master-and-five-categories-v1
 info:
   title: GoGo API
-  version: 9.1.0-alpha.1
+  version: 9.1.1-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -4680,7 +4680,7 @@ paths:
         '200':
           description: Visible announcements
           headers:
-            Cache-Control: { schema: { type: string, const: 'public, max-age=60' } }
+            Cache-Control: { schema: { type: string, const: 'public, max-age=60, no-transform' } }
             ETag: { schema: { type: string } }
           content:
             application/json:
@@ -4688,7 +4688,7 @@ paths:
         '304':
           description: Current page matches If-None-Match; no response body
           headers:
-            Cache-Control: { schema: { type: string, const: 'public, max-age=60' } }
+            Cache-Control: { schema: { type: string, const: 'public, max-age=60, no-transform' } }
             ETag: { schema: { type: string } }
         '400': { $ref: '#/components/responses/BadRequest' }
         '429': { $ref: '#/components/responses/RateLimited' }
@@ -6890,7 +6890,7 @@ paths:
           headers:
             ETag:
               { schema: { type: string }, description: Strong notification settings resource ETag }
-            Cache-Control: { schema: { type: string, const: 'private, no-store' } }
+            Cache-Control: { schema: { type: string, const: 'private, no-store, no-transform' } }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/NotificationSettings' }
@@ -6922,7 +6922,7 @@ paths:
           headers:
             ETag:
               { schema: { type: string }, description: Strong notification settings resource ETag }
-            Cache-Control: { schema: { type: string, const: 'private, no-store' } }
+            Cache-Control: { schema: { type: string, const: 'private, no-store, no-transform' } }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/NotificationSettings' }
@@ -6990,7 +6990,7 @@ paths:
           description: Updated settings or original idempotent replay
           headers:
             ETag: { schema: { type: string } }
-            Cache-Control: { schema: { type: string, const: 'private, no-store' } }
+            Cache-Control: { schema: { type: string, const: 'private, no-store, no-transform' } }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/NotificationSettings' }
@@ -9161,6 +9161,7 @@ paths:
         '200':
           description: Verification decision; same ETag in body and header
           headers:
+            Cache-Control: { schema: { type: string, const: 'private, no-store, no-transform' } }
             ETag:
               schema: { type: string }
           content:
@@ -22181,7 +22182,7 @@ components:
       description: Deterministic entity tag over datasetVersion + the resolved request.
       schema: { type: string }
     CacheControl:
-      description: Always `public, max-age=0, must-revalidate` — immutable per version, but the active version can change.
+      description: Always `public, max-age=0, must-revalidate, no-transform` — immutable per version, but the active version can change.
       schema: { type: string }
     RetryAfter:
       description: Seconds until the request can succeed.

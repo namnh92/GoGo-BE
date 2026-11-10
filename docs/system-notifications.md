@@ -29,12 +29,13 @@ store hiện có (Redis ở môi trường triển khai; fallback memory khi Red
 IP lấy từ Fastify với TRUST_PROXY cấu hình tin cậy; không tự đọc X-Forwarded-For.
 Vượt hạn trả `429 RATE_LIMITED` và Retry-After theo envelope hiện có.
 
-`200` và `304` đều có `Cache-Control: public, max-age=60` và ETag SHA-256 của
+`200` và `304` đều có `Cache-Control: public, max-age=60, no-transform` và ETag SHA-256 của
 **toàn bộ page DTO**, kể cả cursor. `If-None-Match` hỗ trợ danh sách, weak tag và
 `*`; khớp → `304` không body. Tag ổn định khi dữ liệu không đổi; sửa nội dung,
 publish, archive hoặc expiry làm thay đổi tag khi page đổi. Kiểm tra filter
 trước so tag, không cache kết quả trong process. Shared cache có thể giữ nội dung
 cũ tối đa 60 giây sau khi hết hạn/sửa/ẩn; không có purge CDN trong PR này.
+`no-transform` ngăn Cloudflare làm yếu strong ETag khi nén response.
 
 **Client sau đăng nhập hiển thị phần công khai phía trên hộp thư cá nhân. Không
 nhân bản vào inbox, không gửi push, không cộng unread count và không có API đánh

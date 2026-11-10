@@ -8,6 +8,16 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 9.1.1-alpha.1 — Giữ ETag mạnh qua Cloudflare (#831, PR #833)
+
+PATCH: bổ sung `no-transform` vào Cache-Control của notification-settings
+GET/PATCH/PUT, system-notifications GET/304, administrative GET/304 và CMS
+verification PUT để proxy không đổi ETag mạnh khi nén. Response 200 của CMS
+verification công bố const `private, no-store, no-transform` trong OpenAPI.
+Giữ nguyên định dạng ETag; version contract tăng PATCH theo chính sách khi
+OpenAPI thay đổi, thay cho yêu cầu giữ nguyên version trước đó.
+Consumer cần đồng bộ contract và sinh lại types từ **9.1.1-alpha.1**.
+
 ## 9.1.0-alpha.1 — Nhắc lịch và giờ yên lặng (#811 PR4)
 
 MINOR: GET/PUT/PATCH notification settings thêm `quietHours` tùy chọn trong

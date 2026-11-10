@@ -1,3 +1,4 @@
+import { setStrongEtagHeaders } from '../../shared/strong-etag-headers';
 import { schema } from '@gogo/database';
 import { verificationSchema } from '../../shared/venue-verification';
 import {
@@ -1099,7 +1100,7 @@ export class CmsCatalogController {
       body,
       idempotencyScope(req, key),
     );
-    void reply.header('etag', result.etag);
+    setStrongEtagHeaders(reply, result.etag);
     return result;
   }
 

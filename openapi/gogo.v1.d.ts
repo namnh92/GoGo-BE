@@ -11965,7 +11965,7 @@ export interface components {
     headers: {
         /** @description Deterministic entity tag over datasetVersion + the resolved request. */
         ETag: string;
-        /** @description Always `public, max-age=0, must-revalidate` — immutable per version, but the active version can change. */
+        /** @description Always `public, max-age=0, must-revalidate, no-transform` — immutable per version, but the active version can change. */
         CacheControl: string;
         /** @description Seconds until the request can succeed. */
         RetryAfter: number;
@@ -16001,7 +16001,7 @@ export interface operations {
             /** @description Visible announcements */
             200: {
                 headers: {
-                    "Cache-Control"?: "public, max-age=60";
+                    "Cache-Control"?: "public, max-age=60, no-transform";
                     ETag?: string;
                     [name: string]: unknown;
                 };
@@ -16012,7 +16012,7 @@ export interface operations {
             /** @description Current page matches If-None-Match; no response body */
             304: {
                 headers: {
-                    "Cache-Control"?: "public, max-age=60";
+                    "Cache-Control"?: "public, max-age=60, no-transform";
                     ETag?: string;
                     [name: string]: unknown;
                 };
@@ -18076,7 +18076,7 @@ export interface operations {
                 headers: {
                     /** @description Strong notification settings resource ETag */
                     ETag?: string;
-                    "Cache-Control"?: "private, no-store";
+                    "Cache-Control"?: "private, no-store, no-transform";
                     [name: string]: unknown;
                 };
                 content: {
@@ -18113,7 +18113,7 @@ export interface operations {
                 headers: {
                     /** @description Strong notification settings resource ETag */
                     ETag?: string;
-                    "Cache-Control"?: "private, no-store";
+                    "Cache-Control"?: "private, no-store, no-transform";
                     [name: string]: unknown;
                 };
                 content: {
@@ -18161,7 +18161,7 @@ export interface operations {
             200: {
                 headers: {
                     ETag?: string;
-                    "Cache-Control"?: "private, no-store";
+                    "Cache-Control"?: "private, no-store, no-transform";
                     [name: string]: unknown;
                 };
                 content: {
@@ -19861,6 +19861,7 @@ export interface operations {
             /** @description Verification decision; same ETag in body and header */
             200: {
                 headers: {
+                    "Cache-Control"?: "private, no-store, no-transform";
                     ETag?: string;
                     [name: string]: unknown;
                 };
