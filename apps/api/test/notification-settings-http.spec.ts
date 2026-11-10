@@ -104,7 +104,10 @@ describe('PR4 settings HTTP response without database infrastructure', () => {
         { categories: { invite: true }, quietHours: { timezone: 'Asia/Ho_Chi_Minh' } },
       ]) {
         patch.mockClear();
-        expect((await request(payload)).statusCode, JSON.stringify(payload)).toBe(200);
+        const response = await request(payload);
+        expect(response.statusCode, JSON.stringify(payload)).toBe(200);
+        expect(response.headers.etag).toBe('"notification-settings-1"');
+        expect(response.headers['cache-control']).toBe('private, no-store, no-transform');
         expect(patch).toHaveBeenCalledWith(
           actor,
           payload,
@@ -135,6 +138,7 @@ describe('PR4 settings HTTP response without database infrastructure', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json().quietHours).toEqual({ enabled: false, timezone: null });
     expect(response.headers.etag).toBe('"notification-settings-0"');
+    expect(response.headers['cache-control']).toBe('private, no-store, no-transform');
   });
 
   it('preserves quietHours through legacy PUT and returns the new version ETag', async () => {
@@ -148,7 +152,7 @@ describe('PR4 settings HTTP response without database infrastructure', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json().quietHours).toEqual({ enabled: true, timezone: 'Asia/Ho_Chi_Minh' });
     expect(response.headers.etag).toBe('"notification-settings-1"');
-    expect(response.headers['cache-control']).toBe('private, no-store');
+    expect(response.headers['cache-control']).toBe('private, no-store, no-transform');
     const read = await app.inject({ method: 'GET', url: '/v1/me/notification-settings' });
     expect(read.json()).toEqual(response.json());
     expect(read.headers.etag).toBe(response.headers.etag);

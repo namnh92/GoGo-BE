@@ -1,3 +1,4 @@
+import { setStrongEtagHeaders } from '../../shared/strong-etag-headers';
 import { Controller, Get, Headers, Query, Res } from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
 import { Public, RateLimit } from '../../identity/presentation/decorators';
@@ -21,7 +22,7 @@ export class SystemNotificationsController {
     @Res({ passthrough: true }) reply: FastifyReply,
   ) {
     const result = await this.announcements.listPublic(query, ifNoneMatch);
-    reply.header('Cache-Control', 'public, max-age=60').header('ETag', result.etag);
+    setStrongEtagHeaders(reply, result.etag, 'public, max-age=60');
     if (result.notModified) {
       reply.code(304);
       return;

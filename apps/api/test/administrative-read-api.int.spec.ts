@@ -386,6 +386,9 @@ describe('ETag and 304', () => {
 
     const second = await get('/v1/administrative/provinces?limit=5', { 'if-none-match': etag });
     expect(second.statusCode).toBe(304);
+    expect(second.headers['cache-control']).toBe(
+      'public, max-age=0, must-revalidate, no-transform',
+    );
     expect(second.body).toBe('');
   });
 
@@ -393,7 +396,7 @@ describe('ETag and 304', () => {
     const a = await get('/v1/administrative/provinces?limit=5');
     const b = await get('/v1/administrative/provinces?limit=5');
     expect(a.headers.etag).toBe(b.headers.etag);
-    expect(a.headers['cache-control']).toBe('public, max-age=0, must-revalidate');
+    expect(a.headers['cache-control']).toBe('public, max-age=0, must-revalidate, no-transform');
   });
 
   it('gives different tags to every query variant that changes the body', async () => {
