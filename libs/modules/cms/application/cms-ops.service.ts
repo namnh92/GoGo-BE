@@ -1,3 +1,10 @@
+import { writeOutbox } from '../../shared/outbox';
+import {
+  CreditCandidateChanged,
+  lockCreditCutover,
+  lockCreditRecipients,
+  retryCreditDiscovery,
+} from '../../shared/credit-event-protocol';
 import { Inject, Injectable } from '@nestjs/common';
 import { and, desc, eq, sql, type SQL } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
@@ -132,19 +139,72 @@ export class CmsOpsService {
     decision: 'published' | 'rejected',
     reason: string,
   ) {
-    const [row] = await this.db
-      .update(schema.reviews)
-      .set({
-        status: decision,
-        moderatedByAdminId: adminId,
-        moderationReason: reason,
-        updatedAt: sql`now()`,
-      })
-      .where(eq(schema.reviews.id, reviewId))
-      .returning();
-    if (!row) throw AppError.notFound('REVIEW_NOT_FOUND', 'Review not found');
-    await this.audit(adminId, 'review.moderated', 'review', reviewId, { decision, reason });
-    return { id: reviewId, status: decision };
+    return retryCreditDiscovery(() =>
+      this.db.transaction(async (tx) => {
+        const cutover = await lockCreditCutover(tx);
+        // Discovery reads hold no domain lock. Revalidate after the account tier.
+        const [candidate] = await tx
+          .select()
+          .from(schema.reviews)
+          .where(eq(schema.reviews.id, reviewId))
+          .limit(1);
+        if (!candidate) throw AppError.notFound('REVIEW_NOT_FOUND', 'Review not found');
+        const active = await lockCreditRecipients(tx, [candidate.userId]);
+        const [before] = await tx
+          .select()
+          .from(schema.reviews)
+          .where(eq(schema.reviews.id, reviewId))
+          .for('update')
+          .limit(1);
+        if (!before) throw AppError.notFound('REVIEW_NOT_FOUND', 'Review not found');
+        if (
+          before.userId !== candidate.userId ||
+          before.placeId !== candidate.placeId ||
+          before.planId !== candidate.planId
+        )
+          throw new CreditCandidateChanged();
+        const publishing = decision === 'published';
+        const firstPublication = before.firstPublishedAt === null && before.creditEpoch !== null;
+        await tx
+          .update(schema.reviews)
+          .set({
+            status: decision,
+            moderatedByAdminId: adminId,
+            moderationReason: reason,
+            ...(publishing && before.firstPublishedAt === null
+              ? { firstPublishedAt: sql`clock_timestamp()` }
+              : {}),
+            updatedAt: sql`now()`,
+          })
+          .where(eq(schema.reviews.id, reviewId))
+          .returning();
+        await writeAudit(tx, {
+          actorType: 'admin',
+          actorId: adminId,
+          action: 'review.moderated',
+          resourceType: 'review',
+          resourceId: reviewId,
+          diff: { decision, reason },
+        });
+        // Repeated moderation of an already-published review is not a new publication.
+        if (publishing && before.status !== 'published')
+          await writeOutbox(tx, {
+            eventType: 'review.published',
+            resourceType: 'review',
+            resourceId: reviewId,
+            payloadSchemaVersion: 2,
+            payload: {
+              reviewId,
+              userId: active.has(before.userId) ? before.userId : null,
+              target: before.placeId ? 'place' : 'plan',
+              ...(before.placeId ? { placeId: before.placeId } : {}),
+              firstPublication,
+              grantOwner: cutover.mode === 'evaluator' ? 'evaluator' : 'none',
+            },
+          });
+        return { id: reviewId, status: decision };
+      }),
+    );
   }
 
   async decideCheckin(

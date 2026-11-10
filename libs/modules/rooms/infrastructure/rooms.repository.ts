@@ -1,3 +1,9 @@
+import {
+  lockCreditCutover,
+  lockCreditRecipients,
+  retryCreditDiscovery,
+} from '../../shared/credit-event-protocol';
+import { discoverRoomCreditAccounts, captureRoomCreditSnapshot } from './room-credit-snapshot';
 import { syncReminderSchedule } from '../../shared/reminder-schedule';
 import { AppError } from '../../shared/app-error';
 import {
@@ -424,41 +430,66 @@ export class RoomsRepository {
     event: DomainEventInput,
     allowIncomplete = false,
   ): Promise<boolean> {
-    return this.db.transaction(async (tx) => {
-      const [room] = await tx
-        .select()
-        .from(schema.rooms)
-        .where(eq(schema.rooms.id, roomId))
-        .for('update');
-      if (!room) throw AppError.notFound('ROOM_NOT_FOUND', 'Room not found');
-      assertTransition(room.status, status);
-      // Under the lock, so of two starts racing from `ready` exactly one writes
-      // `room.status_active` and its member push.
-      if (isNoOpTransition(room.status, status)) return false;
-      if (status === 'matching') {
-        const members = await tx
-          .select({ selectionStatus: schema.roomMembers.selectionStatus })
-          .from(schema.roomMembers)
-          .where(and(eq(schema.roomMembers.roomId, roomId), isNull(schema.roomMembers.removedAt)))
+    return retryCreditDiscovery(() =>
+      this.db.transaction(async (tx) => {
+        const cutover = status === 'completed' ? await lockCreditCutover(tx) : null;
+        const candidates =
+          status === 'completed' ? await discoverRoomCreditAccounts(tx, roomId) : [];
+        const active = await lockCreditRecipients(tx, candidates);
+        const [room] = await tx
+          .select()
+          .from(schema.rooms)
+          .where(eq(schema.rooms.id, roomId))
           .for('update');
-        assertMatchingReady(members, allowIncomplete || room.status === 'matching');
-      }
-      await tx
-        .update(schema.rooms)
-        .set({ status, updatedAt: sql`now()` })
-        .where(eq(schema.rooms.id, roomId));
-      await writeOutbox(tx, {
-        ...event,
-        payload: {
-          ...event.payload,
-          ...(event.eventType === 'room.status_active'
-            ? { notificationFacts: await captureRoomStartedFacts(tx, roomId) }
-            : {}),
-        },
-      });
-      await syncReminderSchedule(tx, roomId);
-      return true;
-    });
+        if (!room) throw AppError.notFound('ROOM_NOT_FOUND', 'Room not found');
+        assertTransition(room.status, status);
+        // Under the lock, so of two starts racing from `ready` exactly one writes
+        // `room.status_active` and its member push.
+        if (isNoOpTransition(room.status, status)) return false;
+        if (status === 'matching') {
+          const members = await tx
+            .select({ selectionStatus: schema.roomMembers.selectionStatus })
+            .from(schema.roomMembers)
+            .where(and(eq(schema.roomMembers.roomId, roomId), isNull(schema.roomMembers.removedAt)))
+            .for('update');
+          assertMatchingReady(members, allowIncomplete || room.status === 'matching');
+        }
+        const snapshot =
+          status === 'completed'
+            ? await captureRoomCreditSnapshot(tx, roomId, candidates, active)
+            : null;
+        await tx
+          .update(schema.rooms)
+          .set({ status, updatedAt: sql`now()` })
+          .where(eq(schema.rooms.id, roomId));
+        await writeOutbox(tx, {
+          ...event,
+          payload: {
+            ...event.payload,
+            ...(event.eventType === 'room.status_active'
+              ? { notificationFacts: await captureRoomStartedFacts(tx, roomId) }
+              : {}),
+          },
+        });
+        if (snapshot)
+          await writeOutbox(tx, {
+            eventType: 'room.completed',
+            resourceType: 'room',
+            resourceId: roomId,
+            payloadSchemaVersion: 2,
+            payload: {
+              roomId,
+              triggeredAt: snapshot.triggeredAt,
+              room: { type: room.type, participantCount: snapshot.participantCount },
+              plan: snapshot.plan,
+              subjects: snapshot.subjects,
+              grantOwner: cutover!.mode === 'evaluator' ? 'evaluator' : 'none',
+            },
+          });
+        await syncReminderSchedule(tx, roomId);
+        return true;
+      }),
+    );
   }
 
   listMembers(roomId: string): Promise<MemberRow[]> {
@@ -510,6 +541,18 @@ export class RoomsRepository {
     event: DomainEventInput;
   }): Promise<{ guestSessionId: string | null }> {
     return this.db.transaction(async (tx) => {
+      const [candidate] = await tx
+        .select({ roomId: schema.roomMembers.roomId })
+        .from(schema.roomMembers)
+        .where(eq(schema.roomMembers.id, input.memberId))
+        .limit(1);
+      if (candidate)
+        await tx
+          .select({ id: schema.rooms.id })
+          .from(schema.rooms)
+          .where(eq(schema.rooms.id, candidate.roomId))
+          .for('share');
+
       const [member] = await tx
         .update(schema.roomMembers)
         .set({ removedAt: sql`now()`, removedByMemberId: input.removedByMemberId })
@@ -563,7 +606,11 @@ export class RoomsRepository {
     },
     tx?: Tx,
   ): Promise<{ member: MemberRow; created: boolean }> {
-    if (!tx) return this.db.transaction((own) => this.addUserMember(input, own));
+    if (!tx)
+      return this.db.transaction(async (own) => {
+        await this.lockRoomForJoin(own, input.roomId);
+        return this.addUserMember(input, own);
+      });
     const [existing] = await tx
       .select()
       .from(schema.roomMembers)

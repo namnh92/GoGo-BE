@@ -64,6 +64,9 @@ function harness(owner?: string, legacy?: string, approvedEvidenceCount?: number
     events: 0,
     rowStatus: 'ready',
   };
+  const eventRows: Record<string, unknown>[] = [];
+  const creditTrace: string[] = [];
+  let accountActive = true;
   const acquired = deferred();
   const placeLocks: string[] = [];
   const contending = deferred();
@@ -83,6 +86,7 @@ function harness(owner?: string, legacy?: string, approvedEvidenceCount?: number
       const tx = {
         execute: async (query: SQL) => {
           const { sql, params } = dialect.sqlToQuery(query);
+          creditTrace.push(sql);
           if (
             sql.includes('pg_advisory_xact_lock') &&
             String(params[0]).startsWith('venue:google:')
@@ -100,6 +104,8 @@ function harness(owner?: string, legacy?: string, approvedEvidenceCount?: number
             }
             return { rows: [] };
           }
+          if (sql.includes('from credit_cutover'))
+            return { rows: [{ mode: 'sync', epoch: 0, first_activated_at: null }] };
           if (sql.includes('as canonical_place_id'))
             return {
               rows: [
@@ -118,7 +124,7 @@ function harness(owner?: string, legacy?: string, approvedEvidenceCount?: number
                   : [],
             };
           if (sql.includes('select id from users'))
-            return { rows: [{ id: submission.submittedByUserId }] };
+            return { rows: accountActive ? [{ id: submission.submittedByUserId }] : [] };
           if (sql.includes('select count(*)::int as n from place_submission_photos')) {
             expect(sql).toContain("status = 'approved'");
             expect(sql).toContain('uploaded_by_user_id');
@@ -201,6 +207,7 @@ function harness(owner?: string, legacy?: string, approvedEvidenceCount?: number
               } else if (name === 'outbox_events')
                 writes.push(() => {
                   state.events++;
+                  eventRows.push(...data);
                 });
               else
                 writes.push(() => {
@@ -326,6 +333,15 @@ function harness(owner?: string, legacy?: string, approvedEvidenceCount?: number
     identity,
     imports,
     row,
+    eventRows,
+    creditTrace,
+    deactivate: () => {
+      accountActive = false;
+    },
+    merge: async (placeId: string) => {
+      vi.spyOn(dedup, 'emitReindex').mockResolvedValue(undefined);
+      return approval.decide(randomUUID(), submission.id, 'merged', 'Checked', placeId);
+    },
     approve: () => approval.decide(randomUUID(), submission.id, 'approved', 'Checked'),
     importPlace,
     acquired,
@@ -501,5 +517,115 @@ describe('F-02 identity claims', () => {
       h.imports.mergeRow(randomUUID(), h.row.id, 'target', randomUUID()),
     ).rejects.toMatchObject({ code: 'DUPLICATE_VENUE' });
     expect(h.state).toMatchObject({ rowStatus: 'ready', events: 0, owner: 'owner' });
+  });
+});
+
+describe('#829 S1 submission events preserve synchronous awards', () => {
+  it.each([0, 1, 5])(
+    'approval with %i approved evidence emits versioned recipient facts',
+    async (count) => {
+      const h = harness(undefined, undefined, count);
+      const result = await h.approve();
+      const decision = h.eventRows.find((e) => e.eventType === 'place.submission_decided');
+      expect(decision).toMatchObject({
+        payloadSchemaVersion: 2,
+        payload: {
+          submissionId: h.submission.id,
+          googlePlaceId: h.identity,
+          venueIdentity: `google:${h.identity}`,
+          recipientUserId: h.submission.submittedByUserId,
+          decision: 'approved',
+          variant: 'approved',
+          approvedEvidenceCount: count,
+          grantOwner: 'sync',
+          placeId: result.placeId,
+        },
+      });
+      const evidence = h.eventRows.filter(
+        (e) => e.eventType === 'place.submission_evidence_approved',
+      );
+      expect(evidence).toHaveLength(count > 0 ? 1 : 0);
+      if (count > 0)
+        expect(evidence[0]).toMatchObject({
+          payloadSchemaVersion: 2,
+          payload: {
+            submissionId: h.submission.id,
+            recipientUserId: h.submission.submittedByUserId,
+            decision: 'approved',
+            approvedEvidenceCount: count,
+            grantOwner: 'sync',
+          },
+        });
+      expect(h.state.balance).toBe(count > 0 ? 70 : 50);
+      expect(h.creditTrace.findIndex((s) => s.includes('credit_cutover'))).toBeLessThan(
+        h.creditTrace.findIndex((s) => s.includes('pg_advisory_xact_lock')),
+      );
+    },
+  );
+  it('merge with evidence emits the evidence event and preserves the legacy +20 award', async () => {
+    const target = randomUUID();
+    const h = harness(target, undefined, 1);
+    await h.merge(target);
+    expect(
+      h.eventRows.find((e) => e.eventType === 'place.submission_evidence_approved'),
+    ).toMatchObject({
+      payloadSchemaVersion: 2,
+      payload: { decision: 'merged', approvedEvidenceCount: 1 },
+    });
+    expect(
+      h.eventRows.find((e) => e.eventType === 'place.submission_decided')?.payload,
+    ).toMatchObject({
+      decision: 'merged',
+      existingPlaceId: target,
+      recipientUserId: h.submission.submittedByUserId,
+    });
+    expect(h.state.balance).toBe(20);
+  });
+  it('does not reintroduce an erased recipient or award to an inactive account', async () => {
+    const h = harness(undefined, undefined, 1);
+    h.deactivate();
+    await h.approve();
+    expect(
+      h.eventRows.find((e) => e.eventType === 'place.submission_decided')?.payload,
+    ).toMatchObject({ recipientUserId: null });
+    expect(
+      h.eventRows.find((e) => e.eventType === 'place.submission_evidence_approved')?.payload,
+    ).toMatchObject({ recipientUserId: null });
+    expect(h.state.balance).toBe(0);
+    expect(h.state.ledger).toBe(0);
+  });
+  it('reprepares approval after erasure advances the revision during provider preparation', async () => {
+    const h = harness(undefined, undefined, 1);
+    // Return independent discovery snapshots, as Postgres does.
+    h.db.select = (() => {
+      const snapshot = structuredClone(h.submission);
+      return { from: () => ({ where: () => ({ limit: async () => [snapshot] }) }) };
+    }) as never;
+    const transaction = h.db.transaction.bind(h.db);
+    const transactions = vi.spyOn(h.db, 'transaction').mockImplementationOnce(async (work) => {
+      h.deactivate();
+      Object.assign(h.submission, {
+        submittedByUserId: null,
+        enrichment: null,
+        submissionRevision: h.submission.submissionRevision + 2,
+      });
+      return transaction(work);
+    });
+
+    await expect(h.approve()).resolves.toMatchObject({ status: 'approved' });
+    expect(transactions).toHaveBeenCalledTimes(2);
+    expect(h.state.places.size).toBe(1);
+    const decisions = h.eventRows.filter((event) => event.eventType === 'place.submission_decided');
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({
+      eventType: 'place.submission_decided',
+      payload: { recipientUserId: null, approvedEvidenceCount: 0 },
+    });
+    expect(
+      h.eventRows.some((event) => event.eventType === 'place.submission_evidence_approved'),
+    ).toBe(false);
+    expect(h.state.balance).toBe(0);
+    expect(h.state.ledger).toBe(0);
+    expect(h.submission.enrichment).toBeNull();
   });
 });

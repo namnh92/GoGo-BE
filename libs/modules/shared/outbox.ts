@@ -13,6 +13,7 @@ export type DomainEventInput = {
   correlationId?: string | undefined;
   payload: Record<string, unknown>;
   eventVersion?: number | undefined;
+  payloadSchemaVersion?: number | undefined;
 };
 
 /**
@@ -30,7 +31,7 @@ export async function writeOutbox(db: Db | Tx, event: DomainEventInput): Promise
     resourceType: event.resourceType,
     resourceId: event.resourceId,
     correlationId: event.correlationId,
-    payloadSchemaVersion: 1,
+    payloadSchemaVersion: event.payloadSchemaVersion ?? 1,
     payload: event.payload,
   });
   return id;

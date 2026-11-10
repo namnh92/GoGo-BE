@@ -18,6 +18,10 @@ const reviewId = '0f2c7a10-4e2b-4a7c-9b1d-3e5f6a7b8c9d';
 
 function serviceFor(row: { id: string; userId: string; rating: number; status: 'pending' }) {
   const db = {
+    transaction: async (work: (tx: unknown) => Promise<unknown>) => work(db),
+    execute: async () => ({
+      rows: [{ id: row.userId, mode: 'sync', epoch: 0, first_activated_at: null }],
+    }),
     insert: (table: unknown) => ({
       values: (values: Record<string, unknown>) =>
         table === schema.reviews

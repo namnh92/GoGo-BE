@@ -1,0 +1,52 @@
+{
+  "basis": "Filesystem snapshot; no Git command or head resolution. Before hashes are original production bytes retained before edits. Test files are the same between the recorded before and after runs; after hashes describe the delivered files.",
+  "before_production_sha256": {
+    "libs/modules/shared/feature-flags.ts": "8fea6571a0966b7f8314f6e2a72d7c35a7a5b81122d46829b1eb789dc7bfa23a",
+    "libs/modules/shared/outbox.ts": "55522c49a31766ab12891084fb3839d7e1f5cc23a4c09e7990b56a04a9377395",
+    "libs/modules/reviews/application/user-content.service.ts": "9d8671c54d1cc062a8b0bf82c91a4fec8b1970d46f5ec5554da8509d782c6b24",
+    "libs/modules/rooms/infrastructure/rooms.repository.ts": "12bf0777f83ac1b40090d559e6ccdb1cc66df79e9dc92396b9d82af1f10b3092",
+    "libs/modules/cms/application/cms-ops.service.ts": "d95a508a4844ad232161b1407e6f85110a36b48bee347d0ee45ec284e3a39d1e",
+    "libs/modules/identity/infrastructure/identity.repository.ts": "6c1fbca18a8c28085ad55e5d44d32961ac3856f7fa983093d83e69d4a4473154",
+    "libs/modules/ingestion/application/place-submission.service.ts": "b1c1a74010422f1290ee4afbf91a3aa83e261f188d167cd34253a2be00fde9de",
+    "libs/database/src/schema/assistant.ts": "6981b76f690185b68281b2510bdc280ff8503fcfc970caab13f81452eca74ba9",
+    "libs/database/src/schema/social.ts": "20be3b058f7e02e3a99f6f8ea1a485dd215dcac966b6bcac8159d36ca8b325db",
+    "migrations/meta/_journal.json": "70e533960dec87c71c50b953b3711439f4f31235e47a229e2c933802ae4f276b"
+  },
+  "after_sha256": {
+    "apps/api/test/credit-event-prerequisites.int.spec.ts": "c52a6caa6cec59561e7423b4fa8153ed3bbe8518a4926154567371155fd40c14",
+    "docs/credit-event-prerequisites.md": "96fb2ed8fc62c7b3166d7e91651a5375fcb0fe06cadd95b6dcc5e7b2448511e1",
+    "docs/plans/829-s1-verification.md": "41701c452bc486e4b64fa35f09df159eae86641975495ec6d8c3361040a72c5b",
+    "docs/plans/829-slices.md": "7609b6766c2e2be64983a59f2c2b83487970efd051a89a49babb5a63e0c48f03",
+    "libs/database/src/schema/assistant.ts": "2b91366ae231c985c04ccdc0b9ff8753018abb4db196b30676990a669c4b203a",
+    "libs/database/src/schema/social.ts": "b496c8273b408b774b6b1fa30b836d5c59fe0078b4c389cb29d37ec87a1c2688",
+    "libs/modules/cms/application/cms-ops.service.ts": "42cb56115c2e2d754b12492c1f43bfb4223f2f94e8c6a1dd101abfbffb56373d",
+    "libs/modules/cms/application/credit-review-publication.spec.ts": "db2690d75dc52cc20dbd08f149042f103bb67d7f0dbf9aa380717eca551cf5a8",
+    "libs/modules/identity/infrastructure/identity.repository.ts": "f5f2e6770b753a0142f941fcadd42dbb8de6de8d5d96166a953a98890c56cd13",
+    "libs/modules/ingestion/application/identity-claim.spec.ts": "4eb4f864d9978c8a043d9817bad9059131694b53ed0ac98ec2d36026455e8839",
+    "libs/modules/ingestion/application/place-submission.service.spec.ts": "ed6393f7890aeb0e568aa359ae4cb55104a9b83c3c7a3a35d44ccb47f6afdb75",
+    "libs/modules/ingestion/application/place-submission.service.ts": "e2a5554616217e0ebddd627574f7c7a85b4cfc90961511ae870ed00577a04c53",
+    "libs/modules/reviews/application/credit-review-creation.spec.ts": "919e0446a04e7d65517128668fc747906201c6ee479a49097562516b9bdaeb7f",
+    "libs/modules/reviews/application/user-content.service.spec.ts": "e0616035bbbb832c447f39da7ee1fed2d60b1597c71b5a2d400d48380f2f4dca",
+    "libs/modules/reviews/application/user-content.service.ts": "0742c8ecd49b2ebdb5814981caa9e952bd2824987afb17e8c4fb200c89f79401",
+    "libs/modules/rooms/infrastructure/room-credit-completion.spec.ts": "594e8fb2039b802678b35449b2947cfdea7309444446301629515b76894ad73e",
+    "libs/modules/rooms/infrastructure/room-credit-snapshot.ts": "1d37cc29aff00011e6123369ef91ee9011ab6ec330a2e7938e4e1bfdfac041d4",
+    "libs/modules/rooms/infrastructure/rooms.repository.ts": "99132365a42bdee91bd0308593bba751a70fbc71d8d842be0e9040f2d6dbbe16",
+    "libs/modules/shared/credit-event-protocol.ts": "7c831b4058aee7db855536d01e548bb674ade49f5937da18cd5bb1139bcece62",
+    "libs/modules/shared/feature-flags.spec.ts": "3c74a39faa0e36800cd0d9868200c2f3dda9b4284c0cb2f7848414f9b9d3a3e2",
+    "libs/modules/shared/feature-flags.ts": "f552480052e5867dee8a7a0a380f53efe761cd4ff00f5ea387793f41d5029efb",
+    "libs/modules/shared/outbox.spec.ts": "231d15b79aae2cde358a42eb1e4038806eb1b75e2d8215060af477ad6658d6af",
+    "libs/modules/shared/outbox.ts": "4b87e4bd2ace424ee4854aa4662891ca95ddd9e7fe51836ba14ca37c8371e1c2",
+    "migrations/0097_credit-event-prerequisites.sql": "54f3504ed389f1b05dd569cebf8f447cae59198c0e5da3d419356cffeeb5117b",
+    "migrations/meta/_journal.json": "e27273481d69f8d8068e9bbdc651977f442e787d9a84d0acb515b6d9ca09bee6",
+    "scripts/ops/backfill-credit-events.sql": "8a39b2e5fe7a0dcfecc968775b80342b51b5ff87c68112e6b99c60af0f2478eb",
+    "scripts/ops/validate-credit-event-prerequisites.sql": "bf071eae6c205b4bfab5238747df3bc6d5c04310c2962ea7f9d51e6f63e42ac1"
+  },
+  "evidence_sha256": {
+    "api-typecheck.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "fail-before.log": "6a01bff7ab2b0411b272de5306d2d82c87b1eb9dda0610a4c63ee9fb864cd400",
+    "full-unit-summary.log": "748a02ef8189c28d1d70a1e180e452a5ccd264d1e374286fbd84ace79c59d9eb",
+    "lint.log": "050c69da23536758722729aeda55a8d0fb9d557495ef6d33d70873a3b64a71c1",
+    "pass-after.log": "f19f6177cc8cd7958f5d66ddb7563ff23414a83adb5f8a9528b756d3a5a17e9c",
+    "typecheck.log": "09e4a1cc58bdf8c21cdba2201fd11be30b6da676e88fb50dcd8cb78e94b744be"
+  }
+}

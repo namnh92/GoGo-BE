@@ -338,3 +338,23 @@ export const assistantCreditLedger = pgTable(
     ),
   ],
 );
+
+/** #829 S1: DB ownership is independent of the evaluator pause flag. */
+export const creditCutover = pgTable(
+  'credit_cutover',
+  {
+    singleton: boolean('singleton').primaryKey().default(true),
+    mode: text('mode').$type<'sync' | 'evaluator'>().notNull().default('sync'),
+    epoch: integer('epoch').notNull().default(0),
+    firstActivatedAt: timestamp('first_activated_at', { withTimezone: true }),
+  },
+  (t) => [
+    check('credit_cutover_singleton_check', sql`${t.singleton}`),
+    check('credit_cutover_mode_check', sql`${t.mode} in ('sync', 'evaluator')`),
+    check('credit_cutover_epoch_check', sql`${t.epoch} >= 0`),
+    check(
+      'credit_cutover_activation',
+      sql`(${t.epoch} = 0 and ${t.firstActivatedAt} is null and ${t.mode} = 'sync') or (${t.epoch} > 0 and ${t.firstActivatedAt} is not null)`,
+    ),
+  ],
+);
