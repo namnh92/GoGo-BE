@@ -60,7 +60,8 @@ export class CreditEvaluator {
       quarantine?: (eventId: string, reason: string) => void;
     },
   ) {}
-  /** The flag pauses consumption only. Ownership comes exclusively from the payload. */
+  /** The flag pauses consumption only. Ownership comes exclusively from the payload.
+   * Each tick admits up to limit pending events plus min(limit, 20) quarantine retries. */
   async tick(limit = 200): Promise<number> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 200)
       throw new Error('Evaluator limit must be 1..200');
@@ -78,9 +79,28 @@ export class CreditEvaluator {
         CREDIT_EVENT_TYPES.map((t) => sql`${t}`),
         sql`, `,
       )})
-      and (c.event_id is null or c.status='quarantined') order by e.occurred_at,e.id limit ${limit}`);
-    for (const row of result.rows as { id: string }[]) await this.evaluate(row.id);
-    return result.rows.length;
+      and c.event_id is null order by e.occurred_at,e.id limit ${limit}`);
+    // Snapshot retries before evaluation so newly quarantined pending rows wait
+    // until the next tick. Retry oldest attempts first, independent of event time.
+    const retries = await this.db
+      .execute(sql`select e.id from credit_evaluations c join outbox_events e on e.id=c.event_id
+      where c.status='quarantined' and e.event_type in (${sql.join(
+        CREDIT_EVENT_TYPES.map((t) => sql`${t}`),
+        sql`, `,
+      )}) order by c.evaluated_at,e.id limit ${Math.min(limit, 20)}`);
+    const rows = [...result.rows, ...retries.rows] as { id: string }[];
+    const failures: unknown[] = [];
+    for (const row of rows) {
+      try {
+        await this.evaluate(row.id);
+      } catch (error) {
+        // Each transaction rolled back independently; leave it pending/retryable
+        // and let later events progress before surfacing the failure to the worker.
+        failures.push(error);
+      }
+    }
+    if (failures.length) throw failures[0];
+    return rows.length;
   }
   /** Public for deterministic integration replay; worker calls only through tick's pause gate. */
   async evaluate(eventId: string): Promise<void> {
@@ -151,6 +171,14 @@ export class CreditEvaluator {
         }
         let grants = 0;
         for (const rule of rules) {
+          // A valid trigger payload need not contain every supported scope's
+          // identity (e.g. a plan review has no place). Ineligibility is per rule.
+          if (
+            (rule.dedup_scope === 'per_place_subject' &&
+              typeof canonical.facts.placeId !== 'string') ||
+            (rule.dedup_scope === 'per_venue' && typeof canonical.facts.venueIdentity !== 'string')
+          )
+            continue;
           const occurred = new Date(event.occurred_at).getTime();
           const start =
             String(rule.starts_at).toLowerCase() === '-infinity'

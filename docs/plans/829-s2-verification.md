@@ -206,3 +206,90 @@ worktree before deleting `.s2-fail.txt`. The before-file and command logs are in
 `/private/tmp/gogo-829-s2-followup-20261110/`. The corrected integration assertions
 still require execution in Claude's working Testcontainers environment; no
 PASS-after integration result is claimed here.
+
+## PR #847 Astra round 1 fixes (2026-11-10)
+
+Scope: F-01 P1 and F-02 P2 from the supplied review of head `bd5a1f68`.
+No git command was run; that head and the worktree's commit/clean status were
+not independently inspected. The changes are in `credit-evaluator.ts`, its unit
+spec, `credit-events-evaluator.int.spec.ts`, this document and the S2 operations
+document. Migration **0098 is unchanged**; no column or index was added.
+
+- **F-01:** pending selection excludes every evaluation row. A separate retry
+  queue admits at most `min(limit,20)` quarantined events ordered by
+  `evaluated_at,id`. Re-quarantine already advances `evaluated_at`, rotating
+  failed decoder/rule attempts fairly. Pending capacity remains `limit`
+  (default/max 200), so a default tick attempts at most 220 events. Both queues
+  are selected before processing: a newly quarantined pending event waits until
+  the next tick. No quarantine/retention evidence is deleted or terminally acked.
+- **F-02:** each rule's required place/venue identity is checked before
+  entitlement queries, budget reservations or grant writes. A valid plan review
+  without `placeId` is ineligible for `per_place_subject`, including `{all:[]}`;
+  other eligible rules still grant. With no grants, its terminal evaluation is
+  `evaluated / ineligible / 0`. Unexpected transaction failures roll back only
+  that event; the tick attempts later selected events before rethrowing the first
+  error to the existing worker reporting path. Failed events remain retryable.
+
+### Regression evidence and checks
+
+The final unit spec was run against the saved original evaluator and then the
+patched evaluator, restoring the patched file in a `finally` block:
+
+- **FAIL-before:** exit 1, five failures and 18 passes. The starvation and
+  limit-one tests fail selection/capacity expectations; both plan-review cases
+  throw `Missing place identity`; the injected ack-failure case leaves the later
+  valid event unpaid.
+- **PASS-after:** exit 0, all **23 tests pass**. Coverage includes 200 quarantines
+  followed by a granted valid event; all 200 retries get a turn over ten ticks
+  while new pending work keeps arriving; both queues progress at limit one;
+  newly quarantined work is deferred; missing-place plans are recorded without
+  grant writes; other plan-compatible rules still grant; a failed ack rolls back
+  its transaction while later work grants and the error is still reported.
+
+| Check                                                    | Result                                                                                                                                      |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prettier write on the five changed files                 | PASS                                                                                                                                        |
+| `pnpm format:check` (repository-wide)                    | PASS                                                                                                                                        |
+| `pnpm lint`                                              | PASS                                                                                                                                        |
+| `pnpm -r run typecheck`                                  | PASS, all 8 packages; API integration specs included                                                                                        |
+| `pnpm test libs/modules/shared/credit-evaluator.spec.ts` | PASS, 23 tests                                                                                                                              |
+| `pnpm test`                                              | Exit 1: 309 files / 4018 tests passed, 1 skipped; only `apps/api/src/sentry-request.spec.ts` fails setup with `listen EPERM` on `127.0.0.1` |
+| Integration / migration execution                        | NOT RUN, as instructed                                                                                                                      |
+
+Recursive typecheck invokes all eight packages' `tsc --noEmit` scripts directly,
+including the API integration specs, without Turbo SCM discovery. The existing
+socket-dependent suite was not altered or skipped. Evidence (original/patched
+evaluator and command logs): `/private/tmp/gogo-847-r1/`.
+
+### Integration specs to execute elsewhere
+
+The three new PostgreSQL cases in
+`apps/api/test/credit-events-evaluator.int.spec.ts` cover:
+
+1. 200 older quarantines plus a valid review: valid grant on the first tick,
+   exactly 20 retries per tick, every quarantine revisited after ten ticks, and
+   all 200 still protected by retention.
+2. An additional active `review.published` rule with `{all:[]}` and
+   `per_place_subject`: a valid plan review without `placeId` gets a zero-grant
+   ineligible evaluation; the later place review grants both eligible rules;
+   budget, entitlement count and replay balance are checked. The immutable seed
+   stays intact for the real readiness check.
+3. An injected event-specific ack failure: its grant/balance/ack roll back, later
+   pending work still commits before the tick reports the error, and replay
+   grants the failed event without duplicating the successful one.
+
+These are written FAIL-before/PASS-after regressions, but neither integration
+phase was executed here. Run the evaluator spec and adjacent credit regression
+specs in the working Testcontainers environment:
+
+```sh
+pnpm test:integration \
+  apps/api/test/credit-events-evaluator.int.spec.ts \
+  apps/api/test/credit-events-catalogue.int.spec.ts \
+  apps/api/test/credit-events-legacy-erasure.int.spec.ts \
+  apps/api/test/credit-event-prerequisites.int.spec.ts
+```
+
+The broader affected integration command above remains applicable. Integration
+acceptance and Astra re-review remain outstanding; no merge or activation is
+claimed.

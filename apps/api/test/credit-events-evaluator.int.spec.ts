@@ -20,6 +20,16 @@ async function review(userId: string, placeId = randomUUID()) {
     grantOwner: 'evaluator',
   });
 }
+async function enabled(work: () => Promise<void>) {
+  await f.pool.query(
+    "insert into feature_flags(key,environment,platform,enabled) values('credit_events.enabled','all','all',true) on conflict(key,environment,platform) do update set enabled=true",
+  );
+  try {
+    await work();
+  } finally {
+    await f.pool.query("update feature_flags set enabled=false where key='credit_events.enabled'");
+  }
+}
 async function groupRule(
   budget: number,
   maxPerUser: number | null = null,
@@ -53,6 +63,138 @@ afterAll(async () => {
   await f?.close();
 });
 describe('#829 S2 evaluator replay, concurrency and recovery', () => {
+  it('grants newer valid work behind 200 quarantines and fairly retries every preserved row', async () => {
+    const quarantined = (
+      await f.pool.query(`
+      with events as (
+        insert into outbox_events(event_type,resource_type,resource_id,payload,payload_schema_version,occurred_at)
+        select 'review.published','credit-test',gen_random_uuid()::text,
+          '{"grantOwner":"evaluator"}'::jsonb,3,now()-interval '1 day'
+        from generate_series(1,200) returning id
+      )
+      insert into credit_evaluations(event_id,status,reason,evaluated_at)
+      select id,'quarantined','decoder_or_rule_unsupported',now()-interval '1 day' from events
+      returning event_id
+    `)
+    ).rows.map((r) => r.event_id as string);
+    const user = await creditUser(f.pool),
+      valid = await review(user);
+    const started = (await f.pool.query('select clock_timestamp() as time')).rows[0].time;
+    await enabled(async () => {
+      expect(await evaluator.tick()).toBe(21);
+      expect(
+        (
+          await f.pool.query(
+            'select status,reason,grants from credit_evaluations where event_id=$1',
+            [valid],
+          )
+        ).rows,
+      ).toEqual([{ status: 'evaluated', reason: 'granted', grants: 1 }]);
+      expect(
+        (
+          await f.pool.query('select balance from assistant_credit_accounts where user_id=$1', [
+            user,
+          ])
+        ).rows,
+      ).toEqual([{ balance: 5 }]);
+      expect(
+        (
+          await f.pool.query(
+            'select count(*)::int as n from credit_evaluations where event_id=any($1::uuid[]) and evaluated_at >= $2',
+            [quarantined, started],
+          )
+        ).rows,
+      ).toEqual([{ n: 20 }]);
+      for (let i = 1; i < 10; i++) expect(await evaluator.tick()).toBe(20);
+    });
+    expect(
+      (
+        await f.pool.query(
+          `select count(*)::int as n from credit_evaluations c join outbox_events e on e.id=c.event_id
+      where c.event_id=any($1::uuid[]) and c.status='quarantined' and c.grants=0 and c.evaluated_at >= $2`,
+          [quarantined, started],
+        )
+      ).rows,
+    ).toEqual([{ n: 200 }]);
+    expect(
+      (
+        await f.pool.query('delete from outbox_events where id=any($1::uuid[]) returning id', [
+          quarantined,
+        ])
+      ).rows,
+    ).toEqual([]);
+  });
+  it('records a plan review lacking placeId as ineligible before writes and grants the next place review', async () => {
+    const user = await creditUser(f.pool);
+    // Preserve the immutable readiness seed; this is an additional supported rule.
+    const ruleId = (
+      await f.pool.query(
+        `insert into credit_events(key,labels,trigger_event_type,trigger_schema_version,
+      condition,audience,dedup_scope,amount,status,budget_total)
+      values($1,'{"en":"Any review"}','review.published',2,'{"all":[]}',
+        'individual','per_place_subject',7,'active',100) returning id`,
+        [`any_review_${randomUUID().replaceAll('-', '')}`],
+      )
+    ).rows[0].id;
+    const plan = await creditOutbox(f.pool, 'review.published', {
+      reviewId: randomUUID(),
+      userId: user,
+      target: 'plan',
+      firstPublication: true,
+      grantOwner: 'evaluator',
+    });
+    const valid = await review(user);
+    // A deterministic event order makes the plan the first pending event.
+    await f.pool.query("update outbox_events set occurred_at=now()-interval '2 days' where id=$1", [
+      plan,
+    ]);
+    try {
+      await enabled(async () => {
+        await evaluator.tick();
+      });
+      expect(
+        (
+          await f.pool.query(
+            'select status,reason,grants from credit_evaluations where event_id=$1',
+            [plan],
+          )
+        ).rows,
+      ).toEqual([{ status: 'evaluated', reason: 'ineligible', grants: 0 }]);
+      expect(
+        (await f.pool.query('select grants from credit_evaluations where event_id=$1', [valid]))
+          .rows,
+      ).toEqual([{ grants: 2 }]);
+      expect(
+        (
+          await f.pool.query('select balance from assistant_credit_accounts where user_id=$1', [
+            user,
+          ])
+        ).rows,
+      ).toEqual([{ balance: 12 }]);
+      expect(
+        (await f.pool.query('select budget_used from credit_events where id=$1', [ruleId])).rows,
+      ).toEqual([{ budget_used: 7 }]);
+      expect(
+        (
+          await f.pool.query(
+            'select count(*)::int as n from credit_entitlements where event_id=$1',
+            [ruleId],
+          )
+        ).rows,
+      ).toEqual([{ n: 1 }]);
+      await evaluator.evaluate(plan);
+      await evaluator.evaluate(valid);
+      expect(
+        (
+          await f.pool.query('select balance from assistant_credit_accounts where user_id=$1', [
+            user,
+          ])
+        ).rows,
+      ).toEqual([{ balance: 12 }]);
+    } finally {
+      await f.pool.query("update credit_events set status='closed' where id=$1", [ruleId]);
+    }
+  });
   it('leaves paused evaluator-owned backlog pending across sync rollback and protects retention', async () => {
     const id = await review(await creditUser(f.pool));
     expect(await evaluator.tick()).toBe(0);
@@ -181,6 +323,81 @@ describe('#829 S2 evaluator replay, concurrency and recovery', () => {
       (await f.pool.query('select balance from assistant_credit_accounts where user_id=$1', [user]))
         .rows[0].balance,
     ).toBe(5);
+  });
+  it('rolls back a failed event but still grants later pending work before reporting the tick failure', async () => {
+    const failedUser = await creditUser(f.pool),
+      validUser = await creditUser(f.pool);
+    const failed = await review(failedUser),
+      valid = await review(validUser);
+    await f.pool.query("update outbox_events set occurred_at=now()-interval '2 days' where id=$1", [
+      failed,
+    ]);
+    const dialect = new PgDialect();
+    const failingDb = new Proxy(f.db, {
+      get(target, key) {
+        if (key !== 'transaction') return Reflect.get(target, key);
+        return (work: (tx: Tx) => Promise<void>) =>
+          target.transaction((tx) =>
+            work(
+              new Proxy(tx, {
+                get(transaction, property) {
+                  if (property !== 'execute') return Reflect.get(transaction, property);
+                  return async (query: SQL) => {
+                    const parsed = dialect.sqlToQuery(query);
+                    if (
+                      parsed.sql.includes('insert into credit_evaluations') &&
+                      parsed.params.includes(failed)
+                    )
+                      throw new Error('isolated ack failure');
+                    return transaction.execute(query);
+                  };
+                },
+              }),
+            ),
+          );
+      },
+    });
+    await enabled(async () => {
+      await expect(new CreditEvaluator(failingDb, options).tick()).rejects.toThrow(
+        'isolated ack failure',
+      );
+    });
+    expect(
+      (await f.pool.query('select * from credit_evaluations where event_id=$1', [failed])).rows,
+    ).toEqual([]);
+    expect(
+      (await f.pool.query('select * from assistant_credit_ledger where user_id=$1', [failedUser]))
+        .rows,
+    ).toEqual([]);
+    expect(
+      (await f.pool.query('select * from assistant_credit_accounts where user_id=$1', [failedUser]))
+        .rows,
+    ).toEqual([]);
+    expect(
+      (
+        await f.pool.query('select balance from assistant_credit_accounts where user_id=$1', [
+          validUser,
+        ])
+      ).rows,
+    ).toEqual([{ balance: 5 }]);
+    expect(
+      (
+        await f.pool.query('select status,grants from credit_evaluations where event_id=$1', [
+          valid,
+        ])
+      ).rows,
+    ).toEqual([{ status: 'evaluated', grants: 1 }]);
+    // Restored writes can replay the failed event without duplicating the successful grant.
+    await evaluator.evaluate(failed);
+    await evaluator.evaluate(valid);
+    expect(
+      (
+        await f.pool.query(
+          'select balance from assistant_credit_accounts where user_id=any($1::uuid[]) order by user_id',
+          [[failedUser, validUser]],
+        )
+      ).rows,
+    ).toEqual([{ balance: 5 }, { balance: 5 }]);
   });
   it('concurrent per-user capped reviews grant once under rule/account locks', async () => {
     const user = await creditUser(f.pool);

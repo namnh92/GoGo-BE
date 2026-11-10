@@ -3,10 +3,16 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import { describe, expect, it, vi } from 'vitest';
 import { CreditEvaluator } from './credit-evaluator';
 import { CREDIT_SEEDS, type CreditRule } from './credit-catalogue';
+import type * as CreditCatalogue from './credit-catalogue';
 import { CREDIT_TRIGGERS } from './credit-triggers';
+import { resolveBooleanFlag } from './feature-flags';
 vi.mock('./feature-flags', () => ({
   flagEnvironmentOf: () => 'dev',
-  resolveBooleanFlag: async () => false,
+  resolveBooleanFlag: vi.fn(async () => false),
+}));
+vi.mock('./credit-catalogue', async (original) => ({
+  ...(await original<typeof CreditCatalogue>()),
+  assertCreditWriterReady: vi.fn(async () => {}),
 }));
 const dialect = new PgDialect();
 const subject = randomUUID();
@@ -146,7 +152,119 @@ function fixture(
     }),
   };
 }
+/** Selection double; real grant transactions still run through each fixture. SQL is
+ * exercised against PostgreSQL by credit-events-evaluator.int.spec.ts. */
+function scheduler(events: ReturnType<typeof fixture>[]) {
+  let clock = 0;
+  const attempted = new Map<string, number>();
+  const execute = vi.fn(async (query) => {
+    const { sql: text, params } = dialect.sqlToQuery(query);
+    const candidates = events.filter((f) => {
+      if (text.includes("or c.status='quarantined'")) return f.state().ack?.status !== 'evaluated';
+      if (text.includes('c.event_id is null')) return !f.state().ack;
+      if (text.includes("c.status='quarantined'")) return f.state().ack?.status === 'quarantined';
+      throw new Error(`Unexpected selection: ${text}`);
+    });
+    if (text.includes('order by c.evaluated_at'))
+      candidates.sort((a, b) => (attempted.get(a.eventId) ?? 0) - (attempted.get(b.eventId) ?? 0));
+    return { rows: candidates.slice(0, Number(params.at(-1))).map((f) => ({ id: f.eventId })) };
+  });
+  const evaluator = new CreditEvaluator({ execute } as never, {
+    environment: 'dev',
+    subjectKeySecret: 's'.repeat(32),
+  });
+  const evaluate = vi.spyOn(evaluator, 'evaluate').mockImplementation(async (id) => {
+    attempted.set(id, ++clock);
+    await events.find((f) => f.eventId === id)!.evaluator.evaluate(id);
+  });
+  const tick = (limit?: number) => {
+    vi.mocked(resolveBooleanFlag).mockResolvedValueOnce(true);
+    return evaluator.tick(limit);
+  };
+  return { tick, evaluate };
+}
 describe('#829 atomic credit evaluation', () => {
+  it('grants pending work behind 200 quarantined events and rotates bounded retries fairly', async () => {
+    const quarantined = Array.from({ length: 200 }, () => fixture({ version: 3 }));
+    for (const f of quarantined) await f.evaluator.evaluate(f.eventId);
+    const valid = fixture();
+    const events = [...quarantined, valid];
+    const s = scheduler(events);
+    expect(await s.tick()).toBe(21);
+    expect(valid.state().balance).toBe(5);
+    expect(valid.state().ack).toEqual({ status: 'evaluated', grants: 1 });
+    for (let i = 1; i < 10; i++) {
+      const pending = fixture();
+      events.push(pending);
+      expect(await s.tick()).toBe(21);
+      expect(pending.state().balance).toBe(5);
+    }
+    const ids = new Set<string>(quarantined.map((f) => f.eventId));
+    const retries = s.evaluate.mock.calls.map(([id]) => id).filter((id) => ids.has(id));
+    expect(retries).toHaveLength(200);
+    expect(new Set(retries).size).toBe(200);
+    expect(quarantined.every((f) => f.state().ack?.status === 'quarantined')).toBe(true);
+  });
+  it('reserves pending and retry capacity even at limit 1', async () => {
+    const q = fixture({ version: 3 });
+    await q.evaluator.evaluate(q.eventId);
+    const valid = fixture();
+    const s = scheduler([q, valid]);
+    expect(await s.tick(1)).toBe(2);
+    expect(valid.state().balance).toBe(5);
+    expect(q.state().ack?.status).toBe('quarantined');
+  });
+  it('waits until the next tick before retrying newly quarantined pending work', async () => {
+    const q = fixture({ version: 3 });
+    const s = scheduler([q]);
+    expect(await s.tick()).toBe(1);
+    expect(s.evaluate).toHaveBeenCalledTimes(1);
+    expect(await s.tick()).toBe(1);
+    expect(s.evaluate).toHaveBeenCalledTimes(2);
+  });
+  it('records plan reviews without place identity as ineligible and grants later valid work', async () => {
+    const plan = fixture({ rules: [rule({ condition: { all: [] } })] });
+    plan.event.payload.target = 'plan';
+    delete plan.event.payload.placeId;
+    const valid = fixture();
+    await scheduler([plan, valid]).tick();
+    expect(plan.state()).toMatchObject({
+      balance: 0,
+      ledger: [],
+      entitlements: [],
+      ack: { status: 'evaluated', grants: 0 },
+    });
+    expect(plan.trace.some((t) => t.sql.startsWith('update credit_events'))).toBe(false);
+    expect(plan.trace.at(-1)?.params).toContain('ineligible');
+    expect(valid.state().balance).toBe(5);
+  });
+  it('skips only rules missing scope identity, preserving other eligible plan-review rules', async () => {
+    const f = fixture({
+      rules: [
+        rule({ condition: { all: [] } }),
+        rule({
+          id: randomUUID(),
+          key: 'plan_review',
+          dedup_scope: 'per_source',
+          condition: { all: [] },
+        }),
+      ],
+    });
+    f.event.payload.target = 'plan';
+    delete f.event.payload.placeId;
+    await f.evaluator.evaluate(f.eventId);
+    expect(f.state().balance).toBe(5);
+    expect(f.state().ack).toEqual({ status: 'evaluated', grants: 1 });
+    expect(f.state().rules[0]!.budget_used).toBe(0);
+    expect(f.state().ledger[0]!.ruleId).toBe(f.state().rules[1]!.id);
+  });
+  it('continues after a transaction failure, then reports it without acknowledging failed work', async () => {
+    const failed = fixture({ fail: 'insert into credit_evaluations' });
+    const valid = fixture();
+    await expect(scheduler([failed, valid]).tick()).rejects.toThrow('injected write failure');
+    expect(failed.state()).toMatchObject({ balance: 0, ledger: [], entitlements: [], ack: null });
+    expect(valid.state().balance).toBe(5);
+  });
   it('keeps all pending/quarantined rows untouched while paused', async () => {
     const f = fixture();
     expect(await f.evaluator.tick()).toBe(0);

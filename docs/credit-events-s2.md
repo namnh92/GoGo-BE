@@ -85,10 +85,17 @@ is only its pause switch and defaults off. Cutover remains sync. Do not activate
 or resume S2: S3/S4 compatibility and acceptance gates are outstanding. There is
 no activation endpoint or ownership migration in this slice.
 
-Consumption uses an ordered anti-join on evaluation state, independent of
-notification published/failed/retry state or event creation time. All supported
+Consumption gives pending events (no evaluation row) and quarantined retries
+separate bounded capacity, independent of notification published/failed/retry
+state. Each tick selects up to `limit` pending events (default/max 200), ordered
+by `occurred_at,id`, plus up to `min(limit,20)` quarantined retries, ordered by
+`evaluated_at,id` (least recently attempted first). Thus the default tick handles
+at most 220 events. Retry candidates are selected before processing either queue;
+new quarantines wait for the next tick. Re-quarantine advances `evaluated_at`, so
+an unrepaired oldest event cannot monopolize retries or starve pending work.
+This reuses existing evaluation state; migration 0098 is unchanged. All supported
 payload versions have independent decoders; missing/invalid decoders or invalid
-rules quarantine without a terminal ack, and are retried on subsequent ticks.
+rules quarantine without a terminal ack, and are retried fairly on subsequent ticks.
 Nullable or scrubbed recipients are valid no-subject events. Predicates use
 only canonical payload facts plus the pseudonymous subject key; the only live
 subject check is account activity under its account lock. Unsupported audiences,
@@ -97,6 +104,15 @@ reserve all eligible members or none, after dedup and caps; one group_grant_id
 identifies the atomic grant. The additional source-only `group_source_key`
 (`room:<id>`) keeps per-room group caps correct after event pruning and subject
 erasure, including per_occurrence rules.
+
+Scope identity prerequisites are checked per rule before entitlement queries or
+grant writes. A valid plan review without `placeId` is ineligible for a
+`per_place_subject` rule, even when its condition is `{all:[]}`; other supported
+rules can still grant. If no rule grants, the event receives an evaluated,
+`ineligible`, zero-grant acknowledgement. Each event has its own transaction.
+Unexpected transaction errors roll back that event and leave it retryable; the
+tick processes the remaining selected events before rethrowing the first error
+through the worker's existing failure reporting.
 
 Reservation, all grants, balances, audits and terminal ack commit together.
 An unexpected entitlement conflict rolls all of them back. Audit resources are
