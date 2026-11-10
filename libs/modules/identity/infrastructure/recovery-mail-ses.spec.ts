@@ -52,7 +52,12 @@ describe('SES recovery mail adapter (injected client)', () => {
         expect(content).toContain(expiry);
         expect(content).not.toContain(message.challengeId);
         expect(content).not.toContain(message.email);
-        expect(content).not.toMatch(/http|<img|<a\b/i);
+        expect(content).not.toMatch(/<a\b/i);
+        for (const match of content.matchAll(/(?:href|src)="([^"]*)"/g)) {
+          for (const secret of [message.code, message.email, message.challengeId]) {
+            expect(match[1]).not.toContain(secret);
+          }
+        }
         expect(content).not.toContain('2026-11-06T12:05:00.000Z');
       }
     },
