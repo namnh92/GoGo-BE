@@ -12,6 +12,7 @@ import type { RecoveryResponse } from '../../../libs/modules/identity/applicatio
 import {
   COMPLETE,
   REQUEST,
+  VERIFY,
   NEW_PASSWORD,
   OLD_PASSWORD,
   RECOVERY_KEY,
@@ -167,6 +168,16 @@ describe('I-5 recovery telemetry on real HTTP requests', () => {
     );
     expect(invalid.status).toBe(400);
     await invalid.text();
+    const verified = await call(VERIFY, input, 'recovery-telemetry-verify', 'telemetry-verify');
+    expect(verified.status).toBe(204);
+    const invalidVerify = await call(
+      VERIFY,
+      { ...input, code: proof.code === '000000' ? '111111' : '000000' },
+      'recovery-telemetry-verify-invalid',
+      'telemetry-verify',
+    );
+    expect(invalidVerify.status).toBe(400);
+    await invalidVerify.text();
     const throttle = await call(
       REQUEST,
       { email },

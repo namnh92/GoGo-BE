@@ -2,7 +2,7 @@ openapi: 3.1.0
 x-gogo-notification-preference-semantics: master-and-five-categories-v1
 info:
   title: GoGo API
-  version: 9.3.0-alpha.1
+  version: 9.4.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -382,6 +382,49 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '503':
           description: RECOVERY_MAIL_NOT_CONFIGURED (retryable false), or global RECOVERY_UNAVAILABLE (retryable true)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /auth/password-recovery/verify:
+    post:
+      operationId: verifyPasswordRecovery
+      tags: [sessions]
+      summary: Check a recovery code before entering a new password
+      security: []
+      description: |
+        Returns 204 only for a matching, unexpired, unconsumed proof bound to
+        the original active password account. Does not consume the code, reset
+        the password, verify the account email, or revoke sessions.
+        Complete still revalidates and consumes the proof exactly once.
+        Wrong, expired, consumed, exhausted, superseded, mismatched or ineligible
+        proofs return 400 RECOVERY_INVALID. Failed proof checks against a live
+        challenge count toward the same maximum of five failures as complete,
+        including mismatched challenge IDs. Five failures invalidate the challenge.
+        Shares complete limits: 10/15 minutes/email, 30/15 minutes/IP, including
+        repeated checks. Every call revalidates; Idempotency-Key does not replay
+        a prior success or suppress failed attempts.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, challengeId, code]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+                challengeId: { type: string, format: uuid }
+                code: { type: string, pattern: '^[0-9]{6}$' }
+      responses:
+        '204': { description: Recovery proof is valid and remains unconsumed }
+        '400':
+          description: RECOVERY_INVALID or VALIDATION_FAILED
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503':
+          description: RECOVERY_MAIL_NOT_CONFIGURED (retryable false), or RECOVERY_UNAVAILABLE (retryable true)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }

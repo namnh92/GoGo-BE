@@ -33,7 +33,7 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // #774: whole counted-query duration; no query, place or location labels.
   search_count_duration_ms: [],
 
-  // Consumer recovery: action is request | complete (failed also permits send).
+  // Consumer recovery: action is request | verify | complete (failed also permits send).
   // adapter is sink | ses. No identity, proof, digest or free-text values.
   password_recovery_requested: [],
   password_recovery_not_found: [],

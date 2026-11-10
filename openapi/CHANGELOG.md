@@ -8,6 +8,17 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 9.4.0-alpha.1 — Non-consuming recovery verification (#845)
+
+MINOR: thêm `POST /auth/password-recovery/verify` nhận email/challengeId/code,
+204 rỗng khi proof hợp lệ, chưa dùng và còn hạn. Không tiêu mã; complete vẫn
+kiểm lại và reset single-use. Mọi proof sai dùng 400 RECOVERY_INVALID, dùng
+chung tối đa 5 lần sai/challenge và quota complete 10/15 phút/email,
+30/15 phút/IP. Sai challenge ID cũng tính lượt trên challenge đang sống.
+Không replay verify thành công; retry vẫn kiểm trạng thái hiện tại và tính quota.
+Mobile#622 chỉ chuyển OTP → mật khẩu sau 204; đồng bộ types 9.4.0-alpha.1.
+Request/complete giữ DTO, response và completion replay hiện có.
+
 ## 9.2.0-alpha.1 — Recovery account not found (#835, Refs #772)
 
 MINOR theo quyết định owner 2026-11-10: request recovery thêm response 404

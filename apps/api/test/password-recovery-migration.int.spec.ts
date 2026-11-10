@@ -6,6 +6,7 @@ import { PasswordService } from '../../../libs/modules/identity/application/pass
 import {
   COMPLETE,
   REQUEST,
+  VERIFY,
   NEW_PASSWORD,
   OLD_PASSWORD,
   crypto,
@@ -177,7 +178,7 @@ describe('I-4 forward migration, retention and disable rollback', () => {
     ).toEqual([{ key: 'cleanup-live' }]);
   });
 
-  it('restart with disabled mail uniformly refuses both endpoints, keeps tables and revocations, and preserves the new password', async () => {
+  it('restart with disabled mail uniformly refuses recovery endpoints, keeps tables and revocations, and preserves the new password', async () => {
     const user = await f.prepare();
     expect((await post(f.a, COMPLETE, user.input)).statusCode).toBe(204);
     await f.stopApp(f.a);
@@ -186,7 +187,7 @@ describe('I-4 forward migration, retention and disable rollback', () => {
     const disabled = await f.startApp({ disabled: true });
     const bodies = [];
     for (const email of [user.email, `missing-${randomUUID()}@example.test`]) {
-      for (const endpoint of [REQUEST, COMPLETE]) {
+      for (const endpoint of [REQUEST, VERIFY, COMPLETE]) {
         const response = await post(
           disabled,
           endpoint,

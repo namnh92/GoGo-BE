@@ -11,6 +11,7 @@ import type { RecoveryResponse } from '../../../libs/modules/identity/applicatio
 import {
   COMPLETE,
   REQUEST,
+  VERIFY,
   NEW_PASSWORD,
   auth,
   crypto,
@@ -80,7 +81,7 @@ describe('I-2 real app enumeration, quota and replay contracts', () => {
         <T>(
           digest: string,
           email: string,
-          mode: 'request' | 'complete',
+          mode: 'request' | 'verify' | 'complete',
           key: string,
           work: (tx: RecoveryTransaction) => Promise<T>,
         ) =>
@@ -166,7 +167,7 @@ describe('I-2 real app enumeration, quota and replay contracts', () => {
     const eligible = await f.register();
     const missing = `missing-${randomUUID()}@example.test`;
     const disabled = await f.startApp({ disabled: true });
-    for (const endpoint of [REQUEST, COMPLETE]) {
+    for (const endpoint of [REQUEST, VERIFY, COMPLETE]) {
       const bodies: Record<string, unknown>[] = [];
       for (const email of [eligible.email, missing]) {
         const response = await post(
@@ -355,7 +356,7 @@ describe('I-2 real app enumeration, quota and replay contracts', () => {
         <T>(
           digest: string,
           email: string,
-          mode: 'request' | 'complete',
+          mode: 'request' | 'verify' | 'complete',
           key: string,
           work: (tx: RecoveryTransaction) => Promise<T>,
         ) =>

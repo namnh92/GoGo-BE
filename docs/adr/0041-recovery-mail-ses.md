@@ -124,6 +124,45 @@ Rollout cùng Mobile#620 sau khi đồng bộ generated contract; xác minh các
 và công bố contract tương ứng; không cần rollback dữ liệu/migration. Tắt mail
 vẫn dùng adapter disabled và trả 503 như phần vận hành bên dưới.
 
+## Amendment 2026-11-10 — GoGo-BE#845: kiểm tra OTP trước màn mật khẩu
+
+Owner báo Mobile#620/PR #622 vẫn chuyển màn đặt mật khẩu khi nhập sai OTP.
+Thêm `POST /v1/auth/password-recovery/verify` với `{ email, challengeId, code }`;
+204 rỗng chỉ khi proof đúng, còn hạn, chưa dùng và vẫn gắn với tài khoản mật khẩu
+active ban đầu. Verify không tiêu mã, không đổi mật khẩu/email verification,
+không thu hồi session, không tạo completion replay. Complete vẫn kiểm lại proof
+và reset single-use; không thay request/complete DTO, response hoặc replay.
+
+Verify và complete dùng chung hàm kiểm proof, transaction repository và thứ tự
+lock: replay advisory → email advisory → original user `FOR UPDATE` → challenge
+`FOR UPDATE`. Verify dùng lock key HMAC ngẫu nhiên, không đọc/ghi replay thành công;
+`NoIdempotencyReplay` bỏ generic interceptor để mọi lần gọi kiểm trạng thái hiện
+tại, kể cả retry cùng key. Vì vậy success trước đó không bỏ qua expiry/resend/reset.
+
+Proof sai, hết hạn, đã dùng, bị thay hoặc challenge không khớp đều 400
+`RECOVERY_INVALID`. Mỗi lần kiểm sai trên challenge còn sống tăng cùng cột
+`attempts`, kể cả challenge ID không khớp; transaction commit counter trước khi
+trả 400. Counter tối đa 5, hết lượt từ chối cả verify lẫn complete; proof đã hết
+hạn/đã dùng/hết lượt không tăng tiếp. Không đổi schema/migration 0079.
+Lock chung ngăn lost update và serialize lần sai thứ năm với complete đúng.
+
+Verify dùng chung bucket complete hiện có: 10/15 phút/email, 30/15 phút/IP;
+429 giữ envelope và Retry-After 900 giây. Redis fail closed. Email/IP trong quota
+key là HMAC; không log code, email thô, request body hay DB diagnostic.
+Metrics failure/throttle/duration thêm action cố định `verify`, không nhãn identity.
+
+Contract MINOR `9.3.0-alpha.1` → `9.4.0-alpha.1`, types sinh bằng `pnpm api:types`
+và version kiểm bằng `pnpm api:version <base-spec> openapi/gogo.v1.yaml`.
+Mobile đồng bộ contract, nhập đủ 6 số → verify → 204 mới sang màn mật khẩu;
+400 ở lại OTP, 429 tôn trọng Retry-After. Complete vẫn có thể từ chối nếu proof
+hết hạn/bị dùng sau verify, nên Mobile phải giữ xử lý lỗi complete.
+
+Kiểm chứng: unit và HTTP regression FAIL-before/PASS-after; integration bổ sung
+verify không tiêu mã, counter chung, contention thật PostgreSQL, Redis quotas,
+rollback lỗi ghi và telemetry privacy. Integration không chạy trong phiên này;
+chi tiết/lệnh chạy ở `docs/verification/be-845.md`. Rollback bỏ endpoint và đồng
+bộ Mobile; không hoàn tác password/session đã reset, không migration dữ liệu.
+
 ## Required configuration
 
 Mapping phối hợp cho **GoGo-Infra#339** dưới đây là tên BE yêu cầu. Infra cần
