@@ -542,7 +542,10 @@ export class RoomsRepository {
   }): Promise<{ guestSessionId: string | null }> {
     return this.db.transaction(async (tx) => {
       const [candidate] = await tx
-        .select({ roomId: schema.roomMembers.roomId })
+        .select({
+          roomId: schema.roomMembers.roomId,
+          guestSessionId: schema.roomMembers.guestSessionId,
+        })
         .from(schema.roomMembers)
         .where(eq(schema.roomMembers.id, input.memberId))
         .limit(1);
@@ -552,6 +555,14 @@ export class RoomsRepository {
           .from(schema.rooms)
           .where(eq(schema.rooms.id, candidate.roomId))
           .for('share');
+      // Match claim and CMS removal: session before membership. Otherwise a
+      // host removal holding the member can deadlock with either guest writer.
+      if (candidate?.guestSessionId)
+        await tx
+          .select({ id: schema.guestSessions.id })
+          .from(schema.guestSessions)
+          .where(eq(schema.guestSessions.id, candidate.guestSessionId))
+          .for('update');
 
       const [member] = await tx
         .update(schema.roomMembers)

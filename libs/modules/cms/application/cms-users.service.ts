@@ -536,6 +536,32 @@ export class CmsUsersService {
    */
   async removeGuest(input: { roomId: string; memberId: string; reason: string; actorId: string }) {
     return this.db.transaction(async (tx) => {
+      // Completion's FOR UPDATE is the cohort serialization point. Take this
+      // lock before reading membership, including when a claim is in flight.
+      await tx
+        .select({ id: schema.rooms.id })
+        .from(schema.rooms)
+        .where(eq(schema.rooms.id, input.roomId))
+        .for('share');
+      const [candidate] = await tx
+        .select({ guestSessionId: schema.roomMembers.guestSessionId })
+        .from(schema.roomMembers)
+        .where(
+          and(
+            eq(schema.roomMembers.id, input.memberId),
+            eq(schema.roomMembers.roomId, input.roomId),
+          ),
+        )
+        .limit(1);
+      // Claim writes the session before the membership. Use that same order
+      // and re-read the member after waiting, so a completed claim cannot be
+      // removed using a stale guest identity (or deadlock on the child rows).
+      if (candidate?.guestSessionId)
+        await tx
+          .select({ id: schema.guestSessions.id })
+          .from(schema.guestSessions)
+          .where(eq(schema.guestSessions.id, candidate.guestSessionId))
+          .for('update');
       const [member] = await tx
         .select()
         .from(schema.roomMembers)
@@ -545,7 +571,8 @@ export class CmsUsersService {
             eq(schema.roomMembers.roomId, input.roomId),
           ),
         )
-        .limit(1);
+        .limit(1)
+        .for('update');
       if (!member) throw AppError.notFound('MEMBER_NOT_FOUND', 'No such member in this room');
       if (!member.guestSessionId) {
         // Registered members have an account and a different moderation path

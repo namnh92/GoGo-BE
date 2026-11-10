@@ -41,6 +41,11 @@ and guests are excluded from subjects; inactive accounts are excluded under
 their held locks. `participantCount` counts all non-removed members, including
 guests; `stopsCompleted` counts completed stops of the current plan.
 Joins, removal and guest claim take the room FOR SHARE before membership writes.
+CMS guest removal takes it before reading membership, then locks the guest
+session before the member (matching claim's write order) and revalidates the
+member identity. Host removal also locks session before member to avoid
+inverting the order used by claim and CMS. A claim that committed while CMS waited is refused as
+`NOT_A_GUEST`, without removing the registered member.
 After five conflicting discoveries the mutation returns retryable 503.
 
 Erasure uses its existing account lock and removes the new individual recipient

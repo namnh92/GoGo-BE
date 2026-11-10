@@ -86,3 +86,83 @@ production-sized snapshot; the small Testcontainers fixture is not that proof.
 S2 owns catalogue/ledger DDL, seeds, rule-first grant locking, attribution,
 decoder quarantine, retention and full readiness; S3 owns MAJOR/CMS/dry-run;
 S4 owns writer fencing and activation. None of those gates is established by S1.
+
+## PR #830 Astra F-01 fix round (2026-11-10)
+
+CMS `removeGuest` now acquires the room `FOR SHARE` before any membership
+read, keeping completion's room `FOR UPDATE` as the serialization point.
+Because share locks permit simultaneous claim/removal, CMS also locks the
+guest session before re-reading/locking the member, matching claim's
+session-then-member write order. A claim that wins returns `NOT_A_GUEST`
+from removal without changing membership, revoking the session through CMS,
+or writing a removal audit.
+Host removal's room lock was already present, but its member-then-session
+order would invert the corrected CMS/claim order. It now locks the session
+before updating membership as well.
+
+The matching `apps/api/test/credit-event-prerequisites.int.spec.ts` adds:
+
+- Completion first: pause immediately after its real room `FOR UPDATE`,
+  before snapshot capture. On a dedicated second PostgreSQL connection,
+  prove CMS removal is blocked by that transaction using `pg_blocking_pids`
+  and `pg_stat_activity`; release completion, then verify the snapshot
+  includes the guest in `participantCount` and removal commits afterward.
+- CMS removal first: pause after its real room `FOR SHARE`, prove completion
+  waits on its room lock, then verify the committed removal is excluded
+  from the completion snapshot. Both orders check subjects, session
+  revocation, denylist invocation and exactly one removal audit.
+- Claim overlap: pause claim after its session update but before its member
+  update. Prove CMS waits on the session lock, then verify it revalidates
+  the stale guest read, refuses removal, and subsequent completion includes
+  the registered claimant in `subjects`.
+- Concurrent CMS/host removal: pause CMS after locking the session and prove
+  host removal waits on that session before taking the member lock. Both
+  removals then finish without a child-row lock inversion.
+
+The gates observe completed Drizzle SELECT/UPDATE queries as well as raw
+`tx.execute`; the completion-first gate is intentionally before the snapshot
+query, unlike the older repository-removal test. The new PostgreSQL cases
+are **NOT RUN** here; no FAIL-before/PASS-after runtime claim is made.
+
+Membership-writer audit (current application call paths):
+
+| Writer                                                                      | Room serialization                                                                                                                  |
+| --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Registered join (`RoomsService.joinAsUser`)                                 | `admitThroughInvite` locks room FOR SHARE before invite use/member insert; standalone `addUserMember` also takes the lock           |
+| Guest join / fresh session after removal (`AuthService.createGuestSession`) | Holds room FOR SHARE across admission, session creation and `addGuestMember`                                                        |
+| Guest claim / identity replacement (`IdentityRepository.claimGuestSession`) | Locks recipient account, then room FOR SHARE before session/member updates                                                          |
+| Host removal (`RoomsRepository.removeMember`)                               | Discovers immutable room ID, then locks room FOR SHARE before mutation; session-before-member order aligned here with claim and CMS |
+| CMS guest removal (`CmsUsersService.removeGuest`)                           | Fixed here: room FOR SHARE, session FOR UPDATE, member FOR UPDATE and identity revalidation                                         |
+| Initial host member (`RoomsRepository.createRoom`)                          | New room and host membership inserted in one transaction; no concurrent completion can see the uncommitted room                     |
+| Privacy / preference writers                                                | Change display name or selection status only, not cohort membership/identity                                                        |
+
+No other missing room lock was found in these production membership-changing
+paths. `addGuestMember` receives the already-locked join transaction from its
+only production caller.
+
+Checks on this fix round (logs in `/tmp/be-830-{typecheck,lint,unit}.log`):
+
+| Command          | Result                                                                                                                                             |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm typecheck` | PASS: 8/8 packages; shared-cache permission warnings only                                                                                          |
+| `pnpm lint`      | PASS                                                                                                                                               |
+| `pnpm test`      | Exit 1: 300 files / 3924 tests PASS; `apps/api/src/sentry-request.spec.ts` setup BLOCKED by sandbox `listen EPERM ... 127.0.0.1`, one skipped test |
+
+Claude must run the focused integration set below (including the CMS console's
+remove/rejoin/refuse-registered cases), plus the broader S1 integration set
+listed above before landing S1. These are pending execution, not passing gates.
+
+```sh
+pnpm exec vitest run --project integration \
+  apps/api/test/credit-event-prerequisites.int.spec.ts \
+  apps/api/test/cms.int.spec.ts \
+  apps/api/test/rooms.int.spec.ts \
+  apps/api/test/notification-event-facts.int.spec.ts
+pnpm test
+```
+
+No git commands, integrations, installs, builds, commits or remote changes
+were performed in this fix round. Claude must also rerun the full unit suite
+where listening sockets are allowed. Source hashes for this fix are in
+`829-s1-evidence/830-f01-source-sha256.json`; these identify filesystem bytes,
+not a Git head or an independent review verdict.

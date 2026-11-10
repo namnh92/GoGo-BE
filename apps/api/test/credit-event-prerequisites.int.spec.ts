@@ -12,8 +12,9 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { Pool } from 'pg';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CmsOpsService } from '../../../libs/modules/cms/application/cms-ops.service';
+import { CmsUsersService } from '../../../libs/modules/cms/application/cms-users.service';
 import { UserContentService } from '../../../libs/modules/reviews/application/user-content.service';
 import { RoomsRepository } from '../../../libs/modules/rooms/infrastructure/rooms.repository';
 import { IdentityRepository } from '../../../libs/modules/identity/infrastructure/identity.repository';
@@ -38,11 +39,45 @@ function deferred() {
 }
 
 /** Pause after a real SQL statement, keeping its real transaction/locks open. */
-function gatedDb(match: (sql: string) => boolean) {
+function gatedDb(match: (sql: string) => boolean, connection = db) {
   const reached = deferred();
   const release = deferred();
   let paused = false;
-  const wrapped = new Proxy(db, {
+  async function pause(statement: string) {
+    if (!paused && match(statement)) {
+      paused = true;
+      reached.resolve();
+      await release.promise;
+    }
+  }
+  // Drizzle SELECT/UPDATE builders do not go through tx.execute. Observe their
+  // resolved thenable as well, so a gate can stop immediately after a row lock.
+  function observe(query: object): object {
+    return new Proxy(query, {
+      get(target, property) {
+        if (property === 'then')
+          return (resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) => {
+            const statement = target as {
+              toSQL(): { sql: string };
+              then: PromiseLike<unknown>['then'];
+            };
+            return statement
+              .then(async (result) => {
+                await pause(statement.toSQL().sql);
+                return result;
+              })
+              .then(resolve, reject);
+          };
+        const value = Reflect.get(target, property);
+        if (typeof value !== 'function') return value;
+        return (...args: unknown[]) => {
+          const result: unknown = Reflect.apply(value, target, args);
+          return result !== null && typeof result === 'object' ? observe(result) : result;
+        };
+      },
+    });
+  }
+  const wrapped = new Proxy(connection, {
     get(target, key) {
       if (key === 'transaction')
         return (work: (tx: Tx) => Promise<unknown>) =>
@@ -50,14 +85,13 @@ function gatedDb(match: (sql: string) => boolean) {
             work(
               new Proxy(tx, {
                 get(transaction, property) {
+                  if (property === 'select' || property === 'update')
+                    return (...args: unknown[]) =>
+                      observe(Reflect.apply(transaction[property], transaction, args));
                   if (property !== 'execute') return Reflect.get(transaction, property);
                   return async (query: SQL) => {
                     const result = await transaction.execute(query);
-                    if (!paused && match(dialect.sqlToQuery(query).sql)) {
-                      paused = true;
-                      reached.resolve();
-                      await release.promise;
-                    }
+                    await pause(dialect.sqlToQuery(query).sql);
                     return result;
                   };
                 },
@@ -67,7 +101,55 @@ function gatedDb(match: (sql: string) => boolean) {
       return Reflect.get(target, key);
     },
   });
-  return { db: wrapped, reached: reached.promise, release: release.resolve };
+  return { db: wrapped, reached: reached.promise, release: release.resolve, paused: () => paused };
+}
+
+function cmsUsers(connection: Db) {
+  const revokeSession = vi.fn(async () => undefined);
+  return {
+    service: new CmsUsersService(connection, { revokeSession } as never, {} as never, {} as never),
+    revokeSession,
+  };
+}
+
+async function guest(roomId: string) {
+  const [session] = await db
+    .insert(schema.guestSessions)
+    .values({
+      roomId,
+      displayName: 'Guest',
+      tokenHash: randomUUID(),
+      expiresAt: new Date(Date.now() + 60000),
+    })
+    .returning();
+  const [member] = await db
+    .insert(schema.roomMembers)
+    .values({ roomId, guestSessionId: session!.id, role: 'member', displayName: 'Guest' })
+    .returning();
+  return { session: session!, member: member! };
+}
+
+async function expectBlockedBy(waiterPid: number, blockerPid: number, statement: string) {
+  await expect
+    .poll(
+      async () => {
+        const result = await pool.query<{
+          blockers: number[];
+          wait_event_type: string;
+          query: string;
+        }>(
+          'select pg_blocking_pids(pid) as blockers, wait_event_type, query from pg_stat_activity where pid=$1',
+          [waiterPid],
+        );
+        return result.rows[0];
+      },
+      { timeout: 5000 },
+    )
+    .toMatchObject({
+      blockers: [blockerPid],
+      wait_event_type: 'Lock',
+      query: expect.stringContaining(statement),
+    });
 }
 
 function content(connection = db) {
@@ -561,6 +643,201 @@ describe('#829 S1 cohort / erasure interleavings', () => {
         )
       ).rows[0].n,
     ).toBe(1);
+  });
+  it.each(['complete-first', 'cms-remove-first'] as const)(
+    'F-01 %s serializes CMS guest removal at the completion room lock',
+    async (order) => {
+      const f = await room();
+      const g = await guest(f.room.id);
+      const firstClient = await pool.connect();
+      const secondClient = await pool.connect();
+      const operations: Promise<unknown>[] = [];
+      const firstDb = drizzle(firstClient, { schema }) as unknown as Db;
+      const secondDb = drizzle(secondClient, { schema }) as unknown as Db;
+      const completeFirst = order === 'complete-first';
+      const gate = gatedDb(
+        (s) => s.includes('from "rooms"') && s.endsWith(completeFirst ? 'for update' : 'for share'),
+        firstDb,
+      );
+      const cms = cmsUsers(completeFirst ? secondDb : gate.db);
+      const remove = () =>
+        cms.service.removeGuest({
+          roomId: f.room.id,
+          memberId: g.member.id,
+          reason: 'Fixture removal',
+          actorId: adminId,
+        });
+      const completion = () =>
+        complete(new RoomsRepository(completeFirst ? gate.db : secondDb), f.room.id);
+      try {
+        const firstPid = (await firstClient.query('select pg_backend_pid() as pid')).rows[0].pid;
+        const secondPid = (await secondClient.query('select pg_backend_pid() as pid')).rows[0].pid;
+        const first = completeFirst ? completion() : remove();
+        operations.push(first);
+        void first.catch(() => undefined);
+        await expect.poll(gate.paused, { timeout: 5000 }).toBe(true);
+        // In complete-first this is before captureRoomCreditSnapshot, not after
+        // it. The guest is still present and no completion event exists yet.
+        expect(await event('room.completed', f.room.id)).toBeUndefined();
+        const second = completeFirst ? remove() : completion();
+        operations.push(second);
+        void second.catch(() => undefined);
+        await expectBlockedBy(secondPid, firstPid, completeFirst ? 'for share' : 'for update');
+        expect(
+          (await pool.query('select removed_at from room_members where id=$1', [g.member.id])).rows,
+        ).toEqual([{ removed_at: null }]);
+        expect(cms.revokeSession).not.toHaveBeenCalled();
+        gate.release();
+        await Promise.all(operations);
+        expect((await event('room.completed', f.room.id)).payload).toMatchObject({
+          room: { participantCount: completeFirst ? 2 : 1 },
+          subjects: [{ userId: f.user.id, memberId: f.member.id, role: 'host' }],
+        });
+        expect(
+          (await pool.query('select removed_at from room_members where id=$1', [g.member.id]))
+            .rows[0].removed_at,
+        ).not.toBeNull();
+        expect(
+          (await pool.query('select revoked_at from guest_sessions where id=$1', [g.session.id]))
+            .rows[0].revoked_at,
+        ).not.toBeNull();
+        expect(cms.revokeSession).toHaveBeenCalledExactlyOnceWith(g.session.id);
+        expect(
+          (
+            await pool.query(
+              "select count(*)::int n from audit_logs where resource_id=$1 and action='guest.removed_by_staff'",
+              [g.member.id],
+            )
+          ).rows[0].n,
+        ).toBe(1);
+      } finally {
+        gate.release();
+        await Promise.allSettled(operations);
+        firstClient.release();
+        secondClient.release();
+      }
+    },
+  );
+  it('F-01 CMS removal revalidates a stale guest read after an overlapping claim', async () => {
+    const f = await room();
+    const g = await guest(f.room.id);
+    const claimant = await user();
+    const claimClient = await pool.connect();
+    const cmsClient = await pool.connect();
+    const gate = gatedDb(
+      (s) => s.startsWith('update "guest_sessions"'),
+      drizzle(claimClient, { schema }) as unknown as Db,
+    );
+    const cms = cmsUsers(drizzle(cmsClient, { schema }) as unknown as Db);
+    const operations: Promise<unknown>[] = [];
+    try {
+      const claimPid = (await claimClient.query('select pg_backend_pid() as pid')).rows[0].pid;
+      const cmsPid = (await cmsClient.query('select pg_backend_pid() as pid')).rows[0].pid;
+      const claiming = new IdentityRepository(gate.db).claimGuestSession(g.session.id, claimant.id);
+      operations.push(claiming);
+      void claiming.catch(() => undefined);
+      await expect.poll(gate.paused, { timeout: 5000 }).toBe(true);
+      const removing = cms.service.removeGuest({
+        roomId: f.room.id,
+        memberId: g.member.id,
+        reason: 'Fixture removal',
+        actorId: adminId,
+      });
+      operations.push(removing);
+      void removing.catch(() => undefined);
+      // Both have FOR SHARE on the room. The session lock must serialize the
+      // child rows in claim's order before CMS re-reads the guest identity.
+      await expectBlockedBy(cmsPid, claimPid, 'for update');
+      gate.release();
+      await claiming;
+      await expect(removing).rejects.toMatchObject({ code: 'NOT_A_GUEST' });
+      expect(cms.revokeSession).not.toHaveBeenCalled();
+      expect(
+        (
+          await pool.query(
+            'select user_id, guest_session_id, removed_at from room_members where id=$1',
+            [g.member.id],
+          )
+        ).rows,
+      ).toEqual([{ user_id: claimant.id, guest_session_id: null, removed_at: null }]);
+      await complete(new RoomsRepository(db), f.room.id);
+      expect((await event('room.completed', f.room.id)).payload).toMatchObject({
+        room: { participantCount: 2 },
+        subjects: expect.arrayContaining([
+          { userId: claimant.id, memberId: g.member.id, role: 'member' },
+        ]),
+      });
+      expect(
+        (
+          await pool.query('select count(*)::int n from audit_logs where resource_id=$1', [
+            g.member.id,
+          ])
+        ).rows[0].n,
+      ).toBe(0);
+    } finally {
+      gate.release();
+      await Promise.allSettled(operations);
+      claimClient.release();
+      cmsClient.release();
+    }
+  });
+  it('F-01 host and CMS removals use the same session-before-member lock order', async () => {
+    const f = await room();
+    const g = await guest(f.room.id);
+    const cmsClient = await pool.connect();
+    const hostClient = await pool.connect();
+    const gate = gatedDb(
+      (s) => s.includes('from "guest_sessions"') && s.endsWith('for update'),
+      drizzle(cmsClient, { schema }) as unknown as Db,
+    );
+    const cms = cmsUsers(gate.db);
+    const operations: Promise<unknown>[] = [];
+    try {
+      const cmsPid = (await cmsClient.query('select pg_backend_pid() as pid')).rows[0].pid;
+      const hostPid = (await hostClient.query('select pg_backend_pid() as pid')).rows[0].pid;
+      const cmsRemoval = cms.service.removeGuest({
+        roomId: f.room.id,
+        memberId: g.member.id,
+        reason: 'Fixture removal',
+        actorId: adminId,
+      });
+      operations.push(cmsRemoval);
+      void cmsRemoval.catch(() => undefined);
+      await expect.poll(gate.paused, { timeout: 5000 }).toBe(true);
+      const hostRemoval = new RoomsRepository(
+        drizzle(hostClient, { schema }) as unknown as Db,
+      ).removeMember({
+        memberId: g.member.id,
+        removedByMemberId: f.member.id,
+        event: {
+          eventType: 'member.removed',
+          resourceType: 'room',
+          resourceId: f.room.id,
+          payload: {},
+        },
+      });
+      operations.push(hostRemoval);
+      void hostRemoval.catch(() => undefined);
+      await expectBlockedBy(hostPid, cmsPid, 'for update');
+      // Host must not hold the member while waiting for CMS's session lock.
+      expect(
+        (await pool.query('select removed_at from room_members where id=$1', [g.member.id])).rows,
+      ).toEqual([{ removed_at: null }]);
+      gate.release();
+      await Promise.all(operations);
+      expect(
+        (
+          await pool.query('select removed_by_member_id from room_members where id=$1', [
+            g.member.id,
+          ])
+        ).rows,
+      ).toEqual([{ removed_by_member_id: f.member.id }]);
+    } finally {
+      gate.release();
+      await Promise.allSettled(operations);
+      cmsClient.release();
+      hostClient.release();
+    }
   });
   it('removal before the room lock is excluded; removal after the snapshot does not rewrite it', async () => {
     for (const before of [true, false]) {
