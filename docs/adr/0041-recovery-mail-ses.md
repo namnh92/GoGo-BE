@@ -19,11 +19,19 @@ region đã validate, connection timeout 1 giây, request timeout 3 giây với
 `throwOnRequestTimeout=true`, `maxAttempts=1`. Không tự retry vì SES có thể đã
 nhận mail trước khi timeout. Không giữ transaction DB trong lúc gửi.
 
-Template text UTF-8 theo locale đã lưu của user: `en` dùng tiếng Anh, mọi giá
+Template multipart HTML + text fallback UTF-8 theo locale đã lưu của user: `en` dùng tiếng Anh, mọi giá
 trị khác mặc định `vi`. Không thêm field vào public DTO/OpenAPI hoặc generated
-client. Nội dung chỉ có mã sáu chữ số, expiry UTC và hướng dẫn bảo mật; không
+client. Nội dung chỉ có mã sáu chữ số, expiry theo Asia/Ho_Chi_Minh và hướng dẫn bảo mật; không
 có URL/token/challenge ID, provider tags, account ID hoặc lưu provider response.
 Decoy `null` đi cùng adapter path nhưng không gọi SES.
+
+Amendment GoGo-BE#837 (2026-11-10): template pure module trả subject/html/text,
+vi mặc định hoặc en; HTML layout bảng, CSS inline, rộng tối đa 560px, wordmark
+bằng chữ và palette Stitch từ Mobile tokens. Có preheader ẩn chỉ nêu mục đích,
+không chứa mã; escape mọi giá trị chèn HTML. Giờ hết hạn theo giờ Việt Nam,
+footer email tự động/không trả lời. Không ảnh ngoài, tracking pixel hoặc link.
+Khai báo color-scheme light và nền opaque; Gmail Light/Dark cần kiểm chứng thật.
+Vẫn dùng SES Simple content, không đổi IAM hay contract.
 
 Delivery chạy tách khỏi promise trả HTTP sau khi transaction đã commit; cả
 eligible và decoy giữ cùng padding tối thiểu 250 ms, không chờ SES hoặc DB

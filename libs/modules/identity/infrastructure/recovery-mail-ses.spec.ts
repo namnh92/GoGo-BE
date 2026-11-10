@@ -16,11 +16,11 @@ const message: RecoveryMail = {
 
 describe('SES recovery mail adapter (injected client)', () => {
   it.each([
-    [undefined, 'GoGo: Khôi phục mật khẩu', 'Mã khôi phục mật khẩu GoGo của bạn: 012345'],
-    ['vi', 'GoGo: Khôi phục mật khẩu', 'Mã khôi phục mật khẩu GoGo của bạn: 012345'],
-    ['en', 'GoGo: Reset your password', 'Your GoGo password recovery code: 012345'],
+    [undefined, 'Mã khôi phục mật khẩu GoGo', 'Mã khôi phục của bạn: 012345'],
+    ['vi', 'Mã khôi phục mật khẩu GoGo', 'Mã khôi phục của bạn: 012345'],
+    ['en', 'Your GoGo password reset code', 'Your password reset code: 012345'],
   ] as const)(
-    'renders locale %s with a six-digit code and UTC expiry',
+    'renders locale %s with multipart content, a six-digit code and Vietnam expiry',
     async (locale, subject, body) => {
       const sendEmail = vi.fn().mockResolvedValue({ MessageId: 'not-retained' });
       const adapter = new SesRecoveryMailSender({ sendEmail }, config);
@@ -33,6 +33,7 @@ describe('SES recovery mail adapter (injected client)', () => {
           Simple: {
             Subject: { Data: subject, Charset: 'UTF-8' },
             Body: {
+              Html: { Data: expect.stringContaining(message.code), Charset: 'UTF-8' },
               Text: {
                 Data: expect.stringContaining(body),
                 Charset: 'UTF-8',
@@ -41,11 +42,19 @@ describe('SES recovery mail adapter (injected client)', () => {
           },
         },
       });
-      const text = sendEmail.mock.calls[0]?.[0].Content.Simple.Body.Text.Data;
-      expect(text).toContain('2026-11-06T12:05:00.000Z (UTC)');
-      expect(text).not.toContain(message.challengeId);
-      expect(text).not.toContain(message.email);
-      expect(text).not.toContain('https://');
+      const { Html, Text } = sendEmail.mock.calls[0]![0].Content.Simple.Body;
+      const expiry =
+        locale === 'en'
+          ? '07:05 PM, November 6, 2026 (Vietnam time, UTC+7)'
+          : '19:05, 06/11/2026 (giờ Việt Nam)';
+      for (const content of [Html.Data, Text.Data]) {
+        expect(content).toContain(message.code);
+        expect(content).toContain(expiry);
+        expect(content).not.toContain(message.challengeId);
+        expect(content).not.toContain(message.email);
+        expect(content).not.toMatch(/http|<img|<a\b/i);
+        expect(content).not.toContain('2026-11-06T12:05:00.000Z');
+      }
     },
   );
 

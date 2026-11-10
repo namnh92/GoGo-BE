@@ -1,0 +1,216 @@
+/** Fixed Stitch palette from Mobile src/shared/ui/tokens.ts (2026-11-10).
+ * Kept local so the mail template has no runtime dependency on the mobile app.
+ */
+export const recoveryMailColors = {
+  brand: '#20124A', // brandLogo.background
+  accent: '#A71E07', // accents.orange.text
+  accentSoft: '#FFE3DA', // accents.orange.soft
+  canvas: '#FFF8F3', // surface.canvas
+  card: '#FFFFFF', // surface.card
+  text: '#1D1B18', // text.primary
+  secondary: '#5A413B', // text.secondary
+} as const;
+
+const copy = {
+  vi: {
+    subject: 'Mã khôi phục mật khẩu GoGo',
+    preheader: 'Sử dụng mã xác nhận để khôi phục mật khẩu GoGo.',
+    heading: 'Khôi phục mật khẩu',
+    purpose: 'Nhập mã gồm 6 chữ số dưới đây trong ứng dụng GoGo để khôi phục mật khẩu của bạn.',
+    codeLabel: 'Mã khôi phục của bạn',
+    expiry: 'Mã hết hạn lúc',
+    safety: 'Không chia sẻ mã này với bất kỳ ai.',
+    ignore: 'Nếu bạn không yêu cầu khôi phục mật khẩu, hãy bỏ qua email này.',
+    footer: 'Đây là email tự động. Vui lòng không trả lời.',
+  },
+  en: {
+    subject: 'Your GoGo password reset code',
+    preheader: 'Use your verification code to reset your GoGo password.',
+    heading: 'Reset your password',
+    purpose: 'Enter the 6-digit code below in the GoGo app to reset your password.',
+    codeLabel: 'Your password reset code',
+    expiry: 'This code expires at',
+    safety: 'Do not share this code with anyone.',
+    ignore: 'If you did not request a password reset, ignore this email.',
+    footer: 'This is an automated email. Please do not reply.',
+  },
+} as const;
+
+/** Escape every interpolation, including copy, before it enters HTML. */
+function html(strings: TemplateStringsArray, ...values: string[]): string {
+  return strings.reduce((result, part, index) => {
+    const escaped = (values[index] ?? '').replace(/[&<>"']/g, (character) => {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]!;
+    });
+    return result + part + escaped;
+  }, '');
+}
+
+function formatExpiry(expiresAt: Date, locale: 'vi' | 'en'): string {
+  const options = { timeZone: 'Asia/Ho_Chi_Minh' } as const;
+  if (locale === 'vi') {
+    const time = new Intl.DateTimeFormat('vi-VN', {
+      ...options,
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).format(expiresAt);
+    const date = new Intl.DateTimeFormat('vi-VN', {
+      ...options,
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    }).format(expiresAt);
+    return `${time}, ${date} (giờ Việt Nam)`;
+  }
+  const time = new Intl.DateTimeFormat('en-US', {
+    ...options,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  }).format(expiresAt);
+  const date = new Intl.DateTimeFormat('en-US', {
+    ...options,
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(expiresAt);
+  return `${time}, ${date} (Vietnam time, UTC+7)`;
+}
+
+/** Pure presentation only: no recipient, challenge, provider or telemetry data. */
+export function renderRecoveryMail(input: {
+  code: string;
+  expiresAt: Date;
+  locale?: 'vi' | 'en';
+}): { subject: string; html: string; text: string } {
+  const locale = input.locale === 'en' ? 'en' : 'vi';
+  const c = copy[locale];
+  const colors = recoveryMailColors;
+  const expiry = `${c.expiry} ${formatExpiry(input.expiresAt, locale)}.`;
+  return {
+    subject: c.subject,
+    text: [
+      'GoGo',
+      c.heading,
+      c.purpose,
+      `${c.codeLabel}: ${input.code}`,
+      expiry,
+      c.safety,
+      c.ignore,
+      c.footer,
+    ].join('\n\n'),
+    html: html`<!doctype html>
+      <html lang="${locale}">
+        <head>
+          <meta charset="UTF-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <meta name="color-scheme" content="light" />
+          <meta name="supported-color-schemes" content="light" />
+          <title>${c.subject}</title>
+        </head>
+        <body
+          bgcolor="${colors.canvas}"
+          style="margin:0;padding:0;background-color:${colors.canvas};color:${colors.text};font-family:Arial,Helvetica,sans-serif;color-scheme:light;"
+        >
+          <div
+            style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;"
+          >
+            ${c.preheader}
+          </div>
+          <table
+            role="presentation"
+            width="100%"
+            cellpadding="0"
+            cellspacing="0"
+            border="0"
+            bgcolor="${colors.canvas}"
+            style="background-color:${colors.canvas};"
+          >
+            <tr>
+              <td align="center" style="padding:24px 12px;">
+                <table
+                  role="presentation"
+                  width="560"
+                  cellpadding="0"
+                  cellspacing="0"
+                  border="0"
+                  bgcolor="${colors.card}"
+                  style="width:100%;max-width:560px;background-color:${colors.card};border-radius:20px;"
+                >
+                  <tr>
+                    <td
+                      bgcolor="${colors.brand}"
+                      style="padding:24px;background-color:${colors.brand};color:${colors.canvas};border-radius:20px 20px 0 0;font-size:30px;line-height:36px;font-weight:bold;"
+                    >
+                      GoGo
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding:28px 24px;color:${colors.text};">
+                      <h1
+                        style="margin:0 0 16px;font-size:24px;line-height:32px;color:${colors.text};"
+                      >
+                        ${c.heading}
+                      </h1>
+                      <p
+                        style="margin:0 0 24px;font-size:16px;line-height:26px;color:${colors.secondary};"
+                      >
+                        ${c.purpose}
+                      </p>
+                      <table
+                        role="presentation"
+                        width="100%"
+                        cellpadding="0"
+                        cellspacing="0"
+                        border="0"
+                        bgcolor="${colors.accentSoft}"
+                        style="background-color:${colors.accentSoft};border-radius:12px;"
+                      >
+                        <tr>
+                          <td align="center" style="padding:20px 8px;color:${colors.accent};">
+                            <p style="margin:0 0 8px;font-size:14px;line-height:22px;">
+                              ${c.codeLabel}
+                            </p>
+                            <p
+                              dir="ltr"
+                              style="margin:0;font-family:Consolas,'Courier New',monospace;font-size:36px;line-height:48px;font-weight:bold;letter-spacing:6px;white-space:nowrap;color:${colors.accent};"
+                            >
+                              ${input.code}
+                            </p>
+                          </td>
+                        </tr>
+                      </table>
+                      <p
+                        style="margin:20px 0 24px;font-size:14px;line-height:24px;color:${colors.secondary};"
+                      >
+                        ${expiry}
+                      </p>
+                      <p
+                        style="margin:0 0 8px;font-size:14px;line-height:24px;color:${colors.text};font-weight:bold;"
+                      >
+                        ${c.safety}
+                      </p>
+                      <p
+                        style="margin:0;font-size:14px;line-height:24px;color:${colors.secondary};"
+                      >
+                        ${c.ignore}
+                      </p>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td
+                      bgcolor="${colors.canvas}"
+                      style="padding:20px 24px;background-color:${colors.canvas};color:${colors.secondary};border-radius:0 0 20px 20px;font-size:12px;line-height:20px;"
+                    >
+                      ${c.footer}
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+          </table>
+        </body>
+      </html>`,
+  };
+}

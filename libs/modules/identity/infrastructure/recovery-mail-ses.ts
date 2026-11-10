@@ -1,4 +1,5 @@
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
+import { renderRecoveryMail } from './recovery-mail-template';
 import { AppError } from '../../shared/app-error';
 import {
   RecoveryMailSender,
@@ -14,7 +15,10 @@ export type RecoverySesEmail = {
   Content: {
     Simple: {
       Subject: { Data: string; Charset: 'UTF-8' };
-      Body: { Text: { Data: string; Charset: 'UTF-8' } };
+      Body: {
+        Html: { Data: string; Charset: 'UTF-8' };
+        Text: { Data: string; Charset: 'UTF-8' };
+      };
     };
   };
 };
@@ -52,19 +56,6 @@ export class SdkRecoverySesClient implements RecoverySesClient {
   }
 }
 
-const templates = {
-  vi: {
-    subject: 'GoGo: Khôi phục mật khẩu',
-    body: (code: string, expiresAt: string) =>
-      `Mã khôi phục mật khẩu GoGo của bạn: ${code}\nMã hết hạn lúc ${expiresAt} (UTC).\nKhông chia sẻ mã này với bất kỳ ai. Nếu bạn không yêu cầu khôi phục mật khẩu, hãy bỏ qua email này.`,
-  },
-  en: {
-    subject: 'GoGo: Reset your password',
-    body: (code: string, expiresAt: string) =>
-      `Your GoGo password recovery code: ${code}\nThis code expires at ${expiresAt} (UTC).\nDo not share this code with anyone. If you did not request a password reset, ignore this email.`,
-  },
-};
-
 /** No logging, provider response retention, tags, links, or account identifiers. */
 export class SesRecoveryMailSender extends RecoveryMailSender {
   override readonly adapter = 'ses' as const;
@@ -89,8 +80,8 @@ export class SesRecoveryMailSender extends RecoveryMailSender {
     this.assertConfigured();
     // Missing/ineligible accounts enter the adapter but never reach SES.
     if (!message) return;
-    const template = templates[message.locale ?? 'vi'];
     try {
+      const template = renderRecoveryMail(message);
       await this.client.sendEmail({
         FromEmailAddress: this.config.sender,
         ConfigurationSetName: this.config.configurationSet,
@@ -99,8 +90,9 @@ export class SesRecoveryMailSender extends RecoveryMailSender {
           Simple: {
             Subject: { Data: template.subject, Charset: 'UTF-8' },
             Body: {
+              Html: { Data: template.html, Charset: 'UTF-8' },
               Text: {
-                Data: template.body(message.code, message.expiresAt.toISOString()),
+                Data: template.text,
                 Charset: 'UTF-8',
               },
             },
