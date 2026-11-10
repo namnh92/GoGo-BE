@@ -27,7 +27,10 @@ describe('SES SDK bridge (#777)', () => {
       Content: {
         Simple: {
           Subject: { Data: 'subject', Charset: 'UTF-8' },
-          Body: { Text: { Data: 'body', Charset: 'UTF-8' } },
+          Body: {
+            Html: { Data: '<p>body</p>', Charset: 'UTF-8' },
+            Text: { Data: 'body', Charset: 'UTF-8' },
+          },
         },
       },
     };
