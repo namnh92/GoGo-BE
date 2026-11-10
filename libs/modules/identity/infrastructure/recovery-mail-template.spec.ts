@@ -18,7 +18,7 @@ describe('recovery mail template (#837, #839)', () => {
     const visible = mail.html.slice(mail.html.indexOf('<table'));
     for (const match of visible.matchAll(/>([^<>]+)</g)) {
       const phrase = match[1]!.trim();
-      if (phrase && !/^(Sắp có trên|Coming soon on) /.test(phrase)) {
+      if (phrase && !/^(Sắp có trên|Coming soon on|App Store|Google Play)$/.test(phrase)) {
         expect(mail.text).toContain(phrase);
       }
     }
@@ -65,39 +65,38 @@ describe('recovery mail template (#837, #839)', () => {
       );
       expect(html).toContain('<meta name="x-apple-disable-message-reformatting" />');
       expect(html).toMatch(/@media \(max-width:\s*600px\)[\s\S]*?padding:\s*12px 8px !important/);
-      expect(html).toMatch(/@media \(max-width:\s*479px\)[\s\S]*?\.store-column/);
+      expect(html).toMatch(/\.store-badge\s*\{\s*padding: 8px 4px !important/);
+      expect(html).not.toMatch(/\.store-column\s*\{/);
+      expect(html).not.toMatch(/display:\s*(block|inline-block).*width:\s*100%/);
       expect(html).toMatch(/font-size:\s*28px !important;\s*letter-spacing:\s*2px !important;/);
 
       // Gmail clients may remove head CSS: the base layout must still fit at 320px.
       const inline = html.replace(/<style>[\s\S]*?<\/style>/g, '');
       expect(inline).not.toContain('width="560"');
       expect(inline).toContain('width:100%;max-width:560px');
-      expect(inline).toContain('width:120px;max-width:100%;height:auto;');
+      expect(inline).toContain('width:64px;height:45px;');
       const codeStyle = inline.match(/class="recovery-code"\s+dir="ltr"\s+style="([^"]+)"/)![1]!;
       const fontSize = Number(codeStyle.match(/font-size:(\d+)px/)![1]);
       const spacing = Number(codeStyle.match(/letter-spacing:(\d+)px/)![1]);
       // Conservative full-em digit widths, plus spacing, within all inline padding.
       expect(6 * (fontSize + spacing)).toBeLessThanOrEqual(320 - 2 * (12 + 24 + 8));
-      const columns = [...inline.matchAll(/<div\s+class="store-column"\s+style="([^"]+)"/g)];
-      expect(columns).toHaveLength(2);
-      for (const column of columns) {
-        expect(column[1]).toContain('display:inline-block');
-        expect(column[1]).toContain('width:100%;max-width:240px');
+      const stores = inline.match(/<table\s+class="store-row"[^>]*>([\s\S]*?)<\/table>/)![1]!;
+      expect(stores.match(/<tr>/g)).toHaveLength(1);
+      expect(
+        stores.match(/<td\s+class="store-column"\s+width="50%"\s+valign="middle"/g),
+      ).toHaveLength(2);
+      expect(inline).toContain('table-layout:fixed');
+      expect(stores).not.toMatch(/<img|<div|display:inline-block/);
+      for (const badge of stores.matchAll(/<a\s+[^>]+style="([^"]+)"/g)) {
+        expect(badge[1]).toContain('display:block;min-height:44px');
+        expect(badge[1]).toContain('padding:10px 6px');
+        expect(badge[1]).toContain(`background-color:${colors.store}`);
+        expect(badge[1]).toContain(`color:${colors.onBrand}`);
       }
-      const stores = inline.slice(
-        inline.indexOf('class="store-column"'),
-        inline.lastIndexOf('</div>'),
-      );
-      expect(stores).not.toContain('<td');
-      expect([...inline.matchAll(/<a\s+[^>]+style="([^"]+)"/g)]).toHaveLength(2);
-      for (const link of inline.matchAll(/<a\s+[^>]+style="([^"]+)"/g)) {
-        expect(link[1]).toContain('display:block;min-height:44px');
-        expect(link[1]).toContain('padding:12px 8px');
-      }
-      // Ignore the hidden preheader and zero-size whitespace suppression wrapper.
-      for (const size of inline.slice(inline.indexOf('<table')).matchAll(/font-size:(\d+)px/g)) {
-        expect(Number(size[1]) === 0 || Number(size[1]) >= 15).toBe(true);
-      }
+      expect(stores.match(/<a\b/g)).toHaveLength(2);
+      // Inline fallback: each badge gets 124px at 320px, with 20px total cell/badge padding.
+      // Arial bold "Google Play" at 16px fits the remaining 104px without wrapping.
+      expect((320 - 2 * (12 + 24)) / 2 - 2 * (4 + 6)).toBeGreaterThanOrEqual(104);
     },
   );
 
@@ -120,12 +119,24 @@ describe('recovery mail template (#837, #839)', () => {
       expect(mail.text).toContain(intro);
       expect(mail.html.indexOf(intro)).toBeGreaterThan(mail.html.indexOf(sample.code));
       expect(mail.html).toMatch(
-        /<img\s+class="mail-logo"\s+src="https:\/\/gogo.id.vn\/brand\/gogo-mail-logo.png"\s+alt="GoGo"\s+width="120"\s+height="111"/,
+        /<img\s+class="mail-logo"\s+src="https:\/\/gogo.id.vn\/brand\/gogo-mail-mark.png"\s+alt="GoGo"\s+width="64"\s+height="45"/,
+      );
+      expect(mail.html).not.toContain('gogo-mail-logo.png');
+      const header = mail.html.match(/<td\s+class="mail-header"[\s\S]*?<\/table>/)![0];
+      expect(header.match(/<tr>/g)).toHaveLength(1);
+      expect(header.match(/valign="middle"/g)).toHaveLength(2);
+      expect(header).toMatch(/>\s*GoGo\s*<\/p>/);
+      expect(header).toContain(
+        locale === 'vi' ? 'Gợi ý điểm đến cho bạn' : 'Destination ideas for you',
       );
       expect(mail.html.match(/<img\b/g)).toHaveLength(1);
       expect(mail.html).not.toMatch(/<a\b/i);
       for (const label of ['App Store', 'Google Play']) {
-        expect(mail.html).toContain(`${comingSoon} ${label}`);
+        expect(mail.html).toMatch(
+          new RegExp(
+            `>\\s*${comingSoon}\\s*</span\\s*>\\s*<strong[^>]+>\\s*${label}\\s*</strong\\s*>`,
+          ),
+        );
         expect(mail.text).not.toContain(label);
       }
     },
@@ -143,8 +154,8 @@ describe('recovery mail template (#837, #839)', () => {
       expect(mail.html).toContain(
         'href="https://play.google.com/store/apps/details?id=vn.gogo&amp;hl=en"',
       );
-      expect(mail.html).toMatch(/>\s*App Store<\/a\s*>/);
-      expect(mail.html).toMatch(/>\s*Google Play<\/a\s*>/);
+      expect(mail.html).toMatch(/>\s*App Store\s*<\/strong\s*>/);
+      expect(mail.html).toMatch(/>\s*Google Play\s*<\/strong\s*>/);
       expect(mail.text).toContain(`App Store: ${links.appStore}`);
       expect(mail.text).toContain(`Google Play: ${links.googlePlay}`);
       for (const match of mail.html.matchAll(/(?:href|src)="([^"]*)"/g)) {
@@ -161,7 +172,9 @@ describe('recovery mail template (#837, #839)', () => {
       googlePlay: null,
     });
     expect(mail.html.match(/<a\b/g)).toHaveLength(1);
-    expect(mail.html).toContain('Sắp có trên Google Play');
+    expect(mail.html).toMatch(
+      />\s*Sắp có trên\s*<\/span\s*>\s*<strong[^>]+>\s*Google Play\s*<\/strong\s*>/,
+    );
     expect(mail.text).toContain('App Store: https://apps.apple.com/app/id123456');
     expect(mail.text).not.toContain('Google Play');
   });
@@ -226,6 +239,9 @@ describe('recovery mail template (#837, #839)', () => {
     }
     for (const [foreground, background] of [
       [colors.canvas, colors.brand],
+      [colors.onBrand, colors.brand],
+      [colors.onBrandSecondary, colors.brand],
+      [colors.onBrand, colors.store],
       [colors.text, colors.card],
       [colors.secondary, colors.card],
       [colors.secondary, colors.canvas],

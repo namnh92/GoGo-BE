@@ -9,6 +9,9 @@ export const recoveryMailColors = {
   card: '#FFFFFF', // surface.card
   text: '#1D1B18', // text.primary
   secondary: '#5A413B', // text.secondary
+  onBrand: '#FFFFFF',
+  onBrandSecondary: '#E4DEF2',
+  store: '#171717',
 } as const;
 
 export const recoveryMailStoreLinks: Readonly<{
@@ -41,6 +44,7 @@ const copy = {
   vi: {
     subject: 'Mã khôi phục mật khẩu GoGo',
     preheader: 'Sử dụng mã xác nhận để khôi phục mật khẩu GoGo.',
+    tagline: 'Gợi ý điểm đến cho bạn',
     heading: 'Khôi phục mật khẩu',
     purpose: 'Nhập mã gồm 6 chữ số dưới đây trong ứng dụng GoGo để khôi phục mật khẩu của bạn.',
     codeLabel: 'Mã khôi phục của bạn',
@@ -56,6 +60,7 @@ const copy = {
   en: {
     subject: 'Your GoGo password reset code',
     preheader: 'Use your verification code to reset your GoGo password.',
+    tagline: 'Destination ideas for you',
     heading: 'Reset your password',
     purpose: 'Enter the 6-digit code below in the GoGo app to reset your password.',
     codeLabel: 'Your password reset code',
@@ -129,29 +134,39 @@ export function renderRecoveryMail(
   ];
   const storeColumns = stores
     .map(({ label, url }) => {
+      const badge = {
+        markup: html`<span
+            class="store-caption"
+            style="display:block;font-size:11px;line-height:16px;white-space:nowrap;"
+            >${c.comingSoon}</span
+          >
+          <strong
+            class="store-name"
+            style="display:block;font-size:16px;line-height:22px;white-space:nowrap;"
+            >${label}</strong
+          >`,
+      };
+      const badgeStyle = `display:block;min-height:44px;box-sizing:border-box;padding:10px 6px;background-color:${colors.store};border-radius:10px;color:${colors.onBrand};text-align:center;text-decoration:none;`;
       const content = {
         markup: url
-          ? html`<a
-              href="${url}"
-              style="display:block;min-height:44px;box-sizing:border-box;padding:12px 8px;color:${colors.accent};text-decoration:underline;"
-              >${label}</a
-            >`
-          : html`<span style="display:block;min-height:44px;box-sizing:border-box;padding:12px 8px;"
-              >${c.comingSoon} ${label}</span
-            >`,
+          ? html`<a class="store-badge" href="${url}" style="${badgeStyle}">${badge}</a>`
+          : html`<span class="store-badge" style="${badgeStyle}">${badge}</span>`,
       };
-      return html`<div
+      return html`<td
         class="store-column"
-        style="display:inline-block;vertical-align:top;width:100%;max-width:240px;font-size:15px;line-height:22px;text-align:center;color:${colors.secondary};background-color:${colors.canvas};"
+        width="50%"
+        valign="middle"
+        style="width:50%;padding:0 4px;"
       >
         ${content}
-      </div>`;
+      </td>`;
     })
     .join('');
   return {
     subject: c.subject,
     text: [
       'GoGo',
+      c.tagline,
       c.heading,
       c.purpose,
       `${c.codeLabel}: ${input.code}`,
@@ -185,18 +200,18 @@ export function renderRecoveryMail(
               .mail-footer {
                 padding: 20px 16px !important;
               }
-              .mail-logo {
-                width: 96px !important;
-                height: auto !important;
-              }
               .recovery-code {
                 font-size: 28px !important;
                 letter-spacing: 2px !important;
               }
-            }
-            @media (max-width: 479px) {
-              .store-column {
-                max-width: 100% !important;
+              .store-badge {
+                padding: 8px 4px !important;
+              }
+              .store-caption {
+                font-size: 10px !important;
+              }
+              .store-name {
+                font-size: 14px !important;
               }
             }
           </style>
@@ -236,14 +251,38 @@ export function renderRecoveryMail(
                       bgcolor="${colors.brand}"
                       style="padding:24px;background-color:${colors.brand};color:${colors.canvas};border-radius:20px 20px 0 0;font-size:30px;line-height:36px;font-weight:bold;"
                     >
-                      <img
-                        class="mail-logo"
-                        src="https://gogo.id.vn/brand/gogo-mail-logo.png"
-                        alt="GoGo"
-                        width="120"
-                        height="111"
-                        style="display:block;width:120px;max-width:100%;height:auto;border:0;background-color:${colors.brand};color:${colors.canvas};font-size:30px;line-height:36px;font-weight:bold;"
-                      />
+                      <table
+                        role="presentation"
+                        width="100%"
+                        cellpadding="0"
+                        cellspacing="0"
+                        border="0"
+                      >
+                        <tr>
+                          <td width="64" valign="middle" style="width:64px;">
+                            <img
+                              class="mail-logo"
+                              src="https://gogo.id.vn/brand/gogo-mail-mark.png"
+                              alt="GoGo"
+                              width="64"
+                              height="45"
+                              style="display:block;width:64px;height:45px;border:0;"
+                            />
+                          </td>
+                          <td valign="middle" style="padding-left:12px;">
+                            <p
+                              style="margin:0;font-size:26px;line-height:32px;font-weight:bold;color:${colors.onBrand};"
+                            >
+                              GoGo
+                            </p>
+                            <p
+                              style="margin:0;font-size:13px;line-height:20px;font-weight:normal;color:${colors.onBrandSecondary};"
+                            >
+                              ${c.tagline}
+                            </p>
+                          </td>
+                        </tr>
+                      </table>
                     </td>
                   </tr>
                   <tr>
@@ -302,7 +341,19 @@ export function renderRecoveryMail(
                       >
                         ${c.intro}
                       </p>
-                      <div style="font-size:0;text-align:center;">${{ markup: storeColumns }}</div>
+                      <table
+                        class="store-row"
+                        role="presentation"
+                        width="100%"
+                        cellpadding="0"
+                        cellspacing="0"
+                        border="0"
+                        style="width:100%;table-layout:fixed;"
+                      >
+                        <tr>
+                          ${{ markup: storeColumns }}
+                        </tr>
+                      </table>
                     </td>
                   </tr>
                   <tr>
