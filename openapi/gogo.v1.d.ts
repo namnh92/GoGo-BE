@@ -19861,6 +19861,7 @@ export interface operations {
             /** @description Verification decision; same ETag in body and header */
             200: {
                 headers: {
+                    "Cache-Control"?: "private, no-store, no-transform";
                     ETag?: string;
                     [name: string]: unknown;
                 };
