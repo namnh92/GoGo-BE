@@ -3,6 +3,7 @@
 - **Status:** accepted product decision, owner 2026-11-09, GoGo-BE#822; exact-head CODEOWNER review for migration/OpenAPI remains pending
 - **Date:** 2026-11-09
 - **Basis:** sa-shape-be-822.fable.rev2.md rev 2.2, §0/§0b/§16
+- **Amendment:** owner 2026-11-10, GoGo-BE#827: acquisition mặc định bật.
 
 ## Context
 
@@ -72,8 +73,12 @@ submission display/cost (zero Details ở submit không đổi; photoRefs/media 
 - Submission list/detail không emit providerDisplay.photo; refresh dùng
   display.get(..., {photos:false}). ADR-0048 >30 ngày Details refresh vẫn giữ.
   Zero Google **photo** calls khi xem lại, không tuyên bố zero Details.
-- Flags: place_provider_photo_acquire.enabled default off cho submit/CMS;
-  place_provider_photos.enabled cho preview/approve fallback/#797. Không gallery
+- Flags: theo owner 2026-11-10 (#827), place_provider_photo_acquire.enabled
+  mặc định bật cho submit/CMS khi không có DB flag row (isDefault), env
+  FLAG_PLACE_PROVIDER_PHOTO_ACQUIRE mặc định true. Env false luôn tắt, kể cả
+  CMS bật; CMS flag off cũng tắt. Vẫn yêu cầu catalogue storage được cấu hình.
+  place_provider_photos.enabled cho preview/approve fallback/#797 vẫn mặc định
+  tắt; backfill chỉ chạy thủ công, apply phải opt-in. Không gallery
   flag: xoá GET /places/{id}/provider-photos và method photos(). Preview còn.
 - Contract một MAJOR 9.0.0-alpha.1 cho path removal và rút no-provider guarantee
   của CMS. photo / providerPhoto giữ credit; photoUrl editorial/community không

@@ -162,6 +162,8 @@ beforeAll(async () => {
   process.env.PLACE_PROVIDER_MODE = 'google';
   process.env.GOOGLE_PLACES_API_KEY = 'baseline-stub-key-not-a-credential';
   process.env.COST_LEDGER_ENABLED = 'true';
+  // Keep the frozen call counts independent of submit/CMS cover acquisition.
+  process.env.FLAG_PLACE_PROVIDER_PHOTO_ACQUIRE = 'false';
   // Flushes are awaited by the runner, so the interval only bounds what a
   // SIGKILL would lose. Short here so nothing lingers between scenarios.
   process.env.COST_LEDGER_FLUSH_MS = '250';

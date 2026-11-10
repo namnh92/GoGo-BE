@@ -7,6 +7,21 @@ const base = {
   REDIS_URL: 'redis://localhost:6379',
 };
 
+describe('stored provider photo acquisition defaults (#827)', () => {
+  it('enables acquisition by default while preview/backfill stays opt-in', () => {
+    const config = loadEnv(base);
+    expect(config.FLAG_PLACE_PROVIDER_PHOTO_ACQUIRE).toBe(true);
+    expect(config.FLAG_PLACE_PROVIDER_PHOTOS).toBe(false);
+  });
+
+  it('preserves the explicit env kill switch', () => {
+    expect(
+      loadEnv({ ...base, FLAG_PLACE_PROVIDER_PHOTO_ACQUIRE: 'false' })
+        .FLAG_PLACE_PROVIDER_PHOTO_ACQUIRE,
+    ).toBe(false);
+  });
+});
+
 describe('SES recovery configuration (#777)', () => {
   const ses = {
     ...base,

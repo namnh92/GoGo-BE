@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { SubmissionPhotoService } from './submission-photo.service';
+import type { ProviderPhotosConfig } from '../../shared/config';
 
 const photo = {
   contentType: 'image/jpeg',
@@ -41,6 +42,53 @@ function setup() {
     service: new SubmissionPhotoService(db as never, photos as never, storage as never, true),
   };
 }
+
+describe('stored provider photo acquisition switch (#827)', () => {
+  function acquisition(config: Partial<ProviderPhotosConfig> = {}, enabled?: boolean) {
+    const { photos, storage } = setup();
+    const db = {
+      execute: vi.fn(async () => ({
+        rows:
+          enabled === undefined
+            ? []
+            : [{ environment: 'dev', platform: 'all', enabled, payload: null }],
+      })),
+    };
+    return new SubmissionPhotoService(db as never, photos as never, storage as never, true, {
+      APP_ENV: 'dev',
+      FLAG_PLACE_PROVIDER_PHOTOS: false,
+      ...config,
+    });
+  }
+
+  it('enables acquisition with no DB row and no explicit env value', async () => {
+    expect(await acquisition().acquisitionEnabled()).toBe(true);
+  });
+
+  it.each([undefined, true])(
+    'env false disables acquisition with CMS enabled=%s',
+    async (enabled) => {
+      expect(
+        await acquisition(
+          { FLAG_PLACE_PROVIDER_PHOTO_ACQUIRE: false },
+          enabled,
+        ).acquisitionEnabled(),
+      ).toBe(false);
+    },
+  );
+
+  it('CMS off disables acquisition even with the env default enabled', async () => {
+    expect(
+      await acquisition({ FLAG_PLACE_PROVIDER_PHOTO_ACQUIRE: true }, false).acquisitionEnabled(),
+    ).toBe(false);
+  });
+
+  it('enables acquisition with an explicit true env value and no DB row', async () => {
+    expect(
+      await acquisition({ FLAG_PLACE_PROVIDER_PHOTO_ACQUIRE: true }).acquisitionEnabled(),
+    ).toBe(true);
+  });
+});
 
 describe('approved provider photo storage (#786)', () => {
   it('writes durable compensation before upload and retains provider identity and structured credits', async () => {

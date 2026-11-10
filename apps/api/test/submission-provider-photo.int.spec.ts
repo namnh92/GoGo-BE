@@ -22,6 +22,7 @@ import {
   type FakeStorage,
 } from '@gogo/providers';
 import { SubmissionPhotoService } from '../../../libs/modules/ingestion/application/submission-photo.service';
+import { APP_CONFIG } from '../../../libs/modules/shared/config';
 import { PlaceDedupService } from '../../../libs/modules/ingestion/application/place-dedup.service';
 import {
   MEDIA_CLEANUP_MAX_ATTEMPTS,
@@ -157,6 +158,7 @@ beforeAll(async () => {
   process.env.PLACE_DISPLAY_DAILY_MAX_CALLS = '1000';
   process.env.PLACE_DISPLAY_DAILY_MAX_LIST_COST_USD = '100';
   process.env.PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_PHOTOMEDIA = '1000';
+  vi.stubEnv('FLAG_PLACE_PROVIDER_PHOTO_ACQUIRE', undefined);
   pool = new Pool({ connectionString: container.getConnectionUri(), max: 8 });
   db = drizzle(pool, { schema });
   // Forward-test 0095 on a real pre-0095 snapshot containing a legacy row.
@@ -247,6 +249,7 @@ afterAll(async () => {
   await app?.close();
   await pool?.end();
   await container?.stop();
+  vi.unstubAllEnvs();
 });
 beforeEach(async () => {
   await db.execute(sql`truncate place_submissions, places cascade`);
@@ -308,6 +311,28 @@ afterEach(() => {
 });
 
 describe('ADR-0052 S1 provider cover', () => {
+  it('stores a provider cover on submit by default without a flag row or env override', async () => {
+    await db.execute(
+      sql`delete from feature_flags where key = 'place_provider_photo_acquire.enabled'`,
+    );
+    expect(process.env.FLAG_PLACE_PROVIDER_PHOTO_ACQUIRE).toBeUndefined();
+    expect(app.get(APP_CONFIG).FLAG_PLACE_PROVIDER_PHOTO_ACQUIRE).toBe(true);
+    const googlePlaceId = seed();
+    const response = await requestSubmit(googlePlaceId);
+    expect(response.statusCode, response.body).toBe(201);
+    const pending = await row(response.json().submissionId);
+    expect(pending.providerPhoto).toMatchObject({
+      sourceReference: googlePlaceId,
+      attribution: 'Google Maps',
+      authorAttributions: [{ displayName: 'Lan' }],
+    });
+    expect(pending.providerPhotoAttempts).toBe(1);
+    expect(pending.providerPhotoClaimId).toBeNull();
+    expect(refs).toHaveBeenCalledTimes(1);
+    expect(media).toHaveBeenCalledTimes(1);
+    expect(storage.objects.has(pending.providerPhoto!.storageKey)).toBe(true);
+  });
+
   it('claim, compensation and completion preserve the review revision and timestamp', async () => {
     const [pending] = await db
       .insert(schema.placeSubmissions)

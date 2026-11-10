@@ -179,6 +179,8 @@ beforeAll(async () => {
   process.env.PLACE_DISPLAY_DAILY_MAX_CALLS = '100';
   process.env.PLACE_DISPLAY_DAILY_MAX_LIST_COST_USD = '1';
   process.env.PLACE_DISPLAY_DAILY_MAX_UNITS_GOOGLE_PHOTOMEDIA = '100';
+  // These moderation/preview tests exercise approval fallback, not submit acquisition.
+  process.env.FLAG_PLACE_PROVIDER_PHOTO_ACQUIRE = 'false';
 
   pool = new Pool({ connectionString: container.getConnectionUri(), max: 6 });
   pool.on('error', () => undefined);
