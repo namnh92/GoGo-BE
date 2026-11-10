@@ -17,6 +17,7 @@ Stitch (Approved Redesign 17315762413421369447): "Quên mật khẩu - GoGo" (9c
 and "Đặt lại mật khẩu - GoGo" (87fdbe76…), Light; Dark follows approved tokens.
 
 AC:
+
 - Login: "Quên?" opens recovery, replacing UnavailableAction.
 - Remove the eligibility disclaimer. Email → Gửi mã with button loading;
   only HTTP 202 navigates to code/password input. HTTP 404 stays on email and
