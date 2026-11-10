@@ -293,3 +293,57 @@ pnpm test:integration \
 The broader affected integration command above remains applicable. Integration
 acceptance and Astra re-review remain outstanding; no merge or activation is
 claimed.
+
+## PR #847 full-integration readiness follow-up (2026-11-10)
+
+Supplied basis: head `63beca3d`, CI run `42809051634`. The supplied excerpt
+reported three HTTP 503/200 failures in platform, administrative observability
+and runtime metrics. No git command was run; head and worktree state were not
+independently inspected.
+
+Decision: retain the production readiness gate. Shape **Astra-CE-03 §2**
+explicitly requires schema/indexes and full seed definitions before compatible
+API traffic, including sync ownership with the evaluator paused. The sync
+writer still creates catalogue entitlements; `credit_events.enabled` is only
+the evaluator pause switch. Bypassing the gate while paused would contradict
+that rollout order. Historical backfill and constraint validation remain later
+activation gates.
+
+The three failing specs now use the existing `migrateWithCreditIndexes` helper.
+It commits migrations first, then executes the real `index-credit-events.sql`
+statements in autocommit, following the separate ops-index phase already used
+by `notification-scheduling.int.spec.ts` for
+`index-notification-deferred.sql`. All three existing HTTP 200 expectations
+are unchanged. The new platform regression verifies sync/paused state, drops
+the entitlement unique index, requires readiness 503 while liveness remains
+200, and reruns the real ops script to restore readiness 200. Index restoration
+runs in `finally`. `.ci-fail.txt` was deleted.
+
+Checks executed on these working files:
+
+| Check                                                       | Result                                                                                                                                            |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm test`                                                 | Exit 1: 309 files / 4018 tests passed, 1 test skipped; only `apps/api/src/sentry-request.spec.ts` failed setup with `listen EPERM` on `127.0.0.1` |
+| `pnpm -r run typecheck`                                     | PASS, all 8 workspace packages including API integration specs                                                                                    |
+| `NODE_OPTIONS=--max-old-space-size=4096 pnpm lint`          | PASS                                                                                                                                              |
+| Prettier check on the changed specs and operations document | PASS                                                                                                                                              |
+| Testcontainers integration                                  | NOT RUN; Docker socket access denied in this sandbox                                                                                              |
+
+Logs: `/private/tmp/gogo-847-readiness/{unit,typecheck,lint}.log`.
+The new integration regression has not been executed; no PASS-after runtime
+result or CI acceptance is claimed. Run in the working Testcontainers environment:
+
+```sh
+pnpm test:integration \
+  apps/api/test/platform.int.spec.ts \
+  apps/api/test/administrative-observability.int.spec.ts \
+  apps/api/test/metrics.int.spec.ts \
+  apps/api/test/credit-events-catalogue.int.spec.ts
+pnpm test:integration
+```
+
+The catalogue spec additionally checks mismatched seeds, incompatible index
+shape and the separate post-backfill constraint validation. The full suite is
+required after the focused run because these failures escaped the earlier
+targeted integration set. Rerun the full unit suite where the Sentry socket
+test can bind successfully.

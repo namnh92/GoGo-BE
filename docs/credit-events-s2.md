@@ -37,6 +37,16 @@ Worker startup also checks readiness before scheduling jobs. NOT VALID
 constraints enforce new rows immediately; their historical validation comes
 later. The original submission/venue/spend unique indexes remain in force.
 
+Integration fixtures that serve compatible writer traffic or assert API
+readiness must also run the post-commit index phase. Use
+`apps/api/test/support/credit-events.ts`'s `migrateWithCreditIndexes` helper,
+which runs the real ops script after the migration commits. This follows the
+notification scheduling fixture's separate `index-notification-deferred.sql`
+phase. Astra-CE-03 requires writer indexes even with sync ownership and the
+evaluator paused: `credit_events.enabled` pauses consumption, while the sync
+writer still needs its entitlements. Historical backfill and `VALIDATE` remain
+separate activation gates and are not prerequisites for this readiness check.
+
 The legacy attribution operation is separate from the optional S1 review-audit
 stamp reconciliation in `scripts/ops/backfill-credit-events.sql`:
 

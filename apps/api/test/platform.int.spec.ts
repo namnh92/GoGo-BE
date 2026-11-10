@@ -3,7 +3,7 @@ import { GenericContainer, type StartedTestContainer } from 'testcontainers';
 import IORedis from 'ioredis';
 import argon2 from 'argon2';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { creditIndexes, migrateWithCreditIndexes as migrate } from './support/credit-events';
 import { eq } from 'drizzle-orm';
 import path from 'node:path';
 import { Pool } from 'pg';
@@ -12,6 +12,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
 import { MetricsRegistry, RuntimeStateStore } from '@gogo/observability';
 import { cmsAccessHeaders } from './support/cms-access';
+import { resolveBooleanFlag } from '../../../libs/modules/shared/feature-flags';
 
 /**
  * Platform contract pieces: Idempotency-Key semantics (api-contract rule)
@@ -284,6 +285,28 @@ describe('readiness endpoint (downtime monitoring target)', () => {
     const res = await api().inject({ method: 'GET', url: '/v1/health/ready' });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: 'ready', checks: { db: 'ok', redis: 'skipped' } });
+  });
+
+  it('requires the post-commit credit indexes even in sync mode with the evaluator paused', async () => {
+    expect((await pool.query('select mode from credit_cutover')).rows).toEqual([{ mode: 'sync' }]);
+    expect(await resolveBooleanFlag(db, 'credit_events.enabled', { environment: 'dev' })).toBe(
+      false,
+    );
+
+    await pool.query('drop index concurrently credit_entitlements_event_key_unique');
+    try {
+      const res = await api().inject({ method: 'GET', url: '/v1/health/ready' });
+      expect(res.statusCode).toBe(503);
+      expect(res.json().code).toBe('NOT_READY');
+      // A live process and a reachable DB are insufficient for writer traffic.
+      expect((await api().inject({ method: 'GET', url: '/v1/health' })).statusCode).toBe(200);
+    } finally {
+      // Execute the deployment's real autocommit ops script to restore readiness.
+      await creditIndexes(pool);
+    }
+    const ready = await api().inject({ method: 'GET', url: '/v1/health/ready' });
+    expect(ready.statusCode).toBe(200);
+    expect(ready.json()).toEqual({ status: 'ready', checks: { db: 'ok', redis: 'skipped' } });
   });
 });
 
