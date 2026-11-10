@@ -33,6 +33,37 @@ footer email tự động/không trả lời. Không ảnh ngoài, tracking pixe
 Khai báo color-scheme light và nền opaque; Gmail Light/Dark cần kiểm chứng thật.
 Vẫn dùng SES Simple content, không đổi IAM hay contract.
 
+## Amendment 2026-11-10 — GoGo-BE#839: logo, giới thiệu và store
+
+Theo quyết định owner trong `dev/policy/decisions-log.md` ngày 2026-11-10,
+thay phần “không ảnh ngoài, không link” của #837 cho mail khôi phục:
+
+- Header dùng PNG mark + wordmark sáng trên Deep Navy `#20124A`, nguồn cố định
+  `https://gogo.id.vn/brand/gogo-mail-logo.png` (240×222 px), hiển thị 120×111 px.
+  `alt="GoGo"`, kích thước HTML/CSS cố định, chữ alt sáng trên nền navy khi chặn ảnh.
+- Khối giới thiệu dưới mã giữ nguyên văn `a.desc` vi/en từ
+  `GoGo-FE/src/strings/landing.mjs` đã được owner duyệt, không thêm số liệu/pháp nhân.
+  Câu này cũng có trong text fallback.
+- `recoveryMailStoreLinks` là cấu hình tĩnh nội bộ, `appStore`/`googlePlay` mặc định
+  `null`. HTML hiện nhãn “Sắp có trên App Store” / “Sắp có trên Google Play”
+  (en: “Coming soon on …”), không anchor. Khi có URL HTTPS hợp lệ, nhãn thành
+  link App Store / Google Play; text chỉ thêm dòng store có URL. Hai store độc lập.
+  URL không hợp lệ, không HTTPS, có credential hoặc tham số UTM bị coi như chưa cấu hình.
+  Chưa dùng badge ảnh Apple/Google.
+- Không đưa code, email hay challenge ID vào URL; URL logo/store chỉ lấy từ cấu hình,
+  không ghép dữ liệu recovery. Không tracking pixel, UTM, provider tags hay telemetry mới.
+  Module presentation vẫn không nhận email/challenge ID; không đổi SES/contract/IAM.
+
+Kiểm chứng local: unit kiểm tra logo/alt/kích thước, nguyên văn vi/en, store null,
+HTTPS, escape URL, cấu hình không an toàn và không lộ recovery data trong href/src.
+Preview cố định: `docs/verification/be-839/recovery-mail-vi.html`, mã `482913`,
+hết hạn `2026-11-10T08:01:00.000Z` (15:01 giờ Việt Nam).
+DEV acceptance riêng: gửi mail thật, xác minh Gmail tải logo và hiển thị alt khi chặn
+ảnh, Light/Dark, kiểm tra raw Authentication-Results SPF/DKIM/DMARC PASS.
+Chưa coi preview/unit là bằng chứng gửi thật hoặc xác thực domain.
+Rollback bỏ phần branding/store theo #837; muốn tắt riêng store đặt lại cả hai URL
+thành `null`. Không có migration hoặc thay đổi API.
+
 Delivery chạy tách khỏi promise trả HTTP sau khi transaction đã commit; cả
 eligible và decoy giữ cùng padding tối thiểu 250 ms, không chờ SES hoặc DB
 invalidation. Provider chậm/timeout không kéo dài riêng response tài khoản thật.
