@@ -3,6 +3,7 @@ import { sql } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
 import { DB } from '../../shared/tokens';
 import { AppError } from '../../shared/app-error';
+import { GOOGLE_PROVIDER_PUBLIC } from '../../shared/google-provenance';
 import type { Actor } from '../../identity/domain/actor';
 import { SearchService, openStateAt } from '../../search/application/search.service';
 import type { HoursRow } from '../../search/infrastructure/search.repository';
@@ -29,6 +30,9 @@ export type PlaceCard = {
     priceMin?: number;
     priceMax?: number;
     currency?: string;
+    providerRating?: number;
+    providerRatingCount?: number;
+    providerRatingSource?: 'google';
     gogoRating?: number;
     gogoRatingCount?: number;
     openNow?: boolean | null;
@@ -118,6 +122,17 @@ export class AssistantCardHydrator {
           : {}),
         ...(price
           ? { priceMin: price.priceMin, priceMax: price.priceMax, currency: price.currency }
+          : {}),
+        // Reuse PlaceDetail's verified provider values and freshness mapping.
+        // ADR-0020 / core rule 14: keep attribution and count with the score;
+        // no model value, provider fetch, snapshot, or independent TTL here.
+        ...(detail.rating != null &&
+        detail.sources.some((source) => source.provider === GOOGLE_PROVIDER_PUBLIC)
+          ? {
+              providerRating: detail.rating,
+              providerRatingCount: detail.ratingCount,
+              providerRatingSource: GOOGLE_PROVIDER_PUBLIC,
+            }
           : {}),
         ...(detail.gogoRating !== undefined ? { gogoRating: detail.gogoRating } : {}),
         gogoRatingCount: detail.gogoRatingCount,

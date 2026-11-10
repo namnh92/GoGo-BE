@@ -2,7 +2,7 @@ openapi: 3.1.0
 x-gogo-notification-preference-semantics: master-and-five-categories-v1
 info:
   title: GoGo API
-  version: 9.2.0-alpha.1
+  version: 9.3.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -21522,6 +21522,9 @@ components:
           priceMin: 45000
           priceMax: 90000
           currency: VND
+          providerRating: 4.6
+          providerRatingCount: 980
+          providerRatingSource: google
           openNow: true
           checkedAt: '2026-10-20T03:00:00Z'
       type: object
@@ -21549,6 +21552,24 @@ components:
               description: Integer minor units, per person, when GoGo has a verified price.
             priceMax: { type: integer }
             currency: { type: string }
+            providerRating:
+              type: number
+              minimum: 0
+              maximum: 5
+              description: >
+                Google rating from the same verified PlaceDetail.rating read and
+                freshness rules. Omitted together with count/source when the rating
+                or Google provenance is missing. Never supplied by AI or stored in
+                conversation history. Render with a visible Google mark and its
+                own count; never merge with gogoRating (core rule 14, ADR-0020).
+            providerRatingCount:
+              type: integer
+              minimum: 0
+              description: PlaceDetail.ratingCount, accompanying providerRating.
+            providerRatingSource:
+              type: string
+              enum: [google]
+              description: Attribution source accompanying providerRating and providerRatingCount.
             gogoRating:
               type: number
               description: Present under the same rule as `PlaceDetail.gogoRating` (5+ reviews).
