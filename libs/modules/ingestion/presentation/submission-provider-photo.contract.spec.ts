@@ -15,7 +15,7 @@ const entry = parseExceptions(
 
 describe('ADR-0052 contract and exception guard (synthetic matcher fixture, not fresh oasdiff)', () => {
   it('declares the additive MINOR, retains the gallery removal and preview schemas', () => {
-    expect(doc.info.version).toBe('9.2.0-alpha.1');
+    expect(doc.info.version).toBe('9.3.0-alpha.1');
     expect(doc.paths['/places/{id}/provider-photos']).toBeUndefined();
     expect(doc.paths['/places/google-provider-photo/{googlePlaceId}']).toBeDefined();
     expect(doc.components.schemas.PlaceProviderPhotos).toBeDefined();
