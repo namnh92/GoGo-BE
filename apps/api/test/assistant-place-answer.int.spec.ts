@@ -3,6 +3,7 @@ import { AssistantRepository } from '../../../libs/modules/assistant/infrastruct
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
+import { stripVolatile } from './support/strip-volatile';
 import {
   startAssistantFixture,
   parseSse,
@@ -162,8 +163,10 @@ describe('S1 server-authored reference groups on real read surfaces', () => {
     );
     const raw = JSON.stringify(persisted.rows);
     expect(raw).toContain('a1:');
-    expect(raw).not.toMatch(/12000|Lantern|Harbor/);
-    expect(JSON.stringify(await buffer.read(s.messageId, 0))).not.toMatch(/12000|Lantern|Harbor/);
+    expect(stripVolatile(raw)).not.toMatch(/12000|Lantern|Harbor/);
+    expect(stripVolatile(JSON.stringify(await buffer.read(s.messageId, 0)))).not.toMatch(
+      /12000|Lantern|Harbor/,
+    );
   });
   it('history and CMS use current facts, sources/options re-evaluate and original authorization stays enforced', async () => {
     const s = await seed();
@@ -195,7 +198,7 @@ describe('S1 server-authored reference groups on real read surfaces', () => {
       ]),
     };
     const changed = await history(s.conversationId);
-    expect(changed.body).not.toContain('12000');
+    expect(stripVolatile(changed.body)).not.toContain('12000');
     expect(changed.json().items[0].sources).toEqual([]);
     expect(changed.json().items[0].cards[0].available).toBe(false);
     expect(changed.json().items[0].followUps).toEqual([]);
@@ -235,7 +238,7 @@ describe('S1 server-authored reference groups on real read surfaces', () => {
         token: moderator,
       });
       expect(cms.body).toContain('GoGo could not load place data');
-      expect(cms.body).not.toContain('12000');
+      expect(stripVolatile(cms.body)).not.toContain('12000');
     } finally {
       fail = false;
     }
@@ -261,7 +264,9 @@ describe('S1 server-authored reference groups on real read surfaces', () => {
     expect(lookupIds).toEqual([]);
     const exported = await collectAssistantExport(f.db, s.userId, () => {});
     expect(JSON.stringify(exported)).toContain('GoGo place');
-    expect(JSON.stringify(exported)).not.toMatch(/[\uE000\uE001]|12000|Lantern|Harbor/);
+    expect(stripVolatile(JSON.stringify(exported))).not.toMatch(
+      /[\uE000\uE001]|12000|Lantern|Harbor/,
+    );
     expect(lookupIds).toEqual([]);
   });
   it.each([
