@@ -268,3 +268,123 @@ describe('confirm-round name regressions', () => {
     }
   });
 });
+
+describe('round-3 boundary regressions: grammar-like name tokens', () => {
+  /** Catalogue-side whole-name equality, as the SQL exact channel decides it. */
+  const resolveReadings = (catalogue: readonly string[], message: string) => {
+    const parsed = extractPlaceNameSpan(message);
+    if (parsed.kind !== 'span') return { parsed, outcome: undefined };
+    const keys = [parsed.text, ...(parsed.alternates ?? []).map((a) => a.text)].flatMap(
+      placeNameVariants,
+    );
+    const outcome = resolvePlaceNameOutcome(
+      matches(
+        catalogue
+          .filter((name) => keys.includes(placeNameVariants(name)[0]!))
+          .map((id) => ({ id, exact: true, score: 1 })),
+      ),
+    );
+    return { parsed, outcome };
+  };
+  it.each([
+    ['Cafe Cỏ mở cửa mấy giờ?', 'Cafe Cỏ'],
+    ['Cafe Cỏ có wifi không?', 'Cafe Cỏ'],
+    ['Cafe Cô mở cửa không?', 'Cafe Cô'],
+    ['Trà Khổng có chỗ đậu xe không?', 'Trà Khổng'],
+    ['Cafe Mây sao?', undefined],
+    ['Bún Giã giá bao nhiêu?', 'Bún Giã'],
+    ['Phở Ô ở đâu?', 'Phở Ô'],
+    ['Bánh Mỡ mở cửa mấy giờ?', 'Bánh Mỡ'],
+    ['Cafe Giò đánh giá thế nào?', 'Cafe Giò'],
+  ])('Astra F-01 r3: accented name token in "%s" is never question grammar', (text, expected) => {
+    const parsed = extractPlaceNameSpan(text);
+    if (expected === undefined) {
+      // "Mây" is not "mấy": nothing is stripped, so the short core cannot be selected.
+      expect(parsed).toMatchObject({ kind: 'span', text: 'Cafe Mây sao' });
+      return;
+    }
+    expect(parsed).toMatchObject({ kind: 'span', text: expected });
+    if (parsed.kind === 'span') expect(text.slice(parsed.start, parsed.end)).toBe(expected);
+  });
+  it.each([
+    // [message, shortened core, the longer whole-name reading that must also be probed]
+    ['Cafe Co mo cua may gio?', 'Cafe', 'Cafe Co'],
+    ['Cafe co wifi khong?', 'Cafe', 'Cafe co'],
+    ['Cafe Có mở cửa không?', 'Cafe', 'Cafe Có'],
+    ['Quan Khong co wifi?', 'Quan', 'Quan Khong'],
+    ['Quán Không có wifi?', 'Quán', 'Quán Không'],
+    ['Cafe May sao?', 'Cafe', 'Cafe May'],
+    ['Cafe Mấy sao?', 'Cafe', 'Cafe Mấy'],
+    ['Bun Gia bao nhieu?', 'Bun', 'Bun Gia'],
+    ['Pho O dau?', 'Pho', 'Pho O'],
+    ['Phở Ở đâu?', 'Phở', 'Phở Ở'],
+  ])(
+    'Astra F-01 r3: "%s" keeps the longer reading; the short core is never a silent exact unique',
+    (text, core, longer) => {
+      const parsed = extractPlaceNameSpan(text);
+      expect(parsed).toMatchObject({ kind: 'span', text: core });
+      if (parsed.kind !== 'span') return;
+      const readings = (parsed.alternates ?? []).map((a) => a.text);
+      expect(readings).toContain(longer);
+      for (const a of parsed.alternates ?? []) expect(text.slice(a.start, a.end)).toBe(a.text);
+      // Both venues exist: the user chooses, whichever reading was meant.
+      expect(resolveReadings([core, longer], text).outcome).toMatchObject({ kind: 'choice' });
+      expect(resolveReadings([core, longer], text).outcome!.candidates).toHaveLength(2);
+      // Only the longer venue exists: it answers, the core is not invented.
+      expect(resolveReadings([longer], text).outcome).toMatchObject({
+        kind: 'answer',
+        candidates: [{ id: longer }],
+      });
+      // Only the short venue exists: ordinary direct answer, no needless confirm.
+      expect(resolveReadings([core], text).outcome).toMatchObject({
+        kind: 'answer',
+        candidates: [{ id: core }],
+      });
+    },
+  );
+  it('Astra F-01 r3: a doubled particle is consumed once (Quán Có có wifi không?)', () => {
+    for (const [text, expected] of [
+      ['Quán Có có wifi không?', 'Quán Có'],
+      ['Quan Co co wifi khong?', 'Quan Co'],
+      ['Quán Không không có wifi?', 'Quán Không'],
+      ['Cafe Mở mở cửa mấy giờ?', 'Cafe Mở'],
+    ] as const)
+      expect(extractPlaceNameSpan(text)).toMatchObject({ kind: 'span', text: expected });
+  });
+  it('Astra F-01 r3: area markers and stripped topic prefixes keep their whole-name reading', () => {
+    // "Ô"/"Ổ" are not the marker "ở": no area is invented from a name token.
+    expect(extractPlaceNameSpan('Phở Ổ Quận 9 mở cửa mấy giờ?')).toMatchObject({
+      kind: 'span',
+      text: 'Phở Ổ Quận 9',
+    });
+    expect(extractPlaceNameSpan('Phở Ổ Quận 9 mở cửa mấy giờ?')).not.toHaveProperty('statedArea');
+    // Unaccented "o" may be the marker or a name token: both readings are returned.
+    const unaccented = extractPlaceNameSpan('Pho O Quan 9 mo cua may gio?');
+    expect(unaccented).toMatchObject({ kind: 'span', text: 'Pho', statedArea: 'O Quan 9' });
+    expect(unaccented).toMatchObject({
+      alternates: [{ text: 'Pho O Quan 9', includesArea: true }],
+    });
+    const typed = extractPlaceNameSpan('Tonkin ở Quận 9 có wifi không?');
+    expect(typed).toMatchObject({
+      text: 'Tonkin',
+      alternates: [{ text: 'Tonkin ở Quận 9', includesArea: true }],
+    });
+    // A topic prefix with no "của/về" may be the start of the name.
+    const prefixed = extractPlaceNameSpan('Thông tin Cafe mở cửa mấy giờ?');
+    expect(prefixed).toMatchObject({ kind: 'span', text: 'Cafe' });
+    if (prefixed.kind === 'span')
+      expect(prefixed.alternates!.map((a) => a.text)).toEqual([
+        'Thông tin Cafe',
+        'Cafe mở',
+        'Cafe mở cửa',
+      ]);
+    expect(extractPlaceNameSpan('Thông tin về Cafe Gần Tìm Mới')).not.toHaveProperty('alternates');
+    // Comparison operands keep alternates on original-message offsets.
+    const text = 'So sánh Cafe Co mo cua khong và Tonkin về giá?';
+    const compared = extractComparisonPlaceNameSpans(text);
+    expect(compared.kind).toBe('spans');
+    if (compared.kind === 'spans')
+      for (const a of compared.spans[0].alternates ?? [])
+        expect(text.slice(a.start, a.end)).toBe(a.text);
+  });
+});

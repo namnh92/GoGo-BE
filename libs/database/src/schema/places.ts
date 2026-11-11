@@ -1,4 +1,4 @@
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import {
   bigint,
   boolean,
@@ -106,6 +106,23 @@ export const placeStatus = pgEnum('place_status', [
   'suspended',
   'archived',
 ]);
+
+/**
+ * JavaScript's `\\s`, code point for code point, as a PostgreSQL regex class.
+ * `normalizeVietnamese` collapses these runs and trims; the name trigger only
+ * lowercases and unaccents.
+ */
+export const PLACE_NAME_KEY_WHITESPACE =
+  '[\\s\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]+';
+/**
+ * The whole-name equality key for place QA (#857, migration 0102). The index
+ * `places_name_key_idx` is on exactly this expression of `name_normalized`:
+ * build queries through this function or the planner cannot use it.
+ */
+export function placeNameKey(column: SQL): SQL {
+  // A constant pattern with no quote characters, inlined so it matches the index.
+  return sql`btrim(regexp_replace(${column}, ${sql.raw(`'${PLACE_NAME_KEY_WHITESPACE}'`)}, ' ', 'g'), ' ')`;
+}
 
 export const places = pgTable(
   'places',
@@ -219,6 +236,8 @@ export const places = pgTable(
     index('places_province_code_idx')
       .on(t.provinceCode)
       .where(sql`${t.provinceCode} is not null`),
+    // #857 / 0102: expression index behind the place-QA exact-name channel.
+    index('places_name_key_idx').on(placeNameKey(sql`${t.nameNormalized}`)),
     check(
       'places_administrative_confidence_range',
       sql`${t.administrativeMappingConfidence} is null

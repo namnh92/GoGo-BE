@@ -1,0 +1,72 @@
+{
+  "recordedAt": "2026-11-11T12:08:12.422321+00:00",
+  "method": "Regressions written first. Pre-fix = production sources from HEAD 6f1ec606, migration 0102 hidden, tests unchanged; then fixed files restored.",
+  "failBefore": {
+    "unit place-name-key-migration.spec.ts (no migration/ops yet)": [
+      "× #857 ships the exact-name key as an additive, non-rewriting successor migration 3ms",
+      "× #857 offers the same index CONCURRENTLY for a large table, with an exact-shape readiness check 0ms",
+      "AssertionError: expected '' to contain 'CREATE INDEX IF NOT EXISTS places_nam…'",
+      "AssertionError: expected '' to contain 'CREATE INDEX CONCURRENTLY IF NOT EXIS…'",
+      "Test Files  1 failed (1)",
+      "Tests  2 failed (2)"
+    ],
+    "unit resolution.spec.ts (span.ts pre-fix)": [
+      "× Astra F-01 r3: accented name token in \"Cafe Cỏ mở cửa mấy giờ?\" is never question grammar 5ms",
+      "× Astra F-01 r3: accented name token in \"Cafe Cỏ có wifi không?\" is never question grammar 1ms",
+      "× Astra F-01 r3: accented name token in \"Cafe Cô mở cửa không?\" is never question grammar 1ms",
+      "× Astra F-01 r3: accented name token in \"Trà Khổng có chỗ đậu xe không?\" is never question grammar 0ms",
+      "× Astra F-01 r3: accented name token in \"Cafe Mây sao?\" is never question grammar 0ms",
+      "× Astra F-01 r3: accented name token in \"Phở Ô ở đâu?\" is never question grammar 0ms",
+      "× Astra F-01 r3: \"Cafe Co mo cua may gio?\" keeps the longer reading; the short core is never a silent exact unique 0ms",
+      "× Astra F-01 r3: \"Cafe co wifi khong?\" keeps the longer reading; the short core is never a silent exact unique 0ms",
+      "× Astra F-01 r3: \"Cafe Có mở cửa không?\" keeps the longer reading; the short core is never a silent exact unique 0ms",
+      "× Astra F-01 r3: \"Quan Khong co wifi?\" keeps the longer reading; the short core is never a silent exact unique 0ms",
+      "× Astra F-01 r3: \"Quán Không có wifi?\" keeps the longer reading; the short core is never a silent exact unique 0ms",
+      "× Astra F-01 r3: \"Cafe May sao?\" keeps the longer reading; the short core is never a silent exact unique 0ms",
+      "× Astra F-01 r3: \"Cafe Mấy sao?\" keeps the longer reading; the short core is never a silent exact unique 0ms",
+      "× Astra F-01 r3: \"Bun Gia bao nhieu?\" keeps the longer reading; the short core is never a silent exact unique 0ms",
+      "× Astra F-01 r3: \"Pho O dau?\" keeps the longer reading; the short core is never a silent exact unique 0ms",
+      "× Astra F-01 r3: \"Phở Ở đâu?\" keeps the longer reading; the short core is never a silent exact unique 0ms",
+      "× Astra F-01 r3: a doubled particle is consumed once (Quán Có có wifi không?) 0ms",
+      "× Astra F-01 r3: area markers and stripped topic prefixes keep their whole-name reading 0ms",
+      "AssertionError: expected { kind: 'span', text: 'Cafe', …(2) } to match object { kind: 'span', text: 'Cafe Cỏ' }",
+      "AssertionError: expected { kind: 'span', text: 'Cafe', …(2) } to match object { kind: 'span', text: 'Cafe Cô' }",
+      "AssertionError: expected { kind: 'span', text: 'Trà', …(2) } to match object { kind: 'span', text: 'Trà Khổng' }",
+      "AssertionError: expected { kind: 'span', text: 'Cafe', …(2) } to match object { kind: 'span', text: 'Cafe Mây sao' }",
+      "AssertionError: expected { kind: 'ambiguous' } to match object { kind: 'span', text: 'Phở Ô' }",
+      "AssertionError: expected [] to include 'Cafe Co'",
+      "AssertionError: expected [] to include 'Cafe co'",
+      "AssertionError: expected [] to include 'Cafe Có'",
+      "AssertionError: expected [] to include 'Quan Khong'",
+      "AssertionError: expected [] to include 'Quán Không'",
+      "AssertionError: expected [] to include 'Cafe May'",
+      "AssertionError: expected [] to include 'Cafe Mấy'",
+      "AssertionError: expected [] to include 'Bun Gia'",
+      "AssertionError: expected [] to include 'Pho O'",
+      "AssertionError: expected [] to include 'Phở Ở'",
+      "AssertionError: expected { kind: 'span', text: 'Quán', …(2) } to match object { kind: 'span', text: 'Quán Có' }",
+      "AssertionError: expected { kind: 'span', text: 'Phở', …(4) } to match object { kind: 'span', text: 'Phở Ổ Quận 9' }",
+      "Test Files  1 failed (1)",
+      "Tests  18 failed | 37 passed (55)"
+    ],
+    "integration place-qa-s2 (pre-fix sources, no 0102)": [
+      "× Astra F-01 (round 3): a grammar-like boundary token never makes the short core a silent answer 13ms",
+      "× records actual production SQL plans, broad-name fan-out and p95 over a 20k catalogue 4400ms",
+      "AssertionError: expected { candidates: [ { …(3) } ], …(4) } to match object { kind: 'answer', …(1) }",
+      "AssertionError: expected [ undefined, undefined, …(14) ] to include 'places_name_key_idx'",
+      "Test Files  1 failed (1)",
+      "Tests  2 failed | 22 passed (24)"
+    ]
+  },
+  "passAfter": {
+    "integrationFiveFiles": [
+      "× preview/snippet read identity only; persisted export reads no facts and contains no private delimiters 71ms",
+      "AssertionError: expected '[{\"title\":\"fixture-f6bfe48c-726e-4294…' not to match /[\\uE000\\uE001]|12000|Lantern|Harbor/",
+      "Test Files  1 failed | 4 passed (5)",
+      "Tests  1 failed | 73 passed (74)"
+    ],
+    "assistantPlaceAnswerRerun": ["Test Files  1 passed (1)", "Tests  11 passed (11)"],
+    "placeQaS2Alone": ["Test Files  1 passed (1)", "Tests  24 passed (24)"],
+    "migrationIntegration": ["Test Files  1 passed (1)", "Tests  2 passed (2)"]
+  }
+}

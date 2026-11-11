@@ -6,6 +6,72 @@ Basis: Astra rev3 `dev/handoffs/sa-shape-be-844-ai-place-qa.rev3.astra.md`
 `feature/GOGO-856-place-answer-tokens` (PR #860). No git commands were run;
 branch/SHA identities were not independently verified.
 
+## Round-3 fixes (2026-11-11, escalation fixer, owner exception)
+
+Basis: uncommitted working tree on `6f1ec606` (single S2 commit on
+`origin/re-design` `8e45fce2`). Identity is
+[source-sha256.json](857-s2-evidence/source-sha256.json); FAIL-before lines are in
+[round3-verification.json](857-s2-evidence/round3-verification.json). Pre-fix =
+production sources restored from `HEAD`, migration `0102` hidden, tests unchanged.
+
+| Finding                                           | Change                                                                                                                                                                                                     | FAIL before → PASS after                                                                                                                                                                                                   |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Astra F-01 P1 (span)                              | Accented tokens are grammar only in their exact spelling; the `có/không có` particle is matched once; ambiguous boundaries are returned as `alternates` and probed for whole-name equality by the resolver | unit: 18 cases (`Cafe Cỏ mở cửa mấy giờ?` → `Cafe`; `Cafe Co mo cua may gio?` had no longer reading; `Quán Có có wifi không?` → `Quán`; `Phở Ổ Quận 9 …` invented an area). SQL: `Cafe Cỏ mở cửa mấy giờ?` answered `Cafe` |
+| Astra F-02 P2 / Sol F-01 P1 (exact-channel index) | Migration `0102_place-name-key-index.sql`: btree expression index on the whitespace-collapsed key; ops script for a CONCURRENTLY build plus readiness check                                                | unit: migration/journal/ops absent. SQL: exact channel had no `places_name_key_idx` node (sequential scan with `regexp_replace` filter)                                                                                    |
+
+**Migration `0102` needs the owner's CODEOWNER review before merge** (`git.md`).
+It is an expression index only: no column, no rewrite, no data change; rollback
+is `DROP INDEX places_name_key_idx` and the query stays correct without it. In
+the migration transaction the build takes a SHARE lock on `places` (writes wait,
+reads continue) under `lock_timeout = 5s`. The DEV `places` row count was not
+measured in this session. If it is large, run
+`scripts/ops/index-place-name-key.sql` first (autocommit, CONCURRENTLY); `0102`
+is then a no-op, and the script's `places_name_key_idx_ready` check fails on an
+invalid or differently shaped index. No runtime readiness gate was added: the
+index affects latency only, and no S2 read is reachable before S3.
+
+Plans on 20,042 synthetic rows after `VACUUM ANALYZE`
+([sql-performance.json](857-s2-evidence/sql-performance.json), 30 samples): the
+exact channel is `Index Scan places_name_key_idx` for selective and broad names;
+for a selective name the fuzzy OR is a `BitmapOr` over `places_name_trgm_idx`
+(both trigram predicates) and `places_search_tsv_idx`, with no sequential scan
+of `places`, so the OR is **not** split. p95 exact **6 ms**, broad **134 ms**,
+facts **9 ms**. Earlier recorded sequential scans of the fuzzy channel were a
+fixture artefact: after a bulk insert with ANALYZE only, the GIN pending list
+makes the planner avoid both GIN indexes
+([fuzzy-index-experiment.json](857-s2-evidence/fuzzy-index-experiment.json)). A
+broad name that matches every row is still scored row by row (it ends in
+`narrow`); that cost grows with the catalogue and is not addressed here.
+
+Gates on this tree (Docker 29.7.2, Node v22.22.2, `postgis/postgis:16-3.4`):
+
+| Gate                                                                                                                                         | Result                                                                                                                                                                  |
+| -------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm -s turbo run build --force`                                                                                                            | PASS                                                                                                                                                                    |
+| `pnpm -s turbo run typecheck --force`                                                                                                        | PASS, 8/8                                                                                                                                                               |
+| `pnpm -s vitest run --project unit`                                                                                                          | PASS, 336 files / 4376 tests                                                                                                                                            |
+| Integration, `--no-file-parallelism`: `place-qa-s2`, `place-qa-s2-wiring`, `assistant-place-answer`, `assistant`, `place-name-key-migration` | 73/74 on the full run; the one failure is an S1 test flake (below); `assistant-place-answer` alone then PASS 11/11; `place-qa-s2` alone (final evidence run) PASS 24/24 |
+| `pnpm -s api:check`, `pnpm -s check:boundaries`                                                                                              | PASS                                                                                                                                                                    |
+| ESLint on changed TS, `prettier --check .`                                                                                                   | PASS (`sql-performance.json` formatted after generation)                                                                                                                |
+
+S1 flake, not changed here: `assistant-place-answer.int.spec.ts:264` asserts the
+export does not match `/12000/`; a `completedAt` of `…23.512000Z` matched it.
+It fails whenever a timestamp's fraction ends in `12000`.
+
+NOT RUN: full-repo `pnpm lint`, other integration files, CI on a committed
+head, any DEV measurement or migration on DEV, independent re-review.
+
+Notes for the next review:
+
+- `resolvePlaceName` gained the optional `alternates` input; S3 must pass
+  `span.alternates` or the boundary protection is lost.
+- At most four alternates (twelve extra exact keys); more, or one over 120
+  characters, resolves `narrow`.
+- A boundary reading is probed across one boundary at a time, and at most two
+  clause tokens deep.
+- `libs/database/src/assistant-credit-spend-migration.spec.ts` asserted that
+  `0101` is the last journal entry; it now looks the entry up by index.
+
 ## Confirm-round fixes (2026-11-11, escalation fixer)
 
 Basis: uncommitted working tree on S1 head `93148283` (PR #860), S2 patch
@@ -43,15 +109,7 @@ Gates on this tree (macOS, Docker 29.7.2, Node v22.22.2, `postgis/postgis:16-3.4
 NOT RUN: full-repo `pnpm lint`, the remaining integration files, CI on a
 committed head, any DEV/representative-corpus measurement, independent re-review.
 
-Plan/latency evidence, regenerated by the S2 file's last test on the final
-sources (20,039 synthetic rows, 30 samples): p95 exact **127 ms**, broad
-**183 ms**, facts **17 ms** (the 4-file run recorded 225/363/53 ms with other
-containers running). The exact channel stays a sequential scan and now applies
-the whitespace key per eligible row: that node went from 2.5 ms to about 25 ms
-on this corpus. Scoped retrieval still uses `places_province_code_idx`. If a
-representative corpus misses the 1 s budget, the remedy is the rev3 §4.2 path:
-a generated normalized column plus index, as a CODEOWNER-reviewed migration. It
-is not part of this change.
+Plan/latency figures of this round are superseded by the round-3 section above.
 
 Open decisions carried by this fix, for the next review:
 
@@ -88,8 +146,8 @@ reader/context/fact types and reader token. S1's implementation files are unchan
 - `resolvePlaceName` has optional `{area, limit, signal, deadlineAt, ambiguous}`
   and a 1s total budget including all variants and the one permitted relaxation.
 
-No classifier, route hook, emitter, feature enablement, public API, or migration
-is introduced. S3 owns production integration/admission. `SearchModule` provides
+No classifier, route hook, emitter, feature enablement or public API is
+introduced; the only migration is the additive index `0102` (round 3). S3 owns production integration/admission. `SearchModule` provides
 and exports S1's `PLACE_FACTS_READER` token with `useExisting: SearchService`, so
 S1's `PlaceAnswerReader` reaches this projection in the production graph.
 `assistant_place_facts_duration_seconds` is observed only by S1's reader, with its
@@ -135,6 +193,14 @@ never assert special-date/holiday availability; S1 retains its date warning.
   A terminal question supplies the topic without erasing that name token;
   otherwise an ambiguous prefix boundary clarifies. Explicit topic grammar
   (`Giờ mở cửa của…`, etc.) remains supported.
+- A token typed with diacritics is question/area grammar only in its exact
+  accented spelling (`Cỏ`, `Cô`, `Mây`, `Ô` are name tokens although they fold
+  to `co`, `may`, `o`). Unaccented tokens match on the folded form.
+- Where a boundary token can belong to either side, the span carries the longer
+  whole-name readings as `alternates` (stripped prefix without `của/về`, the
+  first one or two tokens of the consumed clause, a grammar-detected area).
+  `resolvePlaceName(text, { alternates })` probes them for exact equality only;
+  the truth table is unchanged, so two published readings give `choice`.
 - One terminal question clause is consumed **at most once**: before a trailing
   area, or after automatic area extraction when nothing was consumed yet. So
   `Mây Lam không có wifi ở Quận 9?` yields `Mây Lam` without caller offsets, and
@@ -156,8 +222,9 @@ never assert special-date/holiday availability; S1 retains its date warning.
   runs and trims exactly as `normalizeVietnamese` does (`placeNameKeySql`; the
   class is JavaScript's `\s`, checked code point by code point in SQL). The
   stored column only lowercases/unaccents, so `Mây Lam` and `Mây  Lam` are one
-  exact family for either input. No migration, generated column or expression
-  index: the exact channel already was a sequential scan over eligible rows.
+  exact family for either input. Migration `0102` indexes exactly this
+  expression (`places_name_key_idx`); schema and query share one builder
+  (`schema.placeNameKey`).
 - Exact lookup is complete and independent of fuzzy cutoffs. Each fuzzy channel
   retrieves k+1; merge/deduplicate all channels before overflow/uniqueness.
   Overflow and unresolved parsing/area take precedence over exact uniqueness.

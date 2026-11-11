@@ -1,0 +1,94 @@
+{
+  "purpose": "#857 round 3: do the fuzzy predicates use their GIN indexes for a selective input ('may lam' in 20,001 published rows, postgis/postgis:16-3.4)? One-off experiment, not a checked-in test.",
+  "query": "select id, score from places p where status='published' and <predicate> order by score desc, id limit 9; thresholds 0.3 transaction-local",
+  "nodeFormat": "NodeType:index-or-relation:actual total ms",
+  "afterBulkInsertAnalyzeOnly": {
+    "wsim": ["Limit::36.736", "Sort::36.675", "Seq Scan:places:36.661"],
+    "wsim (seqscan off)": ["Limit::37.47", "Sort::37.467", "Index Scan:places_status_idx:37.458"],
+    "sim": ["Limit::34.571", "Sort::34.569", "Seq Scan:places:34.559"],
+    "sim (seqscan off)": ["Limit::34.793", "Sort::34.791", "Index Scan:places_status_idx:34.781"],
+    "fts": [
+      "Limit::3.7",
+      "Sort::3.699",
+      "Bitmap Heap Scan:places:3.693",
+      "Bitmap Index Scan:places_search_tsv_idx:3.675"
+    ],
+    "fts (seqscan off)": [
+      "Limit::2.829",
+      "Sort::2.827",
+      "Bitmap Heap Scan:places:2.818",
+      "Bitmap Index Scan:places_search_tsv_idx:2.784"
+    ],
+    "or3": ["Limit::74.161", "Sort::74.158", "Seq Scan:places:74.149"],
+    "or3 (seqscan off)": ["Limit::73.135", "Sort::73.132", "Index Scan:places_status_idx:73.121"],
+    "wsim_broad": ["Limit::112.317", "Sort::112.31", "Seq Scan:places:110.021"],
+    "wsim_broad (seqscan off)": [
+      "Limit::113.454",
+      "Sort::113.45",
+      "Index Scan:places_status_idx:111.422"
+    ]
+  },
+  "afterVacuumAnalyze": {
+    "wsim": [
+      "Limit::1.155",
+      "Sort::1.089",
+      "Bitmap Heap Scan:places:1.071",
+      "Bitmap Index Scan:places_name_trgm_idx:0.934"
+    ],
+    "wsim (seqscan off)": [
+      "Limit::0.053",
+      "Sort::0.051",
+      "Bitmap Heap Scan:places:0.042",
+      "Bitmap Index Scan:places_name_trgm_idx:0.027"
+    ],
+    "sim": [
+      "Limit::0.037",
+      "Sort::0.036",
+      "Bitmap Heap Scan:places:0.03",
+      "Bitmap Index Scan:places_name_trgm_idx:0.017"
+    ],
+    "sim (seqscan off)": [
+      "Limit::0.033",
+      "Sort::0.032",
+      "Bitmap Heap Scan:places:0.027",
+      "Bitmap Index Scan:places_name_trgm_idx:0.015"
+    ],
+    "fts": [
+      "Limit::0.136",
+      "Sort::0.134",
+      "Bitmap Heap Scan:places:0.125",
+      "Bitmap Index Scan:places_search_tsv_idx:0.106"
+    ],
+    "fts (seqscan off)": [
+      "Limit::0.032",
+      "Sort::0.031",
+      "Bitmap Heap Scan:places:0.025",
+      "Bitmap Index Scan:places_search_tsv_idx:0.012"
+    ],
+    "or3": [
+      "Limit::0.095",
+      "Sort::0.094",
+      "Bitmap Heap Scan:places:0.088",
+      "BitmapOr::0.042",
+      "Bitmap Index Scan:places_name_trgm_idx:0.02",
+      "Bitmap Index Scan:places_name_trgm_idx:0.006",
+      "Bitmap Index Scan:places_search_tsv_idx:0.004"
+    ],
+    "or3 (seqscan off)": [
+      "Limit::0.052",
+      "Sort::0.05",
+      "Bitmap Heap Scan:places:0.044",
+      "BitmapOr::0.029",
+      "Bitmap Index Scan:places_name_trgm_idx:0.017",
+      "Bitmap Index Scan:places_name_trgm_idx:0.006",
+      "Bitmap Index Scan:places_search_tsv_idx:0.005"
+    ],
+    "wsim_broad": ["Limit::114.56", "Sort::114.548", "Seq Scan:places:112.291"],
+    "wsim_broad (seqscan off)": [
+      "Limit::113.046",
+      "Sort::113.043",
+      "Index Scan:places_status_idx:111.054"
+    ]
+  },
+  "finding": "With only ANALYZE after the bulk insert, neither trigram predicate is planned through places_name_trgm_idx (GIN pending list); after VACUUM ANALYZE each predicate and the three-way OR (BitmapOr) use the GIN indexes. The OR is not split. A broad name that matches every row is scored row by row either way."
+}

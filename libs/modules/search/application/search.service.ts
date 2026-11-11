@@ -165,6 +165,13 @@ export class SearchService implements PlaceFactsReader {
       area?: PlaceNameArea;
       limit?: number;
       ambiguous?: boolean;
+      /**
+       * `PlaceNameSpan.alternates`: longer whole-name readings of the same
+       * message. Probed for exact equality only, so a boundary token that may
+       * belong to the name can never make the shorter core a silent unique answer.
+       */
+      alternates?:
+        readonly Readonly<{ text: string; includesArea?: boolean | undefined }>[] | undefined;
     } = {},
   ) {
     const limit = options.limit ?? PLACE_QA_CANDIDATE_LIMIT;
@@ -175,7 +182,16 @@ export class SearchService implements PlaceFactsReader {
       throw new PlaceQaReadError('cancelled');
     }
     const variants = placeNameVariants(span);
+    const alternates = options.alternates ?? [];
+    const readings = {
+      scoped: alternates.filter((a) => !a.includesArea).flatMap((a) => placeNameVariants(a.text)),
+      unscoped: alternates.filter((a) => a.includesArea).flatMap((a) => placeNameVariants(a.text)),
+    };
     if (
+      alternates.length > 4 ||
+      alternates.some(
+        (a) => !a.text.trim() || a.text.length > 120 || /[\uE000\uE001]/u.test(a.text),
+      ) ||
       options.ambiguous ||
       options.area?.kind === 'unresolved' ||
       !variants.length ||
@@ -195,7 +211,7 @@ export class SearchService implements PlaceFactsReader {
       const lookup = async (
         area?: Extract<PlaceNameArea, { kind: 'current' }>,
       ): Promise<PlaceNameMatches> => {
-        const result = await read.execute(resolvePlaceNameQuery(variants, limit, area));
+        const result = await read.execute(resolvePlaceNameQuery(variants, limit, area, readings));
         const rows = result.rows as (PlaceNameCandidate & { distinct_count: number })[];
         return {
           candidates: rows.slice(0, limit).map(({ id, exact, score }) => ({ id, exact, score })),

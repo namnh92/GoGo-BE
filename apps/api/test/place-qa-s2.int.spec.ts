@@ -360,6 +360,55 @@ describe('matrix 2: catalogue resolution, real indexed SQL', () => {
     // Dropping the unrelated apostrophe is another name: it may only confirm.
     expect((await service.resolvePlaceName('OBrien Pizza 7ps')).kind).not.toBe('answer');
   });
+  it('Astra F-01 (round 3): a grammar-like boundary token never makes the short core a silent answer', async () => {
+    const grass = await place('Cafe Cỏ');
+    const resolve = (
+      message: string,
+      extra: Parameters<typeof service.resolvePlaceName>[1] = {},
+    ) => {
+      const span = extractPlaceNameSpan(message);
+      if (span.kind !== 'span') throw new Error(`fixture expected a span: ${message}`);
+      return service.resolvePlaceName(span.text, { alternates: span.alternates, ...extra });
+    };
+    // Accented name token: not grammar, whole name answers.
+    expect(await resolve('Cafe Cỏ mở cửa mấy giờ?')).toMatchObject({
+      kind: 'answer',
+      candidates: [{ id: grass, exact: true }],
+    });
+    // Unaccented / particle-shaped token: both published readings, the user chooses.
+    for (const message of [
+      'Cafe Co mo cua may gio?',
+      'Cafe co wifi khong?',
+      'Cafe có mở cửa không?',
+    ]) {
+      const result = await resolve(message);
+      expect(result.kind).toBe('choice');
+      expect(result.candidates.map((c) => c.id).sort()).toEqual([grass, ids['common']!].sort());
+      expect(result.candidates.every((c) => c.exact)).toBe(true);
+    }
+    // No collision in the catalogue: the ordinary question still answers directly.
+    expect(await resolve('Mây Lam có wifi không?')).toMatchObject({
+      kind: 'answer',
+      candidates: [{ id: ids['unique'], exact: true }],
+    });
+    // A detected area may be the tail of a whole name; that reading ignores the area filter.
+    const scoped = {
+      administrativeMappingStatus: 'VERIFIED' as const,
+      administrativeDatasetVersion: 'qa-fixture-v1',
+      provinceCode: '01',
+      communeCode: '00001',
+    };
+    const short = await place('Zetaquy', scoped);
+    const long = await place('Zetaquy O Quan 9');
+    const both = await resolve('Zetaquy O Quan 9 mo cua may gio?', { area: area('01', '00001') });
+    expect(both.kind).toBe('choice');
+    expect(both.candidates.map((c) => c.id).sort()).toEqual([short, long].sort());
+    await expect(
+      service.resolvePlaceName('Cafe', {
+        alternates: Array.from({ length: 5 }, (_, i) => ({ text: `Cafe ${i}` })),
+      }),
+    ).resolves.toMatchObject({ kind: 'narrow' });
+  });
   it('Sol F-01 / Astra F-03: canonical reader returns a map and renderer-facing snapshot', async () => {
     const reader: PlaceFactsReader = service;
     const context = await reader.placeFacts([ids['facts']!], {
@@ -670,7 +719,10 @@ describe('DEV query-plan and latency evidence', () => {
     await db.execute(sql`insert into places(name,name_normalized,status,geom)
       select 'Corpus Venue ' || n, 'trigger', 'published', ST_SetSRID(ST_MakePoint(106.7,10.7),4326)
       from generate_series(1,20000) n`);
-    await db.execute(sql`analyze places`);
+    // VACUUM, not only ANALYZE: a bulk load leaves every new entry in the GIN
+    // pending list, and the planner then prices both GIN indexes out (measured:
+    // sequential scan before, BitmapOr after). Autovacuum does this in a real DB.
+    await pool.query('vacuum analyze places');
     const plans: Record<string, unknown> = {};
     for (const [name, query] of [
       ['exact', resolvePlaceNameQuery(placeNameVariants('Mây Lam'), 8)],
@@ -688,6 +740,51 @@ describe('DEV query-plan and latency evidence', () => {
         return (await read.execute(sql`explain (analyze,buffers,format json) ${query}`)).rows;
       });
     }
+    // Migration 0102: the exact-name channel is an index scan on the name key,
+    // unscoped, for a selective and for a broad name alike.
+    const planText = (name: string) => JSON.stringify(plans[name]);
+    const exactChannel = (name: string) => {
+      const nodes: { 'Node Type': string; 'Index Name'?: string; 'Relation Name'?: string }[] = [];
+      const walk = (node: Record<string, unknown>) => {
+        nodes.push(node as (typeof nodes)[number]);
+        for (const child of (node['Plans'] as Record<string, unknown>[] | undefined) ?? [])
+          walk(child);
+      };
+      walk(
+        (plans[name] as { 'QUERY PLAN': { Plan: Record<string, unknown> }[] }[])[0]![
+          'QUERY PLAN'
+        ][0]!.Plan,
+      );
+      return nodes;
+    };
+    for (const name of ['exact', 'broad']) {
+      expect(exactChannel(name).map((n) => n['Index Name'])).toContain('places_name_key_idx');
+      // No sequential scan evaluates the key expression per row any more.
+      expect(planText(name)).not.toMatch(/"Filter": "[^"]*regexp_replace/);
+    }
+    // A selective name never scans the table: the exact channel uses the name
+    // key and the fuzzy OR is a BitmapOr over the trigram and FTS GIN indexes.
+    const selective = exactChannel('exact');
+    expect(selective.map((n) => n['Node Type'])).toContain('BitmapOr');
+    expect(selective.map((n) => n['Index Name'])).toEqual(
+      expect.arrayContaining(['places_name_trgm_idx', 'places_search_tsv_idx']),
+    );
+    expect(
+      selective.filter((n) => n['Node Type'] === 'Seq Scan' && n['Relation Name'] === 'places'),
+    ).toEqual([]);
+    // The ops script (large-table path) is idempotent after the migration and
+    // its readiness check accepts exactly the migrated index shape.
+    const ops = await readFile(
+      path.resolve(__dirname, '../../../scripts/ops/index-place-name-key.sql'),
+      'utf8',
+    );
+    let ready: unknown;
+    for (const statement of ops
+      .replace(/--[^\n]*/g, '')
+      .split(';')
+      .filter((part) => part.trim()))
+      ready = (await pool.query(statement)).rows?.[0] ?? ready;
+    expect(ready).toEqual({ places_name_key_idx_ready: 1 });
     const timings: Record<string, number[]> = { exact: [], broad: [], facts: [] };
     for (let i = 0; i < 30; i++)
       for (const kind of Object.keys(timings)) {
@@ -708,6 +805,10 @@ describe('DEV query-plan and latency evidence', () => {
       'libs/modules/search/infrastructure/place-qa-read.ts',
       'libs/modules/search/domain/place-facts.ts',
       'libs/modules/assistant/domain/place-qa/resolution.ts',
+      'libs/modules/assistant/domain/place-qa/span.ts',
+      'libs/database/src/schema/places.ts',
+      'migrations/0102_place-name-key-index.sql',
+      'scripts/ops/index-place-name-key.sql',
     ];
     const sourceHashes = Object.fromEntries(
       await Promise.all(

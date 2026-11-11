@@ -1,4 +1,5 @@
 import { sql, type SQL } from 'drizzle-orm';
+import { schema } from '@gogo/database';
 import type { PlaceNameArea } from '../../assistant/domain/place-qa/resolution';
 import { publicAreaSummarySql, notProviderClosed } from './search.repository';
 
@@ -8,27 +9,34 @@ const textArray = (values: readonly string[]) =>
     sql`, `,
   )}]::text[]`;
 
-const JS_WHITESPACE_RUN =
-  '[\\s\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]+';
 /**
  * `normalizeVietnamese` collapses every whitespace run and trims; the
  * `places_normalize_name` trigger only lowercases and unaccents. Whole-name
  * equality is therefore decided on this column-side key, so `Mây Lam` and
  * `Mây  Lam` are ONE exact family for either input instead of one exact row
- * plus a fuzzy twin. The class is JavaScript's `\s`, code point for code point.
+ * plus a fuzzy twin. Migration 0102 indexes exactly this expression
+ * (`places_name_key_idx`); it lives beside the schema so they cannot drift.
  */
-export function placeNameKeySql(column: SQL): SQL {
-  // A constant pattern (no quote characters), inlined so it is compiled once.
-  return sql`btrim(regexp_replace(${column}, ${sql.raw(`'${JS_WHITESPACE_RUN}'`)}, ' ', 'g'), ' ')`;
-}
+export const placeNameKeySql = schema.placeNameKey;
 
-/** EXPLAIN this function, not a separately maintained SQL copy. Aliases join in S5. */
+/**
+ * EXPLAIN this function, not a separately maintained SQL copy. Aliases join in S5.
+ * `readings` are the longer whole-name readings of the same message
+ * (`PlaceNameAlternate`): exact-equality probes only, never fuzzy. `scoped`
+ * ones share the stated area; `unscoped` ones swallowed the area text itself.
+ */
 export function resolvePlaceNameQuery(
   variants: readonly string[],
   limit: number,
   area?: Extract<PlaceNameArea, { kind: 'current' }>,
+  readings: { scoped: readonly string[]; unscoped: readonly string[] } = {
+    scoped: [],
+    unscoped: [],
+  },
 ): SQL {
-  const eligible = sql`p.status = 'published' and ${notProviderClosed()} ${area ? sql`and p.administrative_mapping_status = 'VERIFIED' and p.administrative_dataset_version = ${area.datasetVersion} and p.province_code = ${area.provinceCode} ${area.communeCode ? sql`and p.commune_code = ${area.communeCode}` : sql``}` : sql``}`;
+  const published = sql`p.status = 'published' and ${notProviderClosed()}`;
+  const eligible = sql`${published} ${area ? sql`and p.administrative_mapping_status = 'VERIFIED' and p.administrative_dataset_version = ${area.datasetVersion} and p.province_code = ${area.provinceCode} ${area.communeCode ? sql`and p.commune_code = ${area.communeCode}` : sql``}` : sql``}`;
+  const key = placeNameKeySql(sql`p.name_normalized`);
   const fuzzy = variants.map(
     (span) => sql`(
     select p.id, false as exact,
@@ -41,7 +49,13 @@ export function resolvePlaceNameQuery(
   );
   return sql`with exact_matches as (
     select p.id, true as exact, 1::float8 as score from places p
-    where ${eligible} and ${placeNameKeySql(sql`p.name_normalized`)} = any(${textArray(variants)})
+    where ${eligible} and ${key} = any(${textArray([...new Set([...variants, ...readings.scoped])])})
+    ${
+      readings.unscoped.length
+        ? sql`union all select p.id, true as exact, 1::float8 as score from places p
+    where ${published} and ${key} = any(${textArray([...new Set(readings.unscoped)])})`
+        : sql``
+    }
   ), merged as (
     select id, bool_or(exact) as exact, max(score) as score from (
       select * from exact_matches union all ${sql.join(fuzzy, sql` union all `)}

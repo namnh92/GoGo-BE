@@ -701,6 +701,13 @@
       "when": 1794355200101,
       "tag": "0101_assistant-receipt-finality",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1794355200102,
+      "tag": "0102_place-name-key-index",
+      "breakpoints": true
     }
   ]
 }
