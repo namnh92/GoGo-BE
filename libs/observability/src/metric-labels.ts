@@ -416,6 +416,8 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // `provider`: jev | haiku; `outcome`: ok or an IntentFallbackReason /
   // composition fallback reason (closed sets).
   assistant_provider_duration_seconds: ['provider', 'outcome'],
+  // Dataset preflight only, before any Haiku attempt; `outcome`: unavailable | timeout.
+  assistant_vocabulary_preflight_failures_total: ['outcome'],
   assistant_first_text_seconds: [],
   // `billing_source`: anthropic_byok | openrouter_credits | unknown.
   assistant_haiku_calls_total: ['billing_source'],

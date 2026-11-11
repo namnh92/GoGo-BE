@@ -22,92 +22,102 @@ const answers = {
 };
 
 describe('first-text deadline counts only visible text (A-R3-03)', () => {
-  it('held-back model text does not keep the turn waiting past the deadline', async () => {
-    const placeId = '00000000-0000-4000-8000-000000000001';
-    const llm = {
-      model: 'anthropic/claude-haiku-5.5',
-      async *stream(req: { signal: AbortSignal }) {
-        yield { type: 'delta', text: 'Nhà' };
-        await new Promise((_resolve, reject) =>
-          req.signal.addEventListener('abort', () => reject(new Error('aborted')), {
-            once: true,
+  it.each(['held_model_text', 'dataset_unavailable', 'dataset_stalled'])(
+    '%s preserves the deterministic turn fallback',
+    async (scenario) => {
+      const placeId = '00000000-0000-4000-8000-000000000001';
+      const llm = {
+        model: 'anthropic/claude-haiku-5.5',
+        async *stream(req: { signal: AbortSignal }) {
+          yield { type: 'delta', text: 'Nhà' };
+          await new Promise((_resolve, reject) =>
+            req.signal.addEventListener('abort', () => reject(new Error('aborted')), {
+              once: true,
+            }),
+          );
+        },
+      };
+      const orchestrator = new AssistantOrchestrator(
+        {
+          ASSISTANT_FIRST_TEXT_TIMEOUT_MS: 3_000,
+          ASSISTANT_JEV_TIMEOUT_MS: 1_000,
+          ASSISTANT_MAX_OUTPUT_TOKENS: 100,
+          ASSISTANT_TURN_COST_CEILING_USD: 0.005,
+        } as never,
+        { history: async () => [], insertProposal: async () => ({}) } as never,
+        {
+          taxonomy: async () => ({ category: [], mood: [], setting: [], suitability: [] }),
+          labels: () => new Map<string, string>(),
+        } as never,
+        { search: async () => ({ results: [{ id: placeId }] }) } as never,
+        {
+          placeTags: async () => new Map(),
+          placeCard: async () => ({
+            kind: 'place',
+            placeId,
+            available: true,
+            facts: { name: 'Nhà Lá Café' },
           }),
-        );
-      },
-    };
-    const orchestrator = new AssistantOrchestrator(
-      {
-        ASSISTANT_FIRST_TEXT_TIMEOUT_MS: 3_000,
-        ASSISTANT_JEV_TIMEOUT_MS: 1_000,
-        ASSISTANT_MAX_OUTPUT_TOKENS: 100,
-        ASSISTANT_TURN_COST_CEILING_USD: 0.005,
-      } as never,
-      { history: async () => [], insertProposal: async () => ({}) } as never,
-      {
-        taxonomy: async () => ({ category: [], mood: [], setting: [], suitability: [] }),
-        labels: () => new Map<string, string>(),
-      } as never,
-      { search: async () => ({ results: [{ id: placeId }] }) } as never,
-      {
-        placeTags: async () => new Map(),
-        placeCard: async () => ({
-          kind: 'place',
-          placeId,
-          available: true,
-          facts: { name: 'Nhà Lá Café' },
-        }),
-      } as never,
-      {
-        administrativeNames: async () => new Set(),
-        resolve: async () => ({
-          kind: 'resolved',
-          value: {
-            area: { datasetVersion: 'v', provinceCode: '01', communeCode: null },
-            label: 'Hà Nội',
-          },
-        }),
-      } as never,
-      {} as never,
-      { recordByokViolation: async () => undefined } as never,
-      {
-        decide: async () => ({
-          model: 'typesafe/jev-1.14',
-          answers,
-          usage: { inputTokens: 1, outputTokens: 1, costUsd: 0.0001 },
-        }),
-      } as never,
-      llm as never,
-    );
-    const frames: AssistantFrameInput[] = [];
-    const state = newTurnState();
-    const started = Date.now();
-    const outcome = await Promise.race([
-      orchestrator.run(
+        } as never,
         {
-          messageId: 'm',
-          ledgerId: 'l',
-          conversationId: 'c',
-          userId: 'u',
-          text: 'Nhà hàng ở Hà Nội',
-          locale: 'vi',
-          context: null,
-        },
-        state,
-        {
-          emit: async (f) => {
-            frames.push(f);
-            if (f.type === 'delta') state.textStarted = true;
+          administrativeNames: async () => {
+            if (scenario === 'dataset_unavailable') throw new Error('dataset unavailable');
+            if (scenario === 'dataset_stalled') return new Promise<Set<string>>(() => undefined);
+            return new Set<string>();
           },
-        },
-        new AbortController().signal,
-      ),
-      new Promise<'hung'>((r) => setTimeout(() => r('hung'), 6_000)),
-    ]);
-    expect(outcome).not.toBe('hung');
-    expect(Date.now() - started).toBeLessThan(5_000);
-    expect(outcome).toMatchObject({ status: 'fallback' });
-    expect(frames.find((f) => f.type === 'notice')).toMatchObject({
-      notice: { reason: 'timeout' },
-    });
-  }, 10_000);
+          resolve: async () => ({
+            kind: 'resolved',
+            value: {
+              area: { datasetVersion: 'v', provinceCode: '01', communeCode: null },
+              label: 'Hà Nội',
+            },
+          }),
+        } as never,
+        {} as never,
+        { recordByokViolation: async () => undefined } as never,
+        {
+          decide: async () => ({
+            model: 'typesafe/jev-1.14',
+            answers,
+            usage: { inputTokens: 1, outputTokens: 1, costUsd: 0.0001 },
+          }),
+        } as never,
+        llm as never,
+      );
+      const frames: AssistantFrameInput[] = [];
+      const state = newTurnState();
+      const started = Date.now();
+      const outcome = await Promise.race([
+        orchestrator.run(
+          {
+            messageId: 'm',
+            ledgerId: 'l',
+            conversationId: 'c',
+            userId: 'u',
+            text: 'Nhà hàng ở Hà Nội',
+            locale: 'vi',
+            context: null,
+          },
+          state,
+          {
+            emit: async (f) => {
+              frames.push(f);
+              if (f.type === 'delta') state.textStarted = true;
+            },
+          },
+          new AbortController().signal,
+        ),
+        new Promise<'hung'>((r) => setTimeout(() => r('hung'), 6_000)),
+      ]);
+      expect(outcome).not.toBe('hung');
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(outcome).toMatchObject({ status: 'fallback' });
+      expect(frames.find((f) => f.type === 'notice')).toMatchObject({
+        notice: { reason: scenario === 'dataset_unavailable' ? 'provider_unavailable' : 'timeout' },
+      });
+      expect(frames.some((f) => f.type === 'delta' && f.text.length > 0)).toBe(true);
+      expect(state.costs.haikuCalls).toBe(scenario === 'held_model_text' ? 1 : 0);
+    },
+    10_000,
+  );
 });

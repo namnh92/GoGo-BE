@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { NoopMetrics } from '@gogo/observability';
 import { AssistantAreaResolver } from './area-resolver.service';
 import { v5Query } from './area.fixture';
 import { AssistantOrchestrator } from './assistant-orchestrator.service';
@@ -23,11 +24,19 @@ const ctx: GroundedAnswerContext = {
   conflicting: false,
 };
 
-async function compose(areas: AssistantAreaResolver, timeout = 1000) {
+async function compose(
+  areas: AssistantAreaResolver,
+  timeout = 1000,
+  modelWork: () => Promise<void> = async () => undefined,
+) {
   const stream = vi.fn(async function* () {
+    await modelWork();
     yield { type: 'delta', text: '[P1] nằm gần khu Bến Thành' };
     yield { type: 'done', finishReason: 'stop' };
   });
+  const metrics = new NoopMetrics();
+  const observe = vi.spyOn(metrics, 'observe');
+  const increment = vi.spyOn(metrics, 'increment');
   const stub = {} as never;
   const orchestrator = new AssistantOrchestrator(
     { ASSISTANT_MAX_OUTPUT_TOKENS: 100 } as never,
@@ -40,7 +49,9 @@ async function compose(areas: AssistantAreaResolver, timeout = 1000) {
     stub,
     null,
     { model: 'test', stream } as never,
+    metrics,
   );
+  const warn = vi.spyOn(orchestrator['logger'], 'warn').mockImplementation(() => undefined);
   const state = newTurnState();
   const chunks: string[] = [];
   const outcome = await orchestrator['compose'](
@@ -67,10 +78,53 @@ async function compose(areas: AssistantAreaResolver, timeout = 1000) {
     new AbortController().signal,
     Date.now() + timeout,
   );
-  return { outcome, text: chunks.join(''), stream, state };
+  return { outcome, text: chunks.join(''), stream, state, observe, increment, warn };
 }
 
 describe('#854 published administrative vocabulary in composition', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('measures only the model attempt after a slow vocabulary preflight', async () => {
+    vi.useFakeTimers();
+    const areas = new AssistantAreaResolver({
+      snapshot: async () => {
+        await vi.advanceTimersByTimeAsync(100);
+        return v5Query().snapshot();
+      },
+    } as never);
+    const result = await compose(areas, 1000, async () => {
+      await vi.advanceTimersByTimeAsync(25);
+    });
+    expect(result.outcome).toEqual({ kind: 'ok' });
+    expect(result.observe).toHaveBeenCalledWith('assistant_provider_duration_seconds', 0.025, {
+      provider: 'haiku',
+      outcome: 'ok',
+    });
+    expect(result.increment).not.toHaveBeenCalledWith(
+      'assistant_vocabulary_preflight_failures_total',
+      expect.anything(),
+    );
+  });
+
+  it('still attributes an attempted model failure to Haiku', async () => {
+    const result = await compose(new AssistantAreaResolver(v5Query() as never), 1000, async () => {
+      throw new Error('model unavailable');
+    });
+    expect(result.outcome).toEqual({ kind: 'fallback', reason: 'provider_unavailable' });
+    expect(result.state.costs.haikuCalls).toBe(1);
+    expect(result.observe).toHaveBeenCalledWith(
+      'assistant_provider_duration_seconds',
+      expect.any(Number),
+      { provider: 'haiku', outcome: 'provider_unavailable' },
+    );
+    expect(result.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'assistant.haiku_failed' }),
+    );
+    expect(result.increment).not.toHaveBeenCalled();
+  });
   it('wires the published snapshot vocabulary into the production sanitizer', async () => {
     const result = await compose(new AssistantAreaResolver(v5Query() as never));
     expect(result.outcome).toEqual({ kind: 'ok' });
@@ -86,6 +140,28 @@ describe('#854 published administrative vocabulary in composition', () => {
     } as never);
     const result = await compose(areas);
     expect(result.outcome).toEqual({ kind: 'fallback', reason: 'provider_unavailable' });
+    expect
+      .soft(result.observe)
+      .not.toHaveBeenCalledWith(
+        'assistant_provider_duration_seconds',
+        expect.any(Number),
+        expect.objectContaining({ provider: 'haiku' }),
+      );
+    expect
+      .soft(result.warn)
+      .not.toHaveBeenCalledWith(expect.objectContaining({ event: 'assistant.haiku_failed' }));
+    expect
+      .soft(result.increment)
+      .toHaveBeenCalledWith('assistant_vocabulary_preflight_failures_total', {
+        outcome: 'unavailable',
+      });
+    expect.soft(result.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'assistant.vocabulary_preflight_failed',
+        outcome: 'unavailable',
+      }),
+    );
+    expect(result.text).toBe('');
     expect(result.stream).not.toHaveBeenCalled();
     expect(result.state.costs.haikuCalls).toBe(0);
   });
@@ -96,6 +172,28 @@ describe('#854 published administrative vocabulary in composition', () => {
     } as never);
     const result = await compose(areas, 30);
     expect(result.outcome).toEqual({ kind: 'fallback', reason: 'timeout' });
+    expect
+      .soft(result.observe)
+      .not.toHaveBeenCalledWith(
+        'assistant_provider_duration_seconds',
+        expect.any(Number),
+        expect.objectContaining({ provider: 'haiku' }),
+      );
+    expect
+      .soft(result.warn)
+      .not.toHaveBeenCalledWith(expect.objectContaining({ event: 'assistant.haiku_failed' }));
+    expect
+      .soft(result.increment)
+      .toHaveBeenCalledWith('assistant_vocabulary_preflight_failures_total', {
+        outcome: 'timeout',
+      });
+    expect.soft(result.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'assistant.vocabulary_preflight_failed',
+        outcome: 'timeout',
+      }),
+    );
+    expect(result.text).toBe('');
     expect(result.stream).not.toHaveBeenCalled();
     expect(result.state.costs.haikuCalls).toBe(0);
   });
