@@ -400,6 +400,18 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // `outcome`: accepted | kill_switch | unconfigured | budget_exhausted |
   // byok_unverified | daily_limit | rate_limited.
   assistant_credit_admission_total: ['funding', 'outcome'],
+  assistant_credit_settlement_total: ['outcome'],
+  assistant_credit_charged_total: [],
+  assistant_credit_refunded_total: [],
+  assistant_credit_released_total: [],
+  assistant_credit_settlement_latency_seconds: [],
+  assistant_credit_unresolved_count: [],
+  assistant_credit_unresolved_oldest_age_seconds: [],
+  assistant_credit_reconciliation_queue_lag_seconds: [],
+  assistant_credit_bound_violation_total: ['reason'],
+  assistant_credit_post_final_cost_absorbed_total: [],
+  assistant_credit_hold_mismatch_total: [],
+  assistant_credit_free_allowance_violation_total: [],
   assistant_admission_total: ['outcome'],
   // `source`: decision_model | fallback; `intent`: the four ASSISTANT_INTENTS.
   assistant_decisions_total: ['source', 'intent'],

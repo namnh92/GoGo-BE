@@ -630,3 +630,13 @@ export { publicErrorDetails, type AssistantInsufficientCreditDetails } from '../
 export { assertAssistantCreditSpendReady } from '../shared/assistant-credit-readiness';
 
 export { reserveCredits } from '../assistant/domain/credit-cost';
+
+export { AssistantCreditSettlementService } from '../assistant/application/assistant-credit-settlement.service';
+export { COST_RECONCILE_EVENT } from '../assistant/infrastructure/assistant-usage-evidence.repository';
+
+export {
+  RECEIPT_RECOVERY_BACKOFF_SECONDS,
+  RECEIPT_RECOVERY_WINDOW_SECONDS,
+} from '../assistant/domain/receipt-recovery';
+
+export { lockAssistantAccount } from '../shared/assistant-credits';

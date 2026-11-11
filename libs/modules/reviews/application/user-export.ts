@@ -6,7 +6,10 @@ import { writeAudit } from '../../shared/audit';
 import { publicMediaUrl } from '../../shared/media-url';
 import { pgArray } from '../../search/infrastructure/search.repository';
 import { ExportTooLargeError } from '../../privacy/domain/export-envelope';
-import { collectAssistantExport } from '../../assistant/application/assistant-privacy';
+import {
+  collectAssistantExport,
+  collectAssistantCreditExport,
+} from '../../assistant/application/assistant-privacy';
 
 export {
   readNotificationSettings,
@@ -307,5 +310,6 @@ export async function collectUserExport(
     contributionDrafts,
     contributionEnrichments,
     assistantCreditBalance: await creditBalance(db, userId),
+    assistantCreditFacts: await collectAssistantCreditExport(db, userId, (v) => budget.charge(v)),
   };
 }

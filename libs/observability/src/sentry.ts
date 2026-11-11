@@ -33,6 +33,30 @@ export function reportRecoveryMailFailure(): void {
   }
 }
 
+/** Static billing alert, without account, provider ID, request or ambient context. */
+export function reportAssistantReceiptMissing(): void {
+  try {
+    Sentry.captureException(new Error('Assistant receipt recovery exhausted 24h window'), {
+      captureContext: (scope) => {
+        scope.clear();
+        scope.addEventProcessor((event) => ({
+          ...(event.event_id !== undefined ? { event_id: event.event_id } : {}),
+          ...(event.timestamp !== undefined ? { timestamp: event.timestamp } : {}),
+          ...(event.platform !== undefined ? { platform: event.platform } : {}),
+          ...(event.level !== undefined ? { level: event.level } : {}),
+          ...(event.exception !== undefined ? { exception: event.exception } : {}),
+          ...(event.release !== undefined ? { release: event.release } : {}),
+          ...(event.environment !== undefined ? { environment: event.environment } : {}),
+          tags: { operation: 'assistant_receipt_recovery', reason: 'receipt_missing' },
+        }));
+        return scope;
+      },
+    });
+  } catch {
+    // Durable quarantine and its metric remain authoritative if reporting fails.
+  }
+}
+
 /**
  * #588 — the only way the API and the worker initialise Sentry, and the
  * protection boundary for exact positions in error events. Lives in this lib

@@ -1,3 +1,4 @@
+import { AssistantUsageEvidenceRepository } from './assistant-usage-evidence.repository';
 import { AppError } from '../../shared/app-error';
 import {
   AssistantCreditSpendRepository,
@@ -642,6 +643,7 @@ export class AssistantRepository {
   }
 
   async completeLedger(ledgerId: string, status: string, costs: LedgerCosts): Promise<void> {
+    await new AssistantUsageEvidenceRepository(this.db).closeDispatch(ledgerId);
     await this.db.execute(sql`
       update assistant_usage_ledger set
         status = ${status}, completed_at = now(),
@@ -666,6 +668,11 @@ export class AssistantRepository {
     await this.db.execute(sql`
       update assistant_usage_ledger set status = 'unsettled', completed_at = now()
       where message_id = ${messageId} and status = 'accepted'`);
+    const u = await this.db.execute(
+      sql`select id from assistant_usage_ledger where message_id=${messageId}`,
+    );
+    for (const row of u.rows as { id: string }[])
+      await new AssistantUsageEvidenceRepository(this.db).closeDispatch(row.id);
   }
 
   /**

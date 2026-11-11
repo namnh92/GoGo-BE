@@ -25,3 +25,18 @@ DO $$ BEGIN
  ))<>3 THEN RAISE EXCEPTION 'Seed mismatch'; END IF;
 END $$;
 COMMIT;
+
+DO $$ BEGIN
+ IF to_regclass('assistant_credit_billing_incidents') IS NOT NULL THEN
+  ALTER TABLE assistant_credit_billing_incidents VALIDATE CONSTRAINT assistant_credit_billing_incidents_reason_check;
+ END IF;
+END $$;
+
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('assistant_usage_calls') AND conname='assistant_usage_calls_billable_cost_usd_check') THEN
+  ALTER TABLE assistant_usage_calls VALIDATE CONSTRAINT assistant_usage_calls_billable_cost_usd_check;
+ END IF;
+ IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('assistant_credit_turns') AND conname='assistant_credit_turns_recovery_attempts_check') THEN
+  ALTER TABLE assistant_credit_turns VALIDATE CONSTRAINT assistant_credit_turns_recovery_attempts_check;
+ END IF;
+END $$;

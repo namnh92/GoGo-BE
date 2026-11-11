@@ -31,6 +31,8 @@ describe('#829 assistant erasure integration seam', () => {
     const execute = async (q: Parameters<PgDialect['sqlToQuery']>[0]) => {
       const query = dialect.sqlToQuery(q);
       trace.push(query);
+      if (query.sql.includes('returning usage_ledger_id'))
+        return { rows: [{ usage_ledger_id: 'usage-a' }, { usage_ledger_id: 'usage-b' }] };
       return { rows: query.sql.includes('select distinct') ? [{ key: 'place:p:old-hmac' }] : [] };
     };
     await eraseAssistantDataForUser({ execute } as never, 'user');
@@ -43,5 +45,10 @@ describe('#829 assistant erasure integration seam', () => {
     expect(ledger).toBeGreaterThan(entitlement);
     expect(unlink).toBeGreaterThan(ledger);
     expect(trace[entitlement]!.params).toEqual(trace[ledger]!.params);
+    const turn = trace.findIndex((t) => t.sql.includes('returning usage_ledger_id'));
+    const outbox = trace.findIndex((t) => t.sql.includes('update outbox_events'));
+    expect(outbox).toBeGreaterThan(turn);
+    expect(trace[outbox]!.params).toEqual(['usage-a', 'usage-b']);
+    expect(trace[outbox]!.sql).toContain('resource_id in ($1,$2)');
   });
 });

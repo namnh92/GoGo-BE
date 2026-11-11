@@ -96,6 +96,7 @@ export class OutboxDispatcher {
       .from(schema.outboxEvents)
       .where(
         and(
+          sql`${schema.outboxEvents.eventType} <> 'assistant.cost_reconcile'`,
           isNull(schema.outboxEvents.publishedAt),
           isNull(schema.outboxEvents.failedAt),
           sql`(${schema.outboxEvents.nextAttemptAt} is null

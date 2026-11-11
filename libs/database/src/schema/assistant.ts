@@ -504,11 +504,17 @@ export const assistantCreditTurns = pgTable(
     leaseOwner: text('lease_owner'),
     leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
     retryCount: integer('retry_count').notNull().default(0),
+    recoveryAttempts: integer('recovery_attempts').notNull().default(0),
+    recoveryNextAt: timestamp('recovery_next_at', { withTimezone: true }),
   },
   (t) => [
     check(
       'assistant_credit_turns_policy_key_check',
       sql.raw("policy_key IN ('legacy_allowance_v1','free_then_actual_cost_v1')"),
+    ),
+    check(
+      'assistant_credit_turns_recovery_attempts_check',
+      sql.raw('recovery_attempts BETWEEN 0 AND 5'),
     ),
     check('assistant_credit_turns_policy_epoch_check', sql.raw('policy_epoch>=0')),
     check(
@@ -561,6 +567,7 @@ export const assistantUsageCalls = pgTable(
     provider: text('provider').notNull(),
     model: text('model').notNull(),
     dispatchState: text('dispatch_state').notNull().default('intent'),
+    correlationId: uuid('correlation_id'),
     providerRequestId: text('provider_request_id'),
     providerGenerationId: text('provider_generation_id'),
     directCostUsd: numeric('direct_cost_usd'),
@@ -569,12 +576,18 @@ export const assistantUsageCalls = pgTable(
     receiptFingerprint: text('receipt_fingerprint'),
     receiptRevision: bigint('receipt_revision', { mode: 'bigint' }),
     costState: text('cost_state').notNull().default('unknown'),
+    finalityPolicy: text('finality_policy'),
+    billableCostUsd: numeric('billable_cost_usd'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     dispatchedAt: timestamp('dispatched_at', { withTimezone: true }),
     finalizedAt: timestamp('finalized_at', { withTimezone: true }),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    check(
+      'assistant_usage_calls_billable_cost_usd_check',
+      sql.raw("billable_cost_usd>=0 AND billable_cost_usd<'Infinity'::numeric"),
+    ),
     check('assistant_usage_calls_call_index_check', sql.raw('call_index>=0')),
     check(
       'assistant_usage_calls_dispatch_state_check',
@@ -601,5 +614,79 @@ export const assistantUsageCalls = pgTable(
     uniqueIndex('assistant_usage_calls_receipt_unique')
       .on(t.provider, t.usageLedgerId, t.callIndex, t.receiptFingerprint)
       .where(sql`${t.receiptFingerprint} is not null`),
+  ],
+);
+
+export const assistantUsageReceipts = pgTable(
+  'assistant_usage_receipts',
+  {
+    usageLedgerId: uuid('usage_ledger_id').notNull(),
+    callIndex: integer('call_index').notNull(),
+    receiptRevision: bigint('receipt_revision', { mode: 'bigint' }).notNull(),
+    fingerprint: text('fingerprint').notNull(),
+    directCostUsd: numeric('direct_cost_usd').notNull(),
+    upstreamCostUsd: numeric('upstream_cost_usd').notNull(),
+    feeCostUsd: numeric('fee_cost_usd').notNull(),
+    final: boolean('final').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.usageLedgerId, t.callIndex, t.fingerprint] }),
+    check('assistant_usage_receipts_call_index_check', sql.raw('call_index>=0')),
+    check(
+      'assistant_usage_receipts_direct_cost_usd_check',
+      sql.raw("direct_cost_usd>=0 AND direct_cost_usd<'Infinity'::numeric"),
+    ),
+    check(
+      'assistant_usage_receipts_upstream_cost_usd_check',
+      sql.raw("upstream_cost_usd>=0 AND upstream_cost_usd<'Infinity'::numeric"),
+    ),
+    check(
+      'assistant_usage_receipts_fee_cost_usd_check',
+      sql.raw("fee_cost_usd>=0 AND fee_cost_usd<'Infinity'::numeric"),
+    ),
+    check('assistant_usage_receipts_receipt_revision_check', sql.raw('receipt_revision>0')),
+  ],
+);
+export const assistantCreditBoundArtifacts = pgTable(
+  'assistant_credit_bound_artifacts',
+  {
+    version: text('version').primaryKey(),
+    environment: text('environment').notNull(),
+    boundUsd: numeric('bound_usd').notNull(),
+    description: jsonb('description').notNull(),
+    validatedAt: timestamp('validated_at', { withTimezone: true }).notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  },
+  () => [
+    check(
+      'assistant_credit_bound_artifacts_environment_check',
+      sql.raw("environment IN ('dev','staging','production')"),
+    ),
+    check(
+      'assistant_credit_bound_artifacts_bound_usd_check',
+      sql.raw("bound_usd>0 AND bound_usd<'Infinity'::numeric"),
+    ),
+    check('assistant_credit_bound_artifacts_check', sql.raw('expires_at>validated_at')),
+  ],
+);
+
+export const assistantCreditBillingIncidents = pgTable(
+  'assistant_credit_billing_incidents',
+  {
+    usageLedgerId: uuid('usage_ledger_id').notNull(),
+    reason: text('reason').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.usageLedgerId, t.reason] }),
+    check(
+      'assistant_credit_billing_incidents_reason_check',
+      sql.raw(
+        "reason IN ('invalid_cost','receipt_conflict','bound_or_finality','account_invariant','receipt_missing')",
+      ),
+    ),
   ],
 );

@@ -45,6 +45,24 @@ const ALLOWED: Record<string, RegExp[]> = {
         },
       });
     `),
+    exactCallShape(`
+      Sentry.captureException(new Error('Assistant receipt recovery exhausted 24h window'), {
+        captureContext: (scope) => {
+          scope.clear();
+          scope.addEventProcessor((event) => ({
+            ...(event.event_id !== undefined ? { event_id: event.event_id } : {}),
+            ...(event.timestamp !== undefined ? { timestamp: event.timestamp } : {}),
+            ...(event.platform !== undefined ? { platform: event.platform } : {}),
+            ...(event.level !== undefined ? { level: event.level } : {}),
+            ...(event.exception !== undefined ? { exception: event.exception } : {}),
+            ...(event.release !== undefined ? { release: event.release } : {}),
+            ...(event.environment !== undefined ? { environment: event.environment } : {}),
+            tags: { operation: 'assistant_receipt_recovery', reason: 'receipt_missing' },
+          }));
+          return scope;
+        },
+      });
+    `),
     /Sentry\.getDefaultIntegrations\(\{\}\)/,
     /Sentry\.httpIntegration\(\{ maxIncomingRequestBodySize: 'none' \}\)/,
     /Sentry\.onUnhandledRejectionIntegration\(\{ mode: 'none' \}\)/,

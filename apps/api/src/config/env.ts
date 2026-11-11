@@ -593,6 +593,7 @@ const envSchema = z
      * worst case, so an unknown can only stop spend sooner.
      */
     // Exact versioned billing bound, independently audited from the calibrated budget ceiling.
+    ASSISTANT_CREDIT_PRICING_REVISION: z.string().trim().min(1).max(128).optional(),
     ASSISTANT_CREDIT_BOUND_USD: z
       .string()
       .max(1000)

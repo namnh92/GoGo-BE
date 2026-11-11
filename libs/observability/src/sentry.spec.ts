@@ -1,6 +1,10 @@
 import * as Sentry from '@sentry/node';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { reportRecoveryMailFailure, sentryInitOptions } from './sentry';
+import {
+  reportAssistantReceiptMissing,
+  reportRecoveryMailFailure,
+  sentryInitOptions,
+} from './sentry';
 
 /**
  * #588 — the payload that would leave for Sentry, captured by an in-memory
@@ -91,6 +95,35 @@ describe('Sentry events never carry an exact position (#588)', () => {
     const payload = JSON.stringify(sent.slice(start));
     expect(payload).toContain('Password recovery mail delivery failed');
     expect(payload).toContain('password_recovery_send');
+    for (const secret of [
+      'recovery-pii@example.com',
+      'private-user-id',
+      'private-challenge-id',
+      'private-proof',
+      'private-breadcrumb',
+    ])
+      expect(payload).not.toContain(secret);
+  });
+
+  it('reports expired assistant receipts with a static billing alert and no ambient PII (#853)', async () => {
+    const start = sent.length;
+    Sentry.withIsolationScope((scope) => {
+      scope.setUser({ email: 'recovery-pii@example.com', id: 'private-user-id' });
+      scope.setTag('private-tag', 'private-challenge-id');
+      scope.setExtra('code', 'private-proof');
+      scope.setSDKProcessingMetadata({
+        normalizedRequest: {
+          url: 'https://example.com/?email=recovery-pii@example.com',
+          data: { code: 'private-proof' },
+        },
+      });
+      Sentry.addBreadcrumb({ message: 'private-breadcrumb' });
+      reportAssistantReceiptMissing();
+    });
+    await Sentry.flush(2000);
+    const payload = JSON.stringify(sent.slice(start));
+    expect(payload).toContain('Assistant receipt recovery exhausted 24h window');
+    expect(payload).toContain('assistant_receipt_recovery');
     for (const secret of [
       'recovery-pii@example.com',
       'private-user-id',

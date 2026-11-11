@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
@@ -44,7 +45,12 @@ export const outboxEvents = pgTable(
      */
     failedAt: timestamp('failed_at', { withTimezone: true }),
   },
-  (t) => [index('outbox_events_unpublished_idx').on(t.publishedAt, t.occurredAt)],
+  (t) => [
+    index('outbox_events_unpublished_idx').on(t.publishedAt, t.occurredAt),
+    index('assistant_credit_settlement_outbox_due')
+      .on(t.nextAttemptAt, t.occurredAt)
+      .where(sql`${t.eventType}='assistant.cost_reconcile' and ${t.publishedAt} is null`),
+  ],
 );
 
 export const idempotencyKeys = pgTable(

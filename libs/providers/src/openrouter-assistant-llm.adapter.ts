@@ -1,4 +1,10 @@
 import {
+  parseBillingJson,
+  openRouterReceipt,
+  billingGenerationId,
+  type AssistantCallRecorder,
+} from './assistant-billing';
+import {
   AssistantLlmError,
   HAIKU_MODEL,
   type AssistantLlmEvent,
@@ -61,6 +67,8 @@ export class OpenRouterAssistantLlmAdapter implements AssistantLlmPort {
     }
     if (request.signal.aborted) throw new AssistantLlmError('aborted', 'before request');
 
+    const call = await request.billing?.start('haiku', this.model);
+    request.signal.throwIfAborted();
     let res: Response;
     try {
       res = await this.fetchImpl(OPENROUTER_CHAT_COMPLETIONS_URL, {
@@ -68,6 +76,7 @@ export class OpenRouterAssistantLlmAdapter implements AssistantLlmPort {
         headers: {
           Authorization: `Bearer ${this.options.apiKey}`,
           'Content-Type': 'application/json',
+          ...(call ? { 'X-Request-Id': call.requestId } : {}),
         },
         body: JSON.stringify(buildChatBody(this.model, request, this.options.temperature)),
         signal: request.signal,
@@ -86,7 +95,13 @@ export class OpenRouterAssistantLlmAdapter implements AssistantLlmPort {
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
-    const state: StreamState = { buffer: '', usage: null, finish: null, model: null };
+    const state: StreamState = {
+      buffer: '',
+      usage: null,
+      finish: null,
+      model: null,
+      persistedGenerationIds: new Set(),
+    };
     const onAbort = () => void reader.cancel().catch(() => undefined);
     request.signal.addEventListener('abort', onAbort, { once: true });
     try {
@@ -100,11 +115,11 @@ export class OpenRouterAssistantLlmAdapter implements AssistantLlmPort {
         if (request.signal.aborted) throw new AssistantLlmError('aborted', 'during stream');
         if (chunk.done) break;
         state.buffer += decoder.decode(chunk.value, { stream: true });
-        for (const event of drainLines(state, this.model)) yield event;
+        for await (const event of drainBillingLines(state, this.model, call)) yield event;
       }
       state.buffer += decoder.decode();
       state.buffer += '\n';
-      for (const event of drainLines(state, this.model)) yield event;
+      for await (const event of drainBillingLines(state, this.model, call)) yield event;
     } finally {
       request.signal.removeEventListener('abort', onAbort);
       reader.releaseLock();
@@ -155,6 +170,8 @@ type StreamState = {
   usage: AssistantLlmUsage | null;
   finish: 'stop' | 'length' | 'other' | null;
   model: string | null;
+  evidence?: Record<string, unknown>[];
+  persistedGenerationIds: Set<string>;
 };
 
 /** Consumes complete SSE lines from the buffer. */
@@ -170,6 +187,7 @@ function* drainLines(state: StreamState, requestedModel: string): Generator<Assi
     let event: Record<string, unknown>;
     try {
       event = JSON.parse(data) as Record<string, unknown>;
+      (state.evidence ??= []).push(parseBillingJson(data) as Record<string, unknown>);
     } catch (err) {
       throw new AssistantLlmError('invalid_output', 'unparseable stream chunk', { cause: err });
     }
@@ -255,4 +273,35 @@ function nonNegative(value: unknown): number | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+async function* drainBillingLines(
+  state: StreamState,
+  model: string,
+  call?: AssistantCallRecorder,
+): AsyncGenerator<AssistantLlmEvent> {
+  // Persist cost/identity before handing model output to the orchestrator. Also
+  // capture a receipt from a chunk whose text/model validation subsequently fails.
+  const events: AssistantLlmEvent[] = [];
+  let failure: unknown;
+  try {
+    events.push(...drainLines(state, model));
+  } catch (err) {
+    failure = err;
+  }
+  for (const raw of state.evidence ?? []) {
+    const id = billingGenerationId(raw.id);
+    if (id && call && !state.persistedGenerationIds.has(id)) {
+      await call.generation(id);
+      // Only successful persistence suppresses later copies in this attempt.
+      state.persistedGenerationIds.add(id);
+    }
+    if (raw.usage && typeof raw.usage === 'object') {
+      const receipt = openRouterReceipt('haiku', raw.usage as Record<string, unknown>, 1n, id);
+      if (receipt) await call?.receipt(receipt);
+    }
+  }
+  state.evidence = [];
+  if (failure) throw failure;
+  yield* events;
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AssistantLlmError, type AssistantLlmEvent } from './assistant-llm.port';
 import {
   OpenRouterAssistantLlmAdapter,
@@ -244,4 +244,71 @@ describe('OpenRouterAssistantLlmAdapter', () => {
       false,
     );
   });
+});
+
+it('F-03 persists the first generation ID before text and skips repeats across stream chunks, per call', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const generation = vi.fn(async () => {
+    await gate;
+  });
+  const receipt = vi.fn(async () => undefined);
+  const adapter = new OpenRouterAssistantLlmAdapter({
+    apiKey: 'test-key',
+    fetchImpl: (async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            const enc = new TextEncoder();
+            for (let i = 0; i < 80; i++)
+              controller.enqueue(
+                enc.encode(
+                  chunk({ id: 'gen-repeat', choices: [{ delta: { content: 'x' } }] }) + '\n',
+                ),
+              );
+            controller.enqueue(
+              enc.encode(
+                chunk({
+                  id: 'gen-repeat',
+                  usage: {
+                    cost: 0,
+                    is_byok: true,
+                    cost_details: { upstream_inference_cost: 0.00012 },
+                  },
+                }) + '\n',
+              ),
+            );
+            controller.close();
+          },
+        }),
+      )) as typeof fetch,
+  });
+  const request = {
+    messages: [],
+    maxOutputTokens: 100,
+    signal: signal(),
+    billing: { start: async () => ({ requestId: 'request', generation, receipt }) },
+  };
+  const stream = adapter.stream(request)[Symbol.asyncIterator]();
+  const first = stream.next();
+  await vi.waitFor(() => expect(generation).toHaveBeenCalledOnce());
+  let yielded = false;
+  void first.then(() => {
+    yielded = true;
+  });
+  await Promise.resolve();
+  expect(yielded).toBe(false);
+  release();
+  expect((await first).value).toEqual({ type: 'delta', text: 'x' });
+  while (!(await stream.next()).done) {
+    /* consume all chunks and final receipt */
+  }
+  expect(generation).toHaveBeenCalledTimes(1);
+  expect(receipt).toHaveBeenCalledOnce();
+  // Memoization belongs to this provider attempt, never the adapter instance.
+  for await (const event of adapter.stream(request)) void event;
+  expect(generation).toHaveBeenCalledTimes(2);
+  expect(receipt).toHaveBeenCalledTimes(2);
 });

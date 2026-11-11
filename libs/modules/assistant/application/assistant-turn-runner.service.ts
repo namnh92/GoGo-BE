@@ -1,4 +1,3 @@
-import { flagEnvironmentOf } from '../../shared/feature-flags';
 import {
   Inject,
   Injectable,
@@ -323,14 +322,8 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
         // Deleted (conversation or account) while it ran: no copy stays behind.
         await this.buffer.drop(turn.messageId).catch(() => undefined);
       }
-      if (row && state.costs.jevCalls === 0 && state.costs.haikuCalls === 0) {
-        await this.repo.releaseUndispatchedTurn(
-          turn.userId,
-          turn.ledgerId,
-          turn.messageId,
-          flagEnvironmentOf(this.config.APP_ENV),
-        );
-      }
+      // Financial application (including proven-zero release) belongs to the
+      // durable settlement consumer. Completing SSE never asserts cost finality.
       await this.repo.completeLedger(turn.ledgerId, status, state.costs);
       this.metrics.increment('assistant_turns_total', { status });
     } finally {

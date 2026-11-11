@@ -687,6 +687,20 @@
       "when": 1794268800099,
       "tag": "0099_assistant-cost-credit-spending",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1794355200100,
+      "tag": "0100_assistant-credit-settlement",
+      "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1794355200101,
+      "tag": "0101_assistant-receipt-finality",
+      "breakpoints": true
     }
   ]
 }
