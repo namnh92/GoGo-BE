@@ -2,7 +2,7 @@ openapi: 3.1.0
 x-gogo-notification-preference-semantics: master-and-five-categories-v1
 info:
   title: GoGo API
-  version: 9.4.0-alpha.1
+  version: 9.5.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -655,6 +655,87 @@ paths:
         '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
         '200': { description: '{ deleted: true }' }
 
+  /me/credits:
+    get:
+      operationId: getMyCredits
+      tags: [me]
+      summary: Own posted credit balance and lifetime totals
+      description: |
+        Active registered users only; guests and staff receive USER_ONLY.
+        Requires the independent default-off assistant_credits.display_enabled
+        flag. GET /me capabilities.assistantCredits advertises this release's
+        support; clients must treat absence as unavailable (contract before 9.5).
+        Reads never create an account. No account means zero facts.
+        One statement snapshot reads posted balance and lifetime ledger totals;
+        totals do not depend on history pagination, source/usage retention or
+        catalogue entitlements. Refunds reduce spent, never increase earned.
+        reserved is 0 and policyKey is legacy_allowance_v1 in slice V.
+        Existing daily allowance and one-credit charging stay unchanged.
+        A mismatch is monitored, never repaired during GET.
+        Rate limit: 60 requests per minute per actor.
+        Success and errors use Cache-Control: private, no-store.
+      responses:
+        '200':
+          description: Posted credit facts at asOf
+          headers:
+            Cache-Control:
+              schema: { type: string, const: 'private, no-store' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MyCredits' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AssistantUserOnly' }
+        '404':
+          description: CREDITS_DISPLAY_DISABLED — visibility is not enabled
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
+  /me/credits/ledger:
+    get:
+      operationId: getMyCreditLedger
+      tags: [me]
+      summary: Own credit ledger, ten entries per page
+      description: |
+        Same active-user, display flag and private, no-store policy as /me/credits,
+        including errors. No user ID parameter is accepted. Fixed page size 10,
+        fetch 11, descending (created_at, id) with strict keyset pagination.
+        Cursor is opaque, versioned and bound to the authenticated user; it retains
+        all six timestamp digits. Invalid or another user's cursor returns
+        400 INVALID_CURSOR. Other query validation failures use VALIDATION_FAILED.
+        No-account history is empty. Source deletion and usage purge preserve
+        posted history. Refresh without cursor to see concurrent new entries;
+        pagination is not a frozen multi-request snapshot.
+        direction, eventKey and source.type are open strings: unknown keys need
+        a generic client label. No localized copy, venue/entitlement identity,
+        internal usage ID or provider billing data is returned. Rate: 60/minute/actor.
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, const: 10, default: 10 }
+        - in: query
+          name: cursor
+          schema: { type: string, maxLength: 512 }
+      responses:
+        '200':
+          description: Own ledger page
+          headers:
+            Cache-Control:
+              schema: { type: string, const: 'private, no-store' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MyCreditPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/AssistantUserOnly' }
+        '404':
+          description: CREDITS_DISPLAY_DISABLED — visibility is not enabled
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
   /me/avatar:
     put:
       operationId: setAvatar
@@ -13044,6 +13125,60 @@ components:
         maximum: 100
         default: 20
   schemas:
+    MyCredits:
+      type: object
+      required: [balance, earned, spent, reserved, availableBalance, asOf, policyKey]
+      properties:
+        balance: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        earned: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        spent: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        reserved: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        availableBalance: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        asOf: { type: string, format: date-time }
+        policyKey:
+          type: string
+          description: Open policy key; legacy_allowance_v1 in V. Unknown values must be tolerated.
+    MyCreditEntry:
+      type: object
+      required: [id, createdAt, delta, direction, eventKey, source]
+      properties:
+        id: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+        delta:
+          type: integer
+          minimum: -9007199254740991
+          maximum: 9007199254740991
+          not: { const: 0 }
+        direction:
+          type: string
+          description: Open key; known earned, spent, adjustment.
+        eventKey:
+          type: string
+          description: Open catalogue key or assistant_usage; never localized copy.
+        source:
+          type: object
+          required: [type]
+          properties:
+            type:
+              type: string
+              description: Open key; contribution, review, event, assistant_usage, legacy.
+        eventId:
+          type: string
+          format: uuid
+          description: Catalogue event ID when present; never an entitlement or source-subject key.
+        messageId:
+          type: string
+          format: uuid
+          description: Optional only if still readable by this actor; omitted in V.
+    MyCreditPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 10
+          items: { $ref: '#/components/schemas/MyCreditEntry' }
+        nextCursor: { type: [string, 'null'] }
     SystemNotificationKind:
       type: string
       x-extensible-enum: [maintenance, update, general]
@@ -14543,6 +14678,9 @@ components:
           type: object
           required: [avatarUpload]
           properties:
+            assistantCredits:
+              type: boolean
+              description: Optional capability (9.5+); absence or false means unavailable. Independent default-off display flag; no grant or charging activation.
             avatarUpload:
               type: string
               enum: [available, unavailable]

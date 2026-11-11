@@ -155,7 +155,7 @@ describe('profile read and write (PROF-BE-002)', () => {
       usualBudget: null,
       dateOfBirth: null,
       // The test fake stands in for storage, so uploads are available here.
-      capabilities: { avatarUpload: 'available' },
+      capabilities: { avatarUpload: 'available', assistantCredits: false },
     });
   });
 

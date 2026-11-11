@@ -59,6 +59,13 @@ export type FlagDefinition = {
  * together, so a key can never sit in the console with nothing behind it.
  */
 export const FEATURE_FLAGS = {
+  'assistant_credits.display_enabled': {
+    valueType: 'boolean',
+    defaultValue: false,
+    description:
+      'Expose personal posted-credit facts; independent of grant evaluation and charging.',
+    platformScoped: false,
+  },
   'credit_events.enabled': {
     valueType: 'boolean',
     defaultValue: false,
