@@ -2146,12 +2146,23 @@ export class AssistantOrchestrator {
       },
       Math.max(1, deadline - Date.now()),
     );
-    const sanitizer = new StreamSanitizer(state.sources.length, ctx.places, ctx.locale);
     const started = Date.now();
-    state.costs.haikuCalls += 1;
-    state.costs.haikuModel = llm.model;
+    const vocabularyGuard = firstTextGuard(deadline, AbortSignal.any([signal, local.signal]));
     let finish: 'stop' | 'length' | 'other' = 'other';
     try {
+      const administrativeNames = ctx.places.length
+        ? await vocabularyGuard.run(() => this.areas.administrativeNames())
+        : new Set<string>();
+      // A dataset read must not let an expired/cancelled turn start a paid call.
+      AbortSignal.any([signal, local.signal]).throwIfAborted();
+      const sanitizer = new StreamSanitizer(
+        state.sources.length,
+        ctx.places,
+        ctx.locale,
+        administrativeNames,
+      );
+      state.costs.haikuCalls += 1;
+      state.costs.haikuModel = llm.model;
       for await (const event of llm.stream({
         messages: buildComposerMessages(ctx, history, input.text),
         maxOutputTokens: this.config.ASSISTANT_MAX_OUTPUT_TOKENS,
@@ -2196,7 +2207,7 @@ export class AssistantOrchestrator {
     } catch (err) {
       if (signal.aborted) throw err;
       const reason: 'timeout' | 'provider_unavailable' | 'invalid_output' =
-        local.signal.aborted && !state.textStarted
+        (local.signal.aborted || err instanceof FirstTextDeadlineError) && !state.textStarted
           ? 'timeout'
           : err instanceof AssistantLlmError && err.kind === 'invalid_output'
             ? 'invalid_output'
@@ -2217,6 +2228,7 @@ export class AssistantOrchestrator {
       }
       return { kind: 'fallback', reason };
     } finally {
+      vocabularyGuard.dispose();
       clearTimeout(firstTextTimer);
     }
   }

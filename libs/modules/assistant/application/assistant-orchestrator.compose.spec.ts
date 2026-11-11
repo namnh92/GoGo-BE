@@ -58,6 +58,7 @@ describe('first-text deadline counts only visible text (A-R3-03)', () => {
         }),
       } as never,
       {
+        administrativeNames: async () => new Set(),
         resolve: async () => ({
           kind: 'resolved',
           value: {
