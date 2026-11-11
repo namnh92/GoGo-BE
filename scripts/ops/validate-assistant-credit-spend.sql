@@ -4,6 +4,7 @@
 BEGIN;
 SET LOCAL lock_timeout='5s';
 SET LOCAL statement_timeout='30s';
+ALTER TABLE assistant_usage_ledger VALIDATE CONSTRAINT assistant_usage_ledger_cost_revision_check;
 ALTER TABLE assistant_credit_ledger VALIDATE CONSTRAINT assistant_credit_ledger_check;
 ALTER TABLE assistant_credit_ledger VALIDATE CONSTRAINT assistant_credit_event_reason_fk;
 ALTER TABLE credit_events VALIDATE CONSTRAINT credit_events_billing_keys_check;

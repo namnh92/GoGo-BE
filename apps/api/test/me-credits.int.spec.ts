@@ -380,6 +380,86 @@ describe('Owner 2026-11-11 credit history grouping facts', () => {
     return { id, usageId };
   }
 
+  it.each(['settled', 'pending'] as const)(
+    'includes a retained %s D turn in conversation/list/page totals without double counting (#852 F-02)',
+    async (state) => {
+      await pool.query(
+        `insert into feature_flags(key,enabled) values ('assistant_credits.display_enabled',true)
+         on conflict(key,environment,platform) do update set enabled=true`,
+      );
+      const user = await register();
+      const own = await conversation(user.userId, 'Retained accounting');
+      await grant(user.userId);
+      const retained = await turnUsage(user.userId, own.id);
+      if (state === 'pending') {
+        await pool.query('delete from assistant_credit_ledger where id=$1', [retained.id]);
+        await pool.query(
+          `update assistant_credit_turns set applied_credits=0,held_credits=12,
+             cost_revision=0,applied_cost_revision=0,state='pending',finalized_at=null,
+             message_id=$2 where usage_ledger_id=$1`,
+          [retained.usageId, randomUUID()],
+        );
+      }
+      const expected = {
+        creditsUsed: state === 'settled' ? 12 : 0,
+        creditsReserved: state === 'pending' ? 12 : 0,
+        pendingTurns: state === 'pending' ? 1 : 0,
+        state,
+      };
+      async function assertTotals(messageCount: number) {
+        const read = (suffix: string) =>
+          api().inject({
+            method: 'GET',
+            url: `/v1/assistant/conversations${suffix}`,
+            headers: auth(user.accessToken),
+            remoteAddress: ip(),
+          });
+        const detail = await read(`/${own.id}`);
+        expect(detail.statusCode).toBe(200);
+        expect(detail.json().credits).toMatchObject(expected);
+        const list = await read('');
+        expect(list.statusCode).toBe(200);
+        expect(
+          list.json().items.find((item: { id: string }) => item.id === own.id).credits,
+        ).toMatchObject(expected);
+        const page = await read(`/${own.id}/messages?limit=1`);
+        expect(page.statusCode).toBe(200);
+        expect(page.json().items).toHaveLength(messageCount);
+        expect(page.json().conversationCredits).toMatchObject(expected);
+        if (messageCount) {
+          expect(page.json().nextCursor).not.toBeNull();
+          const next = await read(
+            `/${own.id}/messages?limit=1&cursor=${encodeURIComponent(page.json().nextCursor)}`,
+          );
+          expect(next.statusCode).toBe(200);
+          expect(next.json().conversationCredits).toMatchObject(expected);
+        }
+      }
+      // No source usage/message exists, but the stored conversation remains readable.
+      await assertTotals(0);
+      expect((await get(user.accessToken)).json().reserved).toBe(expected.creditsReserved);
+
+      await legacyUsage(user.userId, own.id);
+      const linked = await legacyUsage(user.userId, own.id);
+      await pool.query(`update assistant_credit_ledger set delta=-5,cost_revision=1 where id=$1`, [
+        linked.id,
+      ]);
+      await pool.query(
+        `insert into assistant_credit_turns(usage_ledger_id,user_id,message_id,conversation_id,
+           accepted_at,policy_key,policy_epoch,funding_source,reserved_ceiling,held_credits,
+           applied_credits,bound_version,cost_revision,applied_cost_revision,state,finalized_at)
+         values ($1,$2,$3,$4,now(),'free_then_actual_cost_v1',1,'credit',5,0,5,
+           'history-test-bound',1,1,'settled',now())`,
+        [linked.usageId, user.userId, linked.messageId, own.id],
+      );
+      // A foreign owner's retained record must not enter this owner's totals.
+      const other = await register();
+      await turnUsage(other.userId, own.id);
+      expected.creditsUsed += 6; // legacy 1 + D 5, each counted exactly once.
+      await assertTotals(1);
+    },
+  );
+
   it('returns two own conversations on legacy/D usage and refunds, plus exact catalogue grant labels', async () => {
     const user = await register();
     const first = await conversation(user.userId, 'Dinner plans');

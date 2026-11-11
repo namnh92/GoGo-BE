@@ -56,7 +56,7 @@ export const turnCreditsSql = (messageId: SQL, userId: SQL): SQL => sql`(
  limit 1
 )`;
 
-export const conversationCreditsSql = (conversationId: SQL): SQL => sql`(
+export const conversationCreditsSql = (conversationId: SQL, userId: SQL): SQL => sql`(
  select jsonb_build_object(
   'creditsUsed',case when coalesce(bool_or(f->>'state'='unavailable'),false) then null else coalesce(sum((f->>'creditsCharged')::bigint),0) end,
   'creditsReserved',coalesce(sum((f->>'creditsReserved')::bigint),0),
@@ -65,8 +65,18 @@ export const conversationCreditsSql = (conversationId: SQL): SQL => sql`(
     when count(*) filter(where f->>'state' in ('pending','reconciling'))>0 then 'pending' else 'settled' end,
   'asOf',to_char(statement_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))
  from (
+  select jsonb_build_object(
+   'fundingSource',t.funding_source,
+   'state',case when t.state='quarantined' then case when t.applied_cost_revision>0 then 'reconciling' else 'pending' end else t.state end,
+   'creditsCharged',t.applied_credits,'creditsReserved',t.held_credits) as f
+  from assistant_credit_turns t
+  where t.conversation_id=${conversationId} and t.user_id=${userId}
+  union all
   select ${turnCreditsSql(sql`m_credit.id`, sql`m_credit.user_id`)} as f from assistant_messages m_credit
-  where m_credit.conversation_id=${conversationId} and m_credit.role='assistant'
+  where m_credit.conversation_id=${conversationId} and m_credit.user_id=${userId} and m_credit.role='assistant'
+   and not exists (select 1 from assistant_credit_turns t
+    where t.message_id=m_credit.id or t.usage_ledger_id in (
+     select u.id from assistant_usage_ledger u where u.message_id=m_credit.id))
  ) facts
 )`;
 
@@ -142,7 +152,8 @@ export class AssistantCreditSpendRepository {
     ${input.boundVersion},${paid ? 'pending' : 'settled'},${paid ? null : input.acceptedAt.toISOString()}::timestamptz,${input.acceptedAt.toISOString()}::timestamptz)`);
   }
   async facts(exec: CreditExec, userId: string, conversationId: string) {
-    const r = await exec.execute(sql`select ${conversationCreditsSql(sql`c.id`)} as credits,
+    const r =
+      await exec.execute(sql`select ${conversationCreditsSql(sql`c.id`, sql`c.user_id`)} as credits,
    coalesce((select jsonb_object_agg(m.id,${turnCreditsSql(sql`m.id`, sql`m.user_id`)}) from assistant_messages m
     where m.conversation_id=c.id and m.role='assistant'),'{}'::jsonb) as turns
    from assistant_conversations c where c.id=${conversationId} and c.user_id=${userId}`);

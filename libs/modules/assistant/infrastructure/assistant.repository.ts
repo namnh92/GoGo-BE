@@ -113,7 +113,7 @@ const rowsOf = <T>(res: { rows: unknown[] }) => res.rows as T[];
 
 const CONVERSATION_COLUMNS = sql`c.id, c.user_id, c.title, c.context_kind, c.context_id,
   c.message_count, c.preview, ${sql.raw(isoUs('c.created_at'))} as created_at,
-  ${sql.raw(isoUs('c.last_message_at'))} as last_message_at, ${conversationCreditsSql(sql`c.id`)} as credits`;
+  ${sql.raw(isoUs('c.last_message_at'))} as last_message_at, ${conversationCreditsSql(sql`c.id`, sql`c.user_id`)} as credits`;
 
 const MESSAGE_COLUMNS = sql`m.id, m.conversation_id, m.user_id, m.role, m.status, m.text,
   m.locale, m.context_kind, m.context_id, m.cards, m.follow_ups, m.notice, m.error, m.frames,

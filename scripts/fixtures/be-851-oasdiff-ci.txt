@@ -1,0 +1,5 @@
+1 changes: 1 error, 0 warning, 0 info
+error	[response-property-became-not-enum] at openapi/gogo.v1.yaml
+	in API GET /cms/users/{id}/assistant-credits
+		removed the enum constraint from the `items/items/reason` response property for the response status `200`
+		The server may now return any value of the property's type, including values the previous enum excluded, so a client written against it may not handle the response.

@@ -206,6 +206,19 @@
       "diagnostic": "error [api-path-removed-without-deprecation] at .oasdiff-base.yaml in API GET /places/{id}/provider-photos API path removed without deprecation",
       "reason": "Owner Q6 removes the transient gallery in #822 on unreleased re-design. Stored cover in PlaceDetail.photos replaces it; ADR-0052. MAJOR 9.0.0-alpha.1 also withdraws the CMS no-provider guarantee for implicit cover acquisition.",
       "note": "The full diagnostic is retained from the captured PR #825 CI oasdiff report with CI's filenames (base .oasdiff-base.yaml, revision openapi/gogo.v1.yaml), saved as scripts/fixtures/be-822-oasdiff-ci.txt. Both SHA-256 values use the raw YAML bytes, exactly as scripts/check-contract-compat.ts does. Replay with --expect=BE-822-provider-photos-path-removed must admit it exactly once. Changing either contract or adding another finding still fails. CODEOWNER sign-off remains separate and pending."
+    },
+    {
+      "id": "BE-851-credit-reason-open",
+      "issue": "https://github.com/namnh92/GoGo-BE/issues/851",
+      "decidedAt": "2026-11-11",
+      "decidedBy": "product owner, Astra rev2 shape and owner D1 implementation brief dated 2026-11-11; explicit PR #852 finding-fix request to record this transition. CODEOWNER sign-off remains separate and pending",
+      "baseCommit": "b509c79f6fae836ded350ed604a5f781043882a7",
+      "baseSha256": "f5196d81d43feb009fa11606ef51c1883ff6bb3d6e545f01d3d62062f78d82f8",
+      "revisionCommit": "7722aad2ca7d706ff19dc769404e31f1218fa4ed",
+      "revisionSha256": "2a65b7bd14435a5ad1000db452ad099d106612d0375a6a3f325a8b529bdce28d",
+      "diagnostic": "error [response-property-became-not-enum] at openapi/gogo.v1.yaml in API GET /cms/users/{id}/assistant-credits removed the enum constraint from the `items/items/reason` response property for the response status `200`",
+      "reason": "ADR-0054 (docs/adr/0054-assistant-actual-cost-credit-funding.md) authorizes MAJOR 10.0.0-alpha.1 for free-first actual-cost funding, including open CMS reasons for variable debits and signed adjustments. The consumer migration note is openapi/CHANGELOG.md section 10.0.0-alpha.1: CMS must regenerate its contract/client and deploy tolerant reason readers before activation.",
+      "note": "Both SHA-256 values use raw YAML bytes as scripts/check-contract-compat.ts does. The base bytes were fetched by immutable commit through the GitHub connector, with their blob SHA verified locally; no git commands were used. The revision YAML is unchanged from the reviewed head. The diagnostic comes from CI run 42958267031 job 130318448927, retained in scripts/fixtures/be-851-oasdiff-ci.txt. Replay with --expect=BE-851-credit-reason-open must admit it exactly once. Changed contract bytes or any unrecorded diagnostic still fail. This records the authorized transition only; CODEOWNER sign-off remains separate and pending."
     }
   ]
 }

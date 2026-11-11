@@ -24,9 +24,11 @@ INSERT INTO assistant_credit_spend_control(singleton) VALUES(true);
 ALTER TABLE assistant_usage_ledger
  ADD COLUMN billing_policy text,
  ADD COLUMN billing_epoch bigint,
- ADD COLUMN cost_revision bigint NOT NULL DEFAULT 0 CHECK (cost_revision>=0),
+ ADD COLUMN cost_revision bigint NOT NULL DEFAULT 0,
  ADD COLUMN dispatch_closed_at timestamptz,
  ADD COLUMN cost_finalized_at timestamptz;
+ALTER TABLE assistant_usage_ledger ADD CONSTRAINT assistant_usage_ledger_cost_revision_check
+ CHECK (cost_revision>=0) NOT VALID;
 --> statement-breakpoint
 CREATE TABLE assistant_credit_turns (
  usage_ledger_id uuid PRIMARY KEY,

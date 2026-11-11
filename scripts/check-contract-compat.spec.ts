@@ -441,6 +441,30 @@ describe('parseArgs (#703 F-02)', () => {
 });
 
 describe('parseExceptions', () => {
+  it('admits only the recorded CMS reason transition (#852 F-03)', () => {
+    const exceptions = parseExceptions(
+      readFileSync(path.resolve(__dirname, '../.github/oasdiff-exceptions.json'), 'utf8'),
+    );
+    const input = {
+      report: readFileSync(path.resolve(__dirname, 'fixtures/be-851-oasdiff-ci.txt'), 'utf8'),
+      baseSha256: 'f5196d81d43feb009fa11606ef51c1883ff6bb3d6e545f01d3d62062f78d82f8',
+      revisionSha256: '2a65b7bd14435a5ad1000db452ad099d106612d0375a6a3f325a8b529bdce28d',
+      exceptions,
+      oasdiffOutcome: 'success',
+      expect: 'BE-851-credit-reason-open',
+    };
+    expect(evaluate(input)).toMatchObject({ ok: true });
+    expect(exceptions.find((entry) => entry.id === input.expect)?.reason).toContain('ADR-0054');
+    expect(evaluate({ ...input, baseSha256: '0'.repeat(64) })).toMatchObject({ ok: false });
+    expect(evaluate({ ...input, revisionSha256: '0'.repeat(64) })).toMatchObject({ ok: false });
+    expect(
+      evaluate({
+        ...input,
+        report: input.report.replace('items/items/reason', 'items/items/other'),
+      }),
+    ).toMatchObject({ ok: false });
+  });
+
   it('reads the committed file', () => {
     const json = readFileSync(
       path.resolve(__dirname, '../.github/oasdiff-exceptions.json'),
