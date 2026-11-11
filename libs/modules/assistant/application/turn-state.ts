@@ -1,3 +1,4 @@
+import type { AssistantBillingObserver } from '@gogo/providers';
 import type {
   AssistantCardRef,
   AssistantFollowUpGroup,
@@ -14,6 +15,7 @@ import type { LedgerCosts } from '../infrastructure/assistant.repository';
  * the kill switch, the hard ceiling — persists exactly what the client saw.
  */
 export type TurnState = {
+  billing?: AssistantBillingObserver | undefined;
   text: string;
   textStarted: boolean;
   dispatchClosed: boolean;

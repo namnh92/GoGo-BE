@@ -1,3 +1,4 @@
+import type { AssistantBillingObserver } from './assistant-billing';
 /**
  * AI-BE-001 (ADR-0036): the assistant's streaming text port.
  * There is deliberately no fake runtime binding. Consumers persist/replay
@@ -13,6 +14,7 @@ export type AssistantLlmMessage = {
 };
 
 export type AssistantLlmRequest = {
+  billing?: AssistantBillingObserver | undefined;
   messages: readonly AssistantLlmMessage[];
   maxOutputTokens: number;
   /** Orchestrator owns the end-to-end <=15s time-to-first-text deadline. */

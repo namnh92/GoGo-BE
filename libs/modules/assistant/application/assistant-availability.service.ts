@@ -1,3 +1,4 @@
+import { verifiedCreditBound } from '../../shared/assistant-credit-bound';
 import {
   AssistantCreditSpendRepository,
   type SpendControl,
@@ -182,6 +183,7 @@ export class AssistantAvailabilityService {
         return null;
     }
     try {
+      if (!(await verifiedCreditBound(exec, this.config))) return null;
       return reserveCredits(bound);
     } catch {
       return null;

@@ -237,3 +237,14 @@ export {
   servedModelMatches,
   type OpenRouterAssistantLlmOptions,
 } from './openrouter-assistant-llm.adapter';
+
+export {
+  parseBillingJson,
+  decimal,
+  openRouterReceipt,
+  OpenRouterAssistantReceiptReader,
+  type AssistantCostReceipt,
+  type AssistantCallRecorder,
+  type AssistantBillingObserver,
+  type AssistantReceiptReader,
+} from './assistant-billing';

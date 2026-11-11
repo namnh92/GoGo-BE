@@ -1,0 +1,71 @@
+import { describe, it, expect, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
+import { AssistantCreditSettlementWorker } from './assistant-credit-settlement';
+const dialect = new PgDialect(),
+  signal = new AbortController().signal;
+function harness(outcome = 'applied', lease = true, retries = 0) {
+  const queries: { sql: string; params: unknown[] }[] = [];
+  const execute = vi.fn(async (q: SQL) => {
+    const query = dialect.sqlToQuery(q);
+    queries.push(query);
+    if (query.sql.includes('select id,resource_id'))
+      return { rows: [{ id: 'event', resource_id: 'usage', lag: 12 }] };
+    if (query.sql.includes('select usage_ledger_id from')) return { rows: [] };
+    if (query.sql.includes('returning cost_revision'))
+      return { rows: lease ? [{ cost_revision: '4', retry_count: retries }] : [] };
+    if (query.sql.includes('returning usage_ledger_id'))
+      return { rows: [{ usage_ledger_id: 'usage' }] };
+    return { rows: [] };
+  });
+  const db = {
+    execute,
+    transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({ execute }),
+  };
+  const reconcile = vi.fn(async () => outcome);
+  return {
+    queries,
+    reconcile,
+    worker: new AssistantCreditSettlementWorker(db as never, { reconcile } as never),
+  };
+}
+describe('#853 bounded settlement consumer', () => {
+  it('a durable wakeup bypasses sweep delay and ACKs only its delivered IDs', async () => {
+    const h = harness();
+    await h.worker.tick(signal, 5);
+    expect(h.reconcile).toHaveBeenCalledOnce();
+    const claim = h.queries.find((q) => q.sql.includes('returning cost_revision'))!;
+    expect(claim.params).toContain(true);
+    const ack = h.queries.find((q) => q.sql.includes('update outbox_events'))!;
+    expect(ack.params).toContain('event');
+    expect(ack.params).not.toContain('usage');
+    expect(ack.params).toContain(false);
+  });
+  it.each([
+    ['paused', 0, 5],
+    ['pending', 10, 3600],
+    ['retry', 100, 3600],
+  ])('backs off %s and retains wakeups', async (outcome, retries, seconds) => {
+    const h = harness(String(outcome), true, Number(retries));
+    await h.worker.tick(signal);
+    const ack = h.queries.find((q) => q.sql.includes('update outbox_events'))!;
+    expect(ack.params).toContain(seconds);
+    expect(ack.params).toContain(true);
+  });
+  it('a held turn lease skips reconciliation; no row remains locked waiting for account', async () => {
+    const h = harness('applied', false);
+    await h.worker.tick(signal);
+    expect(h.reconcile).not.toHaveBeenCalled();
+    expect(
+      h.queries.some((q) => q.sql.includes('for update') || q.sql.includes('pg_advisory')),
+    ).toBe(false);
+  });
+  it('only paid turns use the unapplied financial revision sweep condition', async () => {
+    const h = harness();
+    await h.worker.tick(signal);
+    const sweep = h.queries.find((q) => q.sql.includes('select usage_ledger_id from'))!.sql;
+    expect(sweep).toContain("funding_source='credit' and u.cost_revision>applied_cost_revision");
+    expect(sweep).toContain('limit');
+    await expect(h.worker.tick(signal, 101)).rejects.toThrow(RangeError);
+  });
+});

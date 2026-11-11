@@ -630,3 +630,6 @@ export { publicErrorDetails, type AssistantInsufficientCreditDetails } from '../
 export { assertAssistantCreditSpendReady } from '../shared/assistant-credit-readiness';
 
 export { reserveCredits } from '../assistant/domain/credit-cost';
+
+export { AssistantCreditSettlementService } from '../assistant/application/assistant-credit-settlement.service';
+export { COST_RECONCILE_EVENT } from '../assistant/infrastructure/assistant-usage-evidence.repository';

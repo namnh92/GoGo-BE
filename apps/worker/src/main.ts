@@ -1,3 +1,7 @@
+import {
+  assistantCreditSettlementFromEnv,
+  collectAssistantSettlementHealth,
+} from './assistant-credit-settlement';
 import { assertAssistantCreditSpendReady } from '@gogo/modules';
 import os from 'node:os';
 import { createDb } from '@gogo/database';
@@ -302,6 +306,8 @@ async function bootstrap(): Promise<void> {
   // draining is what the flag being off asks for.
   const pushDevices = new PushDeviceLifecycle(db, push, metrics, process.env.APP_ENV ?? 'dev');
   const privacy = new PrivacyJobs(db);
+  const assistantCreditSettlement = assistantCreditSettlementFromEnv(db, process.env, baseMetrics);
+  registry.registerCollector(() => collectAssistantSettlementHealth(db, registry));
   // ADR-0022: the retry half of media cleanup. Registered only with real
   // buckets — a fake here would mark rows done while the objects stayed.
   const mediaCleanupWiring = mediaCleanupFromEnv(process.env);
@@ -559,6 +565,13 @@ async function bootstrap(): Promise<void> {
 
   const periodic = startPeriodic(
     [
+      {
+        name: 'gogo:worker:assistant-credit-settlement',
+        schedule: { everyMs: 15_000 },
+        run: async ({ signal }) => {
+          await assistantCreditSettlement.tick(signal);
+        },
+      },
       {
         name: 'gogo:worker:credit-evaluator',
         schedule: { everyMs: 60_000 },

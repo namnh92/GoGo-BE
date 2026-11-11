@@ -1,3 +1,5 @@
+import { flagEnvironmentOf } from '../../shared/feature-flags';
+import { AssistantUsageEvidenceRepository } from '../infrastructure/assistant-usage-evidence.repository';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import {
@@ -335,6 +337,7 @@ export class AssistantOrchestrator {
     @Inject(ASSISTANT_DECISION_PROVIDER) private readonly decisions: DecisionProviderPort | null,
     @Inject(ASSISTANT_LLM) private readonly llm: AssistantLlmPort | null,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
+    @Optional() private readonly evidence?: AssistantUsageEvidenceRepository,
   ) {}
 
   async run(
@@ -343,6 +346,7 @@ export class AssistantOrchestrator {
     sink: TurnSink,
     signal: AbortSignal,
   ): Promise<TurnOutcome> {
+    state.billing = this.evidence?.observer(input, flagEnvironmentOf(this.config.APP_ENV));
     const startedAt = Date.now();
     const deadline = startedAt + this.config.ASSISTANT_FIRST_TEXT_TIMEOUT_MS;
     // A-R-05: one first-text deadline over every stage, not only the Haiku
@@ -1799,6 +1803,7 @@ export class AssistantOrchestrator {
     try {
       const response = await this.decisions.decide(request, {
         signal: AbortSignal.any([signal, budget]),
+        billing: state.billing,
       });
       this.recordJevUsage(state, response.model, response.usage, 'decision');
       this.metrics.observe('assistant_provider_duration_seconds', secondsSince(started), {
@@ -2002,6 +2007,7 @@ export class AssistantOrchestrator {
     try {
       const response = await this.decisions!.decide(request, {
         signal: AbortSignal.any([signal, budget]),
+        billing: state.billing,
       });
       this.recordJevUsage(state, response.model, response.usage, 'relevance');
       const scored = keyed
@@ -2153,6 +2159,7 @@ export class AssistantOrchestrator {
     let finish: 'stop' | 'length' | 'other' = 'other';
     try {
       for await (const event of llm.stream({
+        billing: state.billing,
         messages: buildComposerMessages(ctx, history, input.text),
         maxOutputTokens: this.config.ASSISTANT_MAX_OUTPUT_TOKENS,
         signal: AbortSignal.any([signal, local.signal]),

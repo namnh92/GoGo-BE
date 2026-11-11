@@ -1,3 +1,8 @@
+import {
+  billingConfiguration,
+  billingConfigurationHash,
+} from '../../shared/assistant-credit-bound';
+import type { AssistantConfig } from './assistant.config';
 import { describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { AssistantAvailabilityService } from './assistant-availability.service';
@@ -23,7 +28,36 @@ function harness(
     quarantined: false,
     ...input,
   };
+  const boundConfig = {
+    APP_ENV: 'dev',
+    ASSISTANT_CREDIT_BOUND_USD: '0.00012',
+    ASSISTANT_CREDIT_BOUND_VERSION: 'verified-test-artifact',
+    ASSISTANT_CREDIT_PRICING_REVISION: 'test-only-pricing',
+    ...config,
+  } as AssistantConfig;
   const execute = vi.fn(async (q) => {
+    if (dialect.sqlToQuery(q).sql.includes('from assistant_credit_bound_artifacts'))
+      return {
+        rows: [
+          {
+            description: {
+              schemaVersion: 1,
+              configurationHash: billingConfigurationHash(boundConfig),
+              configuration: billingConfiguration(boundConfig),
+              pricingRevision: boundConfig.ASSISTANT_CREDIT_PRICING_REVISION,
+              boundProofSha256: 'a'.repeat(64),
+              finalityProofSha256: 'b'.repeat(64),
+              coverage: {
+                allAttempts: true,
+                retries: true,
+                parallelCalls: true,
+                timeoutAbortBillability: true,
+                maximumFees: true,
+              },
+            },
+          },
+        ],
+      };
     const key = dialect.sqlToQuery(q).params[0] as string;
     return {
       rows:
@@ -41,12 +75,7 @@ function harness(
   const spend = { snapshot: vi.fn(async () => facts) };
   const service = new AssistantAvailabilityService(
     { execute } as never,
-    {
-      APP_ENV: 'dev',
-      ASSISTANT_CREDIT_BOUND_USD: '0.00012',
-      ASSISTANT_CREDIT_BOUND_VERSION: 'verified-test-artifact',
-      ...config,
-    } as never,
+    boundConfig,
     repo as never,
     undefined,
     spend as never,

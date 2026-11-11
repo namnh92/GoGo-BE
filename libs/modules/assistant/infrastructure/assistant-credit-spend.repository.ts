@@ -1,4 +1,5 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { sql, type SQL } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
 import { resolveBooleanFlag } from '../../shared/feature-flags';
@@ -25,6 +26,7 @@ export type FundingSnapshot = SpendControl & {
 };
 type CreditTurnRow = {
   usage_ledger_id: string;
+  accepted_at: string;
   user_id: string | null;
   funding_source: string;
   reserved_ceiling: number;
@@ -82,7 +84,10 @@ export const conversationCreditsSql = (conversationId: SQL, userId: SQL): SQL =>
 
 @Injectable()
 export class AssistantCreditSpendRepository {
-  constructor(@Inject(DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DB) private readonly db: Db,
+    @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
+  ) {}
   /** First admission lock, before account and global budget. */
   async lockControl(tx: CreditExec): Promise<SpendControl> {
     try {
@@ -107,7 +112,7 @@ export class AssistantCreditSpendRepository {
    (select coalesce(sum(held_credits),0)::text from assistant_credit_turns where user_id=u.id) as reserved,
    (select count(*)::int from assistant_usage_ledger where user_id=u.id and allowance_source='daily' and accepted_at>=${dayStart.toISOString()}::timestamptz
      and accepted_at<${new Date(dayStart.getTime() + 86400000).toISOString()}::timestamptz) as accepted_today,
-   exists(select 1 from assistant_credit_turns where state='quarantined') as quarantined,
+   (exists(select 1 from assistant_credit_turns where state='quarantined') or exists(select 1 from assistant_credit_billing_incidents where resolved_at is null)) as quarantined,
    to_char(statement_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as as_of
    from users u cross join assistant_credit_spend_control c
    left join assistant_credit_accounts a on a.user_id=u.id where u.id=${userId} and u.status='active'`);
@@ -182,7 +187,9 @@ export class AssistantCreditSpendRepository {
     final = false,
     refundOnly = false,
   ) {
-    return this.db.transaction(async (tx) => {
+    let committed:
+      { delta: number; released: number; finalized: boolean; acceptedAt: string } | undefined;
+    const result = await this.db.transaction(async (tx) => {
       await lockAssistantAccount(tx, userId);
       if (!(await resolveBooleanFlag(tx, 'assistant_credits.settlement_enabled', { environment })))
         return 'paused' as const;
@@ -234,12 +241,18 @@ export class AssistantCreditSpendRepository {
         await tx.execute(
           sql`update assistant_credit_turns set state='quarantined',updated_at=clock_timestamp() where usage_ledger_id=${usageId}`,
         );
+        await tx.execute(
+          sql`insert into assistant_credit_billing_incidents(usage_ledger_id,reason) values(${usageId},'bound_or_finality') on conflict do nothing`,
+        );
         await writeAudit(tx, {
           actorType: 'system',
           action: 'assistant.credit_quarantined',
           resourceType: 'assistant_usage',
           resourceId: usageId,
           diff: { revision: revision.toString() },
+        });
+        this.metrics.increment('assistant_credit_bound_violation_total', {
+          reason: 'bound_or_finality',
         });
         return 'quarantined' as const;
       }
@@ -248,12 +261,28 @@ export class AssistantCreditSpendRepository {
         const base = await tx.execute(
           sql`select id from assistant_credit_ledger where usage_ledger_id=${usageId} and reason='message_spent'`,
         );
-        await tx.execute(sql`insert into assistant_credit_ledger(user_id,delta,reason,usage_ledger_id,cost_revision)
-     values(${userId},${next.delta},${base.rows.length ? 'assistant_usage_adjustment' : 'message_spent'},${usageId},${revision.toString()}::bigint)`);
         const account =
           await tx.execute(sql`update assistant_credit_accounts set balance=balance+${next.delta}
-     where user_id=${userId} and balance::bigint+${next.delta} between 0 and 2147483647 returning balance`);
-        if (!account.rows.length) throw new RangeError('Credit account invariant violation');
+          where user_id=${userId} and balance::bigint+${next.delta} between 0 and 2147483647 returning balance`);
+        if (!account.rows.length) {
+          await tx.execute(
+            sql`update assistant_credit_turns set state='quarantined',updated_at=clock_timestamp() where usage_ledger_id=${usageId}`,
+          );
+          await tx.execute(
+            sql`insert into assistant_credit_billing_incidents(usage_ledger_id,reason) values(${usageId},'account_invariant') on conflict do nothing`,
+          );
+          await writeAudit(tx, {
+            actorType: 'system',
+            action: 'assistant.credit_quarantined',
+            resourceType: 'assistant_usage',
+            resourceId: usageId,
+            diff: { revision: revision.toString(), reason: 'account_invariant' },
+          });
+          this.metrics.increment('assistant_credit_account_mismatch_total', {});
+          return 'quarantined' as const;
+        }
+        await tx.execute(sql`insert into assistant_credit_ledger(user_id,delta,reason,usage_ledger_id,cost_revision)
+          values(${userId},${next.delta},${base.rows.length ? 'assistant_usage_adjustment' : 'message_spent'},${usageId},${revision.toString()}::bigint)`);
       }
       await tx.execute(sql`update assistant_credit_turns set applied_credits=${next.applied},held_credits=${next.held},
     applied_cost_revision=${revision.toString()}::bigint,state=${next.finalized ? 'settled' : 'reconciling'},
@@ -271,8 +300,32 @@ export class AssistantCreditSpendRepository {
           final: next.finalized,
         },
       });
+      // Durable notification/audit marker commits with the financial revision.
+      await tx.execute(sql`insert into outbox_events(event_type,resource_type,resource_id,payload)
+        values('assistant.credit_applied','assistant_usage',${usageId},${JSON.stringify({ revision: revision.toString() })}::jsonb)`);
+      committed = {
+        delta: next.delta,
+        released: t.held_credits + next.delta - next.held,
+        finalized: next.finalized,
+        acceptedAt: t.accepted_at,
+      };
       return 'applied' as const;
     });
+    if (result === 'applied' && committed) {
+      if (committed.delta < 0)
+        this.metrics.increment('assistant_credit_charged_total', {}, -committed.delta);
+      if (committed.delta > 0)
+        this.metrics.increment('assistant_credit_refunded_total', {}, committed.delta);
+      if (committed.released > 0)
+        this.metrics.increment('assistant_credit_released_total', {}, committed.released);
+      if (committed.finalized && Number.isFinite(new Date(committed.acceptedAt).getTime()))
+        this.metrics.observe(
+          'assistant_credit_settlement_latency_seconds',
+          Math.max(0, (Date.now() - new Date(committed.acceptedAt).getTime()) / 1000),
+          {},
+        );
+    }
+    return result;
   }
   /** Refund is a lower aggregate target at a new authoritative revision. */
   refund(

@@ -1,3 +1,9 @@
+import { APP_CONFIG } from '../../../libs/modules/shared/config';
+import {
+  billingConfiguration,
+  billingConfigurationHash,
+} from '../../../libs/modules/shared/assistant-credit-bound';
+import type { AssistantConfig } from '../../../libs/modules/assistant/application/assistant.config';
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -19,11 +25,32 @@ beforeAll(async () => {
     ASSISTANT_MONTHLY_MAX_USD: '100',
     ASSISTANT_CREDIT_BOUND_USD: '0.00012',
     ASSISTANT_CREDIT_BOUND_VERSION: artifact,
+    ASSISTANT_CREDIT_PRICING_REVISION: 'test-only-pricing',
   });
   // Policy/transaction tests deliberately stop before inference. No provider acceptance claim.
   start = vi.spyOn(f.app.get(AssistantTurnRunner), 'start').mockImplementation(() => undefined);
 }, 240000);
 beforeEach(async () => {
+  const config = f.app.get<AssistantConfig>(APP_CONFIG);
+  const description = {
+    schemaVersion: 1,
+    configurationHash: billingConfigurationHash(config),
+    configuration: billingConfiguration(config),
+    pricingRevision: config.ASSISTANT_CREDIT_PRICING_REVISION,
+    boundProofSha256: 'a'.repeat(64),
+    finalityProofSha256: 'b'.repeat(64),
+    coverage: {
+      allAttempts: true,
+      retries: true,
+      parallelCalls: true,
+      timeoutAbortBillability: true,
+      maximumFees: true,
+    },
+  };
+  await f.db
+    .execute(sql`insert into assistant_credit_bound_artifacts(version,environment,bound_usd,description,validated_at,expires_at)
+    values(${artifact},'dev',0.00012,${JSON.stringify(description)}::jsonb,now(),now()+interval '1 day')
+    on conflict(version) do update set description=excluded.description,expires_at=excluded.expires_at`);
   start.mockClear();
   await f.setFlag(true);
   await f.db.execute(

@@ -1,3 +1,10 @@
+import {
+  parseBillingJson,
+  openRouterReceipt,
+  billingGenerationId,
+  type AssistantBillingObserver,
+  type AssistantCallRecorder,
+} from './assistant-billing';
 import { withResilience } from './resilience';
 import {
   ProviderCallAbortedError,
@@ -73,6 +80,7 @@ export type DecisionResponse = {
 };
 
 export type DecisionCallOptions = {
+  billing?: AssistantBillingObserver | undefined;
   /**
    * GoGo-BE#713 — the caller's own cancellation (a user pressing Stop). It
    * aborts the in-flight request and is never counted against the breaker.
@@ -146,7 +154,11 @@ export class OpenRouterDecisionProvider implements DecisionProviderPort {
       },
       async (signal) => {
         try {
-          return await this.send(request, caller ? AbortSignal.any([signal, caller]) : signal);
+          return await this.send(
+            request,
+            caller ? AbortSignal.any([signal, caller]) : signal,
+            options.billing,
+          );
         } catch (err) {
           // The caller's abort teaches nothing about the provider.
           if (caller?.aborted) throw new ProviderCallAbortedError('openrouter.decisions');
@@ -156,12 +168,20 @@ export class OpenRouterDecisionProvider implements DecisionProviderPort {
     );
   }
 
-  private async send(request: DecisionRequest, signal: AbortSignal): Promise<DecisionResponse> {
+  private async send(
+    request: DecisionRequest,
+    signal: AbortSignal,
+    billing?: AssistantBillingObserver,
+  ): Promise<DecisionResponse> {
+    signal.throwIfAborted();
+    const call: AssistantCallRecorder | undefined = await billing?.start('jev', this.options.model);
+    signal.throwIfAborted();
     const res = await this.fetchImpl(OPENROUTER_DECISIONS_URL, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${this.options.apiKey}`,
         'Content-Type': 'application/json',
+        ...(call ? { 'X-Request-Id': call.requestId } : {}),
       },
       body: JSON.stringify({
         model: this.options.model,
@@ -184,7 +204,20 @@ export class OpenRouterDecisionProvider implements DecisionProviderPort {
       }
       throw new Error(`openrouter decisions HTTP ${res.status}`);
     }
-    return parseDecisionResponse(request, await res.json());
+    const text = await res.text();
+    const exact = parseBillingJson(text) as Record<string, unknown>;
+    const generationId = billingGenerationId(exact.id);
+    if (generationId) await call?.generation(generationId);
+    if (exact.usage && typeof exact.usage === 'object') {
+      const receipt = openRouterReceipt(
+        'jev',
+        exact.usage as Record<string, unknown>,
+        1n,
+        generationId,
+      );
+      if (receipt) await call?.receipt(receipt);
+    }
+    return parseDecisionResponse(request, JSON.parse(text));
   }
 }
 

@@ -24,3 +24,16 @@ it('defers the existing usage ledger CHECK scan until post-commit validation (#8
     /ALTER TABLE assistant_usage_ledger\s+VALIDATE CONSTRAINT assistant_usage_ledger_cost_revision_check\s*;/i,
   );
 });
+
+it('D2 builds the existing-outbox index concurrently outside migration transaction', () => {
+  const migration = readFileSync(
+    path.join(root, 'migrations/0100_assistant-credit-settlement.sql'),
+    'utf8',
+  ).replace(/--[^\n]*/g, '');
+  expect(migration).not.toMatch(/CREATE\s+(?:UNIQUE\s+)?INDEX[\s\S]+outbox_events/i);
+  const ops = readFileSync(path.join(root, 'scripts/ops/index-assistant-credit-spend.sql'), 'utf8');
+  expect(ops).toMatch(
+    /CREATE INDEX CONCURRENTLY IF NOT EXISTS assistant_credit_settlement_outbox_due/,
+  );
+  expect(ops).toContain('assistant_credit_settlement_outbox_due_ready');
+});

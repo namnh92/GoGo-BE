@@ -1,6 +1,6 @@
-# ADR-0054: Free-first actual-cost assistant credit funding (#851 / #832 D1)
+# ADR-0054: Free-first actual-cost assistant credit funding (#851 D1 / #853 D2 / #832)
 
-Date: 2026-11-11. Status: D1 implemented, activation and DEV acceptance unverified.
+Date: 2026-11-11. Status: D1/D2 implemented locally; activation and DEV acceptance unverified.
 Authority: Astra rev2 shape and owner implementation brief dated 2026-11-11.
 Supersedes pricing passages of ADR-0040/0036; extends ADR-0053 visibility.
 
@@ -73,9 +73,91 @@ Rollback disables new paid reservations, preserves real free allowance and reads
 and drains accepted financial liabilities with compatible code. A settlement
 incident pauses financial application/release while retaining evidence and holds.
 Never restore a hold-blind -1 writer, shrink constraints or drop financial tables.
-D2 owns provider capture, settlement worker/outbox/finality, erasure/export and
-activation evidence; these are not implemented or accepted by D1.
+D1 supplied the funding primitives; D2 supplies the evidence, settlement, recovery
+and privacy lifecycle below. Paid activation evidence remains a separate gate.
 
 Validation: deterministic unit/property tests plus named Testcontainers D01/D03/
 D04/D05/D09 specs. Docker integration and live provider/consumer DEV acceptance
 are separate execution gates; no deployment or paid activation is claimed.
+
+D2 (#853) implementation decisions:
+
+- Migration 0100 succeeds 0099, without modifying it, switching policy, certifying
+  a bound, or enabling flags. The receipt journal preserves all valid decimal
+  components, including conflicting evidence. Scrubbed billing incidents survive
+  erasure and keep new paid admission blocked until audited resolution.
+- Existing Jev/Haiku adapters receive one billing observer per accepted turn.
+  Before each actual attempt, it commits an intent, then a dispatch claim under
+  account → usage locks. The claim checks the active subject, master/provider
+  safeguards, terminal-message fence and live generation lease. A claim can be
+  ambiguous across a crash; recovery never repeats inference. Provider generation
+  identity is persisted as soon as a chunk/response supplies it, even if text or
+  answer validation subsequently fails. No prompt/header/token/payload copy is
+  admitted to billing storage. The correlation UUID is metadata, not a token.
+- Numeric JSON cost lexemes use Node >=22 source context, before Number rounding.
+  Exact per-call decimals remain unconstrained numeric. Direct Jev uses its
+  reported charge once. BYOK composition uses upstream inference plus OpenRouter
+  fee; shared-capacity composition counts direct OpenRouter cost once and does
+  not add its already-included upstream projection.
+- Receipt ingestion deduplicates by attempt, authoritative revision and canonical
+  component fingerprint. Stale evidence cannot move the current revision. A
+  correction back to a previous amount remains a new revision. Same-revision
+  conflicts quarantine and retain both pieces of evidence. The usage revision,
+  turn received revision and cost-reconcile outbox event commit together.
+- A terminal message permits durable dispatch closure. Unclaimed intents become
+  proven-zero final attempts; dispatched attempts without cost stay unknown.
+  Every aggregate must be complete and dispatch-closed before financial posting.
+  All attempts must be final before final release. SSE done/completeLedger is
+  never provider finality. Free turns collect provider cost but never debit.
+- The shared application service uses D1 account-locked revision primitives.
+  One base debit survives refund-to-zero; later deltas are revision-unique signed
+  adjustments. Ledger/account/A/H/applied revision/audit/notification marker are
+  atomic. Financial counters emit after commit. Int32 refund overflow and missing
+  wallet arithmetic quarantine, preserving funds instead of retrying a debit or
+  creating debt. Public contracts remain 10.0.0-alpha.1; D2 adds no wire fields.
+- The worker has a dedicated outbox consumer (notification fanout excludes its
+  events), bounded indexed sweep, expiring per-turn CAS claims, retry/backoff and
+  the existing periodic worker_leases row. Discovery holds no usage-row lock while
+  waiting for an account. Recovery reads generation metadata only. A lost ACK
+  replays the revision; a missed wakeup is repaired by the sweep. Financial pause
+  keeps cost capture running and retains holds. Spend-off does not cancel funded
+  work. Master-off fences new dispatch, while dispatched liabilities reconcile.
+- Bound readiness additionally requires an environment-scoped, current, unrevoked
+  versioned artifact, matching exact B, live provider/models/caps/config hash and
+  explicit pricing revision. Immutable bound/finality evidence digests and complete
+  attempt/abort/fee coverage are required. Digests reference reviewed evidence;
+  they do not certify it themselves. No artifact is shipped by this change.
+- Account erasure under the common lock clears turn/user/message/conversation
+  linkage, call/provider correlations, wallet and queued payload/linkage. Late work
+  rechecks identity and cannot recreate a wallet. Scrubbed financial evidence and
+  safety incidents remain. Conversation deletion keeps funding. Unresolved D cost
+  is excluded from the 400-day usage purge; resolved provider correlation is
+  removed at that retention boundary. Self export pages own credit facts/holds
+  and signed ledger entries through the existing byte budget, excluding provider
+  identifiers. Existing balance export remains available.
+
+Provider evidence limitation / activation blocker:
+[OpenRouter generation metadata](https://openrouter.ai/docs/api/api-reference/generations/get-generation)
+provides per-generation cost retrieval, and its
+[usage-accounting reference](https://github.com/OpenRouterTeam/docs/blob/main/cookbook/administration/usage-accounting.mdx)
+distinguishes BYOK inference from OpenRouter cost. Neither reference used here
+establishes a binding whole-turn cap, an ordered correction sequence, or a billing
+finality guarantee. Thus response evidence is revision 1, generation retrieval
+revision 2, both correctable; changed retrieval evidence at that fixed revision is
+quarantined instead of inventing ordering. An ambiguous call with no returned
+generation ID stays pending and requires provider-assisted attribution. No
+account/monthly allocation, invented zero, TTL release or redispatch is permitted.
+Trusted final receipts exercise the generic settlement path in deterministic
+fixtures; they are not live provider acceptance. Real bound/finality review and
+correlation/recovery acceptance remain mandatory before paid admission, including
+any provider capability work that the evidence review identifies. The calibrated
+0.003904 ceiling alone continues to fail readiness.
+
+D2 validation and DEV commands: docs/plans/853-D2-validation.md. No policy switch,
+remote configuration change, provider inference, integration execution or rollout
+was performed during implementation.
+
+The D2 due-work index on the existing outbox is built CONCURRENTLY in the
+existing `index-assistant-credit-spend.sql` autocommit phase, with exact
+valid/ready/definition checks and explicit invalid-remnant recovery. Runtime
+storage readiness includes it. No existing-outbox index scan occurs inside 0100.
