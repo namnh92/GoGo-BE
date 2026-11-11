@@ -1,0 +1,132 @@
+{
+  "recordedAt": "2026-11-11T09:49:11.749840+00:00",
+  "basis": "Local workspace source; no git commands, no verified head SHA or base identity",
+  "before": {
+    "tests": 28,
+    "passed": 20,
+    "failed": 8,
+    "files": 2
+  },
+  "beforeFailures": [
+    {
+      "file": "libs/modules/search/domain/place-facts.spec.ts",
+      "test": "S2 fact policy: verified, unconfirmed-as-absent, absent retains true zero, units/currencies and own dates; reference cannot enter compact cards",
+      "status": "failed"
+    },
+    {
+      "file": "libs/modules/search/domain/place-facts.spec.ts",
+      "test": "round-1 canonical projection regressions Sol F-01 / Astra F-03: exposes S1 renderer facts, name and no S2 identity seam",
+      "status": "failed"
+    },
+    {
+      "file": "libs/modules/search/domain/place-facts.spec.ts",
+      "test": "round-1 canonical projection regressions DEV decision: keeps mixed-date weekday intervals in one bundle at the oldest date",
+      "status": "failed"
+    },
+    {
+      "file": "libs/modules/search/domain/place-facts.spec.ts",
+      "test": "round-1 canonical projection regressions Sol F-05: unsupported uppercase currency never enables the price topic",
+      "status": "failed"
+    },
+    {
+      "file": "libs/modules/assistant/domain/place-qa/resolution.spec.ts",
+      "test": "round-1 name regressions Sol F-04 / Astra F-02: every approved spelling has the same complete exact set",
+      "status": "failed"
+    },
+    {
+      "file": "libs/modules/assistant/domain/place-qa/resolution.spec.ts",
+      "test": "round-1 name regressions Astra F-01: topic-like identifying tokens cannot select the shorter catalogue collision",
+      "status": "failed"
+    },
+    {
+      "file": "libs/modules/assistant/domain/place-qa/resolution.spec.ts",
+      "test": "round-1 name regressions Sol F-03: negated suffix is stripped after automatic trailing-area detection",
+      "status": "failed"
+    },
+    {
+      "file": "libs/modules/assistant/domain/place-qa/resolution.spec.ts",
+      "test": "round-1 name regressions Astra F-04: both comparison area offsets refer to the original message",
+      "status": "failed"
+    }
+  ],
+  "after": {
+    "tests": 231,
+    "passed": 231,
+    "failed": 0,
+    "files": 10
+  },
+  "afterMatchingAssertions": [
+    {
+      "file": "libs/modules/search/domain/place-facts.spec.ts",
+      "test": "S2 fact policy: verified, unconfirmed-as-absent, absent retains true zero, units/currencies and own dates; reference cannot enter compact cards",
+      "status": "passed"
+    },
+    {
+      "file": "libs/modules/search/domain/place-facts.spec.ts",
+      "test": "round-1 canonical projection regressions Sol F-01 / Astra F-03: exposes S1 renderer facts, name and no S2 identity seam",
+      "status": "passed"
+    },
+    {
+      "file": "libs/modules/search/domain/place-facts.spec.ts",
+      "test": "round-1 canonical projection regressions DEV decision: keeps mixed-date weekday intervals in one bundle at the oldest date",
+      "status": "passed"
+    },
+    {
+      "file": "libs/modules/search/domain/place-facts.spec.ts",
+      "test": "round-1 canonical projection regressions Sol F-05: unsupported uppercase currency never enables the price topic",
+      "status": "passed"
+    },
+    {
+      "file": "libs/modules/assistant/domain/place-qa/resolution.spec.ts",
+      "test": "round-1 name regressions Sol F-04 / Astra F-02: every approved spelling has the same complete exact set",
+      "status": "passed"
+    },
+    {
+      "file": "libs/modules/assistant/domain/place-qa/resolution.spec.ts",
+      "test": "round-1 name regressions Astra F-01: topic-like identifying tokens cannot select the shorter catalogue collision",
+      "status": "passed"
+    },
+    {
+      "file": "libs/modules/assistant/domain/place-qa/resolution.spec.ts",
+      "test": "round-1 name regressions Sol F-03: negated suffix is stripped after automatic trailing-area detection",
+      "status": "passed"
+    },
+    {
+      "file": "libs/modules/assistant/domain/place-qa/resolution.spec.ts",
+      "test": "round-1 name regressions Astra F-04: both comparison area offsets refer to the original message",
+      "status": "passed"
+    }
+  ],
+  "checks": {
+    "typecheck": "PASS: pnpm typecheck, 8/8 packages (sandbox cache warnings only)",
+    "eslint": "PASS: every changed TypeScript path",
+    "prettier": "PASS: changed TypeScript and validation document"
+  },
+  "integration": {
+    "status": "BLOCKED",
+    "reason": "Could not find a working container runtime strategy",
+    "testsSkippedBeforeFixtureSetup": 19,
+    "command": "pnpm exec vitest run --project integration apps/api/test/place-qa-s2.int.spec.ts -t 'Sol F-'",
+    "behavioralSqlFailBefore": false,
+    "sqlPassAfter": false
+  },
+  "sourceSha256": {
+    "libs/modules/assistant/domain/place-qa/span.ts": "2fbb800562fce32afd0e0e62d5d85c5fc5a91ceda527eae0259c62b51d733449",
+    "libs/modules/assistant/domain/place-qa/resolution.ts": "0d05ff2651c78a209f502c3c29d95c4f8962d6f152424da78577bf16fc7a17bd",
+    "libs/modules/assistant/domain/place-qa/resolution.spec.ts": "9cc4222483abcb8cf4f15d41d226e63d91419db25ff6851ec3893049398c7575",
+    "libs/modules/search/domain/place-facts.ts": "d9af5cb23e4f7afe93ebc18b5e758914adc2b2e7848037625ea980c0149cd846",
+    "libs/modules/search/domain/place-facts.spec.ts": "30d8f76e302383bb4fede08a012fb2714a2ec674e5acb61a46a4229b012d4a36",
+    "libs/modules/search/application/search.service.ts": "4c126f5d237273b05578955f897047471ad011dc78f9f148084c504ec2b7cd4c",
+    "libs/modules/search/infrastructure/place-qa-read.ts": "80666fae454217cf1943767aad1ad3498ad97821b5f6fe6c81d036038aa18adf",
+    "libs/modules/search/infrastructure/place-qa-read.spec.ts": "208229f7ec153629243222b46bce947e15976d5c8228f991f74912ac680429d1",
+    "libs/modules/search/infrastructure/place-qa-queries.ts": "36c35ea031b146efddc3688a81f46b2a81a832f5ee5f22ec8007cd918d78f367",
+    "libs/modules/src/index.ts": "421005c2c6fb6a55b24a3b43a301a9a67f87443e6230f047a9c3a59ae16455f6",
+    "libs/observability/src/metric-labels.ts": "871f73c1e87d5429551c3e0bb0f8f008b2ddc26df6f997ee0e3ad8b489775062",
+    "apps/api/test/place-qa-s2.int.spec.ts": "0354296ac9fdb7e2cde700402a210e2f4a43761f2e6ead192e70eb0061242f78",
+    "docs/plans/857-s2-validation.md": "299ae1348d33a3a5ba3d3cde83c3b6874d958c08cc0d97fd4946e68f03c0dfd0"
+  },
+  "limits": [
+    "Source hashes describe final local files only, not pre-fix source or a formal review snapshot.",
+    "No realistic-corpus performance, query-plan, CI, independent review or DEV acceptance claim."
+  ]
+}

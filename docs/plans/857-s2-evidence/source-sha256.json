@@ -1,0 +1,33 @@
+{
+  "recordedAt": "2026-11-11T11:33:58.076724+00:00",
+  "basis": "Uncommitted working tree on S1 head 93148283 (PR #860); S2 patch re-applied from 40d7fc57; confirm-round fixes applied. Not a commit or review snapshot.",
+  "files": {
+    "libs/modules/assistant/domain/place-qa/span.ts": "c62114396ef3cecb53bd09d9667fd58f15d072727d724fe55059b19779df6176",
+    "libs/modules/assistant/domain/place-qa/resolution.ts": "e5f5dd679f2a131dd4e70b2480f9faaa6d2f2e3f95c895386902ec60d0c51fb3",
+    "libs/modules/assistant/domain/place-qa/resolution.spec.ts": "d31290e4b67460a64614f985ae10dddf40a131499f1ff4985b6d4972f128fe56",
+    "libs/modules/search/domain/place-facts.ts": "be914bad187e80864caca73ea0b53019fe1992ff99a315f99b0e92bb403dbca2",
+    "libs/modules/search/domain/place-facts.spec.ts": "d71da62e22b5fa7427171abe263c70495517c4c8b7c7b425cda4be7e8b1f3722",
+    "libs/modules/search/infrastructure/place-qa-queries.ts": "77b7cca6fd9b3cf18225974d1fc1b8b96b4da8a1e98af823825faf1d29c22c07",
+    "libs/modules/search/infrastructure/place-qa-read.ts": "80666fae454217cf1943767aad1ad3498ad97821b5f6fe6c81d036038aa18adf",
+    "libs/modules/search/infrastructure/place-qa-read.spec.ts": "208229f7ec153629243222b46bce947e15976d5c8228f991f74912ac680429d1",
+    "libs/modules/search/application/search.service.ts": "876d187a7acb3288d65b070b7aae3b0d908491343e90875c4c00b92586a5e9cd",
+    "libs/modules/search/infrastructure/search.repository.ts": "07fefb712d3cc0ce7ce98aa605f50d9051db363b4912b64362ec8f28e86a6fda",
+    "libs/modules/search/presentation/search.module.ts": "aeaca8abf32090112e7c84808e9bb70103023275feb351990d2dcbc8f355f2ca",
+    "libs/modules/src/index.ts": "c442ca61afe4642c9d79d11226f5643a491ed3bc4f727223bd2ac9ab4d7fd0ec",
+    "libs/observability/src/metric-labels.ts": "72695bc4dd34d6223acaf85d3bac8de5e767cf6a67fba5fbfd5d2c4ce4e60ed4",
+    "apps/api/test/place-qa-s2.int.spec.ts": "0efc39a13725dc3e2275e9431c16eb1ab076b1b1418cde95c828bbc62d9db854",
+    "apps/api/test/place-qa-s2-wiring.int.spec.ts": "351c053cef1a704ce1f3feec3778a56f4fe9d4d9f2d41a448823f66675296531",
+    "docs/infrastructure.md": "0000c7e321f45a984d9453f21f23ea6eb554322798ec9b787c5877e91520f577"
+  },
+  "checks": {
+    "build": "PASS: turbo build --force, 2 tasks",
+    "typecheck": "PASS: 8 packages",
+    "unit": "PASS: 335 files, 4353 tests",
+    "integration": "PASS: 4 files, 71 tests (place-qa-s2, place-qa-s2-wiring, assistant-place-answer, assistant), --no-file-parallelism",
+    "apiCheck": "PASS",
+    "eslint": "PASS: 15 changed TypeScript files",
+    "prettier": "PASS: --check . after formatting sql-performance.json",
+    "fullLint": "NOT RUN",
+    "ci": "NOT RUN"
+  }
+}

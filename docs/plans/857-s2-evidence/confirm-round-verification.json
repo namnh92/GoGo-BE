@@ -1,0 +1,65 @@
+{
+  "recordedAt": "2026-11-11T11:33:58.076724+00:00",
+  "method": "Regressions written first. Pre-fix = production sources restored from the git index (restacked S2 patch 40d7fc57 on S1 93148283) and search.module.ts from HEAD, tests unchanged; then the fixed files restored.",
+  "failBefore": {
+    "unit resolution.spec.ts (span.ts/resolution.ts pre-fix)": [
+      "× Astra F-01: \"Cafe Wifi mở cửa mấy giờ?\" consumes one question clause and keeps Wifi 5ms",
+      "× Astra F-01: \"Cafe Wifi ở Quận 9 mở cửa mấy giờ?\" consumes one question clause and keeps Wifi 1ms",
+      "× Astra F-01: \"Cafe Wifi có wifi không?\" consumes one question clause and keeps Wifi 1ms",
+      "× Astra F-01: \"Giờ mở cửa của Cafe Wifi?\" consumes one question clause and keeps Wifi 0ms",
+      "× Astra F-01: \"Giờ mở cửa của Cafe Wifi ở Quận 9?\" consumes one question clause and keeps Wifi 0ms",
+      "× Astra F-01: bare topic noun \"Cafe Wifi?\" is an uncertain boundary, never a guessed core 0ms",
+      "× Astra F-01: bare topic noun \"Cafe Wifi\" is an uncertain boundary, never a guessed core 0ms",
+      "× Astra F-01: bare topic noun \"Cafe Wifi ở Quận 9?\" is an uncertain boundary, never a guessed core 0ms",
+      "× Astra F-01: bare topic noun \"Tonkin Price\" is an uncertain boundary, never a guessed core 1ms",
+      "× Astra F-01: bare topic noun \"Sunset Address?\" is an uncertain boundary, never a guessed core 0ms",
+      "× Astra F-01: bare topic noun \"Cafe Chỗ Đậu Xe\" is an uncertain boundary, never a guessed core 0ms",
+      "× Sol F-04: only the digit-brand token varies; unrelated punctuation is preserved 0ms",
+      "× Sol F-04 property: the whole folded name is always in its own bounded variant set 0ms",
+      "AssertionError: expected { kind: 'span', text: 'Cafe', …(2) } to match object { kind: 'span', text: 'Cafe Wifi' }",
+      "AssertionError: expected { kind: 'span', text: 'Cafe', …(4) } to match object { kind: 'span', text: 'Cafe Wifi' }",
+      "AssertionError: expected { kind: 'span', text: 'Cafe', …(2) } to deeply equal { kind: 'ambiguous' }",
+      "AssertionError: expected { kind: 'span', text: 'Cafe', …(4) } to deeply equal { kind: 'ambiguous' }",
+      "AssertionError: expected { kind: 'span', text: 'Tonkin', …(2) } to deeply equal { kind: 'ambiguous' }",
+      "AssertionError: expected { kind: 'span', text: 'Sunset', …(2) } to deeply equal { kind: 'ambiguous' }",
+      "AssertionError: expected [ 'o\\'leary pizza 4p\\'s', …(2) ] to deeply equal [ 'o\\'leary pizza 4p\\'s', …(2) ]",
+      "AssertionError: expected [ 'o\\'leary pizza 4p\\'s', …(2) ] to include 'o\\'leary pizza 4ps'",
+      "Test Files  1 failed (1)",
+      "Tests  13 failed | 21 passed (34)"
+    ],
+    "unit place-facts.spec.ts (place-facts.ts pre-fix)": [
+      "× Sol F-02: one future-dated review suppresses the whole aggregate, old rows cannot vouch for it 4ms",
+      "AssertionError: expected { tier: 'verified_current', …(3) } to be undefined",
+      "Test Files  1 failed (1)",
+      "Tests  1 failed | 10 passed (11)"
+    ],
+    "integration place-qa-s2 + wiring (all production sources pre-fix)": [
+      "× Astra F-02 (confirm): whitespace spellings are one exact family for either input 13ms",
+      "× Astra F-02 (confirm): the SQL name key collapses exactly the JavaScript whitespace class 3ms",
+      "× Sol F-04 (confirm): unrelated and typographic apostrophes keep an exact unique answer 12ms",
+      "× Sol F-02 (confirm): a future-dated published review suppresses the aggregate; old rows cannot vouch 22ms",
+      "× Sol F-01: PlaceAnswerReader renders facts from the bound SearchService, not a load error 5ms",
+      "× Sol F-03: one page read observes the fact duration once, on the S1 surface label 1ms",
+      "AssertionError: expected 'read_error' to be 'ok' // Object.is equality",
+      "AssertionError: expected 'read_error' to be 'ok' // Object.is equality",
+      "AssertionError: expected 'answer' to be 'choice' // Object.is equality",
+      "TypeError: placeNameKeySql is not a function",
+      "AssertionError: expected { …(5) } to match object { kind: 'answer', …(1) }",
+      "AssertionError: expected { tier: 'verified_current', …(3) } to be undefined",
+      "Test Files  2 failed (2)",
+      "Tests  6 failed | 19 passed (25)"
+    ],
+    "integration wiring (module binding fixed, service pre-fix) - Sol F-03": [
+      "× Sol F-03: one page read observes the fact duration once, on the S1 surface label 11ms",
+      "AssertionError: expected [ { surface: 'projection' }, …(1) ] to deeply equal [ { surface: 'history' } ]",
+      "Test Files  1 failed (1)",
+      "Tests  1 failed | 1 passed (2)"
+    ]
+  },
+  "note": "In the all-pre-fix integration run the whitespace-class property test fails with 'placeNameKeySql is not a function' (the helper did not exist) and Sol F-03 fails as read_error because the reader was unbound; its stated reason is shown by the second run.",
+  "passAfter": {
+    "unit": "335 files / 4353 tests PASS",
+    "integration": ["Test Files  4 passed (4)", "Tests  71 passed (71)"],
+    "integrationS2Alone": ["Test Files  1 passed (1)", "Tests  23 passed (23)"]
+  }
+}
