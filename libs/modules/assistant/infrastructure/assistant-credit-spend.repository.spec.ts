@@ -93,11 +93,11 @@ describe('#851 settlement repository primitives (no worker)', () => {
       h.queries.find((q) => q.sql.includes('update assistant_credit_turns'))?.params,
     ).toContain('settled');
   });
-  it('duplicate/stale revisions do not write; late upward/over-bound revisions quarantine', async () => {
+  it('duplicate/stale revisions do not write; over-bound revisions quarantine', async () => {
     const duplicate = harness({ applied_cost_revision: '1' });
     expect(await duplicate.repo.applyRevision('user', 'usage', 1n, 0, 'dev')).toBe('duplicate');
     expect(duplicate.queries.some((q) => q.sql.trimStart().startsWith('update '))).toBe(false);
-    for (const overrides of [{}, { finalized_at: 'final', held_credits: 0, applied_credits: 10 }]) {
+    for (const overrides of [{}]) {
       const h = harness(overrides);
       expect(await h.repo.applyRevision('user', 'usage', 1n, 21, 'dev')).toBe('quarantined');
       expect(h.queries.some((q) => q.sql.includes('assistant_credit_accounts'))).toBe(false);
@@ -144,4 +144,25 @@ describe('#851 settlement repository primitives (no worker)', () => {
       true,
     );
   });
+});
+
+it('policy A acknowledges a post-final upward revision without debiting or quarantining', async () => {
+  const h = harness({
+    finalized_at: 'final',
+    held_credits: 0,
+    applied_credits: 10,
+    applied_cost_revision: '1',
+    cost_revision: '2',
+    state: 'settled',
+  });
+  expect(await h.repo.applyRevision('user', 'usage', 2n, 21, 'dev', true)).toBe('applied');
+  expect(
+    h.queries.some(
+      (q) =>
+        q.sql.includes('update assistant_credit_accounts') ||
+        q.sql.includes('insert into assistant_credit_ledger'),
+    ),
+  ).toBe(false);
+  const advance = h.queries.find((q) => q.sql.includes('set applied_credits='))!;
+  expect(advance.params).toEqual(expect.arrayContaining([10, 0, '2', 'settled']));
 });

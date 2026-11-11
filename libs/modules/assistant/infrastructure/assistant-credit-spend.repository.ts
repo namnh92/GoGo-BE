@@ -225,6 +225,8 @@ export class AssistantCreditSpendRepository {
         (final && (!evidence.dispatch_closed_at || !evidence.cost_finalized_at))
       )
         throw new RangeError('Incomplete billing evidence');
+      const absorbed = t.finalized_at !== null && target > t.applied_credits;
+      const billableTarget = absorbed ? t.applied_credits : target;
       let next;
       try {
         next = reviseCredits(
@@ -234,7 +236,7 @@ export class AssistantCreditSpendRepository {
             applied: t.applied_credits,
             finalized: t.finalized_at !== null,
           },
-          target,
+          billableTarget,
           final,
         );
       } catch {
@@ -298,6 +300,7 @@ export class AssistantCreditSpendRepository {
           delta: next.delta,
           held: next.held,
           final: next.finalized,
+          absorbedUpward: absorbed,
         },
       });
       // Durable notification/audit marker commits with the financial revision.

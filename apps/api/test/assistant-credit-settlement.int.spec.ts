@@ -80,14 +80,14 @@ async function facts(t: Awaited<ReturnType<typeof turn>>) {
 const service = (db: Db = f.db) =>
   new AssistantCreditSettlementService(db, 'dev', new NoopMetrics());
 describe('#853 D06 durable settlement recovery', () => {
-  it('R20→12→14→10, duplicate/reordered evidence, final release and late refund', async () => {
+  it('R20→12 final, absorb 14, refund to 10, duplicate/reordered evidence and late refund', async () => {
     const t = await turn();
     await evidence.observer({ ...t, ledgerId: t.usageId }, 'dev').start('jev', 'fixture/model');
     await end(t);
     for (const [revision, cost, a, h] of [
-      [1n, '0.00012', 12, 8],
-      [2n, '0.00014', 14, 6],
-      [3n, '0.00010', 10, 10],
+      [1n, '0.00012', 12, 0],
+      [2n, '0.00014', 12, 0],
+      [3n, '0.00010', 10, 0],
     ] as const) {
       expect(await evidence.ingest(t.usageId, 0, receipt(revision, cost))).toBe('ingested');
       await Promise.all([
@@ -107,7 +107,7 @@ describe('#853 D06 durable settlement recovery', () => {
     expect(await facts(t)).toMatchObject({ a: 4, h: 0, balance: 46, net: -4, bases: 1 });
   });
   it.each([[['0', '0.00007', '0', '0.00007']], [['0.00012', '0', '0.00008']]])(
-    'zero↔positive and refund-to-zero keep one base debit: %j',
+    'final charge never grows after refund-to-zero: %j',
     async (sequence) => {
       const t = await turn();
       await evidence.observer({ ...t, ledgerId: t.usageId }, 'dev').start('jev', 'fixture/model');
@@ -116,7 +116,7 @@ describe('#853 D06 durable settlement recovery', () => {
         await evidence.ingest(t.usageId, 0, receipt(BigInt(i + 1), cost));
         await service().reconcile(t.usageId, signal);
       }
-      expect(await facts(t)).toMatchObject({ bases: 1 });
+      expect(await facts(t)).toMatchObject({ bases: sequence[0] === '0' ? 0 : 1, a: 0, h: 0 });
     },
   );
   it('crash before commit rolls back debit/account/revision/marker; after commit before ACK deduplicates', async () => {
@@ -147,27 +147,27 @@ describe('#853 D06 durable settlement recovery', () => {
     await service().reconcile(t.usageId, signal);
     expect(await facts(t)).toMatchObject({ a: 12, h: 0, net: -12, bases: 1, balance: 38 });
   });
-  it.each(['over-bound', 'after-final', 'invalid', 'overflow', 'same-version-conflict'])(
+  it.each(['over-bound', 'invalid', 'overflow', 'same-version-conflict'])(
     'quarantines %s without debt or clipping',
     async (scenario) => {
       const t = await turn();
       await evidence.observer({ ...t, ledgerId: t.usageId }, 'dev').start('jev', 'fixture/model');
       await end(t);
-      if (scenario === 'after-final' || scenario === 'same-version-conflict') {
-        await evidence.ingest(t.usageId, 0, receipt(1n, '0.0001', scenario === 'after-final'));
+      if (scenario === 'same-version-conflict') {
+        await evidence.ingest(t.usageId, 0, receipt(1n, '0.0001'));
         await service().reconcile(t.usageId, signal);
       }
       await evidence.ingest(
         t.usageId,
         0,
         receipt(
-          scenario === 'after-final' ? 2n : 1n,
+          1n,
           scenario === 'invalid'
             ? '-1'
             : scenario === 'overflow'
               ? '999999'
-              : scenario === 'same-version-conflict' || scenario === 'after-final'
-                ? '0.00011'
+              : scenario === 'same-version-conflict'
+                ? '0.00009'
                 : '0.00021',
           true,
         ),
@@ -175,7 +175,7 @@ describe('#853 D06 durable settlement recovery', () => {
       await service().reconcile(t.usageId, signal);
       expect(await facts(t)).toMatchObject({
         state: 'quarantined',
-        balance: scenario === 'after-final' || scenario === 'same-version-conflict' ? 40 : 50,
+        balance: scenario === 'same-version-conflict' ? 40 : 50,
       });
     },
   );
@@ -266,13 +266,22 @@ describe('#853 D07 provider failure boundaries', () => {
       const unavailable = new AssistantCreditSettlementService(f.db, 'dev', new NoopMetrics(), {
         read,
       });
+      await f.pool.query(
+        "update assistant_credit_turns set accepted_at=now()-interval '6 minutes' where usage_ledger_id=$1",
+        [t.usageId],
+      );
       expect(await unavailable.reconcile(t.usageId, signal)).toBe(free ? 'ignored' : 'pending');
       expect(await facts(t)).toMatchObject({ a: 0, h: free ? 0 : 20 });
+      await f.pool.query(
+        'update assistant_credit_turns set recovery_next_at=now() where usage_ledger_id=$1',
+        [t.usageId],
+      );
       const recovered = new AssistantCreditSettlementService(f.db, 'dev', new NoopMetrics(), {
         read: async () => receipt(2n, '0.00012', true),
       });
       await recovered.reconcile(t.usageId, signal);
       expect(await facts(t)).toMatchObject({ a: free ? 0 : 12, h: 0, state: 'settled' });
+      expect(read).toHaveBeenCalledTimes(free ? 0 : 1);
       expect(fetchImpl).toHaveBeenCalledOnce();
     },
   );
@@ -423,5 +432,178 @@ describe('#853 D11 erasure and retention', () => {
         .rowCount,
     ).toBe(1);
     expect(await facts(t)).toMatchObject({ h: 20, a: 0 });
+  });
+});
+
+describe('#853 policy A bounded recovery and finality', () => {
+  it.each([false, true])(
+    'inline cost is final at ingestion; free=%s never polls or reschedules',
+    async (free) => {
+      const t = await turn(free);
+      const call = await evidence
+        .observer({ ...t, ledgerId: t.usageId }, 'dev')
+        .start('jev', 'fixture/model');
+      await call.receipt({ ...receipt(1n, '0.00012'), generationId: 'gen-inline' });
+      const stored = await f.pool.query(
+        'select cost_state,finality_policy from assistant_usage_calls where usage_ledger_id=$1',
+        [t.usageId],
+      );
+      expect(stored.rows[0]).toEqual({ cost_state: 'final', finality_policy: 'inline_receipt_v1' });
+      await end(t);
+      const read = vi.fn(async () => receipt(2n, '0.00014'));
+      const settlement = new AssistantCreditSettlementService(f.db, 'dev', new NoopMetrics(), {
+        read,
+      });
+      const worker = new AssistantCreditSettlementWorker(f.db, settlement);
+      for (let tick = 0; tick < 12; tick++) await worker.tick(signal);
+      expect(read).not.toHaveBeenCalled();
+      expect(await facts(t)).toMatchObject({ a: free ? 0 : 12, h: 0, state: 'settled' });
+      expect(
+        (
+          await f.pool.query(
+            'select next_reconcile_at from assistant_credit_turns where usage_ledger_id=$1',
+            [t.usageId],
+          )
+        ).rows[0].next_reconcile_at,
+      ).toBeNull();
+    },
+  );
+  it('free unknown cost neither recovers, charges, quarantines nor reschedules after 24h', async () => {
+    const t = await turn(true);
+    const call = await evidence
+      .observer({ ...t, ledgerId: t.usageId }, 'dev')
+      .start('jev', 'fixture/model');
+    await call.generation('gen-free-unknown');
+    await end(t);
+    await f.pool.query(
+      "update assistant_credit_turns set accepted_at=now()-interval '25 hours' where usage_ledger_id=$1",
+      [t.usageId],
+    );
+    const read = vi.fn(async () => null);
+    const settlement = new AssistantCreditSettlementService(f.db, 'dev', new NoopMetrics(), {
+      read,
+    });
+    const worker = new AssistantCreditSettlementWorker(f.db, settlement);
+    for (let tick = 0; tick < 12; tick++) await worker.tick(signal);
+    expect(read).not.toHaveBeenCalled();
+    expect(await facts(t)).toMatchObject({ a: 0, h: 0, state: 'settled', bases: 0 });
+    expect(
+      (
+        await f.pool.query(
+          'select next_reconcile_at,recovery_attempts from assistant_credit_turns where usage_ledger_id=$1',
+          [t.usageId],
+        )
+      ).rows[0],
+    ).toEqual({ next_reconcile_at: null, recovery_attempts: 0 });
+  });
+  it.each([0, 1, 5, 19, 83])(
+    'GETs per usage <=5 regardless of %s extra ticks, calls or overlapping deliveries',
+    async (extraTicks) => {
+      const t = await turn();
+      for (let i = 0; i < 9; i++) {
+        const call = await evidence
+          .observer({ ...t, ledgerId: t.usageId }, 'dev')
+          .start('jev', 'fixture/model');
+        await call.generation('gen-' + i);
+      }
+      await end(t);
+      const read = vi.fn(async () => null);
+      const settlement = new AssistantCreditSettlementService(f.db, 'dev', new NoopMetrics(), {
+        read,
+      });
+      await settlement.reconcile(t.usageId, signal); // before first 5m, no request
+      expect(read).not.toHaveBeenCalled();
+      await f.pool.query(
+        "update assistant_credit_turns set accepted_at=now()-interval '6 minutes' where usage_ledger_id=$1",
+        [t.usageId],
+      );
+      for (let tick = 0; tick < 5 + extraTicks; tick++) {
+        // Force eligibility: even adversarial ticks cannot replenish the durable budget.
+        await f.pool.query(
+          'update assistant_credit_turns set recovery_next_at=now() where usage_ledger_id=$1',
+          [t.usageId],
+        );
+        await Promise.all([
+          settlement.reconcile(t.usageId, signal),
+          settlement.reconcile(t.usageId, signal),
+        ]);
+      }
+      expect(read).toHaveBeenCalledTimes(5);
+      expect(
+        (
+          await f.pool.query(
+            'select recovery_attempts from assistant_credit_turns where usage_ledger_id=$1',
+            [t.usageId],
+          )
+        ).rows[0].recovery_attempts,
+      ).toBe(5);
+      expect(await facts(t)).toMatchObject({ a: 0, h: 20, state: 'pending' });
+    },
+  );
+  it.each([false, true])(
+    '24h unknown cost quarantines with or without generation ID (%s), retaining funding',
+    async (withId) => {
+      const t = await turn();
+      const call = await evidence
+        .observer({ ...t, ledgerId: t.usageId }, 'dev')
+        .start('jev', 'fixture/model');
+      if (withId) await call.generation('gen-missing');
+      await end(t);
+      await f.pool.query(
+        "update assistant_credit_turns set accepted_at=now()-interval '24 hours' where usage_ledger_id=$1",
+        [t.usageId],
+      );
+      const increment = vi.fn();
+      const read = vi.fn(async () => null);
+      const settlement = new AssistantCreditSettlementService(f.db, 'dev', { increment } as never, {
+        read,
+      });
+      await settlement.reconcile(t.usageId, signal);
+      expect(read).not.toHaveBeenCalled();
+      expect(await facts(t)).toMatchObject({ a: 0, h: 20, state: 'quarantined', balance: 50 });
+      expect(increment).toHaveBeenCalledWith('assistant_credit_bound_violation_total', {
+        reason: 'receipt_missing',
+      });
+      expect(
+        (
+          await f.pool.query(
+            'select reason from assistant_credit_billing_incidents where usage_ledger_id=$1',
+            [t.usageId],
+          )
+        ).rows,
+      ).toEqual([{ reason: 'receipt_missing' }]);
+    },
+  );
+  it('post-final upward cost before/after settlement is journaled and absorbed; normal downward receipt refunds', async () => {
+    const t = await turn();
+    const increment = vi.fn();
+    const repo = new AssistantUsageEvidenceRepository(f.db, { increment } as never);
+    const call = await repo
+      .observer({ ...t, ledgerId: t.usageId }, 'dev')
+      .start('jev', 'fixture/model');
+    await call.receipt(receipt(1n, '0.00012'));
+    await end(t);
+    await repo.ingest(t.usageId, 0, receipt(2n, '0.00014'));
+    await service().reconcile(t.usageId, signal);
+    expect(await facts(t)).toMatchObject({ a: 12, h: 0, balance: 38, state: 'settled' });
+    await repo.ingest(t.usageId, 0, receipt(3n, '0.00015'));
+    await service().reconcile(t.usageId, signal);
+    expect(await facts(t)).toMatchObject({ a: 12, h: 0, balance: 38, state: 'settled' });
+    expect(
+      (
+        await f.pool.query(
+          'select direct_cost_usd::text,billable_cost_usd::text,cost_state from assistant_usage_calls where usage_ledger_id=$1',
+          [t.usageId],
+        )
+      ).rows[0],
+    ).toMatchObject({
+      direct_cost_usd: '0.00015',
+      billable_cost_usd: '0.00012',
+      cost_state: 'final',
+    });
+    expect(increment).toHaveBeenCalledWith('assistant_credit_post_final_cost_absorbed_total', {});
+    await repo.ingest(t.usageId, 0, receipt(4n, '0.00010'));
+    await service().reconcile(t.usageId, signal);
+    expect(await facts(t)).toMatchObject({ a: 10, h: 0, balance: 40, state: 'settled' });
   });
 });

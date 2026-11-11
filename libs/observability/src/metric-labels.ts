@@ -409,6 +409,7 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   assistant_credit_unresolved_oldest_age_seconds: [],
   assistant_credit_reconciliation_queue_lag_seconds: [],
   assistant_credit_bound_violation_total: ['reason'],
+  assistant_credit_post_final_cost_absorbed_total: [],
   assistant_credit_hold_mismatch_total: [],
   assistant_credit_free_allowance_violation_total: [],
   assistant_admission_total: ['outcome'],

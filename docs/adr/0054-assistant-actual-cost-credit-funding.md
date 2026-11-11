@@ -1,7 +1,9 @@
 # ADR-0054: Free-first actual-cost assistant credit funding (#851 D1 / #853 D2 / #832)
 
 Date: 2026-11-11. Status: D1/D2 implemented locally; activation and DEV acceptance unverified.
-Authority: Astra rev2 shape and owner implementation brief dated 2026-11-11.
+Authority: Astra rev2 shape, implementation brief and owner decision 2026-11-11
+“phương án A” (`dev/policy/decisions-log.md`), which supersedes rev2 §3
+for inline finality and post-final upward losses.
 Supersedes pricing passages of ADR-0040/0036; extends ADR-0053 visibility.
 
 The daily free limit is ASSISTANT_USER_DAILY_MAX_MESSAGES (DEV configured to 5),
@@ -38,8 +40,9 @@ account lock; first debit is message_spent, later signed differences are
 assistant_usage_adjustment. Refunds reduce spent, never increase earned.
 Before finality H+A=R; finality releases residual H without a positive ledger row.
 Revisions are deduplicated; zero differences still advance the applied revision.
-Over-bound or post-final upward targets quarantine and disable new paid admission,
-never create debt or collect from future grants. A runner that proves no call was
+Over-bound targets before finality quarantine and disable new paid admission,
+never create debt or collect from future grants. Post-final upward corrections are
+GoGo losses, recorded for Cost Center without another user debit. A runner that proves no call was
 attempted fences all later dispatch before releasing the hold. Unknown dispatch
 or cost never becomes zero by TTL, SSE completion, or orphan recovery.
 
@@ -107,20 +110,52 @@ D2 (#853) implementation decisions:
 - A terminal message permits durable dispatch closure. Unclaimed intents become
   proven-zero final attempts; dispatched attempts without cost stay unknown.
   Every aggregate must be complete and dispatch-closed before financial posting.
-  All attempts must be final before final release. SSE done/completeLedger is
-  never provider finality. Free turns collect provider cost but never debit.
+  All attempts must be final before final release. Valid inline receipts become
+  final at ingestion with `finality_policy=inline_receipt_v1` (GoGo policy, not a
+  provider SLA); dispatch closure is still required. Recovered missing cost uses
+  `recovered_receipt_v1`. Pre-policy complete receipts are promoted per usage
+  with `recorded_receipt_v1`, without GET. Free turns capture inline costs and
+  normal-path corrections but never debit, recover via GET or reschedule hourly.
 - The shared application service uses D1 account-locked revision primitives.
+  Full latest provider components and every receipt remain Cost Center evidence.
+  At call finality `billable_cost_usd` freezes the billable total; later evidence
+  may only lower it. This also prevents a correction that arrives before the
+  first financial application from increasing the final inline amount.
+  Post-final upward differences emit `assistant_credit_post_final_cost_absorbed_total`
+  and `assistant.post_final_cost_absorbed` audit records, without ledger debit.
+  Normal-path authoritative downward corrections may refund; no polling seeks
+  either correction. Finality never reopens on a non-final correction receipt.
   One base debit survives refund-to-zero; later deltas are revision-unique signed
   adjustments. Ledger/account/A/H/applied revision/audit/notification marker are
   atomic. Financial counters emit after commit. Int32 refund overflow and missing
   wallet arithmetic quarantine, preserving funds instead of retrying a debit or
   creating debt. Public contracts remain 10.0.0-alpha.1; D2 adds no wire fields.
+- Migration 0101 adds durable per-usage `recovery_attempts/recovery_next_at`,
+  call `finality_policy/billable_cost_usd`, and `receipt_missing` incidents.
+  0099/0100 remain unchanged. Existing complete calls are upgraded per usage,
+  avoiding a table-wide historical UPDATE. Apply DDL before compatible writers;
+  validate deferred CHECKs in the existing ops phase. Rollback disables paid
+  admission and retains these additive columns, receipts, holds and incidents;
+  drain with compatible code, never reset recovery counters or restore polling.
 - The worker has a dedicated outbox consumer (notification fanout excludes its
   events), bounded indexed sweep, expiring per-turn CAS claims, retry/backoff and
   the existing periodic worker_leases row. Discovery holds no usage-row lock while
   waiting for an account. Recovery reads generation metadata only. A lost ACK
   replays the revision; a missed wakeup is repaired by the sweep. Financial pause
-  keeps cost capture running and retains holds. Spend-off does not cancel funded
+  keeps inline cost capture and bounded missing-cost recovery running and retains holds.
+  Only unknown paid calls with generation identity can GET. The budget is **five
+  GET claims total per usage**, shared across all calls, stricter than five per
+  call. `RECEIPT_RECOVERY_MAX_GETS`, `RECEIPT_RECOVERY_BACKOFF_SECONDS` and
+  `RECEIPT_RECOVERY_WINDOW_SECONDS` own the policy: first attempt at acceptance
+  +5m, then delays of 15m, 1h, 4h and 12h after the preceding claim, all before
+  acceptance +24h. Late ticks never catch up in a burst. Claim commits under the
+  account lock before I/O; failures, aborts and crashes consume an attempt.
+  Exhausted budgets wait for the 24h deadline. Still-unknown paid cost, including
+  missing generation identity, quarantines with the hold intact, a durable
+  `receipt_missing` incident, bound-violation metric and static Sentry error alert.
+  Existing incident semantics block new paid admissions. No missing-as-zero or
+  TTL-to-free conversion. Finished/free/quarantined work has no scheduled retry.
+  Ordinary financial pause retries remain bounded by their existing backoff. Spend-off does not cancel funded
   work. Master-off fences new dispatch, while dispatched liabilities reconcile.
 - Bound readiness additionally requires an environment-scoped, current, unrevoked
   versioned artifact, matching exact B, live provider/models/caps/config hash and
@@ -142,16 +177,16 @@ provides per-generation cost retrieval, and its
 [usage-accounting reference](https://github.com/OpenRouterTeam/docs/blob/main/cookbook/administration/usage-accounting.mdx)
 distinguishes BYOK inference from OpenRouter cost. Neither reference used here
 establishes a binding whole-turn cap, an ordered correction sequence, or a billing
-finality guarantee. Thus response evidence is revision 1, generation retrieval
-revision 2, both correctable; changed retrieval evidence at that fixed revision is
-quarantined instead of inventing ordering. An ambiguous call with no returned
-generation ID stays pending and requires provider-assisted attribution. No
-account/monthly allocation, invented zero, TTL release or redispatch is permitted.
-Trusted final receipts exercise the generic settlement path in deterministic
-fixtures; they are not live provider acceptance. Real bound/finality review and
-correlation/recovery acceptance remain mandatory before paid admission, including
-any provider capability work that the evidence review identifies. The calibrated
-0.003904 ceiling alone continues to fail readiness.
+finality guarantee. Response evidence remains revision 1 and generation
+retrieval revision 2; GoGo policy A now supplies economic finality and accepts
+post-final upward losses. This replaces the prior “no provider finality means
+reconciling forever” default. Same-revision conflicts still retain both receipts and quarantine instead of
+inventing correction ordering, except post-final upward observations: those
+update Cost Center evidence and emit the loss signal without changing billing. Unknown evidence stops
+recovery at the budget/window and quarantines at 24h, never zeroes. Real reviewed
+whole-turn bound/config/pricing and correlation/recovery acceptance remain
+mandatory before paid admission. The calibrated 0.003904 ceiling alone continues
+to fail readiness. No bound is certified by this finality policy.
 
 D2 validation and DEV commands: docs/plans/853-D2-validation.md. No policy switch,
 remote configuration change, provider inference, integration execution or rollout

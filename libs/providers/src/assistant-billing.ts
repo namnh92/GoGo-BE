@@ -4,7 +4,7 @@ export type AssistantCostReceipt = {
   direct: string;
   upstream: string;
   fee: string;
-  /** A receipt is correctable unless the provider contract proves otherwise. */
+  /** Provider-attested finality. GoGo policy finality is recorded independently at ingestion. */
   final: boolean;
   generationId?: string | undefined;
 };

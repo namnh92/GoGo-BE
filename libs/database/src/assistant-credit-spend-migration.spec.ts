@@ -37,3 +37,23 @@ it('D2 builds the existing-outbox index concurrently outside migration transacti
   );
   expect(ops).toContain('assistant_credit_settlement_outbox_due_ready');
 });
+
+it('policy A uses an additive migration and bounded durable usage recovery, without TTL release', () => {
+  const migration = readFileSync(
+    path.join(root, 'migrations/0101_assistant-receipt-finality.sql'),
+    'utf8',
+  ).replace(/--[^\n]*/g, '');
+  expect(migration).toContain('ADD COLUMN recovery_attempts integer NOT NULL DEFAULT 0');
+  expect(migration).toContain('CHECK(recovery_attempts BETWEEN 0 AND 5) NOT VALID');
+  expect(migration).toContain(
+    "CHECK(billable_cost_usd>=0 AND billable_cost_usd<'Infinity'::numeric) NOT VALID",
+  );
+  expect(migration).toContain('ADD COLUMN finality_policy text');
+  expect(migration).toContain('ADD COLUMN billable_cost_usd numeric');
+  expect(migration).toContain("'receipt_missing'");
+  expect(migration).not.toMatch(/\bUPDATE\b|\bDELETE\b|\bTRUNCATE\b/);
+  const journal = JSON.parse(
+    readFileSync(path.join(root, 'migrations/meta/_journal.json'), 'utf8'),
+  );
+  expect(journal.entries.at(-1).tag).toBe('0101_assistant-receipt-finality');
+});

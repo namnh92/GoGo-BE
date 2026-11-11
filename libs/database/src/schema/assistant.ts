@@ -504,11 +504,17 @@ export const assistantCreditTurns = pgTable(
     leaseOwner: text('lease_owner'),
     leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
     retryCount: integer('retry_count').notNull().default(0),
+    recoveryAttempts: integer('recovery_attempts').notNull().default(0),
+    recoveryNextAt: timestamp('recovery_next_at', { withTimezone: true }),
   },
   (t) => [
     check(
       'assistant_credit_turns_policy_key_check',
       sql.raw("policy_key IN ('legacy_allowance_v1','free_then_actual_cost_v1')"),
+    ),
+    check(
+      'assistant_credit_turns_recovery_attempts_check',
+      sql.raw('recovery_attempts BETWEEN 0 AND 5'),
     ),
     check('assistant_credit_turns_policy_epoch_check', sql.raw('policy_epoch>=0')),
     check(
@@ -570,12 +576,18 @@ export const assistantUsageCalls = pgTable(
     receiptFingerprint: text('receipt_fingerprint'),
     receiptRevision: bigint('receipt_revision', { mode: 'bigint' }),
     costState: text('cost_state').notNull().default('unknown'),
+    finalityPolicy: text('finality_policy'),
+    billableCostUsd: numeric('billable_cost_usd'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     dispatchedAt: timestamp('dispatched_at', { withTimezone: true }),
     finalizedAt: timestamp('finalized_at', { withTimezone: true }),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    check(
+      'assistant_usage_calls_billable_cost_usd_check',
+      sql.raw("billable_cost_usd>=0 AND billable_cost_usd<'Infinity'::numeric"),
+    ),
     check('assistant_usage_calls_call_index_check', sql.raw('call_index>=0')),
     check(
       'assistant_usage_calls_dispatch_state_check',
@@ -673,7 +685,7 @@ export const assistantCreditBillingIncidents = pgTable(
     check(
       'assistant_credit_billing_incidents_reason_check',
       sql.raw(
-        "reason IN ('invalid_cost','receipt_conflict','bound_or_finality','account_invariant')",
+        "reason IN ('invalid_cost','receipt_conflict','bound_or_finality','account_invariant','receipt_missing')",
       ),
     ),
   ],

@@ -30,5 +30,6 @@ export {
   sentryRelease,
   sentryIntegrations,
   reportRecoveryMailFailure,
+  reportAssistantReceiptMissing,
   type UnhandledRejectionMode,
 } from './sentry';

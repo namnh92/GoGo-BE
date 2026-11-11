@@ -250,7 +250,8 @@ Metric đang phát — danh sách đầy đủ, đối chiếu với `METRIC_LAB
 | `assistant_credit_unresolved_count`                 | none                                         | Unresolved D provider/financial cost, including free and scrubbed erased liabilities; refreshed at scrape.                                                                               |
 | `assistant_credit_unresolved_oldest_age_seconds`    | none                                         | Oldest unresolved D liability; no TTL release.                                                                                                                                           |
 | `assistant_credit_reconciliation_queue_lag_seconds` | none                                         | Age of delivered durable cost wakeups.                                                                                                                                                   |
-| `assistant_credit_bound_violation_total`            | `reason`                                     | Bounded reasons: bound_or_finality/invalid_cost/evidence_quarantined. Immediate billing alert; new paid admission fails closed.                                                          |
+| `assistant_credit_bound_violation_total`            | `reason`                                     | Bounded reasons: bound_or_finality/invalid_cost/evidence_quarantined/receipt_missing. Immediate billing alert; new paid admission fails closed.                                          |
+| `assistant_credit_post_final_cost_absorbed_total`   | none                                         | Post-final upward provider cost retained for Cost Center; GoGo absorbs it, no user debit. Audit action `assistant.post_final_cost_absorbed`.                                             |
 | `assistant_credit_hold_mismatch_total`              | none                                         | Scrape observations of holds exceeding posted funds; immediate alert.                                                                                                                    |
 | `assistant_credit_free_allowance_violation_total`   | none                                         | Scrape observations of a usage debit against a frozen free turn; immediate alert.                                                                                                        |
 
@@ -611,3 +612,20 @@ itself. No artifact or certification is seeded by the migration. Provider, cap,
 pricing or routing changes invalidate the binding; bump `BILLING_CONFIG_REVISION`
 when call topology/request construction changes. Finality is never inferred from
 SSE done, timeout, elapsed age or a generation GET alone.
+
+D2 policy A receipt recovery (#853, owner 2026-11-11): only missing-cost paid
+calls GET generation metadata. One usage has at most five durable claims across
+all calls, at 5m initially then 15m/1h/4h/12h backoff, within 24h of acceptance.
+Crashes and unavailable receipts consume attempts. Free and known-cost turns do
+not poll. At the 24h deadline unknown paid cost retains its hold and creates a
+`receipt_missing` incident that blocks new paid admission. It emits
+`assistant_credit_bound_violation_total{reason="receipt_missing"}` and a static
+Sentry error: `Assistant receipt recovery exhausted 24h window`, tags
+`operation=assistant_receipt_recovery,reason=receipt_missing`. Route that issue
+through the existing worker Sentry alert channel; it carries no user/generation
+ID, request or ambient context. Alert routing/delivery still requires deployed
+Sentry configuration and DEV verification. Respond by pausing paid admission,
+examining scrubbed receipt/incident evidence through authorized billing tooling,
+and resolving through the audited billing correction path; never release a hold
+or reset attempts to silence the alert. Full provider amounts remain in call and
+receipt evidence, separate from the capped billable amount.

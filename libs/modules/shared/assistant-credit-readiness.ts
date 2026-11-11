@@ -52,7 +52,7 @@ export async function assertAssistantCreditSpendReady(db: CreditExec): Promise<v
     throw AppError.serviceUnavailable('ASSISTANT_DISABLED', 'Spend policy unavailable', false);
   await db.execute(sql`select u.billing_policy,u.billing_epoch,u.cost_revision,u.dispatch_closed_at,u.cost_finalized_at,
    l.cost_revision,t.reserved_ceiling,t.held_credits,t.applied_credits,t.policy_epoch,t.applied_cost_revision,
-   c.correlation_id,c.dispatch_state,c.direct_cost_usd,c.upstream_cost_usd,c.fee_cost_usd,c.receipt_revision
+   t.recovery_attempts,t.recovery_next_at,c.billable_cost_usd,c.finality_policy,c.correlation_id,c.dispatch_state,c.direct_cost_usd,c.upstream_cost_usd,c.fee_cost_usd,c.receipt_revision
   from assistant_usage_ledger u cross join assistant_credit_ledger l cross join assistant_credit_turns t cross join assistant_usage_calls c limit 0`);
   await db.execute(
     sql`select r.fingerprint,r.direct_cost_usd,b.description,i.resolved_at from assistant_usage_receipts r cross join assistant_credit_bound_artifacts b cross join assistant_credit_billing_incidents i limit 0`,

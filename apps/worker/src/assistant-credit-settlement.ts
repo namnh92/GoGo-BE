@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
-import { AssistantCreditSettlementService, COST_RECONCILE_EVENT } from '@gogo/modules';
+import {
+  AssistantCreditSettlementService,
+  COST_RECONCILE_EVENT,
+  RECEIPT_RECOVERY_BACKOFF_SECONDS,
+  RECEIPT_RECOVERY_WINDOW_SECONDS,
+} from '@gogo/modules';
 import { OpenRouterAssistantReceiptReader } from '@gogo/providers';
 import type { MetricsPort } from '@gogo/observability';
 
@@ -22,7 +27,7 @@ export class AssistantCreditSettlementWorker {
       from outbox_events where event_type=${COST_RECONCILE_EVENT} and published_at is null
       and (next_attempt_at is null or next_attempt_at<=now()) order by next_attempt_at nulls first,occurred_at limit ${limit}`);
     const sweep = await this.db.execute(sql`select usage_ledger_id from assistant_credit_turns
-      where state in ('pending','reconciling','settled') and (next_reconcile_at is null or next_reconcile_at<=now())
+      where funding_source='credit' and state in ('pending','reconciling','settled') and (next_reconcile_at is null or next_reconcile_at<=now())
       and exists(select 1 from assistant_usage_ledger u where u.id=usage_ledger_id and u.user_id is not null
         and (u.cost_finalized_at is null or (funding_source='credit' and u.cost_revision>applied_cost_revision)))
       order by state,next_reconcile_at nulls first limit ${limit}`);
@@ -59,14 +64,27 @@ export class AssistantCreditSettlementWorker {
         (r) => (r as { resource_id: string }).resource_id === usageId,
       ) as { id: string; lag: number }[];
       await this.db.transaction(async (tx) => {
+        // A usage owns its recovery schedule, independent of deliveries/ticks.
+        // Exhausted attempts wait for the 24h quarantine deadline.
+        const next = sql`case
+          when state in ('erased','quarantined') or funding_source='free' then null
+          when cost_revision<>${before.cost_revision}::bigint and cost_revision>applied_cost_revision then now()
+          when ${retry} and exists(select 1 from assistant_usage_calls c
+            where c.usage_ledger_id=assistant_credit_turns.usage_ledger_id and c.cost_state='unknown')
+            then case when not exists(select 1 from assistant_usage_calls c
+              where c.usage_ledger_id=assistant_credit_turns.usage_ledger_id and c.cost_state='unknown'
+                and c.provider in ('jev','haiku') and c.provider_generation_id is not null)
+              then accepted_at+make_interval(secs=>${RECEIPT_RECOVERY_WINDOW_SECONDS})
+              else least(accepted_at+make_interval(secs=>${RECEIPT_RECOVERY_WINDOW_SECONDS}),
+              coalesce(recovery_next_at,accepted_at+make_interval(secs=>${RECEIPT_RECOVERY_BACKOFF_SECONDS[0]}))) end
+          when ${retry} then now()+make_interval(secs=>${delay}) else null end`;
         const owned =
           await tx.execute(sql`update assistant_credit_turns set lease_owner=null,lease_expires_at=null,
           retry_count=case when ${retry} then least(retry_count+1,1000000) else 0 end,
-          next_reconcile_at=case when cost_revision<>${before.cost_revision}::bigint then now()
-            when ${retry} then now()+make_interval(secs=>${delay})
-            when state in ('pending','reconciling') or funding_source='free' then now()+interval '1 hour' else null end
-          where usage_ledger_id=${usageId} and lease_owner=${owner} returning usage_ledger_id`);
+          next_reconcile_at=${next}
+          where usage_ledger_id=${usageId} and lease_owner=${owner} returning usage_ledger_id,next_reconcile_at`);
         if (!owned.rows.length) return;
+        const scheduled = (owned.rows[0] as { next_reconcile_at: string | null }).next_reconcile_at;
         for (const event of delivered) {
           this.metrics?.observe(
             'assistant_credit_reconciliation_queue_lag_seconds',
@@ -74,7 +92,7 @@ export class AssistantCreditSettlementWorker {
             {},
           );
           await tx.execute(sql`update outbox_events set published_at=case when ${retry} then null else now() end,
-            next_attempt_at=case when ${retry} then now()+make_interval(secs=>${delay}) else null end,
+            next_attempt_at=case when ${retry} then ${scheduled ?? null}::timestamptz else null end,
             attempts=least(attempts+1,1000000),last_error=case when ${retry} then 'settlement_pending' else null end
             where id=${event.id}`);
         }

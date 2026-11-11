@@ -15,7 +15,7 @@ function harness(outcome = 'applied', lease = true, retries = 0) {
     if (query.sql.includes('returning cost_revision'))
       return { rows: lease ? [{ cost_revision: '4', retry_count: retries }] : [] };
     if (query.sql.includes('returning usage_ledger_id'))
-      return { rows: [{ usage_ledger_id: 'usage' }] };
+      return { rows: [{ usage_ledger_id: 'usage', next_reconcile_at: '2026-11-11T00:05:00Z' }] };
     return { rows: [] };
   });
   const db = {
@@ -49,7 +49,9 @@ describe('#853 bounded settlement consumer', () => {
     const h = harness(String(outcome), true, Number(retries));
     await h.worker.tick(signal);
     const ack = h.queries.find((q) => q.sql.includes('update outbox_events'))!;
-    expect(ack.params).toContain(seconds);
+    const finish = h.queries.find((q) => q.sql.includes('next_reconcile_at=case'))!;
+    expect(finish.params).toContain(seconds);
+    expect(ack.params).toContain('2026-11-11T00:05:00Z');
     expect(ack.params).toContain(true);
   });
   it('a held turn lease skips reconciliation; no row remains locked waiting for account', async () => {
@@ -68,4 +70,21 @@ describe('#853 bounded settlement consumer', () => {
     expect(sweep).toContain('limit');
     await expect(h.worker.tick(signal, 101)).rejects.toThrow(RangeError);
   });
+});
+
+it('policy A leaves free/finished turns unscheduled instead of hourly polling', async () => {
+  const h = harness('ignored');
+  await h.worker.tick(signal);
+  const finish = h.queries.find((q) => q.sql.includes('next_reconcile_at=case'))!.sql;
+  expect(finish).not.toContain("interval '1 hour'");
+  const sweep = h.queries.find((q) => q.sql.includes('select usage_ledger_id from'))!.sql;
+  expect(sweep).toContain("funding_source='credit'");
+});
+
+it('a revision finalized and applied during reconcile does not create another scheduled tick', async () => {
+  const h = harness('applied');
+  await h.worker.tick(signal);
+  const finish = h.queries.find((q) => q.sql.includes('next_reconcile_at=case'))!.sql;
+  expect(finish).toContain('and cost_revision>applied_cost_revision then now()');
+  expect(finish).toContain('else null end');
 });
