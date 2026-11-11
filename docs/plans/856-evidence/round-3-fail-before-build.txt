@@ -1,0 +1,16 @@
+$ pnpm -s turbo run build --filter @gogo/api   # clean head 56df5af34bf33dcd756e3f1e0c0c4e06fb5f0acd, before any edit
+(trimmed: first error, the importing spec, counts and tail of 1455 output lines)
+@gogo/api:build: ../../libs/modules/administrative/application/administrative-publication.service.ts(19,8): error TS6059: File '<repo>/libs/modules/administrative/application/administrative-dataset.port.ts' is not under 'rootDir' '<repo>/apps/api/src'. 'rootDir' is expected to contain all source files.
+@gogo/api:build:     Imported via '../../../../libs/modules/assistant/application/assistant-conversations.service' from file '<repo>/apps/api/src/assistant/assistant-stream-http.spec.ts'
+@gogo/api:build:     Imported via '../../../../libs/modules/assistant/application/assistant-proposals.service' from file '<repo>/apps/api/src/assistant/assistant-stream-http.spec.ts'
+@gogo/api:build:     Imported via '../../../../libs/modules/assistant/application/assistant-stream.service' from file '<repo>/apps/api/src/assistant/assistant-stream-http.spec.ts'
+@gogo/api:build:     Imported via '../../../../libs/modules/assistant/infrastructure/assistant.repository' from file '<repo>/apps/api/src/assistant/assistant-stream-http.spec.ts'
+@gogo/api:build:     Imported via '../../../../libs/modules/assistant/infrastructure/frame-buffer' from file '<repo>/apps/api/src/assistant/assistant-stream-http.spec.ts'
+@gogo/api:build:     Imported via '../../../../libs/modules/assistant/presentation/assistant.controller' from file '<repo>/apps/api/src/assistant/assistant-stream-http.spec.ts'
+error TS6059 count: 122
+other error TS codes: 0
+  Time:    10.504s 
+Failed:    @gogo/api#build
+
+ ERROR  run failed: command  exited (2)
+exit=2

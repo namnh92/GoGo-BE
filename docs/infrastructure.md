@@ -353,6 +353,10 @@ Metric đang phát — danh sách đầy đủ, đối chiếu với `METRIC_LAB
 | `administrative_mappings` | `status` | gauge: số place theo trạng thái mapping — hàng đợi duyệt đọc ở đây |
 | `administrative_remediation` | `category` | gauge: place đã publish theo nhóm cần khắc phục |
 | `administrative_publication_enabled` | — | gauge 0/1: môi trường này có thể duyệt place hay không |
+| `assistant_place_answer_render_total`                | `mode`, `result`                             | S1 QA rendering: mode live/replay/history/cms/preview/export; result ok/unavailable/read_error/timeout/unknown_token; no text or IDs                                                                                                                                                                                      |
+| `assistant_place_facts_duration_seconds`             | `surface`                                    | Batched QA fact read including snapshot preparation; surface live/replay/history/cms; explicit 2 s bucket                                                                                                                                                                                                                 |
+| `assistant_place_answer_token_ready_seconds`         | —                                            | Producer reference-ready time, not client-visible text success; no emission from replay                                                                                                                                                                                                                                   |
+| `assistant_place_answer_first_visible_text_seconds`  | `mode`                                       | First nonempty text actually delivered to attached live SSE, including fixed errors; mode live. Use render result to distinguish successful fact delivery                                                                                                                                                                 |
 
 Alert đề xuất (ngưỡng chỉnh sau khi có baseline thật):
 

@@ -1,0 +1,30 @@
+$ pnpm -s turbo run typecheck --force
+started: 2026-11-11T10:28:07Z
+• turbo 2.10.11
+
+   • Packages in scope: @gogo/api, @gogo/cost-observability, @gogo/database, @gogo/modules, @gogo/observability, @gogo/providers, @gogo/scripts, @gogo/worker
+   • Running typecheck in 8 packages
+   • Remote caching disabled, using shared worktree cache
+
+@gogo/observability:typecheck: cache bypass, force executing 93a169b3c63586a7
+@gogo/providers:typecheck: cache bypass, force executing 1d098c4b46141617
+@gogo/database:typecheck: cache bypass, force executing f892d33e599442d8
+@gogo/providers:typecheck: $ tsc --noEmit
+@gogo/observability:typecheck: $ tsc --noEmit
+@gogo/database:typecheck: $ tsc --noEmit
+@gogo/cost-observability:typecheck: cache bypass, force executing cba3e156ee895a4c
+@gogo/cost-observability:typecheck: $ tsc --noEmit
+@gogo/modules:typecheck: cache bypass, force executing 3ded1479c4a74e6f
+@gogo/modules:typecheck: $ tsc --noEmit
+@gogo/scripts:typecheck: cache bypass, force executing 9c13edb2257618f0
+@gogo/worker:typecheck: cache bypass, force executing 69454ef61d2f3ea9
+@gogo/api:typecheck: cache bypass, force executing dad42cf422e93646
+@gogo/worker:typecheck: $ tsc --noEmit
+@gogo/scripts:typecheck: $ tsc --noEmit
+@gogo/api:typecheck: $ tsc --noEmit
+
+ Tasks:    8 successful, 8 total
+Cached:    0 cached, 8 total
+  Time:    28.874s 
+
+exit=0

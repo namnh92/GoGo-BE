@@ -1,3 +1,4 @@
+import type { MetricsPort } from '@gogo/observability';
 import { eraseCreditSubjectKeys } from '../../shared/credit-erasure';
 import { lockAssistantAccount } from '../../shared/assistant-credits';
 import { sql } from 'drizzle-orm';
@@ -98,6 +99,7 @@ export async function collectAssistantExport(
   exec: Exec,
   userId: string,
   charge: (value: unknown) => void,
+  metrics?: MetricsPort,
 ): Promise<UserExportAssistantConversation[]> {
   const conversations = await exec.execute(sql`
     select id, title, ${sql.raw(isoUs('created_at'))} as created_at,
@@ -113,7 +115,7 @@ export async function collectAssistantExport(
     last_message_at: string;
   }[]) {
     const messages = await exec.execute(sql`
-      select m.role, m.status, m.text, ${sql.raw(isoUs('m.created_at'))} as created_at,
+      select m.role, m.status, m.text, m.trace, ${sql.raw(isoUs('m.created_at'))} as created_at,
         ${sql.raw(isoUs('m.completed_at'))} as completed_at,
         f.rating, f.reason, ${sql.raw(isoUs('f.created_at'))} as feedback_at
       from assistant_messages m
@@ -124,6 +126,7 @@ export async function collectAssistantExport(
       role: 'user' | 'assistant';
       status: string;
       text: string;
+      trace?: Record<string, unknown> | null;
       created_at: string;
       completed_at: string | null;
       rating: 'up' | 'down' | null;
@@ -133,7 +136,20 @@ export async function collectAssistantExport(
     // The export is stored (sealed, in R2) until it expires, so it must not
     // hold a place's name either (A-R2-03, owner decision 2026-10-27): a
     // place reads as "GoGo place" with its id, which the app resolves.
-    const texts = rows.map((m) => placeTokensAsIds(m.text));
+    // The complete row is read here, so the whole-message grammar applies: a
+    // malformed answer exports as one neutral label, never its prose.
+    const texts = rows.map((m) =>
+      placeTokensAsIds(
+        m.text,
+        'vi',
+        () =>
+          metrics?.increment('assistant_place_answer_render_total', {
+            mode: 'export',
+            result: 'unknown_token',
+          }),
+        m.trace ?? null,
+      ),
+    );
     const item: UserExportAssistantConversation = {
       title: c.title,
       createdAt: c.created_at,

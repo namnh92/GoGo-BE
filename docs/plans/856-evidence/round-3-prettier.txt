@@ -1,0 +1,5 @@
+$ sh -c xargs pnpm exec prettier --check < '<tmp>/be860/prettier-files.txt'
+started: 2026-11-11T10:29:18Z
+Checking formatting...
+All matched files use Prettier code style!
+exit=0

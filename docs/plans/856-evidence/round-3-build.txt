@@ -1,0 +1,18 @@
+$ pnpm -s turbo run build --force
+started: 2026-11-11T10:27:58Z
+• turbo 2.10.11
+
+   • Packages in scope: @gogo/api, @gogo/cost-observability, @gogo/database, @gogo/modules, @gogo/observability, @gogo/providers, @gogo/scripts, @gogo/worker
+   • Running build in 8 packages
+   • Remote caching disabled, using shared worktree cache
+
+@gogo/worker:build: cache bypass, force executing 17efb147d3d7e803
+@gogo/api:build: cache bypass, force executing c1360df00b77a60f
+@gogo/worker:build: $ tsc -p tsconfig.build.json
+@gogo/api:build: $ tsc -p tsconfig.build.json
+
+ Tasks:    2 successful, 2 total
+Cached:    0 cached, 2 total
+  Time:    8.941s 
+
+exit=0

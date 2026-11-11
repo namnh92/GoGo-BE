@@ -1,0 +1,17 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v4.1.11 /Users/maxnguyen/MyWorks/GoGo/dev/worktrees/be-856
+
+[Nest] 69323  - 11/11/2026, 4:12:02 PM   ERROR [AssistantTurnRunner] Object(3) {
+  msg: 'assistant turn failed',
+  event: 'assistant.turn_failed',
+  error: 'Error'
+}
+
+ Test Files  17 passed (17)
+      Tests  253 passed (253)
+   Start at  16:11:55
+   Duration  11.33s (transform 4.49s, setup 0ms, import 15.93s, tests 11.57s, environment 1ms)
+

@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/Users/maxnguyen/MyWorks/GoGo/dev/worktrees/be-856/docs/plans/856-evidence/verify-evidence.py", line 17, in <module>
+    assert required <= set(manifest), f'Missing final stream files: {sorted(required - set(manifest))}'
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Missing final stream files: ['apps/api/src/assistant/assistant-stream-http.spec.ts', 'docs/plans/856-stream-admission.md', 'libs/modules/assistant/application/assistant-stream.spec.ts', 'libs/modules/assistant/infrastructure/assistant.repository.ts', 'libs/modules/assistant/presentation/assistant-stream.guard.ts', 'libs/modules/assistant/presentation/assistant.controller.ts']

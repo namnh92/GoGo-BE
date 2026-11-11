@@ -11383,7 +11383,15 @@ export interface components {
             /** Format: date-time */
             urlExpiresAt?: string;
         };
+        /** @description Optional source-bound follow-up fields are reserved by contract 10.1 (S1); S3 implements validation/state before any emitter or consumer submits them. Send both or neither: the server enforces the pairing and answers `400 VALIDATION_FAILED` when only one is present (the schema carries no dependency keyword). Until S3 the server refuses either field with the same 400. Typed messages omit both fields. Stale/expired/disabled QA options must never resume a recommendation. */
         AssistantMessageSend: {
+            /**
+             * Format: uuid
+             * @description Latest accessible assistant message owning the option. Send only together with followUpOptionId; alone it is a 400. Not accepted until S3.
+             */
+            replyToMessageId?: string;
+            /** @description Opaque server option id, not a place id. Send only together with replyToMessageId; alone it is a 400. S3 validates kind, config, expiry and latest source. */
+            followUpOptionId?: string;
             /** @description Trimmed server-side; blank after trimming is a 400. */
             text: string;
             context?: components["schemas"]["AssistantContext"];
@@ -11406,7 +11414,7 @@ export interface components {
             /** @enum {string} */
             role: "user" | "assistant";
             status: components["schemas"]["AssistantMessageStatus"];
-            /** @description Markdown-light answer text (paragraphs, lists, `[n]` citation markers that index `sources`). For a user message, what they sent. */
+            /** @description Markdown-light answer text (paragraphs, lists, `[n]` citation markers that index `sources`). Place QA text, cards, sources and topic options use one current eligible fact snapshot per response group. Private semantic tokens never reach clients. Replay is a current rendering, not a historical fact snapshot. Fact-read failure/timeout gives fixed localized load-error text and omits cards/sources/options; live SSE terminates with an error frame even if production completed. For a user message, what they sent. */
             text: string;
             /** Format: date-time */
             createdAt: string;
@@ -11461,7 +11469,7 @@ export interface components {
             description?: string;
             /**
              * Format: date-time
-             * @description For `place_data`, the verified data's `freshnessCheckedAt`.
+             * @description Legacy place_data uses place freshness. QA omits this aggregate date; each actually rendered fact carries its own verification date in prose or the source description. Community and Google are never blended. Google facts are never relabelled GoGo-verified.
              */
             checkedAt?: string;
         };
@@ -11684,7 +11692,7 @@ export interface components {
             confirmedAt: string;
         };
         /**
-         * @description A missing detail the assistant asks for, with quick answers. At most two groups per reply; the user may type instead.
+         * @description A missing detail the assistant asks for, with quick answers. At most two groups per reply; the user may type instead. Place QA uses place_choice, place_confirm and place_topic. Labels are derived from current identity/eligible topic keys at read time, never retained facts. Option ids are specified in S1 but not emitted before S3/S4 integration.
          * @example {
          *       "field": "date",
          *       "label": "Which day?",
@@ -11705,6 +11713,8 @@ export interface components {
             field: string;
             label: string;
             options: {
+                /** @description Source-bound option key; send with the owning message id. Omit on manually typed messages. */
+                id?: string;
                 label: string;
                 /** @description What is sent as the next user message when tapped. */
                 text: string;

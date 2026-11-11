@@ -1,0 +1,6 @@
+$ pnpm -s api:check
+started: 2026-11-11T10:29:05Z
+$ openapi-typescript openapi/gogo.v1.yaml -o /tmp/gogo.v1.d.ts && diff -q /tmp/gogo.v1.d.ts openapi/gogo.v1.d.ts
+✨ openapi-typescript 7.13.0
+🚀 openapi/gogo.v1.yaml → /tmp/gogo.v1.d.ts [380.6ms]
+exit=0

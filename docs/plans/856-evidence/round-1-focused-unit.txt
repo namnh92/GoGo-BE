@@ -1,0 +1,89 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v4.1.11 /Users/maxnguyen/MyWorks/GoGo/dev/worktrees/be-856
+
+[Nest] 1581  - 11/01/2026, 1:00:00 AM    WARN [AssistantOrchestrator] Object(3) {
+  msg: 'assistant jev decision fell back',
+  event: 'assistant.jev_fallback',
+  reason: 'provider_error'
+}
+[Nest] 1581  - 11/01/2026, 1:00:00 AM    WARN [AssistantOrchestrator] Object(3) {
+  msg: 'assistant jev decision fell back',
+  event: 'assistant.jev_fallback',
+  reason: 'provider_error'
+}
+[Nest] 1581  - 11/01/2026, 1:00:00 AM    WARN [AssistantOrchestrator] Object(3) {
+  msg: 'assistant jev decision fell back',
+  event: 'assistant.jev_fallback',
+  reason: 'provider_error'
+}
+[Nest] 1581  - 11/01/2026, 1:00:00 AM    WARN [AssistantOrchestrator] Object(3) {
+  msg: 'assistant jev decision fell back',
+  event: 'assistant.jev_fallback',
+  reason: 'provider_error'
+}
+[Nest] 1581  - 11/01/2026, 1:00:00 AM    WARN [AssistantOrchestrator] Object(3) {
+  msg: 'assistant jev decision fell back',
+  event: 'assistant.jev_fallback',
+  reason: 'provider_error'
+}
+[Nest] 1581  - 11/01/2026, 1:00:00 AM    WARN [AssistantOrchestrator] Object(3) {
+  msg: 'assistant jev decision fell back',
+  event: 'assistant.jev_fallback',
+  reason: 'provider_error'
+}
+[Nest] 1581  - 11/01/2026, 1:00:00 AM    WARN [AssistantOrchestrator] Object(3) {
+  msg: 'assistant jev decision fell back',
+  event: 'assistant.jev_fallback',
+  reason: 'provider_error'
+}
+[Nest] 1581  - 11/01/2026, 1:00:00 AM    WARN [AssistantOrchestrator] Object(3) {
+  msg: 'assistant jev decision fell back',
+  event: 'assistant.jev_fallback',
+  reason: 'provider_error'
+}
+[Nest] 1581  - 11/01/2026, 1:00:00 AM    WARN [AssistantOrchestrator] Object(3) {
+  msg: 'assistant jev decision fell back',
+  event: 'assistant.jev_fallback',
+  reason: 'provider_error'
+}
+[Nest] 1581  - 11/01/2026, 1:00:00 AM    WARN [AssistantOrchestrator] Object(3) {
+  msg: 'assistant jev decision fell back',
+  event: 'assistant.jev_fallback',
+  reason: 'provider_error'
+}
+[Nest] 1570  - 11/11/2026, 4:50:43 PM    WARN [AssistantOrchestrator] Object(4) {
+  msg: 'assistant haiku composition failed',
+  event: 'assistant.haiku_failed',
+  kind: 'unknown',
+  textStarted: false
+}
+[Nest] 1570  - 11/11/2026, 4:50:43 PM    WARN [AssistantOrchestrator] Object(3) {
+  msg: 'assistant vocabulary preflight failed',
+  event: 'assistant.vocabulary_preflight_failed',
+  outcome: 'unavailable'
+}
+[Nest] 1631  - 11/11/2026, 4:50:43 PM   ERROR [AssistantProposalsService] Object(4) {
+  msg: 'assistant proposal confirm ended ambiguously',
+  event: 'assistant.proposal_ambiguous',
+  kind: 'create_invite',
+  error: 'Error'
+}
+[Nest] 1568  - 11/11/2026, 4:50:44 PM   ERROR [AssistantTurnRunner] Object(3) {
+  msg: 'assistant turn failed',
+  event: 'assistant.turn_failed',
+  error: 'Error'
+}
+[Nest] 1570  - 11/11/2026, 4:50:46 PM    WARN [AssistantOrchestrator] Object(3) {
+  msg: 'assistant vocabulary preflight failed',
+  event: 'assistant.vocabulary_preflight_failed',
+  outcome: 'timeout'
+}
+
+ Test Files  38 passed (38)
+      Tests  657 passed (657)
+   Start at  16:50:38
+   Duration  10.97s (transform 6.12s, setup 0ms, import 25.96s, tests 26.06s, environment 2ms)
+

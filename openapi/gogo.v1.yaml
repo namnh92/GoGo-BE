@@ -2,7 +2,7 @@ openapi: 3.1.0
 x-gogo-notification-preference-semantics: master-and-five-categories-v1
 info:
   title: GoGo API
-  version: 10.0.0-alpha.1
+  version: 10.1.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -21664,7 +21664,33 @@ components:
       type: object
       required: [text]
       additionalProperties: false
+      description: >
+        Optional source-bound follow-up fields are reserved by contract 10.1
+        (S1); S3 implements validation/state before any emitter or consumer
+        submits them. Send both or neither: the server enforces the pairing
+        and answers `400 VALIDATION_FAILED` when only one is present (the
+        schema carries no dependency keyword). Until S3 the server refuses
+        either field with the same 400. Typed messages omit both fields.
+        Stale/expired/disabled QA options must never resume a recommendation.
       properties:
+        replyToMessageId:
+          type: string
+          format: uuid
+          x-gogo-planned: true
+          description: >
+            Latest accessible assistant message owning the option. Send only
+            together with followUpOptionId; alone it is a 400. Not accepted
+            until S3.
+        followUpOptionId:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[A-Za-z0-9_-]+$'
+          x-gogo-planned: true
+          description: >
+            Opaque server option id, not a place id. Send only together with
+            replyToMessageId; alone it is a 400. S3 validates kind, config,
+            expiry and latest source.
         text:
           type: string
           minLength: 1
@@ -21710,7 +21736,13 @@ components:
           type: string
           description: >
             Markdown-light answer text (paragraphs, lists, `[n]` citation
-            markers that index `sources`). For a user message, what they sent.
+            markers that index `sources`). Place QA text, cards, sources and topic
+            options use one current eligible fact snapshot per response group.
+            Private semantic tokens never reach clients. Replay is a current
+            rendering, not a historical fact snapshot. Fact-read failure/timeout
+            gives fixed localized load-error text and omits cards/sources/options;
+            live SSE terminates with an error frame even if production completed.
+            For a user message, what they sent.
         createdAt: { type: string, format: date-time }
         completedAt: { type: [string, 'null'], format: date-time }
         context: { $ref: '#/components/schemas/AssistantContextRef' }
@@ -21792,7 +21824,11 @@ components:
         checkedAt:
           type: string
           format: date-time
-          description: For `place_data`, the verified data's `freshnessCheckedAt`.
+          description: >
+            Legacy place_data uses place freshness. QA omits this aggregate date;
+            each actually rendered fact carries its own verification date in prose
+            or the source description. Community and Google are never blended.
+            Google facts are never relabelled GoGo-verified.
     AssistantResultCard:
       description: >
         A structured result: ids the model chose **from the turn's allowlist**,
@@ -22017,7 +22053,10 @@ components:
       type: object
       description: >
         A missing detail the assistant asks for, with quick answers. At most
-        two groups per reply; the user may type instead.
+        two groups per reply; the user may type instead. Place QA uses
+        place_choice, place_confirm and place_topic. Labels are derived from
+        current identity/eligible topic keys at read time, never retained facts.
+        Option ids are specified in S1 but not emitted before S3/S4 integration.
       required: [field, label, options]
       properties:
         field:
@@ -22031,6 +22070,13 @@ components:
             type: object
             required: [label, text]
             properties:
+              id:
+                type: string
+                minLength: 1
+                maxLength: 64
+                pattern: '^[A-Za-z0-9_-]+$'
+                x-gogo-planned: true
+                description: Source-bound option key; send with the owning message id. Omit on manually typed messages.
               label: { type: string, maxLength: 40 }
               text:
                 type: string

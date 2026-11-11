@@ -1,3 +1,5 @@
+import { NoopMetrics } from '@gogo/observability';
+import { fixtureRow } from '../domain/place-qa/fixtures';
 import { describe, expect, it, vi } from 'vitest';
 import { InMemoryFrameBuffer, type AssistantFrameBuffer } from '../infrastructure/frame-buffer';
 import { AssistantTurnRunner, deriveTitle } from './assistant-turn-runner.service';
@@ -34,6 +36,12 @@ function harness(
     buffer?: AssistantFrameBuffer;
     /** Holds finalizeMessage's answer until it resolves. */
     finalizeGate?: Promise<void>;
+    metrics?: NoopMetrics;
+    persistRoute?: (
+      messageId: string,
+      owner: string,
+      route: 'place_qa' | 'ordinary',
+    ) => Promise<boolean>;
   } = {},
 ) {
   const buffer = opts.buffer ?? new InMemoryFrameBuffer();
@@ -43,6 +51,7 @@ function harness(
   const closed: string[] = [];
   const purged: string[][] = [];
   const repo = {
+    persistStreamRoute: opts.persistRoute ?? (async () => true),
     finalizeMessage: async (id: string, update: Finalized, options?: unknown) => {
       finalized.push({ ...update, id });
       finalizeOptions.push(options);
@@ -81,6 +90,7 @@ function harness(
     buffer,
     'test-instance',
     config,
+    opts.metrics,
   );
   const turn = {
     messageId: 'm1',
@@ -407,3 +417,99 @@ describe('stream helpers', () => {
     expect(long.endsWith('…')).toBe(true);
   });
 });
+
+describe('S1 producer token timing', () => {
+  it('records token-ready independently and makes no visible-text success claim', async () => {
+    const metrics = new NoopMetrics(),
+      observe = vi.spyOn(metrics, 'observe');
+    const row = fixtureRow();
+    const h = harness(
+      async (state, sink) => {
+        state.trace = row.trace;
+        await sink.emit({ type: 'delta', text: row.text });
+        return { status: 'complete' };
+      },
+      { metrics },
+    );
+    h.runner.start(h.turn);
+    await until(() => h.finalized.length === 1);
+    expect(observe).toHaveBeenCalledWith(
+      'assistant_place_answer_token_ready_seconds',
+      expect.any(Number),
+      {},
+    );
+    expect(observe).not.toHaveBeenCalledWith(
+      'assistant_first_text_seconds',
+      expect.any(Number),
+      expect.anything(),
+    );
+    expect(observe).not.toHaveBeenCalledWith(
+      'assistant_place_answer_first_visible_text_seconds',
+      expect.any(Number),
+      expect.anything(),
+    );
+    expect(h.finalized[0]?.text).toBe(row.text);
+  });
+});
+
+describe('round-1 route-before-buffer invariant', () => {
+  it('persists the QA route before the first card is buffered', async () => {
+    const order: string[] = [];
+    const buffer = new InMemoryFrameBuffer();
+    vi.spyOn(buffer, 'append').mockImplementation(async () => {
+      order.push('buffer');
+    });
+    const persistRoute = vi.fn(async () => {
+      order.push('route');
+      return true;
+    });
+    const h = harness(
+      async (state, sink) => {
+        state.trace.route = 'place_qa';
+        await sink.emit({
+          type: 'card',
+          card: { kind: 'place', placeId: '11111111-1111-4111-8111-111111111111' },
+        } as never);
+        return { status: 'complete' };
+      },
+      { buffer, persistRoute },
+    );
+    h.runner.start(h.turn);
+    await until(() => h.ledger.length > 0);
+    expect(order[0]).toBe('route');
+    expect(order).toContain('buffer');
+    expect(persistRoute).toHaveBeenCalledExactlyOnceWith('m1', 'test-instance', 'place_qa');
+  });
+});
+
+it.each(['failed write', 'lost lease'] as const)(
+  'does not buffer an uncommitted route after %s',
+  async (failure) => {
+    const buffer = new InMemoryFrameBuffer();
+    const append = vi.spyOn(buffer, 'append');
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const persistRoute = vi.fn(async () => {
+      if (failure === 'failed write') throw new Error('fixture DB error');
+      return false;
+    });
+    const h = harness(
+      async (state, sink) => {
+        state.trace.route = 'place_qa';
+        await sink.emit({ type: 'delta', text: fixtureRow().text });
+        await sink.emit({ type: 'sources', sources: [] });
+        await gate;
+        return { status: 'complete' };
+      },
+      { buffer, persistRoute },
+    );
+    h.runner.start(h.turn);
+    await until(() => persistRoute.mock.calls.length > 0);
+    expect(append).not.toHaveBeenCalled();
+    finish();
+    await until(() => h.ledger.length > 0);
+    expect(persistRoute).toHaveBeenCalledOnce();
+  },
+);

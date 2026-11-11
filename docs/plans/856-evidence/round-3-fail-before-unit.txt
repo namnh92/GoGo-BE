@@ -1,0 +1,43 @@
+$ git apply -R <patch of the 8 fixed source files>   # tests stay at their fixed version
+$ pnpm -s vitest run --project unit libs/modules/assistant/application/place-answer-readers.spec.ts libs/modules/assistant/presentation/assistant-place-answer.contract.spec.ts
+(condensed: result lines and error headlines of 257 output lines)
+     × reserves both-or-neither source binding without adding required fields for existing clients 4ms
+     × stored preview with residual prose is neutralized whole, without an identity read 4ms
+     × a finalized mixed prose leaves no stored preview and reads as invalid 0ms
+     × a finalized zero-query answer leaves no stored preview and reads as invalid 0ms
+     × a finalized identity-only answer leaves no stored preview and reads as invalid 0ms
+     × a finalized metadata-only source leaves no stored preview and reads as invalid 0ms
+     × a finalized answer reference without a group leaves no stored preview and reads as invalid 0ms
+     × search snippet of a mixed prose is neutral with no identity read 1ms
+     × search snippet of a zero-query answer is neutral with no identity read 0ms
+     × search snippet of a identity-only answer is neutral with no identity read 0ms
+     × search snippet of a metadata-only source is neutral with no identity read 0ms
+     × search snippet of a answer reference without a group is neutral with no identity read 0ms
+     × stored export of a mixed prose holds one neutral label and none of its text 1ms
+     × stored export of a zero-query answer holds one neutral label and none of its text 0ms
+     × stored export of a identity-only answer holds one neutral label and none of its text 0ms
+     × stored export of a metadata-only source holds one neutral label and none of its text 0ms
+     × stored export of a answer reference without a group holds one neutral label and none of its text 0ms
+     × history, snippet, export and preview-write agree on a mixed prose 1ms
+     × history, snippet, export and preview-write agree on a zero-query answer 0ms
+     × history, snippet, export and preview-write agree on a identity-only answer 1ms
+     × history, snippet, export and preview-write agree on a metadata-only source 0ms
+     × history, snippet, export and preview-write agree on a answer reference without a group 0ms
+     × valid answers still render: complete row, export label, and a preview cut mid-compare 0ms
+     × ordinary replies keep their prose around identity references 0ms
+⎯⎯⎯⎯⎯⎯ Failed Tests 24 ⎯⎯⎯⎯⎯⎯⎯
+AssertionError: expected [ Array(1) ] to deeply equal [ 'this place' ]
+TypeError: answerMessageValidity is not a function
+TypeError: text.matchAll is not a function or its return value is not iterable
+AssertionError: expected 'GoGo place (11111111-1111-4111-8111-1…' to be 'địa điểm này' // Object.is equality
+AssertionError: expected 'Secret Cafe costs 123 VND' to be 'địa điểm này' // Object.is equality
+AssertionError: expected 'địa điểm GoGo (11111111-1111-4111-811…' to be 'địa điểm này' // Object.is equality
+AssertionError: expected 'GoGo place (11111111-1111-4111-8111-1…' to be 'địa điểm này' // Object.is equality
+AssertionError: expected [ Array(1) ] to deeply equal []
+AssertionError: expected 'Secret Cafe costs 123 VND' to be 'this place' // Object.is equality
+TypeError: storedPreview is not a function
+TypeError: answerMessageValidity is not a function
+AssertionError: expected { type: 'object', …(5) } to not have property "dependentRequired"
+ Test Files  2 failed (2)
+      Tests  24 failed | 9 passed (33)
+exit=1

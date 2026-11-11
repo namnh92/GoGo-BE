@@ -1,0 +1,55 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v4.1.11 /Users/maxnguyen/MyWorks/GoGo/dev/worktrees/be-856
+
+ ❯ |unit| libs/modules/assistant/application/place-answer-readers.spec.ts (3 tests | 2 failed) 9ms
+     × export uses an id/query label with no private delimiters or facts 5ms
+     × preview resolves identity only and never leaks the answer query 2ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |unit| libs/modules/assistant/application/place-answer-readers.spec.ts > S1 private answer references at existing boundaries > export uses an id/query label with no private delimiters or facts
+AssertionError: expected 'a1:11111111-1111-4111-8111-111111111…' to be 'GoGo place (11111111-1111-4111-8111-1…' // Object.is equality
+
+Expected: "GoGo place (11111111-1111-4111-8111-111111111111; hours; 2026-11-11; weekday=3)"
+Received: "a1:11111111-1111-4111-8111-111111111111:en:hours:day=date:date=2026-11-11:d=3:tz=Asia/Ho_Chi_Minh"
+
+ ❯ libs/modules/assistant/application/place-answer-readers.spec.ts:9:43
+      7| describe('S1 private answer references at existing boundaries', () => {
+      8|   it('export uses an id/query label with no private delimiters or fact…
+      9|     expect(placeTokensAsIds(token, 'en')).toBe(`GoGo place (${id}; hou…
+       |                                           ^
+     10|   });
+     11|   it('preview resolves identity only and never leaks the answer query'…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |unit| libs/modules/assistant/application/place-answer-readers.spec.ts > S1 private answer references at existing boundaries > preview resolves identity only and never leaks the answer query
+AssertionError: expected [ Array(1) ] to deeply equal [ 'Fictional Lantern' ]
+
+- Expected
++ Received
+
+  [
+-   "Fictional Lantern",
++   "a1:11111111-1111-4111-8111-111111111111:en:hours:day=date:date=2026-11-11:d=3:tz=Asia/Ho_Chi_Minh",
+  ]
+
+ ❯ libs/modules/assistant/application/place-answer-readers.spec.ts:14:66
+     12|     let reads = 0;
+     13|     const exec = { execute: async () => { reads++; return { rows: [{id…
+     14|     expect(await renderPlaceTexts(exec as never, [token], 'en')).toEqu…
+       |                                                                  ^
+     15|     expect(reads).toBe(1);
+     16|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 1 passed (3)
+   Start at  15:35:01
+   Duration  308ms (transform 28ms, setup 0ms, import 151ms, tests 9ms, environment 0ms)
+

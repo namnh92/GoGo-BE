@@ -431,6 +431,12 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // Dataset preflight only, before any Haiku attempt; `outcome`: unavailable | timeout.
   assistant_vocabulary_preflight_failures_total: ['outcome'],
   assistant_first_text_seconds: [],
+  // #856 S1. mode: live | replay | history | cms | preview | export; surface excludes preview/export; result:
+  // ok | unavailable | read_error | timeout | unknown_token. No IDs/text.
+  assistant_place_answer_render_total: ['mode', 'result'],
+  assistant_place_facts_duration_seconds: ['surface'],
+  assistant_place_answer_token_ready_seconds: [],
+  assistant_place_answer_first_visible_text_seconds: ['mode'],
   // `billing_source`: anthropic_byok | openrouter_credits | unknown.
   assistant_haiku_calls_total: ['billing_source'],
   // `status`: terminal message status, or `reaped`.

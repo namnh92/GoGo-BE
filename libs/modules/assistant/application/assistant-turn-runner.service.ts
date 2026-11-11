@@ -1,3 +1,5 @@
+import { isPlaceAnswerRow } from '../domain/place-qa/reference-group';
+import { flagEnvironmentOf } from '../../shared/feature-flags';
 import {
   Inject,
   Injectable,
@@ -137,14 +139,23 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
     let queuedUpTo = 0;
     /** Every buffer write of this turn expires here, wherever it lands (S2-F-02). */
     const notAfter = turnStartedAt + this.config.ASSISTANT_REPLY_MAX_MS + BUFFER_APPEND_GRACE_MS;
+    let routeReady: Promise<boolean> | undefined;
     const toBuffer = (list: AssistantFrame[]) => {
       if (list.length === 0) return;
       queuedUpTo = list[list.length - 1]!.seq;
       // A-R2-07: the turn never waits on the buffer. Frames stay ordered on
       // one chain; a stalled, failed or expired append leaves a hole readers
       // fill from the row once the turn is finalized.
+      const route = isPlaceAnswerRow({ text: state.text, trace: state.trace })
+        ? 'place_qa'
+        : 'ordinary';
+      state.trace.streamRoute ??= route;
       chain = chain
-        .then(() => this.buffer.append(turn.messageId, list, notAfter))
+        .then(
+          () =>
+            (routeReady ??= this.repo.persistStreamRoute(turn.messageId, this.instanceId, route)),
+        )
+        .then((held) => (held ? this.buffer.append(turn.messageId, list, notAfter) : undefined))
         .catch(() => undefined);
     };
 
@@ -172,10 +183,20 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
       deltaBuffer = '';
       push({ type: 'delta', text });
     };
+    let tokenReady = false;
     const sink: TurnSink = {
       emit: async (frame) => {
         if (frame.type === 'delta') {
-          if (!state.textStarted) {
+          const referenceOnly = isPlaceAnswerRow({ text: frame.text, trace: state.trace });
+          if (referenceOnly && !tokenReady) {
+            tokenReady = true;
+            this.metrics.observe(
+              'assistant_place_answer_token_ready_seconds',
+              (Date.now() - turnStartedAt) / 1000,
+              {},
+            );
+          }
+          if (!state.textStarted && !referenceOnly) {
             // ADR-0036 §3G: time to first text over the whole path (Jev,
             // retrieval, Haiku or the deterministic reply), from turn start.
             this.metrics.observe(
@@ -184,7 +205,8 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
               {},
             );
           }
-          // Counted as started at once, so the first-text deadline sees it.
+          // Producer progress only for QA references; visible delivery is measured
+          // by the reader within the remaining accepted-turn allowance.
           state.textStarted = true;
           deltaBuffer += frame.text;
           if (deltaBuffer.length >= DELTA_FLUSH_CHARS) flushDelta();
@@ -316,7 +338,12 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
       // A-R-11 / A-R2-09: only the writer that finalized publishes — the
       // frames it held back after an abort, then its terminal. A runner that
       // lost to a stop or the reaper adds nothing after their terminal.
-      if (row) toBuffer(frames.filter((f) => f.seq > queuedUpTo));
+      if (row) {
+        const tail = frames.filter((f) => f.seq > queuedUpTo);
+        chain = chain
+          .then(() => this.buffer.append(turn.messageId, tail, notAfter))
+          .catch(() => undefined);
+      }
       if (row) await this.repo.setTitleIfEmpty(turn.conversationId, deriveTitle(turn.text));
       else if (!(await this.repo.findMessageById(turn.messageId))) {
         // Deleted (conversation or account) while it ran: no copy stays behind.

@@ -1,0 +1,4 @@
+$ pnpm -s api:routes
+started: 2026-11-11T10:29:07Z
+(condensed: 441 output lines, all application boot logs from the route-coverage harness; the script prints nothing else on success)
+exit=0

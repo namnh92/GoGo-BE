@@ -32,6 +32,8 @@ import { AssistantTurnRunner } from './assistant-turn-runner.service';
 import { AssistantCardHydrator } from './card-hydrator.service';
 import { conversationView, messageView, refsOf, type ContextLabel } from './assistant-views';
 import { renderPlaceTexts } from './place-text';
+import { PlaceAnswerReader } from './place-answer-reader';
+import { isPlaceAnswerRow } from '../domain/place-qa/reference-group';
 
 export function requireUser(actor: Actor): string {
   if (actor.type !== 'user') {
@@ -61,6 +63,7 @@ export class AssistantConversationsService {
     @Inject(ASSISTANT_INSTANCE_ID) private readonly instanceId: string,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
     private readonly spend: AssistantCreditSpendRepository,
+    @Optional() private readonly placeAnswers: PlaceAnswerReader = new PlaceAnswerReader(),
   ) {}
 
   status(actor: Actor) {
@@ -473,22 +476,37 @@ export class AssistantConversationsService {
     ]);
     const at = new Date();
     // Assistant text names places by token (A-R-04): today's names, at read.
+    const qa = await this.placeAnswers.page(
+      rows.filter((r) => r.role === 'assistant'),
+      'history',
+    );
     const texts = await renderPlaceTexts(
       this.db,
-      rows.map((r) => r.text),
+      rows.map((r) => (isPlaceAnswerRow(r) && r.role === 'assistant' ? '' : r.text)),
+      'vi',
+      this.metrics,
+      'history',
     );
     return Promise.all(
       rows.map(async (stored, i) => {
-        const r = { ...stored, text: texts[i]! };
-        const cards =
-          r.role === 'assistant' ? await this.hydrator.hydrate(actor, refsOf(r), at) : [];
+        const group = qa.get(stored.id);
+        const r = {
+          ...stored,
+          text: group?.text ?? texts[i]!,
+          ...(group ? { follow_ups: group.followUps } : {}),
+        };
+        const cards = group
+          ? group.cards
+          : r.role === 'assistant'
+            ? await this.hydrator.hydrate(actor, refsOf(r), at)
+            : [];
         const context =
           r.role === 'user' && r.context_kind && r.context_id
             ? await this.labelFor(actor, r.context_kind, r.context_id)
             : null;
         return messageView(r, {
           context,
-          sources: sources.get(r.id) ?? [],
+          sources: group?.sources ?? sources.get(r.id) ?? [],
           cards,
           proposals: proposals.get(r.id) ?? [],
           feedback: feedback.get(r.id) ?? null,
@@ -512,9 +530,19 @@ export class AssistantConversationsService {
   private async renderConversations(rows: ConversationRow[]): Promise<ConversationRow[]> {
     const texts = await renderPlaceTexts(
       this.db,
-      rows.flatMap((r) => [r.preview ?? '', r.match_text ?? '']),
+      // The stored preview is truncated and has no metadata (text grammar
+      // only); a message hit is a complete row, validated with its trace.
+      rows.flatMap((r) => [
+        r.preview ?? '',
+        r.match_field === 'message'
+          ? { text: r.match_text ?? '', trace: r.match_trace ?? null }
+          : (r.match_text ?? ''),
+      ]),
+      'vi',
+      this.metrics,
+      'preview',
     );
-    return rows.map((r, i) => ({
+    return rows.map(({ match_trace: _trace, ...r }, i) => ({
       ...r,
       preview: r.preview === null ? null : texts[2 * i]!,
       ...(r.match_text ? { match_text: texts[2 * i + 1]! } : {}),

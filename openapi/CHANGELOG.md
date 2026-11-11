@@ -8,6 +8,30 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 10.1.0-alpha.1 — Place-answer reader compatibility floor (#856 / #844 S1)
+
+Additive MINOR: optional `AssistantFollowUpGroup.options[].id` and paired optional
+send fields `replyToMessageId` + `followUpOptionId`. Both or neither: the
+pairing is documented on the fields and enforced by the server (`400
+VALIDATION_FAILED` when one arrives alone), not by a schema dependency keyword,
+so the request schema gains no constraint. These fields are reserved
+(`x-gogo-planned`): S1 specifies and generates them and the server still
+refuses either field with that 400; S3 implements request validation/state and
+S4 integrates the consumer before emission/enablement. Existing typed sends omit
+both fields.
+
+Documents `place_choice`, `place_confirm`, `place_topic`, atomic current-fact
+rendering, replay semantics, per-fact source dates and read-error delivery. A
+reader failure can emit an SSE error after a persisted producer completion;
+history/CMS return localized load-error text and omit affected cards/sources/
+options, never pretending the place is unavailable. Private references never
+reach clients or exports. Stored export contains public ID/query labels only.
+
+No production emitter/projection/classifier or flag enablement in S1. Once any
+new reference has been written, rollback must keep S1-compatible readers. See
+ADR-0055 and `docs/plans/856-place-answer-readers.md` for the versioned format,
+read-port obligations, activation order and DEV checks.
+
 ## 10.0.0-alpha.1 — Free-first actual-cost credit funding (#851 / #832 D1)
 
 MAJOR: after the configured free daily allowance, accepted sends require a

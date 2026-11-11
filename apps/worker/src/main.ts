@@ -344,6 +344,7 @@ async function bootstrap(): Promise<void> {
   const privacyExports = privacyExportWiring.storage
     ? new PrivacyExportProcessor(db, privacyExportWiring.storage, privacyExportWiring.keyring, {
         workerId: WORKER_ID,
+        metrics,
         mediaPublicBaseUrl: process.env.MEDIA_PUBLIC_BASE_URL ?? '',
         retentionMonths: Number(process.env.PRIVACY_RETENTION_MONTHS ?? 12),
       })

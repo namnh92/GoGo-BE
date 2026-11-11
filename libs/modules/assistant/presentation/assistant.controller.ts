@@ -14,6 +14,7 @@ import {
   Res,
   Sse,
   SseSignal,
+  UseGuards,
 } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { Observable } from 'rxjs';
@@ -41,6 +42,8 @@ import {
   sendMessageBody,
   uuid,
 } from './dtos';
+
+import { AssistantStreamGuard } from './assistant-stream.guard';
 
 const UuidPipe = new ZodValidationPipe(uuid);
 
@@ -165,6 +168,7 @@ export class AssistantController {
   }
 
   @RateLimit({ action: 'assistant.stream', limit: 60, windowSeconds: 60, keyBy: 'actor' })
+  @UseGuards(AssistantStreamGuard)
   @Sse('conversations/:id/messages/:messageId/stream')
   stream(
     @CurrentActor() actor: Actor,

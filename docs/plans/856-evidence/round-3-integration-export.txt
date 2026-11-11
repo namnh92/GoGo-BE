@@ -1,0 +1,7 @@
+$ pnpm -s vitest run --project integration --no-file-parallelism apps/api/test/privacy-export.int.spec.ts apps/api/test/privacy-export-round2.int.spec.ts
+started: 2026-11-11T10:29:54Z
+(condensed: lines matching / (✓|×|❯) |Test Files|Tests |Duration|FAIL/ of 28 output lines)
+ Test Files  2 passed (2)
+      Tests  53 passed (53)
+   Duration  28.99s (transform 2.00s, setup 119ms, import 4.18s, tests 24.45s, environment 0ms)
+exit=0

@@ -598,6 +598,15 @@ export {
 // GoGo AI assistant (GoGo-BE#713, ADR-0036)
 export { AssistantModule } from '../assistant/presentation/assistant.module';
 export { GuideDocumentsService } from '../assistant/application/guide-documents.service';
+// The app's HTTP-level stream admission spec builds on these (GoGo-BE#856). An
+// app reaches a module through this entry only: a relative import from
+// `apps/*/src` pulls the lib's sources under the app's `rootDir` (TS6059).
+export { AssistantController } from '../assistant/presentation/assistant.controller';
+export { AssistantConversationsService } from '../assistant/application/assistant-conversations.service';
+export { AssistantProposalsService } from '../assistant/application/assistant-proposals.service';
+export { AssistantStreamService } from '../assistant/application/assistant-stream.service';
+export { InMemoryFrameBuffer } from '../assistant/infrastructure/frame-buffer';
+export type { MessageRow } from '../assistant/infrastructure/assistant.repository';
 export {
   purgeAssistantRetention,
   eraseAssistantDataForUser,

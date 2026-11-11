@@ -1,0 +1,123 @@
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v4.1.11 /Users/maxnguyen/MyWorks/GoGo/dev/worktrees/be-856
+
+ ❯ |unit| libs/modules/assistant/domain/place-qa/templates.spec.ts (22 tests | 1 failed) 24ms
+     × preserves two Wednesday intervals with different dates and tiers 4ms
+ ❯ |unit| libs/modules/assistant/application/place-answer-reader.spec.ts (32 tests | 8 failed) 34ms
+     × rejects prose only before facts are loaded or writer prose is exposed 4ms
+     × rejects mixed prose before facts are loaded or writer prose is exposed 1ms
+     × rejects identity only before facts are loaded or writer prose is exposed 0ms
+     × rejects missing compare slot before facts are loaded or writer prose is exposed 1ms
+     × rejects metadata-only source before facts are loaded or writer prose is exposed 1ms
+     × times out while buffer read is stalled and ignores its late completion 1ms
+     × times out while metadata read is stalled and ignores its late completion 1ms
+     × times out while buffer wait is stalled and ignores its late completion 1ms
+ ❯ |unit| libs/modules/assistant/application/assistant-stream.spec.ts (2 tests | 1 failed) 2019ms
+     × classifies only once before the first of many buffered batches 8ms
+[Nest] 99205  - 11/11/2026, 4:45:17 PM   ERROR [AssistantTurnRunner] Object(3) {
+  msg: 'assistant turn failed',
+  event: 'assistant.turn_failed',
+  error: 'Error'
+}
+ ❯ |unit| libs/modules/assistant/application/assistant-turn-runner.spec.ts (19 tests | 1 failed) 8955ms
+     × persists the QA route before the first card is buffered 24ms
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 11 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |unit| libs/modules/assistant/application/assistant-stream.spec.ts > round-1 ordinary stream query budget > classifies only once before the first of many buffered batches
+AssertionError: expected "vi.fn()" to be called 2 times, but got 7 times
+ ❯ libs/modules/assistant/application/assistant-stream.spec.ts:84:25
+     82|     await new Promise<void>((resolve) => out.subscribe({ next: (e) => …
+     83|     expect(frames).toHaveLength(6);
+     84|     expect(findMessage).toHaveBeenCalledTimes(2); // admission + one l…
+       |                         ^
+     85|   });
+     86| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/11]⎯
+
+ FAIL  |unit| libs/modules/assistant/application/assistant-turn-runner.spec.ts > round-1 route-before-buffer invariant > persists the QA route before the first card is buffered
+AssertionError: expected 'buffer' to be 'route' // Object.is equality
+
+Expected: "route"
+Received: "buffer"
+
+ ❯ libs/modules/assistant/application/assistant-turn-runner.spec.ts:465:22
+    463|     h.runner.start(h.turn);
+    464|     await until(() => h.ledger.length > 0);
+    465|     expect(order[0]).toBe('route');
+       |                      ^
+    466|     expect(order).toContain('buffer');
+    467|     expect(persistRoute).toHaveBeenCalledExactlyOnceWith('m1', 'test-i…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/11]⎯
+
+ FAIL  |unit| libs/modules/assistant/application/place-answer-reader.spec.ts > round-1 malformed writer regressions > rejects prose only before facts are loaded or writer prose is exposed
+ FAIL  |unit| libs/modules/assistant/application/place-answer-reader.spec.ts > round-1 malformed writer regressions > rejects mixed prose before facts are loaded or writer prose is exposed
+ FAIL  |unit| libs/modules/assistant/application/place-answer-reader.spec.ts > round-1 malformed writer regressions > rejects identity only before facts are loaded or writer prose is exposed
+ FAIL  |unit| libs/modules/assistant/application/place-answer-reader.spec.ts > round-1 malformed writer regressions > rejects missing compare slot before facts are loaded or writer prose is exposed
+ FAIL  |unit| libs/modules/assistant/application/place-answer-reader.spec.ts > round-1 malformed writer regressions > rejects metadata-only source before facts are loaded or writer prose is exposed
+AssertionError: expected 'ok' to be 'unknown_token' // Object.is equality
+
+Expected: "unknown_token"
+Received: "ok"
+
+ ❯ libs/modules/assistant/application/place-answer-reader.spec.ts:489:29
+    487|       const port = { placeFacts: vi.fn(async () => context()) };
+    488|       const result = (await new PlaceAnswerReader(port).page([row], 'h…
+    489|       expect(result.result).toBe('unknown_token');
+       |                             ^
+    490|       expect(port.placeFacts).not.toHaveBeenCalled();
+    491|       expect(result.text).not.toMatch(/Secret Cafe|123|Lantern/);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/11]⎯
+
+ FAIL  |unit| libs/modules/assistant/application/place-answer-reader.spec.ts > round-1 absolute attachment deadline > times out while buffer read is stalled and ignores its late completion
+ FAIL  |unit| libs/modules/assistant/application/place-answer-reader.spec.ts > round-1 absolute attachment deadline > times out while metadata read is stalled and ignores its late completion
+ FAIL  |unit| libs/modules/assistant/application/place-answer-reader.spec.ts > round-1 absolute attachment deadline > times out while buffer wait is stalled and ignores its late completion
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ libs/modules/assistant/application/place-answer-reader.spec.ts:525:35
+    523|       await vi.advanceTimersByTimeAsync(0);
+    524|       subscription.unsubscribe();
+    525|       expect(completedAtDeadline).toBe(true);
+       |                                   ^
+    526|       expect(deadlineEvents.filter((e) => 'type' in e).map((e) => JSON…
+    527|       expect(JSON.stringify(deadlineEvents)).toContain('ASSISTANT_REND…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/11]⎯
+
+ FAIL  |unit| libs/modules/assistant/domain/place-qa/templates.spec.ts > round-1 complete schedule with per-interval evidence > preserves two Wednesday intervals with different dates and tiers
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ libs/modules/assistant/domain/place-qa/templates.spec.ts:235:29
+    233|     const p = { ...fictionalPlace(), facts: { hours: [{ day: 3, interv…
+    234|     const answer = render('hours', p as PlaceFacts, { day: 'weekday', …
+    235|     expect(answer.eligible).toBe(true);
+       |                             ^
+    236|     expect(answer.text).toMatch(/09:00–12:00.*2026-11-10.*18:00–22:00.…
+    237|     expect(answer.sources.map((s) => s.verifiedAt)).toEqual([morning.v…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/11]⎯
+
+
+ Test Files  4 failed (4)
+      Tests  11 failed | 64 passed (75)
+   Start at  16:45:12
+   Duration  10.95s (transform 2.40s, setup 0ms, import 5.64s, tests 11.03s, environment 0ms)
+

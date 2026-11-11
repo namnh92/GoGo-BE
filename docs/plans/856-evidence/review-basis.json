@@ -1,0 +1,31 @@
+{
+  "round": 3,
+  "committedHead": "56df5af34bf33dcd756e3f1e0c0c4e06fb5f0acd",
+  "base": "66ff0ddcd518a46e6a01abf31ec31e142ac275eb",
+  "baseRef": "origin/re-design",
+  "basis": "committed head plus the uncommitted round-3 working tree, identified by content hash (files.sha256 and the source snapshot in validation.md), not by a commit SHA",
+  "manifest": "changed-files.txt = git diff --name-only origin/re-design, plus untracked files",
+  "gitUse": "read-only commands (status, diff, show, ls-files, log) and git apply / git apply -R of a local patch to measure FAIL-before; no commit, push, checkout, stash or rebase",
+  "roundThreeSourceFiles": [
+    "apps/api/src/assistant/assistant-stream-http.spec.ts",
+    "apps/api/test/assistant-place-answer.int.spec.ts",
+    "docs/plans/856-place-answer-readers.md",
+    "libs/modules/assistant/application/assistant-conversations.service.ts",
+    "libs/modules/assistant/application/assistant-privacy.ts",
+    "libs/modules/assistant/application/place-answer-readers.spec.ts",
+    "libs/modules/assistant/application/place-text.ts",
+    "libs/modules/assistant/domain/place-qa/reference-group.ts",
+    "libs/modules/assistant/domain/place-qa/tokens.ts",
+    "libs/modules/assistant/domain/place-tokens.ts",
+    "libs/modules/assistant/infrastructure/assistant.repository.ts",
+    "libs/modules/assistant/presentation/assistant-place-answer.contract.spec.ts",
+    "libs/modules/src/index.ts",
+    "openapi/CHANGELOG.md",
+    "openapi/gogo.v1.d.ts",
+    "openapi/gogo.v1.yaml"
+  ],
+  "historicalHeads": {
+    "round1Reviewed": "89483f359cb173f6f574fe1c532c8fd2aba81abd",
+    "round2Reviewed": "56df5af34bf33dcd756e3f1e0c0c4e06fb5f0acd"
+  }
+}
