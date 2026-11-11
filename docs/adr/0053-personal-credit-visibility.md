@@ -49,7 +49,7 @@ false trên từng request, độc lập `credit_events.enabled` và charging. F
 trả `404 CREDITS_DISPLAY_DISABLED`; capability chỉ true cho active account.
 
 Rollout V: phát hành BE + contract/types, đồng bộ generated client Mobile,
-chỉ cho client biết capability 9.4+ mở UI; kiểm chứng trên DEV rồi bật display
+chỉ cho client biết capability 9.5+ mở UI; kiểm chứng trên DEV rồi bật display
 cho môi trường dự định qua feature-flag API/CMS hiện có. V chưa nghiệm thu
 cost charging #832 hoặc welcome. Không đổi evaluator/cutover. Rollback display
 flag riêng; giữ ledger/account và quy tắc AI đang chạy. Không có D/W flag.

@@ -306,7 +306,7 @@ export interface paths {
          * @description Active registered users only; guests and staff receive USER_ONLY.
          *     Requires the independent default-off assistant_credits.display_enabled
          *     flag. GET /me capabilities.assistantCredits advertises this release's
-         *     support; clients must treat absence as unavailable (contract before 9.4).
+         *     support; clients must treat absence as unavailable (contract before 9.5).
          *     Reads never create an account. No account means zero facts.
          *     One statement snapshot reads posted balance and lifetime ledger totals;
          *     totals do not depend on history pagination, source/usage retention or
@@ -7083,7 +7083,7 @@ export interface components {
              */
             dateOfBirth?: string | null;
             capabilities?: {
-                /** @description Optional capability (9.4+); absence or false means unavailable. Independent default-off display flag; no grant or charging activation. */
+                /** @description Optional capability (9.5+); absence or false means unavailable. Independent default-off display flag; no grant or charging activation. */
                 assistantCredits?: boolean;
                 /**
                  * @description Known before a picker opens; the server still enforces it.
