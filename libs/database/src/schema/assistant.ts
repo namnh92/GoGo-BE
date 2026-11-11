@@ -3,6 +3,7 @@ import {
   boolean,
   check,
   index,
+  foreignKey,
   integer,
   jsonb,
   numeric,
@@ -15,6 +16,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { users } from './identity';
 import { adminUsers } from './cms';
+import { outboxEvents } from './platform';
 
 /**
  * GoGo-BE#713 — GoGo AI assistant (ADR-0036, `docs/assistant.md`).
@@ -305,6 +307,40 @@ export const assistantCreditAccounts = pgTable(
   (t) => [check('assistant_credit_accounts_balance_check', sql`${t.balance} >= 0`)],
 );
 
+export const creditEvents = pgTable(
+  'credit_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    key: text('key').notNull(),
+    labels: jsonb('labels').notNull(),
+    triggerEventType: text('trigger_event_type').notNull(),
+    triggerSchemaVersion: integer('trigger_schema_version').notNull(),
+    condition: jsonb('condition').notNull(),
+    conditionVersion: integer('condition_version').notNull().default(1),
+    audience: text('audience').$type<'individual' | 'group'>().notNull(),
+    dedupScope: text('dedup_scope').notNull(),
+    amount: integer('amount').notNull(),
+    startsAt: timestamp('starts_at', { withTimezone: true })
+      .notNull()
+      .default(sql`'-infinity'`),
+    endsAt: timestamp('ends_at', { withTimezone: true }),
+    status: text('status').$type<'draft' | 'active' | 'closed'>().notNull().default('draft'),
+    closedReason: text('closed_reason'),
+    maxPerUser: integer('max_per_user'),
+    maxPerGroup: integer('max_per_group'),
+    budgetTotal: integer('budget_total'),
+    budgetUsed: integer('budget_used').notNull().default(0),
+    createdByAdminId: uuid('created_by_admin_id'),
+    closedByAdminId: uuid('closed_by_admin_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('credit_events_key_key').on(t.key),
+    uniqueIndex('credit_events_id_key_key').on(t.id, t.key),
+  ],
+);
+
 export const assistantCreditLedger = pgTable(
   'assistant_credit_ledger',
   {
@@ -315,6 +351,10 @@ export const assistantCreditLedger = pgTable(
     submissionId: uuid('submission_id'),
     venueIdentity: text('venue_identity'),
     usageLedgerId: uuid('usage_ledger_id'),
+    creditEventId: uuid('credit_event_id'),
+    entitlementKey: text('entitlement_key'),
+    groupGrantId: uuid('group_grant_id'),
+    groupSourceKey: text('group_source_key'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -328,13 +368,23 @@ export const assistantCreditLedger = pgTable(
       .on(t.usageLedgerId)
       .where(sql`${t.reason} = 'message_spent'`),
     index('assistant_credit_user_history').on(t.userId, t.createdAt, t.id),
-    check(
-      'assistant_credit_ledger_reason_check',
-      sql`${t.reason} in ('submission_approved','message_spent')`,
-    ),
+    index('assistant_credit_event_user').on(t.creditEventId, t.userId),
+    index('assistant_credit_event_group').on(t.creditEventId, t.groupSourceKey, t.groupGrantId),
+    index('assistant_credit_legacy_pending')
+      .on(t.id)
+      .where(sql`${t.reason}='submission_approved' and ${t.creditEventId} is null`),
+    foreignKey({
+      name: 'assistant_credit_event_reason_fk',
+      columns: [t.creditEventId, t.reason],
+      foreignColumns: [creditEvents.id, creditEvents.key],
+    }),
     check(
       'assistant_credit_ledger_check',
-      sql`(${t.reason}='submission_approved' and ${t.delta} in (20,50,70) and ${t.submissionId} is not null and ${t.venueIdentity} is not null and ${t.usageLedgerId} is null) or (${t.reason}='message_spent' and ${t.delta}=-1 and ${t.usageLedgerId} is not null and ${t.submissionId} is null and ${t.venueIdentity} is null)`,
+      sql`
+      (${t.reason}='submission_approved' and ${t.delta} in (20,50,70) and ${t.submissionId} is not null and ${t.venueIdentity} is not null and ${t.usageLedgerId} is null and ${t.groupGrantId} is null and ${t.groupSourceKey} is null
+        and ((${t.creditEventId} is null and ${t.entitlementKey} is null) or (${t.creditEventId}='82900000-0000-4000-8000-000000000001' and ${t.entitlementKey} is not null)))
+      or (${t.reason}='message_spent' and ${t.delta}=-1 and ${t.usageLedgerId} is not null and ${t.submissionId} is null and ${t.venueIdentity} is null and ${t.creditEventId} is null and ${t.entitlementKey} is null and ${t.groupGrantId} is null and ${t.groupSourceKey} is null)
+      or (${t.reason}<>'message_spent' and ${t.creditEventId} is not null and ${t.entitlementKey} is not null and ${t.delta}>0 and ${t.usageLedgerId} is null)`,
     ),
   ],
 );
@@ -357,4 +407,35 @@ export const creditCutover = pgTable(
       sql`(${t.epoch} = 0 and ${t.firstActivatedAt} is null and ${t.mode} = 'sync') or (${t.epoch} > 0 and ${t.firstActivatedAt} is not null)`,
     ),
   ],
+);
+
+export const creditEntitlements = pgTable(
+  'credit_entitlements',
+  {
+    eventId: uuid('event_id')
+      .notNull()
+      .references(() => creditEvents.id),
+    key: text('key').notNull(),
+    ledgerId: uuid('ledger_id')
+      .notNull()
+      .references(() => assistantCreditLedger.id),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('credit_entitlements_event_key_unique').on(t.eventId, t.key),
+    index('credit_entitlements_ledger').on(t.ledgerId),
+  ],
+);
+export const creditEvaluations = pgTable(
+  'credit_evaluations',
+  {
+    eventId: uuid('event_id')
+      .notNull()
+      .references(() => outboxEvents.id, { onDelete: 'cascade' }),
+    status: text('status').$type<'evaluated' | 'quarantined'>().notNull(),
+    reason: text('reason'),
+    grants: integer('grants').notNull().default(0),
+    evaluatedAt: timestamp('evaluated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('credit_evaluations_event_unique').on(t.eventId)],
 );

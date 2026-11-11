@@ -673,6 +673,13 @@
       "when": 1794268800097,
       "tag": "0097_credit-event-prerequisites",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1794268800098,
+      "tag": "0098_credit-events-catalogue",
+      "breakpoints": true
     }
   ]
 }

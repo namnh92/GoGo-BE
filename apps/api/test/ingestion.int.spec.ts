@@ -1,6 +1,6 @@
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { migrateWithCreditIndexes as migrate } from './support/credit-events';
 import { eq, sql } from 'drizzle-orm';
 import path from 'node:path';
 import { Pool } from 'pg';

@@ -1,0 +1,349 @@
+# GoGo-BE #829 S2 implementation and verification
+
+Date: 2026-11-10. Scope: docs/plans/829-slices.md §S2 only. Authority:
+`dev/handoffs/sa-shape-credit-events.fable.md`, read in full, with
+Astra-CE-01/02/03 overriding historical passages. S1 migration 0097 is retained.
+Migration added: **0098_credit-events-catalogue.sql**.
+
+Implemented: catalogue/stable +50/+10/+5 seeds, additive ledger columns,
+NOT VALID shape/event-key constraints, separate concurrent-index and validation
+scripts; versioned trigger decoders, quarantine, payload-only predicates,
+supported audiences/scopes, HMAC business entitlements, caps, atomic budgets,
+all-or-none groups and grant+ack; sync rule→account→domain locks, 50+10 components
+and reconciliation of legacy conflicts before payment; erasure through one
+random tombstone map; resumable separately committed legacy attribution batches.
+Outbox retention preserves pending/quarantined work. Worker consumption defaults
+to paused; cutover is not switched from sync.
+
+No public contract files changed: OpenAPI and generated client remain
+9.1.0-alpha.1. Existing public history projects internal evidence back into its
+closed reason enum until S3. No S3 endpoints/dry-run/public MAJOR or S4 activation,
+fleet fence, deployment, real-data migration or enablement was performed.
+Operational details and rollback: [credit-events-s2.md](../credit-events-s2.md).
+
+## Executed local checks
+
+| Check                                        | Result                                                                                                                                                                 |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| pnpm format                                  | PASS                                                                                                                                                                   |
+| pnpm lint                                    | PASS                                                                                                                                                                   |
+| pnpm typecheck                               | PASS, all 8 packages; integration specs included in API typecheck                                                                                                      |
+| Focused S2 + S1 regression unit run          | PASS, 13 files / 129 tests                                                                                                                                             |
+| Full pnpm test                               | BLOCKED overall (exit 1): 309 files passed, 4012 tests passed, 1 existing skipped; only apps/api/src/sentry-request.spec.ts fails setup with listen EPERM on 127.0.0.1 |
+| Migration forward/index/validation execution | NOT RUN                                                                                                                                                                |
+| Testcontainers integration specs             | NOT RUN, as instructed; Claude must run the exact commands below                                                                                                       |
+
+The socket-dependent Sentry suite was neither weakened nor skipped. No
+permission escalation or git command was used. Branch/head/clean state was not
+inspected. Turbo emitted cache-write permission warnings while typecheck itself
+completed successfully.
+
+FAIL-before / PASS-after regressions:
+
+- +10 evidence: S1 returned {base:50, photoBonus:20, total:70}; the regression
+  requires {base:50, photoBonus:10, total:60}. FAIL captured before changing the
+  helper; PASS in focused and full runs.
+- Erasure: with the exact pre-extension assistant erasure body restored
+  temporarily, the regression found no entitlement rewrite (index -1). Restoring
+  the extension passes and proves entitlement/ledger rewrites precede unlinking.
+- Public compatibility: without the projection, internal submission_evidence
+  escaped the closed public reason enum. The regression fails before the mapping
+  and passes after it. Public field names and contract files are unchanged.
+
+Additional unit proof covers distinct business entitlement keys, nullable
+recipients, unsupported audiences/scopes/facts/operators/depth/leaves, versioned
+backlog, quarantine/recovery, no writes while paused, locks before outbox,
+active accounts, caps, group all-or-none budgets/exhaustion, reservation rollback
+on entitlement/ack failure, legacy 20/50/70 mapping and one erasure tombstone map.
+
+## Exact Testcontainers commands for Claude
+
+Run from this worktree with Testcontainers/Docker and loopback networking
+available. The new specs perform populated S1→S2 forward migration and apply the
+index ops script outside DDL transactions. They do not activate a real fleet.
+
+New specs:
+
+```sh
+pnpm test:integration \
+  apps/api/test/credit-events-catalogue.int.spec.ts \
+  apps/api/test/credit-events-evaluator.int.spec.ts \
+  apps/api/test/credit-events-legacy-erasure.int.spec.ts
+```
+
+All affected integration regressions (includes the new specs and S1):
+
+```sh
+pnpm test:integration \
+  apps/api/test/cms.int.spec.ts \
+  apps/api/test/contribution-wizard.int.spec.ts \
+  apps/api/test/cost-baseline.int.spec.ts \
+  apps/api/test/credit-event-prerequisites.int.spec.ts \
+  apps/api/test/credit-events-catalogue.int.spec.ts \
+  apps/api/test/credit-events-evaluator.int.spec.ts \
+  apps/api/test/credit-events-legacy-erasure.int.spec.ts \
+  apps/api/test/discovery-774.int.spec.ts \
+  apps/api/test/google-provenance.int.spec.ts \
+  apps/api/test/identity-claim.int.spec.ts \
+  apps/api/test/ingestion.int.spec.ts \
+  apps/api/test/place-contact-ownership.int.spec.ts \
+  apps/api/test/submission-administrative.int.spec.ts \
+  apps/api/test/submission-photos.int.spec.ts \
+  apps/api/test/submission-provider-photo.int.spec.ts \
+  apps/api/test/submission-review.int.spec.ts
+```
+
+Also rerun `pnpm test` in that environment so the existing Sentry request
+suite can execute. No successful migration/concurrency/erasure runtime result
+is claimed until Claude supplies these outputs. Existing submission and credit
+fixtures now apply the separate concurrent-index phase and use the production
+lock tiers; component assertions have been updated to +50/+10 semantics.
+
+New integration scenarios cover stable seeds, mismatch/misdefined indexes,
+NOT VALID row-shape rejection, unchanged historical deltas, bounded committed
+batches, post-drain reconciliation, source identity reuse, overlapping
+sync/evaluator/backfill, late/dead-lettered events, pause/rollback, replay,
+quarantine recovery, ack-failure rollback, concurrent caps/group budgets and
+both evaluator/erasure commit orders with observed PostgreSQL lock waits.
+
+## Files changed or added
+
+- `apps/api/src/health/health.controller.ts`
+- `apps/api/test/cms.int.spec.ts`
+- `apps/api/test/contribution-wizard.int.spec.ts`
+- `apps/api/test/cost-baseline.int.spec.ts`
+- `apps/api/test/credit-event-prerequisites.int.spec.ts`
+- `apps/api/test/credit-events-catalogue.int.spec.ts`
+- `apps/api/test/credit-events-evaluator.int.spec.ts`
+- `apps/api/test/credit-events-legacy-erasure.int.spec.ts`
+- `apps/api/test/discovery-774.int.spec.ts`
+- `apps/api/test/google-provenance.int.spec.ts`
+- `apps/api/test/identity-claim.int.spec.ts`
+- `apps/api/test/ingestion.int.spec.ts`
+- `apps/api/test/place-contact-ownership.int.spec.ts`
+- `apps/api/test/submission-administrative.int.spec.ts`
+- `apps/api/test/submission-photos.int.spec.ts`
+- `apps/api/test/submission-provider-photo.int.spec.ts`
+- `apps/api/test/submission-review.int.spec.ts`
+- `apps/api/test/support/credit-events.ts`
+- `apps/worker/src/main.ts`
+- `docs/credit-events-s2.md`
+- `docs/plans/829-s2-verification.md`
+- `libs/database/src/schema/assistant.ts`
+- `libs/modules/assistant/application/assistant-privacy.ts`
+- `libs/modules/cms/application/cms-assistant-credits.service.ts`
+- `libs/modules/cms/application/credit-history-s2.spec.ts`
+- `libs/modules/ingestion/application/identity-claim.spec.ts`
+- `libs/modules/ingestion/application/place-submission.service.spec.ts`
+- `libs/modules/ingestion/application/place-submission.service.ts`
+- `libs/modules/ingestion/domain/enrichment-selection.spec.ts`
+- `libs/modules/shared/assistant-credits.spec.ts`
+- `libs/modules/shared/assistant-credits.ts`
+- `libs/modules/shared/credit-catalogue.spec.ts`
+- `libs/modules/shared/credit-catalogue.ts`
+- `libs/modules/shared/credit-erasure.spec.ts`
+- `libs/modules/shared/credit-erasure.ts`
+- `libs/modules/shared/credit-evaluator.spec.ts`
+- `libs/modules/shared/credit-evaluator.ts`
+- `libs/modules/shared/credit-events-s2.spec.ts`
+- `libs/modules/shared/credit-grants.ts`
+- `libs/modules/shared/credit-triggers.spec.ts`
+- `libs/modules/shared/credit-triggers.ts`
+- `libs/modules/src/index.ts`
+- `migrations/0098_credit-events-catalogue.sql`
+- `migrations/meta/_journal.json`
+- `scripts/ops/attribute-legacy-credit-events.ts`
+- `scripts/ops/index-credit-events.sql`
+- `scripts/ops/validate-credit-events.sql`
+
+## Filesystem evidence
+
+No git metadata was used to identify changes: the list above is based on
+SHA-256 differences from an initial filesystem manifest. It does not claim a
+clean or committed review basis. Test-generated artifacts absent from that
+initial manifest were removed after the suite.
+
+Logs and the final content-hash manifest are stored outside the repository at:
+
+`/Users/maxnguyen/MyWorks/GoGo/dev/handoffs/be-829-s2-evidence-20261110T105951Z`
+
+Independent review, CODEOWNER, migration timing/forward execution, integration
+acceptance, deployed readiness and S4 activation remain unverified.
+
+## Integration assertion follow-up (2026-11-10)
+
+Claude reported 18 integration files: 17 passed, 601 tests passed, and two
+assertion failures in `submission-photos.int.spec.ts`. This is supplied evidence,
+not an integration run performed by this follow-up.
+
+Both failures pin superseded expectations; production grants are unchanged:
+
+- The owned-evidence approval test expected one +70 row. Shape R2-03 and Q22
+  require separate `submission_approved` +50 and `submission_evidence` +10 rows,
+  totalling 60. The assertion now checks both exact reasons, deltas and business
+  entitlement keys, then compares the full ledger rows after a rejected retry.
+- The explicit keep/drop merge test equated the pending approval preview (60)
+  with the merge award. Shape R2-06 restricts the +50 seed to `decision eq
+approved`; approved evidence on merge earns only +10. That supersedes #806's
+  historical explicit-selection merge base. S2 retains the approval preview
+  without a decision input; catalogue-derived previews belong to S3. The test
+  now requires exactly +50/+10 and total 60 for approval, or exactly +10 and
+  total 10 for merge. It also compares full ledger rows immediately after the
+  same-key replay and after the changed-payload rejection. Existing response,
+  audit, retained facts/photos and post-decision zero-preview checks remain.
+
+Checks executed after the assertion changes:
+
+| Check                                                               | Result                                                                                                                                                           |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm test`                                                         | BLOCKED overall (exit 1): 309 files and 4012 tests passed, 1 skipped; only `apps/api/src/sentry-request.spec.ts` failed setup with `listen EPERM` on `127.0.0.1` |
+| `pnpm typecheck`                                                    | PASS, 8 packages (including the API integration specs); Turbo cache-write permission warnings only                                                               |
+| `pnpm lint`                                                         | PASS                                                                                                                                                             |
+| `pnpm test:integration apps/api/test/submission-photos.int.spec.ts` | BLOCKED (exit 1): Testcontainers could not find a working container runtime strategy; all 27 tests skipped during setup                                          |
+
+No git command was run. The original failure report was copied outside the
+worktree before deleting `.s2-fail.txt`. The before-file and command logs are in
+`/private/tmp/gogo-829-s2-followup-20261110/`. The corrected integration assertions
+still require execution in Claude's working Testcontainers environment; no
+PASS-after integration result is claimed here.
+
+## PR #847 Astra round 1 fixes (2026-11-10)
+
+Scope: F-01 P1 and F-02 P2 from the supplied review of head `bd5a1f68`.
+No git command was run; that head and the worktree's commit/clean status were
+not independently inspected. The changes are in `credit-evaluator.ts`, its unit
+spec, `credit-events-evaluator.int.spec.ts`, this document and the S2 operations
+document. Migration **0098 is unchanged**; no column or index was added.
+
+- **F-01:** pending selection excludes every evaluation row. A separate retry
+  queue admits at most `min(limit,20)` quarantined events ordered by
+  `evaluated_at,id`. Re-quarantine already advances `evaluated_at`, rotating
+  failed decoder/rule attempts fairly. Pending capacity remains `limit`
+  (default/max 200), so a default tick attempts at most 220 events. Both queues
+  are selected before processing: a newly quarantined pending event waits until
+  the next tick. No quarantine/retention evidence is deleted or terminally acked.
+- **F-02:** each rule's required place/venue identity is checked before
+  entitlement queries, budget reservations or grant writes. A valid plan review
+  without `placeId` is ineligible for `per_place_subject`, including `{all:[]}`;
+  other eligible rules still grant. With no grants, its terminal evaluation is
+  `evaluated / ineligible / 0`. Unexpected transaction failures roll back only
+  that event; the tick attempts later selected events before rethrowing the first
+  error to the existing worker reporting path. Failed events remain retryable.
+
+### Regression evidence and checks
+
+The final unit spec was run against the saved original evaluator and then the
+patched evaluator, restoring the patched file in a `finally` block:
+
+- **FAIL-before:** exit 1, five failures and 18 passes. The starvation and
+  limit-one tests fail selection/capacity expectations; both plan-review cases
+  throw `Missing place identity`; the injected ack-failure case leaves the later
+  valid event unpaid.
+- **PASS-after:** exit 0, all **23 tests pass**. Coverage includes 200 quarantines
+  followed by a granted valid event; all 200 retries get a turn over ten ticks
+  while new pending work keeps arriving; both queues progress at limit one;
+  newly quarantined work is deferred; missing-place plans are recorded without
+  grant writes; other plan-compatible rules still grant; a failed ack rolls back
+  its transaction while later work grants and the error is still reported.
+
+| Check                                                    | Result                                                                                                                                      |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prettier write on the five changed files                 | PASS                                                                                                                                        |
+| `pnpm format:check` (repository-wide)                    | PASS                                                                                                                                        |
+| `pnpm lint`                                              | PASS                                                                                                                                        |
+| `pnpm -r run typecheck`                                  | PASS, all 8 packages; API integration specs included                                                                                        |
+| `pnpm test libs/modules/shared/credit-evaluator.spec.ts` | PASS, 23 tests                                                                                                                              |
+| `pnpm test`                                              | Exit 1: 309 files / 4018 tests passed, 1 skipped; only `apps/api/src/sentry-request.spec.ts` fails setup with `listen EPERM` on `127.0.0.1` |
+| Integration / migration execution                        | NOT RUN, as instructed                                                                                                                      |
+
+Recursive typecheck invokes all eight packages' `tsc --noEmit` scripts directly,
+including the API integration specs, without Turbo SCM discovery. The existing
+socket-dependent suite was not altered or skipped. Evidence (original/patched
+evaluator and command logs): `/private/tmp/gogo-847-r1/`.
+
+### Integration specs to execute elsewhere
+
+The three new PostgreSQL cases in
+`apps/api/test/credit-events-evaluator.int.spec.ts` cover:
+
+1. 200 older quarantines plus a valid review: valid grant on the first tick,
+   exactly 20 retries per tick, every quarantine revisited after ten ticks, and
+   all 200 still protected by retention.
+2. An additional active `review.published` rule with `{all:[]}` and
+   `per_place_subject`: a valid plan review without `placeId` gets a zero-grant
+   ineligible evaluation; the later place review grants both eligible rules;
+   budget, entitlement count and replay balance are checked. The immutable seed
+   stays intact for the real readiness check.
+3. An injected event-specific ack failure: its grant/balance/ack roll back, later
+   pending work still commits before the tick reports the error, and replay
+   grants the failed event without duplicating the successful one.
+
+These are written FAIL-before/PASS-after regressions, but neither integration
+phase was executed here. Run the evaluator spec and adjacent credit regression
+specs in the working Testcontainers environment:
+
+```sh
+pnpm test:integration \
+  apps/api/test/credit-events-evaluator.int.spec.ts \
+  apps/api/test/credit-events-catalogue.int.spec.ts \
+  apps/api/test/credit-events-legacy-erasure.int.spec.ts \
+  apps/api/test/credit-event-prerequisites.int.spec.ts
+```
+
+The broader affected integration command above remains applicable. Integration
+acceptance and Astra re-review remain outstanding; no merge or activation is
+claimed.
+
+## PR #847 full-integration readiness follow-up (2026-11-10)
+
+Supplied basis: head `63beca3d`, CI run `42809051634`. The supplied excerpt
+reported three HTTP 503/200 failures in platform, administrative observability
+and runtime metrics. No git command was run; head and worktree state were not
+independently inspected.
+
+Decision: retain the production readiness gate. Shape **Astra-CE-03 §2**
+explicitly requires schema/indexes and full seed definitions before compatible
+API traffic, including sync ownership with the evaluator paused. The sync
+writer still creates catalogue entitlements; `credit_events.enabled` is only
+the evaluator pause switch. Bypassing the gate while paused would contradict
+that rollout order. Historical backfill and constraint validation remain later
+activation gates.
+
+The three failing specs now use the existing `migrateWithCreditIndexes` helper.
+It commits migrations first, then executes the real `index-credit-events.sql`
+statements in autocommit, following the separate ops-index phase already used
+by `notification-scheduling.int.spec.ts` for
+`index-notification-deferred.sql`. All three existing HTTP 200 expectations
+are unchanged. The new platform regression verifies sync/paused state, drops
+the entitlement unique index, requires readiness 503 while liveness remains
+200, and reruns the real ops script to restore readiness 200. Index restoration
+runs in `finally`. `.ci-fail.txt` was deleted.
+
+Checks executed on these working files:
+
+| Check                                                       | Result                                                                                                                                            |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm test`                                                 | Exit 1: 309 files / 4018 tests passed, 1 test skipped; only `apps/api/src/sentry-request.spec.ts` failed setup with `listen EPERM` on `127.0.0.1` |
+| `pnpm -r run typecheck`                                     | PASS, all 8 workspace packages including API integration specs                                                                                    |
+| `NODE_OPTIONS=--max-old-space-size=4096 pnpm lint`          | PASS                                                                                                                                              |
+| Prettier check on the changed specs and operations document | PASS                                                                                                                                              |
+| Testcontainers integration                                  | NOT RUN; Docker socket access denied in this sandbox                                                                                              |
+
+Logs: `/private/tmp/gogo-847-readiness/{unit,typecheck,lint}.log`.
+The new integration regression has not been executed; no PASS-after runtime
+result or CI acceptance is claimed. Run in the working Testcontainers environment:
+
+```sh
+pnpm test:integration \
+  apps/api/test/platform.int.spec.ts \
+  apps/api/test/administrative-observability.int.spec.ts \
+  apps/api/test/metrics.int.spec.ts \
+  apps/api/test/credit-events-catalogue.int.spec.ts
+pnpm test:integration
+```
+
+The catalogue spec additionally checks mismatched seeds, incompatible index
+shape and the separate post-backfill constraint validation. The full suite is
+required after the focused run because these failures escaped the earlier
+targeted integration set. Rerun the full unit suite where the Sentry socket
+test can bind successfully.

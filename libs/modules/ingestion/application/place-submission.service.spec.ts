@@ -1,3 +1,5 @@
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { CREDIT_SEEDS } from '../../shared/credit-catalogue';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { schema, type Db } from '@gogo/database';
@@ -48,9 +50,15 @@ function fixture(over: Record<string, unknown> = {}) {
     }),
   }));
   const tx = {
-    execute: vi.fn(async () => ({
-      rows: [{ id: row.submittedByUserId, mode: 'sync', epoch: 0, first_activated_at: null }],
-    })),
+    execute: vi.fn(async (query) => {
+      const text = new PgDialect().sqlToQuery(query).sql;
+      if (text.includes('select * from credit_events')) return { rows: CREDIT_SEEDS.slice(0, 2) };
+      if (text.includes("from assistant_credit_ledger where reason='submission_approved'"))
+        return { rows: [] };
+      return {
+        rows: [{ id: row.submittedByUserId, mode: 'sync', epoch: 0, first_activated_at: null }],
+      };
+    }),
     select: vi.fn(() => query),
     update,
     insert: (table: unknown) => ({
@@ -333,7 +341,7 @@ describe('CMS credit preview (#806)', () => {
         keptFactKeys: [],
         keptPhotoMediaIds: mediaIds,
       }),
-    ).toEqual({ expectedCredit: { base: 50, photoBonus: count ? 20 : 0, total: count ? 70 : 50 } });
+    ).toEqual({ expectedCredit: { base: 50, photoBonus: count ? 10 : 0, total: count ? 60 : 50 } });
     expect(db.transaction).not.toHaveBeenCalled();
   });
   it('returns zero when the venue was already credited or the contributor is ineligible', async () => {

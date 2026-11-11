@@ -6,7 +6,7 @@ import { schema, type Db } from '@gogo/database';
 import type { ResolvedProviderPlace } from '@gogo/providers';
 import { eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { migrateWithCreditIndexes as migrate } from './support/credit-events';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PlaceDedupService } from '../../../libs/modules/ingestion/application/place-dedup.service';

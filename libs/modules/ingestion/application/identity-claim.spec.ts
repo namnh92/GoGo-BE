@@ -1,3 +1,4 @@
+import { CREDIT_SEEDS } from '../../shared/credit-catalogue';
 import type { SubmissionPhotosService } from './submission-photos.service';
 import { randomUUID } from 'node:crypto';
 import { getTableName, type SQL } from 'drizzle-orm';
@@ -104,6 +105,31 @@ function harness(owner?: string, legacy?: string, approvedEvidenceCount?: number
             }
             return { rows: [] };
           }
+          if (sql.includes('select id from credit_events') || sql.includes('from pg_index'))
+            return { rows: [{ id: 'ready' }] };
+          if (sql.includes('select * from credit_events'))
+            return {
+              rows: CREDIT_SEEDS.slice(0, 2).map((seed) => ({
+                id: seed.id,
+                key: seed.key,
+                amount: seed.amount,
+                trigger_event_type: seed.trigger,
+                trigger_schema_version: 2,
+                audience: 'individual',
+                dedup_scope: seed.scope,
+                condition: seed.condition,
+                condition_version: 1,
+                status: 'active',
+                max_per_user: null,
+                max_per_group: null,
+                budget_total: null,
+                budget_used: 0,
+                starts_at: '-infinity',
+                ends_at: null,
+              })),
+            };
+          if (sql.includes('update credit_events')) return { rows: [{ id: 'reserved' }] };
+          if (sql.includes('count(distinct e.ledger_id)')) return { rows: [{ n: 0 }] };
           if (sql.includes('from credit_cutover'))
             return { rows: [{ mode: 'sync', epoch: 0, first_activated_at: null }] };
           if (sql.includes('as canonical_place_id'))
@@ -362,16 +388,16 @@ function harness(owner?: string, legacy?: string, approvedEvidenceCount?: number
 describe('F-02 identity claims', () => {
   it.each([
     [0, 50],
-    [1, 70],
-    [5, 70],
+    [1, 60],
+    [5, 60],
   ])('awards approval credit from %i server-approved evidence photos', async (count, delta) => {
     const h = harness(undefined, undefined, count);
     await h.approve();
     expect(h.state.balance).toBe(delta);
-    expect(h.state.ledger).toBe(1);
+    expect(h.state.ledger).toBe(count ? 2 : 1);
     await expect(h.approve()).rejects.toMatchObject({ code: 'ALREADY_DECIDED' });
     expect(h.state.balance).toBe(delta);
-    expect(h.state.ledger).toBe(1);
+    expect(h.state.ledger).toBe(count ? 2 : 1);
   });
 
   it('uses one UUID lock order for mixed-case merge targets and same-owner claims', async () => {
@@ -520,7 +546,7 @@ describe('F-02 identity claims', () => {
   });
 });
 
-describe('#829 S1 submission events preserve synchronous awards', () => {
+describe('#829 S2 submission events and component awards', () => {
   it.each([0, 1, 5])(
     'approval with %i approved evidence emits versioned recipient facts',
     async (count) => {
@@ -556,13 +582,13 @@ describe('#829 S1 submission events preserve synchronous awards', () => {
             grantOwner: 'sync',
           },
         });
-      expect(h.state.balance).toBe(count > 0 ? 70 : 50);
+      expect(h.state.balance).toBe(count > 0 ? 60 : 50);
       expect(h.creditTrace.findIndex((s) => s.includes('credit_cutover'))).toBeLessThan(
         h.creditTrace.findIndex((s) => s.includes('pg_advisory_xact_lock')),
       );
     },
   );
-  it('merge with evidence emits the evidence event and preserves the legacy +20 award', async () => {
+  it('merge with evidence emits the evidence event and grants the +10 component', async () => {
     const target = randomUUID();
     const h = harness(target, undefined, 1);
     await h.merge(target);
@@ -579,7 +605,7 @@ describe('#829 S1 submission events preserve synchronous awards', () => {
       existingPlaceId: target,
       recipientUserId: h.submission.submittedByUserId,
     });
-    expect(h.state.balance).toBe(20);
+    expect(h.state.balance).toBe(10);
   });
   it('does not reintroduce an erased recipient or award to an inactive account', async () => {
     const h = harness(undefined, undefined, 1);

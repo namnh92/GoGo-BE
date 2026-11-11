@@ -32,6 +32,8 @@ import {
   NEON_POSTGRES_OPERATIONS,
   MediaCleanupService,
   PrivacyExportProcessor,
+  CreditEvaluator,
+  assertCreditWriterReady,
 } from '@gogo/modules';
 import { TeeMetrics, createLogger } from '@gogo/observability';
 import {
@@ -207,6 +209,22 @@ async function bootstrap(): Promise<void> {
   // for that reason, and before the ledger, which needs the pool.
   const { db, pool } = createDb(databaseUrl, {
     runtime: { metrics: registry, operation: NEON_POSTGRES_OPERATIONS.query },
+  });
+  await assertCreditWriterReady(db);
+  const creditEvaluator = new CreditEvaluator(db, {
+    environment: process.env.APP_ENV ?? 'dev',
+    subjectKeySecret: process.env.CREDITS_SUBJECT_KEY_SECRET ?? '',
+    metrics: baseMetrics,
+    quarantine: (eventId, reason) => {
+      logger.error(
+        { eventId, reason },
+        'credit event quarantined; decoder or rule repair required',
+      );
+      captureWorkerError(
+        new Error(`Credit event quarantined: ${eventId}`),
+        'gogo:worker:credit-evaluator',
+      );
+    },
   });
   /**
    * #335 — the worker's half of durable usage accounting.
@@ -539,6 +557,13 @@ async function bootstrap(): Promise<void> {
 
   const periodic = startPeriodic(
     [
+      {
+        name: 'gogo:worker:credit-evaluator',
+        schedule: { everyMs: 60_000 },
+        run: async () => {
+          await creditEvaluator.tick();
+        },
+      },
       {
         name: 'gogo:worker:outbox',
         schedule: { everyMs: OUTBOX_POLL_MS },

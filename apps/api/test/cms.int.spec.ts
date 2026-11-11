@@ -1,6 +1,7 @@
+import { grantLockedSubmissionCredits as grantSubmissionCredits } from './support/credit-events';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { migrateWithCreditIndexes as migrate } from './support/credit-events';
 import argon2 from 'argon2';
 import { and, desc, DrizzleQueryError, eq, inArray, sql } from 'drizzle-orm';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
@@ -24,7 +25,6 @@ import {
 } from '@gogo/modules';
 import { cmsAccessHeaders, cmsAssertion } from './support/cms-access';
 import {
-  grantSubmissionCredits,
   lockAssistantAccount,
   spendAssistantCredit,
 } from '../../../libs/modules/shared/assistant-credits';

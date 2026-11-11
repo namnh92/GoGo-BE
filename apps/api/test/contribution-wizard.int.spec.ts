@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { migrateWithCreditIndexes as migrate } from './support/credit-events';
 import { eq, sql } from 'drizzle-orm';
 import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -17,7 +17,7 @@ import { SubmissionPhotosService } from '../../../libs/modules/ingestion/applica
 import { UploadsService } from '../../../libs/modules/uploads/application/uploads.service';
 import { MediaCleanupService } from '../../../libs/modules/profile/application/media-cleanup.service';
 import { FakePlaceProvider, FakeStorage } from '@gogo/providers';
-import { grantSubmissionCredits } from '../../../libs/modules/shared/assistant-credits';
+import { grantLockedSubmissionCredits as grantSubmissionCredits } from './support/credit-events';
 import { eraseAssistantDataForUser } from '../../../libs/modules/assistant/application/assistant-privacy';
 import { PrivacyJobs } from '../../../libs/modules/shared/privacy-jobs';
 import { collectUserExport } from '../../../libs/modules/reviews/application/user-export';
@@ -354,7 +354,7 @@ describe('private contribution lifecycle against PostgreSQL (#796)', () => {
       });
     },
   );
-  it('grants 50 or at most 70 once per approved source/venue and rolls back with approval failure', async () => {
+  it('grants base once per venue and +10 evidence once per source, atomically with approval', async () => {
     const a = randomUUID(),
       b = randomUUID();
     await db.transaction((tx) => grantSubmissionCredits(tx, owner.id, a, 'google:credit-a', 0));
@@ -364,7 +364,7 @@ describe('private contribution lifecycle against PostgreSQL (#796)', () => {
     );
     await db.transaction((tx) => grantSubmissionCredits(tx, owner.id, b, 'google:credit-b', 5));
     const ledger = await db.select().from(schema.assistantCreditLedger);
-    expect(ledger.map((r) => r.delta).sort()).toEqual([50, 70]);
+    expect(ledger.map((r) => r.delta).sort((a, b) => a - b)).toEqual([10, 10, 10, 50, 50]);
     expect(
       (
         await db
@@ -379,7 +379,7 @@ describe('private contribution lifecycle against PostgreSQL (#796)', () => {
         throw new Error('Approval failed');
       }),
     ).rejects.toThrow('Approval failed');
-    expect(await db.select().from(schema.assistantCreditLedger)).toHaveLength(2);
+    expect(await db.select().from(schema.assistantCreditLedger)).toHaveLength(5);
   });
   async function photoUpload() {
     const bytes = await sharp({ create: { width: 32, height: 32, channels: 3, background: 'red' } })
@@ -522,9 +522,8 @@ describe('private contribution lifecycle against PostgreSQL (#796)', () => {
       })
       .returning();
     await db.transaction(async (tx) => {
+      await grantSubmissionCredits(tx, owner.id, submission!.id, `google:bill-${id}`, 1);
       await photos.decide(tx, submission!.id, place!.id, admin!.id, undefined, [photo!.id]);
-      await grantSubmissionCredits(tx, owner.id, submission!.id, `google:bill-${id}`, 1);
-      await grantSubmissionCredits(tx, owner.id, submission!.id, `google:bill-${id}`, 1);
       await tx
         .update(schema.placeSubmissions)
         .set({ status: 'approved' })
@@ -557,8 +556,10 @@ describe('private contribution lifecycle against PostgreSQL (#796)', () => {
           .select()
           .from(schema.assistantCreditLedger)
           .where(eq(schema.assistantCreditLedger.submissionId, submission!.id))
-      ).map((r) => r.delta),
-    ).toEqual([70]);
+      )
+        .map((r) => r.delta)
+        .sort((a, b) => a - b),
+    ).toEqual([10, 50]);
     const queued = await db
       .select()
       .from(schema.mediaCleanupQueue)
