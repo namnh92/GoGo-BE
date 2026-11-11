@@ -9,7 +9,7 @@ import { GenericContainer } from 'testcontainers';
 import IORedis from 'ioredis';
 import { Pool } from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { migrateWithCreditIndexes as migrate } from './credit-events';
 import { eq } from 'drizzle-orm';
 import { schema } from '@gogo/database';
 import { expect, vi } from 'vitest';

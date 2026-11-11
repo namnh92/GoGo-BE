@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
+import type { components } from '../../../../openapi/gogo.v1';
+import type { MyCreditEntryDto } from '../application/assistant-credits.service';
 import { parse as parseYaml } from 'yaml';
 import { SearchService } from '../../search/application/search.service';
 import { AssistantCardHydrator } from '../application/card-hydrator.service';
@@ -273,24 +275,64 @@ describe('GoGo AI contract (GoGo-BE#713)', () => {
 
   // ── 2.0.0-alpha.3: SA decisions on GoGo-BE#713 (owner-delegated) ────────
 
-  it('Q1 — status carries both limits, with the provisional defaults stated', () => {
+  it('D1 status carries configured funding allowance and billing readiness', () => {
     const status = schema('AssistantStatus');
-    expect(Object.keys(status.properties ?? {})).toEqual(
-      expect.arrayContaining(['dailyMessageLimit', 'messagesPerMinuteLimit', 'resetsAt']),
+    expect(status.required).toEqual(
+      expect.arrayContaining([
+        'creditReserved',
+        'creditAvailable',
+        'creditPolicy',
+        'paidCreditsRequired',
+        'paidSendEnabled',
+        'asOf',
+      ]),
     );
-    const daily = String(status.properties!.dailyMessageLimit!.description);
-    expect(daily).toContain('30');
-    expect(daily).toMatch(/never hardcode/);
-    expect(daily).toMatch(/replay[^.]*consumes nothing/);
-    expect(daily).toMatch(/never means\s+unlimited/);
-    expect(String(status.properties!.messagesPerMinuteLimit!.description)).toMatch(
-      /rolling 60-second window \(default \*\*5\*\*/,
+    expect(String(status.properties!.dailyMessageLimit!.description)).toContain(
+      'ASSISTANT_USER_DAILY_MAX_MESSAGES',
     );
-    expect(String(status.properties!.resetsAt!.description)).toMatch(/midnight Asia\/Ho_Chi_Minh/);
-    const limited = String(doc.components.responses.AssistantRateLimited!.description);
-    expect(limited).toMatch(/default 5[\s\S]*rolling minute/);
-    expect(limited).toMatch(/default 30[\s\S]*midnight Asia\/Ho_Chi_Minh/);
-    expect(limited).toMatch(/never unlimited/);
+    expect(String(status.properties!.dailyMessageLimit!.description)).not.toContain('30');
+    expect(status.properties!.state!['x-extensible-enum']).toContain('insufficient_credit');
+    expect(schema('AssistantTurn').required).toContain('conversationCredits');
+    expect(schema('AssistantMessagePage').required).toContain('conversationCredits');
+    expect(schema('AssistantConversation').required).toContain('credits');
+    expect(schema('AssistantTurnCredits').required).toEqual([
+      'policyKey',
+      'fundingSource',
+      'state',
+      'creditsCharged',
+      'creditsReserved',
+      'updatedAt',
+    ]);
+    expect(schema('AssistantInsufficientCreditDetails').required).toEqual([
+      'creditBalance',
+      'creditReserved',
+      'creditAvailable',
+      'requiredCredits',
+      'remainingToday',
+      'resetsAt',
+    ]);
+    expect(schema('CmsAssistantCreditEntry').properties!.reason!.enum).toBeUndefined();
+  });
+
+  it('credit history exposes optional nullable conversation and catalogue labels without changing the page', () => {
+    const entry = schema('MyCreditEntry');
+    expect(entry.required).not.toContain('conversation');
+    expect(entry.required).not.toContain('eventLabels');
+    expect(entry.properties!.conversation).toMatchObject({
+      type: ['object', 'null'],
+      required: ['id', 'title'],
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        title: { type: ['string', 'null'] },
+      },
+    });
+    expect(entry.properties!.eventLabels).toMatchObject({
+      type: ['object', 'null'],
+      required: ['vi', 'en'],
+      properties: { vi: { type: 'string' }, en: { type: 'string' } },
+    });
+    expect(schema('MyCreditPage').properties!.items!.maxItems).toBe(10);
+    expectTypeOf<MyCreditEntryDto>().toMatchTypeOf<components['schemas']['MyCreditEntry']>();
   });
 
   it('Q5 — a reply cut off by the hard ceiling ends as `truncated`, not `complete`', () => {

@@ -13,9 +13,22 @@ import {
 } from '../domain/credit-visibility';
 import { AssistantCreditRepository } from '../infrastructure/assistant-credit.repository';
 
-function integer(value: string | number): number {
+/** Public credit-history facts; clients group by local day and conversation. */
+export type MyCreditEntryDto = {
+  id: string;
+  createdAt: string;
+  delta: number;
+  direction: string;
+  eventKey: string;
+  source: { type: string };
+  eventId?: string;
+  conversation?: { id: string; title: string | null } | null;
+  eventLabels?: { vi: string; en: string } | null;
+};
+
+function integer(value: string | number | bigint): number {
   const result = Number(value);
-  if (!Number.isSafeInteger(result))
+  if (!Number.isSafeInteger(result) || result < 0)
     throw AppError.internal('Credit total is outside the supported range');
   return result;
 }
@@ -47,14 +60,16 @@ export class AssistantCreditsService {
     if (BigInt(row.balance) !== BigInt(row.earned) - BigInt(row.spent)) {
       this.metrics.increment('assistant_credit_account_mismatch_total');
     }
+    if (BigInt(row.reserved) > BigInt(row.balance))
+      throw AppError.internal('Credit hold invariant violation');
     return {
       balance: integer(row.balance),
       earned: integer(row.earned),
       spent: integer(row.spent),
-      reserved: 0,
-      availableBalance: integer(row.balance),
+      reserved: integer(row.reserved),
+      availableBalance: integer(BigInt(row.balance) - BigInt(row.reserved)),
       asOf: row.as_of,
-      policyKey: 'legacy_allowance_v1',
+      policyKey: row.policy_key,
     };
   }
 
@@ -67,12 +82,14 @@ export class AssistantCreditsService {
     const page = ledger.slice(0, 10);
     const last = page.at(-1);
     return {
-      items: page.map((row) => ({
+      items: page.map((row): MyCreditEntryDto => ({
         id: row.id!,
         createdAt: row.created_at!,
         delta: row.delta!,
         ...creditEntryFacts(row.reason!, row.delta!, row.usage_linked === true),
         ...(row.event_id ? { eventId: row.event_id } : {}),
+        conversation: row.conversation ?? null,
+        eventLabels: row.event_labels ?? null,
       })),
       nextCursor:
         ledger.length > 10 && last

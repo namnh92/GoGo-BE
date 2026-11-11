@@ -1,4 +1,4 @@
-import { creditIndexes } from './support/credit-events';
+import { creditIndexes, assistantSpendIndexes } from './support/credit-events';
 import { PlaceSubmissionService } from '../../../libs/modules/ingestion/application/place-submission.service';
 import { PlaceDedupService } from '../../../libs/modules/ingestion/application/place-dedup.service';
 import { SubmissionPhotosService } from '../../../libs/modules/ingestion/application/submission-photos.service';
@@ -257,6 +257,7 @@ beforeAll(async () => {
     );
     await migrate(db, { migrationsFolder: migrations });
     await creditIndexes(pool);
+    await assistantSpendIndexes(pool);
   } finally {
     await rm(folder, { recursive: true, force: true });
   }

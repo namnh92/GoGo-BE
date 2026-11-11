@@ -1,3 +1,4 @@
+import { AssistantCreditSpendRepository } from '../infrastructure/assistant-credit-spend.repository';
 import { Module } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
@@ -75,6 +76,7 @@ type BufferConfig = { NODE_ENV: string; REDIS_URL?: string };
   providers: [
     AssistantRepository,
     AssistantCreditRepository,
+    AssistantCreditSpendRepository,
     AssistantCreditsService,
     AssistantTaxonomyService,
     AssistantAvailabilityService,

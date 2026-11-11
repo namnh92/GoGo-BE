@@ -14,6 +14,8 @@ const actor: Actor = { type: 'user', id: randomUUID(), sessionId: randomUUID() }
 function setup(enabled = true) {
   const summary = vi.fn().mockResolvedValue({
     balance: 139,
+    reserved: '0',
+    policy_key: 'legacy_allowance_v1',
     earned: '140',
     spent: '1',
     as_of: '2026-11-10T00:00:00.123456Z',
@@ -84,7 +86,14 @@ describe('V own credit reads', () => {
 
   it('returns zero/empty for no account, refuses missing/inactive users', async () => {
     const { service, summary, history } = setup();
-    summary.mockResolvedValueOnce({ balance: 0, earned: '0', spent: '0', as_of: 'now' });
+    summary.mockResolvedValueOnce({
+      reserved: '0',
+      policy_key: 'legacy_allowance_v1',
+      balance: 0,
+      earned: '0',
+      spent: '0',
+      as_of: 'now',
+    });
     expect(await service.summary(actor)).toMatchObject({ balance: 0, earned: 0, spent: 0 });
     expect(await service.history(actor, {})).toEqual({ items: [], nextCursor: null });
     summary.mockResolvedValueOnce(undefined);
@@ -95,10 +104,19 @@ describe('V own credit reads', () => {
 
   it('monitors mismatch without repair or replacing posted balance; refuses unsafe JSON integers', async () => {
     const { service, summary, increment } = setup();
-    summary.mockResolvedValueOnce({ balance: 7, earned: '140', spent: '1', as_of: 'now' });
+    summary.mockResolvedValueOnce({
+      reserved: '0',
+      policy_key: 'legacy_allowance_v1',
+      balance: 7,
+      earned: '140',
+      spent: '1',
+      as_of: 'now',
+    });
     expect(await service.summary(actor)).toMatchObject({ balance: 7, earned: 140, spent: 1 });
     expect(increment).toHaveBeenCalledWith('assistant_credit_account_mismatch_total');
     summary.mockResolvedValueOnce({
+      reserved: '0',
+      policy_key: 'legacy_allowance_v1',
       balance: 0,
       earned: '9007199254740992',
       spent: '9007199254740992',
@@ -118,6 +136,8 @@ describe('V own credit reads', () => {
         reason: 'submission_approved',
         event_id: null,
         usage_linked: false,
+        conversation: null,
+        event_labels: null,
       }));
       history.mockResolvedValueOnce(count ? rows : [{ id: null }]);
       const page = await service.history(actor, {});
@@ -130,13 +150,75 @@ describe('V own credit reads', () => {
       else expect(page.nextCursor).toBeNull();
       if (count)
         expect(Object.keys(page.items[0]!).sort()).toEqual([
+          'conversation',
           'createdAt',
           'delta',
           'direction',
           'eventKey',
+          'eventLabels',
           'id',
           'source',
         ]);
     },
   );
+
+  it('maps legacy spends, D debits/refunds and catalogue labels to public grouping facts', async () => {
+    const { service, history } = setup();
+    const conversation = { id: randomUUID(), title: 'Dinner plans' };
+    const untitled = { id: randomUUID(), title: null };
+    const labels = { vi: 'Đánh giá địa điểm', en: 'Place review' };
+    const rows = [
+      { reason: 'message_spent', delta: -1, conversation, event_labels: null },
+      { reason: 'message_spent', delta: -12, conversation: untitled, event_labels: null },
+      { reason: 'assistant_usage_adjustment', delta: 3, conversation, event_labels: null },
+      { reason: 'review_published', delta: 5, conversation: null, event_labels: labels },
+    ].map((row) => ({
+      id: randomUUID(),
+      created_at: '2026-11-11T00:00:00.123456Z',
+      usage_linked: row.delta < 0 || row.reason === 'assistant_usage_adjustment',
+      event_id: row.reason === 'review_published' ? randomUUID() : null,
+      ...row,
+    }));
+    history.mockResolvedValueOnce(rows);
+    const page = await service.history(actor, {});
+    expect(page.items).toEqual(
+      rows.map((row) => ({
+        id: row.id,
+        createdAt: row.created_at,
+        delta: row.delta,
+        direction:
+          row.reason === 'message_spent'
+            ? 'spent'
+            : row.reason === 'assistant_usage_adjustment'
+              ? 'adjustment'
+              : 'earned',
+        eventKey: row.reason === 'message_spent' ? 'assistant_usage' : row.reason,
+        source: { type: row.reason === 'review_published' ? 'review' : 'assistant_usage' },
+        ...(row.event_id ? { eventId: row.event_id } : {}),
+        conversation: row.conversation,
+        eventLabels: row.event_labels,
+      })),
+    );
+    expect(page.nextCursor).toBeNull();
+  });
+
+  it('keeps unreadable/unknown conversations and non-event labels explicitly null', async () => {
+    const { service, history } = setup();
+    history.mockResolvedValueOnce([
+      {
+        id: randomUUID(),
+        created_at: '2026-11-11T00:00:00.123456Z',
+        delta: -1,
+        reason: 'message_spent',
+        usage_linked: true,
+        event_id: null,
+        conversation: null,
+        event_labels: null,
+      },
+    ]);
+    expect((await service.history(actor, {})).items[0]).toMatchObject({
+      conversation: null,
+      eventLabels: null,
+    });
+  });
 });

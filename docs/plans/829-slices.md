@@ -54,8 +54,9 @@ historical cutoff, lock-order, seeding and flag-ownership passages.
 
 ## S3 — contract and CMS
 
-- One public MAJOR: 10.0.0-alpha.1, regenerated types, pinned contract diff
-  exceptions and ADR-0054. Tolerant CMS readers deploy before BE MAJOR.
+- D1 #851 owns 10.0.0-alpha.1 and ADR-0054 for actual-cost funding. S3 must
+  classify its eventual delta against that release; never reuse a shipped version.
+  Tolerant CMS readers deploy before enabling new signed billing writes.
 - Catalogue/trigger endpoints, super-admin mutations and subject-key lookup;
   open event-key credit history and catalogue-derived submission previews.
 - Repeatable-read dry-run over ordered events with simulated entitlements,

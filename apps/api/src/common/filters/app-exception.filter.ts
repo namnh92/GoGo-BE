@@ -2,9 +2,11 @@ import type { ArgumentsHost, ExceptionFilter } from '@nestjs/common';
 import { Catch, HttpException } from '@nestjs/common';
 import * as Sentry from '@sentry/node';
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import { publicErrorDetails, type AssistantInsufficientCreditDetails } from '@gogo/modules';
 import { AppError, type FieldError } from '../errors/app-error';
 
 type ErrorEnvelope = {
+  details?: AssistantInsufficientCreditDetails;
   code: string;
   message: string;
   field_errors: FieldError[];
@@ -36,6 +38,7 @@ export class AppExceptionFilter implements ExceptionFilter {
     if (exception instanceof AppError) {
       status = exception.httpStatus;
       envelope = {
+        ...(publicErrorDetails(exception) ? { details: publicErrorDetails(exception)! } : {}),
         code: exception.code,
         message: exception.message,
         field_errors: exception.options.fieldErrors ?? [],

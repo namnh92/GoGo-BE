@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { CmsAssistantCreditsService } from './cms-assistant-credits.service';
 
-describe('#829 S2 public history compatibility before S3 MAJOR', () => {
-  it('projects internal evidence rows to the existing closed reason enum without exposing entitlement keys', async () => {
+describe('#851 MAJOR tolerant CMS credit history', () => {
+  it('preserves open evidence reasons without exposing entitlement keys', async () => {
     const db = {
       execute: vi.fn(async () => ({
         rows: [
@@ -33,7 +33,7 @@ describe('#829 S2 public history compatibility before S3 MAJOR', () => {
         id: 'ledger',
         createdAt: '2026-11-10T00:00:00.000000Z',
         delta: 10,
-        reason: 'submission_approved',
+        reason: 'submission_evidence',
         submissionId: 'submission',
         venueIdentity: 'google:ABC',
         placeId: 'place',

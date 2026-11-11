@@ -1,6 +1,8 @@
 import { sql } from 'drizzle-orm';
 import {
   boolean,
+  bigint,
+  date,
   check,
   index,
   foreignKey,
@@ -201,6 +203,11 @@ export const assistantUsageLedger = pgTable(
     userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
     messageId: uuid('message_id'),
     allowanceSource: text('allowance_source').notNull().default('daily'),
+    billingPolicy: text('billing_policy'),
+    billingEpoch: bigint('billing_epoch', { mode: 'bigint' }),
+    costRevision: bigint('cost_revision', { mode: 'bigint' }).notNull().default(0n),
+    dispatchClosedAt: timestamp('dispatch_closed_at', { withTimezone: true }),
+    costFinalizedAt: timestamp('cost_finalized_at', { withTimezone: true }),
     acceptedAt: timestamp('accepted_at', { withTimezone: true }).notNull().defaultNow(),
     completedAt: timestamp('completed_at', { withTimezone: true }),
     status: text('status').notNull().default('accepted'),
@@ -222,6 +229,7 @@ export const assistantUsageLedger = pgTable(
     haikuIsByok: boolean('haiku_is_byok'),
   },
   (t) => [
+    check('assistant_usage_ledger_cost_revision_check', sql`${t.costRevision}>=0`),
     index('assistant_usage_ledger_user_idx').on(t.userId, t.acceptedAt),
     index('assistant_usage_ledger_accepted_idx').on(t.acceptedAt),
   ],
@@ -336,6 +344,10 @@ export const creditEvents = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    check(
+      'credit_events_billing_keys_check',
+      sql`key not in ('message_spent','assistant_usage','assistant_usage_adjustment')`,
+    ),
     uniqueIndex('credit_events_key_key').on(t.key),
     uniqueIndex('credit_events_id_key_key').on(t.id, t.key),
   ],
@@ -347,6 +359,7 @@ export const assistantCreditLedger = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
     delta: integer('delta').notNull(),
+    costRevision: bigint('cost_revision', { mode: 'bigint' }),
     reason: text('reason').notNull(),
     submissionId: uuid('submission_id'),
     venueIdentity: text('venue_identity'),
@@ -367,6 +380,9 @@ export const assistantCreditLedger = pgTable(
     uniqueIndex('assistant_credit_spend_unique')
       .on(t.usageLedgerId)
       .where(sql`${t.reason} = 'message_spent'`),
+    uniqueIndex('assistant_credit_usage_revision_unique')
+      .on(t.usageLedgerId, t.costRevision)
+      .where(sql`${t.usageLedgerId} is not null and ${t.costRevision} is not null`),
     index('assistant_credit_user_history').on(t.userId, t.createdAt, t.id),
     index('assistant_credit_event_user').on(t.creditEventId, t.userId),
     index('assistant_credit_event_group').on(t.creditEventId, t.groupSourceKey, t.groupGrantId),
@@ -380,11 +396,9 @@ export const assistantCreditLedger = pgTable(
     }),
     check(
       'assistant_credit_ledger_check',
-      sql`
-      (${t.reason}='submission_approved' and ${t.delta} in (20,50,70) and ${t.submissionId} is not null and ${t.venueIdentity} is not null and ${t.usageLedgerId} is null and ${t.groupGrantId} is null and ${t.groupSourceKey} is null
-        and ((${t.creditEventId} is null and ${t.entitlementKey} is null) or (${t.creditEventId}='82900000-0000-4000-8000-000000000001' and ${t.entitlementKey} is not null)))
-      or (${t.reason}='message_spent' and ${t.delta}=-1 and ${t.usageLedgerId} is not null and ${t.submissionId} is null and ${t.venueIdentity} is null and ${t.creditEventId} is null and ${t.entitlementKey} is null and ${t.groupGrantId} is null and ${t.groupSourceKey} is null)
-      or (${t.reason}<>'message_spent' and ${t.creditEventId} is not null and ${t.entitlementKey} is not null and ${t.delta}>0 and ${t.usageLedgerId} is null)`,
+      sql.raw(
+        "\n (reason='submission_approved' AND delta IN (20,50,70) AND submission_id IS NOT NULL\n  AND venue_identity IS NOT NULL AND usage_ledger_id IS NULL AND group_grant_id IS NULL AND group_source_key IS NULL AND cost_revision IS NULL\n  AND ((credit_event_id IS NULL AND entitlement_key IS NULL)\n    OR (credit_event_id='82900000-0000-4000-8000-000000000001' AND entitlement_key IS NOT NULL)))\n OR (reason='message_spent' AND delta<0 AND usage_ledger_id IS NOT NULL AND (cost_revision IS NULL OR cost_revision>0)\n  AND submission_id IS NULL AND venue_identity IS NULL AND credit_event_id IS NULL\n  AND entitlement_key IS NULL AND group_grant_id IS NULL AND group_source_key IS NULL)\n OR (reason='assistant_usage_adjustment' AND delta<>0 AND usage_ledger_id IS NOT NULL AND cost_revision>0 AND cost_revision IS NOT NULL\n  AND submission_id IS NULL AND venue_identity IS NULL AND credit_event_id IS NULL\n  AND entitlement_key IS NULL AND group_grant_id IS NULL AND group_source_key IS NULL)\n OR (reason NOT IN ('message_spent','assistant_usage','assistant_usage_adjustment') AND credit_event_id IS NOT NULL AND entitlement_key IS NOT NULL\n  AND delta>0 AND usage_ledger_id IS NULL AND cost_revision IS NULL)\n",
+      ),
     ),
   ],
 );
@@ -438,4 +452,154 @@ export const creditEvaluations = pgTable(
     evaluatedAt: timestamp('evaluated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('credit_evaluations_event_unique').on(t.eventId)],
+);
+
+export const assistantCreditSpendControl = pgTable(
+  'assistant_credit_spend_control',
+  {
+    singleton: boolean('singleton').primaryKey().default(true),
+    policyKey: text('policy_key').notNull().default('legacy_allowance_v1'),
+    epoch: bigint('epoch', { mode: 'bigint' }).notNull().default(0n),
+    activatedAt: timestamp('activated_at', { withTimezone: true }),
+    boundVersion: text('bound_version'),
+  },
+  () => [
+    check('assistant_credit_spend_control_singleton_check', sql.raw('singleton')),
+    check(
+      'assistant_credit_spend_control_policy_key_check',
+      sql.raw("policy_key IN ('legacy_allowance_v1','free_then_actual_cost_v1')"),
+    ),
+    check('assistant_credit_spend_control_epoch_check', sql.raw('epoch>=0')),
+    check(
+      'assistant_credit_spend_control_check',
+      sql.raw(
+        "(policy_key='legacy_allowance_v1' AND epoch=0 AND activated_at IS NULL AND bound_version IS NULL)\n  OR (policy_key='free_then_actual_cost_v1' AND epoch>0 AND activated_at IS NOT NULL)",
+      ),
+    ),
+  ],
+);
+
+export const assistantCreditTurns = pgTable(
+  'assistant_credit_turns',
+  {
+    usageLedgerId: uuid('usage_ledger_id').primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+    messageId: uuid('message_id'),
+    conversationId: uuid('conversation_id'),
+    acceptedAt: timestamp('accepted_at', { withTimezone: true }).notNull(),
+    freeDay: date('free_day'),
+    policyKey: text('policy_key').notNull(),
+    policyEpoch: bigint('policy_epoch', { mode: 'bigint' }).notNull(),
+    fundingSource: text('funding_source').notNull(),
+    reservedCeiling: integer('reserved_ceiling').notNull(),
+    heldCredits: integer('held_credits').notNull(),
+    appliedCredits: integer('applied_credits').notNull(),
+    boundVersion: text('bound_version'),
+    costRevision: bigint('cost_revision', { mode: 'bigint' }).notNull().default(0n),
+    appliedCostRevision: bigint('applied_cost_revision', { mode: 'bigint' }).notNull().default(0n),
+    state: text('state').notNull(),
+    finalizedAt: timestamp('finalized_at', { withTimezone: true }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    nextReconcileAt: timestamp('next_reconcile_at', { withTimezone: true }),
+    leaseOwner: text('lease_owner'),
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+    retryCount: integer('retry_count').notNull().default(0),
+  },
+  (t) => [
+    check(
+      'assistant_credit_turns_policy_key_check',
+      sql.raw("policy_key IN ('legacy_allowance_v1','free_then_actual_cost_v1')"),
+    ),
+    check('assistant_credit_turns_policy_epoch_check', sql.raw('policy_epoch>=0')),
+    check(
+      'assistant_credit_turns_funding_source_check',
+      sql.raw("funding_source IN ('free','credit')"),
+    ),
+    check('assistant_credit_turns_reserved_ceiling_check', sql.raw('reserved_ceiling>=0')),
+    check('assistant_credit_turns_held_credits_check', sql.raw('held_credits>=0')),
+    check('assistant_credit_turns_applied_credits_check', sql.raw('applied_credits>=0')),
+    check('assistant_credit_turns_cost_revision_check', sql.raw('cost_revision>=0')),
+    check(
+      'assistant_credit_turns_applied_cost_revision_check',
+      sql.raw('applied_cost_revision>=0 AND applied_cost_revision<=cost_revision'),
+    ),
+    check(
+      'assistant_credit_turns_state_values_check',
+      sql.raw("state IN ('pending','reconciling','settled','quarantined','erased')"),
+    ),
+    check('assistant_credit_turns_retry_count_check', sql.raw('retry_count>=0')),
+    check(
+      'assistant_credit_turns_funding_check',
+      sql.raw(
+        "\n  (funding_source='free' AND free_day IS NOT NULL AND reserved_ceiling=0 AND held_credits=0 AND applied_credits=0 AND bound_version IS NULL)\n  OR (funding_source='credit' AND free_day IS NULL AND reserved_ceiling>=1 AND bound_version IS NOT NULL AND applied_credits<=reserved_ceiling)",
+      ),
+    ),
+    check(
+      'assistant_credit_turns_state_check',
+      sql.raw(
+        "\n  (state='erased' AND user_id IS NULL AND message_id IS NULL AND conversation_id IS NULL AND held_credits=0)\n  OR (funding_source='free' AND state='settled' AND finalized_at IS NOT NULL)\n  OR (funding_source='credit' AND (\n   (state IN ('pending','reconciling','quarantined') AND finalized_at IS NULL AND applied_credits::bigint+held_credits=reserved_ceiling)\n   OR (state IN ('settled','quarantined') AND finalized_at IS NOT NULL AND held_credits=0)))",
+      ),
+    ),
+    index('assistant_credit_turns_held')
+      .on(t.userId)
+      .where(sql`${t.heldCredits}>0`),
+    index('assistant_credit_turns_reconcile').on(t.state, t.nextReconcileAt),
+    index('assistant_credit_turns_conversation').on(
+      t.userId,
+      t.conversationId,
+      t.acceptedAt,
+      t.usageLedgerId,
+    ),
+  ],
+);
+
+export const assistantUsageCalls = pgTable(
+  'assistant_usage_calls',
+  {
+    usageLedgerId: uuid('usage_ledger_id').notNull(),
+    callIndex: integer('call_index').notNull(),
+    provider: text('provider').notNull(),
+    model: text('model').notNull(),
+    dispatchState: text('dispatch_state').notNull().default('intent'),
+    providerRequestId: text('provider_request_id'),
+    providerGenerationId: text('provider_generation_id'),
+    directCostUsd: numeric('direct_cost_usd'),
+    upstreamCostUsd: numeric('upstream_cost_usd'),
+    feeCostUsd: numeric('fee_cost_usd'),
+    receiptFingerprint: text('receipt_fingerprint'),
+    receiptRevision: bigint('receipt_revision', { mode: 'bigint' }),
+    costState: text('cost_state').notNull().default('unknown'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    dispatchedAt: timestamp('dispatched_at', { withTimezone: true }),
+    finalizedAt: timestamp('finalized_at', { withTimezone: true }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('assistant_usage_calls_call_index_check', sql.raw('call_index>=0')),
+    check(
+      'assistant_usage_calls_dispatch_state_check',
+      sql.raw("dispatch_state IN ('intent','dispatched','ambiguous','closed')"),
+    ),
+    check(
+      'assistant_usage_calls_direct_cost_usd_check',
+      sql.raw("direct_cost_usd>=0 AND direct_cost_usd<'Infinity'::numeric"),
+    ),
+    check(
+      'assistant_usage_calls_upstream_cost_usd_check',
+      sql.raw("upstream_cost_usd>=0 AND upstream_cost_usd<'Infinity'::numeric"),
+    ),
+    check(
+      'assistant_usage_calls_fee_cost_usd_check',
+      sql.raw("fee_cost_usd>=0 AND fee_cost_usd<'Infinity'::numeric"),
+    ),
+    check('assistant_usage_calls_receipt_revision_check', sql.raw('receipt_revision>0')),
+    check(
+      'assistant_usage_calls_cost_state_check',
+      sql.raw("cost_state IN ('unknown','complete','final','quarantined')"),
+    ),
+    primaryKey({ columns: [t.usageLedgerId, t.callIndex] }),
+    uniqueIndex('assistant_usage_calls_receipt_unique')
+      .on(t.provider, t.usageLedgerId, t.callIndex, t.receiptFingerprint)
+      .where(sql`${t.receiptFingerprint} is not null`),
+  ],
 );

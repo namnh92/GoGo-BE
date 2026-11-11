@@ -1,5 +1,10 @@
 # ADR-0040: Discovery totals, venue verification, contributor credits and Home
 
+Pricing successor (2026-11-11): [ADR-0054](0054-assistant-actual-cost-credit-funding.md)
+free-first actual-cost holds supersedes the daily-then-one-credit rule only after
+audited spend-policy cutover. The daily limit is configured, DEV 5; legacy policy
+stays unchanged until that switch. D1 does not enable paid billing.
+
 Date: 2026-11-06. Status: accepted for GoGo-BE#774 (owner scope and Astra advice).
 
 Search totals are exact and opt-in, before cursor/limit, in the page statement's

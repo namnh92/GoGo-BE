@@ -2,7 +2,7 @@ openapi: 3.1.0
 x-gogo-notification-preference-semantics: master-and-five-categories-v1
 info:
   title: GoGo API
-  version: 9.5.1-alpha.1
+  version: 10.0.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -1878,10 +1878,12 @@ paths:
 
         One reply at a time per conversation: sending while a reply is still
         streaming is `409 ASSISTANT_TURN_IN_PROGRESS` — stop it first.
-        The per-account daily message limit (default 30 per day, resetting at
-        midnight Asia/Ho_Chi_Minh) and the per-minute burst limit (default 5
-        in any rolling minute) both answer `429` with `Retry-After`. Defaults
-        are provisional and configurable: the current values are in
+        Free accepted sends use the configured daily allowance, resetting at
+        midnight Asia/Ho_Chi_Minh. Exhausted free allowance requires paid readiness
+        and sufficient available credits for the verified hold: unavailable is
+        503 ASSISTANT_DISABLED; insufficient is 409 ASSISTANT_INSUFFICIENT_CREDIT
+        with typed details and retryable false. Burst remains 429 RATE_LIMITED.
+        Legacy policy retains its daily-limit 429. The current limits are in
         `GET /assistant/status` (`dailyMessageLimit`,
         `messagesPerMinuteLimit`) — never hardcode them. Only an accepted send
         counts; an idempotent replay consumes nothing. An unconfigured limit
@@ -1922,7 +1924,7 @@ paths:
         '409':
           description: >
             `ASSISTANT_TURN_IN_PROGRESS` — a reply in this conversation is still
-            streaming; or `IDEMPOTENT_REQUEST_IN_FLIGHT`.
+            streaming; `IDEMPOTENT_REQUEST_IN_FLIGHT`; or `ASSISTANT_INSUFFICIENT_CREDIT` with required typed details and retryable false.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -13132,12 +13134,13 @@ components:
         balance: { type: integer, minimum: 0, maximum: 9007199254740991 }
         earned: { type: integer, minimum: 0, maximum: 9007199254740991 }
         spent: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        # reserved = sum of outstanding holds; availableBalance = balance - reserved.
         reserved: { type: integer, minimum: 0, maximum: 9007199254740991 }
         availableBalance: { type: integer, minimum: 0, maximum: 9007199254740991 }
         asOf: { type: string, format: date-time }
         policyKey:
           type: string
-          description: Open policy key; legacy_allowance_v1 in V. Unknown values must be tolerated.
+          description: Open policy key; known legacy_allowance_v1 and free_then_actual_cost_v1. Unknown values must be tolerated.
     MyCreditEntry:
       type: object
       required: [id, createdAt, delta, direction, eventKey, source]
@@ -13166,6 +13169,25 @@ components:
           type: string
           format: uuid
           description: Catalogue event ID when present; never an entitlement or source-subject key.
+        conversation:
+          type: [object, 'null']
+          required: [id, title]
+          description: >
+            Conversation of this owner's usage entry (message_spent or assistant_usage_adjustment),
+            resolved from the credit turn or legacy usage/message link. Null for non-usage,
+            deleted, expired, unknown or otherwise unreadable conversations. Never another user's
+            conversation. Clients group by local day and conversation; pagination and ordering
+            remain unchanged.
+          properties:
+            id: { type: string, format: uuid }
+            title: { type: [string, 'null'] }
+        eventLabels:
+          type: [object, 'null']
+          required: [vi, en]
+          description: Catalogue credit_events.labels for an event-sourced grant; null otherwise. Facts, not composed copy.
+          properties:
+            vi: { type: string }
+            en: { type: string }
         messageId:
           type: string
           format: uuid
@@ -16550,9 +16572,13 @@ components:
           description: UTC ledger timestamp, including all six fractional digits.
         delta:
           type: integer
-          x-extensible-enum: [20, 50, 70, -1]
-          description: Signed credits; +50 or +70 for approval, +20 for accepted evidence on merge (ledger reason submission_approved), -1 for message_spent. Bonus requires approved menu/bill evidence (#794). Values are extensible; consumers must accept unknown integer deltas.
-        reason: { type: string, enum: [submission_approved, message_spent] }
+          minimum: -9007199254740991
+          maximum: 9007199254740991
+          not: { const: 0 }
+          description: Signed nonzero credits. Usage debits are negative; usage corrections can be positive refunds or negative charges. Positive adjustments are not grants.
+        reason:
+          type: string
+          description: Open reason; known catalogue keys, submission_approved, message_spent and assistant_usage_adjustment.
         submissionId:
           type: [string, 'null']
           format: uuid
@@ -18435,10 +18461,25 @@ components:
         expiresIn:
           type: integer
           description: Access token TTL in seconds.
+    AssistantInsufficientCreditDetails:
+      type: object
+      additionalProperties: false
+      required:
+        [creditBalance, creditReserved, creditAvailable, requiredCredits, remainingToday, resetsAt]
+      properties:
+        creditBalance: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        creditReserved: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        creditAvailable: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        requiredCredits: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        remainingToday: { type: integer, const: 0 }
+        resetsAt: { type: string, format: date-time }
     ErrorEnvelope:
       type: object
       required: [code, message, field_errors, request_id, retryable]
       properties:
+        details:
+          $ref: '#/components/schemas/AssistantInsufficientCreditDetails'
+          description: Required for ASSISTANT_INSUFFICIENT_CREDIT (409); no internal provider/usage data.
         code:
           type: string
           description: Stable machine-readable error code.
@@ -21394,47 +21435,105 @@ components:
     # ── GoGo AI assistant (GoGo-BE#713) ───────────────────────────────────────
     AssistantStatus:
       type: object
-      required: [state, dailyMessageLimit, remainingToday, resetsAt, creditBalance]
+      required:
+        [
+          state,
+          dailyMessageLimit,
+          remainingToday,
+          resetsAt,
+          creditBalance,
+          creditReserved,
+          creditAvailable,
+          creditPolicy,
+          paidCreditsRequired,
+          paidSendEnabled,
+          asOf,
+        ]
       properties:
         creditBalance:
           type: integer
           minimum: 0
-          description: 'No-expiry contributor credits. Prospective registered-user submission approval grants +50 once, or +70 with at least one approved menu/bill photo; merge grants +20 only when menu/bill evidence is accepted. All bill uploads require public consent; approved menu/bill photos appear in userPhotos with uploader credit, separately from the official gallery/cover. Daily allowance first, then one credit per accepted user send (202), including later provider failure. Replay/rejection costs zero; credits never bypass burst/readiness/budget gates.'
+          maximum: 9007199254740991
+          description: Posted no-expiry credit balance. Free allowance first; actual-cost paid funding reserves credits without posting a debit. Replays and refusals consume nothing.
+        creditReserved: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        creditAvailable: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        creditPolicy:
+          type: string
+          description: Open effective admission policy, independent of temporary paid availability.
+          x-extensible-enum: [legacy_allowance_v1, free_then_actual_cost_v1]
+        paidCreditsRequired:
+          type: [integer, 'null']
+          minimum: 1
+          maximum: 9007199254740991
+          description: Required hold from the verified whole-turn bound; null when unavailable. Independent of remaining free sends.
+        paidSendEnabled:
+          type: boolean
+          description: Spend and settlement switches plus bound/finality/config readiness and settlement health. General readiness still applies; POST repeats every check.
+        asOf: { type: string, format: date-time }
         state:
           type: string
           description: >
-            `enabled` — sending works. `disabled` — kill switch off
-            (`assistant.enabled`), or the environment cannot take new replies
-            (for example its spending limit is reached). `limit_reached` — this account's daily
-            messages and contributor credits are both spent until `resetsAt`. Unknown values mean "cannot
-            send now".
-          x-extensible-enum: [enabled, disabled, limit_reached]
+            Open state. General unavailability or exhausted free allowance with paid admission off is disabled.
+            With free allowance remaining, enabled regardless of balance. Otherwise insufficient_credit
+            means available credits are below the required hold. limit_reached is legacy-only.
+            Unknown values mean sending is unavailable. Burst/busy may still reject a send.
+          x-extensible-enum: [enabled, disabled, insufficient_credit, limit_reached]
         dailyMessageLimit:
           type: integer
           minimum: 0
-          description: >
-            Accepted messages this account may send per day (default **30**;
-            provisional and configurable — read it from here, never hardcode
-            it). Only an accepted send (`202`) counts; an idempotent replay
-            (`x-idempotent-replay: true`) consumes nothing. A limit that is
-            not configured refuses (`503 ASSISTANT_DISABLED`), it never means
-            unlimited.
+          description: Configured ASSISTANT_USER_DAILY_MAX_MESSAGES free accepted sends per Asia/Ho_Chi_Minh day; no hardcoded default. Paid sends do not consume free allowance. Missing configuration disables admission. Replays/refusals consume nothing; accepted failures still consume their free slot.
         remainingToday: { type: integer, minimum: 0 }
         resetsAt:
           type: string
           format: date-time
-          description: >
-            When `remainingToday` refills: midnight Asia/Ho_Chi_Minh (start of
-            the next local day), expressed in UTC.
+          description: Next Asia/Ho_Chi_Minh midnight in UTC. Only free allowance refills; credits never expire or refill here.
         messagesPerMinuteLimit:
           type: integer
           minimum: 0
-          description: >
-            2.0.0-alpha.3. Accepted messages this account may send in any
-            rolling 60-second window (default **5**; provisional and
-            configurable — read it from here, never hardcode it). Same
-            counting as `dailyMessageLimit`: replays consume nothing.
-            Exceeding it is `429 RATE_LIMITED` with `Retry-After`.
+          description: Configured rolling-minute burst limit across all funding sources. Exceeding it is 429 RATE_LIMITED with Retry-After.
+    AssistantTurnCredits:
+      type: object
+      required: [policyKey, fundingSource, state, creditsCharged, creditsReserved, updatedAt]
+      properties:
+        policyKey:
+          type: string
+          x-extensible-enum: [legacy_allowance_v1, free_then_actual_cost_v1]
+          description: Open frozen billing policy.
+        fundingSource:
+          type: string
+          x-extensible-enum: [free, credit, unavailable]
+          description: Open funding source; free stays free even when provider accounting is pending.
+        state:
+          type: string
+          x-extensible-enum: [pending, reconciling, settled, unavailable]
+          description: Open state. Quarantined turns remain pending or reconciling, never settled.
+        creditsCharged:
+          type: [integer, 'null']
+          minimum: 0
+          maximum: 9007199254740991
+          description: Latest net POSTED charge, not a final-cost promise. Initial paid reservation is 0. Missing historical attribution is null, never invented zero.
+        creditsReserved:
+          type: [integer, 'null']
+          minimum: 0
+          maximum: 9007199254740991
+          description: Residual held credits, not the original ceiling. Unknown historical attribution is null.
+        updatedAt: { type: string, format: date-time }
+    AssistantConversationCredits:
+      type: object
+      required: [creditsUsed, creditsReserved, pendingTurns, state, asOf]
+      properties:
+        creditsUsed:
+          type: [integer, 'null']
+          minimum: 0
+          maximum: 9007199254740991
+          description: Full conversation net posted usage, including failed/stopped turns and refunds. Null if historical attribution is incomplete.
+        creditsReserved: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        pendingTurns: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        state:
+          type: string
+          x-extensible-enum: [pending, settled, unavailable]
+          description: Open state. Incomplete history takes precedence over pending paid turns. New conversations are settled with zero amounts.
+        asOf: { type: string, format: date-time }
     AssistantContext:
       description: >
         What the assistant was opened from. Exactly one of `placeId` /
@@ -21474,11 +21573,20 @@ components:
         createdAt: '2026-10-26T02:10:00Z'
         lastMessageAt: '2026-10-26T02:14:31Z'
         expiresAt: '2027-01-24T02:14:31Z'
+        credits:
+          {
+            creditsUsed: 0,
+            creditsReserved: 0,
+            pendingTurns: 0,
+            state: settled,
+            asOf: '2026-10-26T02:14:31Z',
+          }
         messageCount: 4
         preview: I found 3 cafés that match.
       type: object
-      required: [id, title, createdAt, lastMessageAt, expiresAt, messageCount]
+      required: [id, title, createdAt, lastMessageAt, expiresAt, messageCount, credits]
       properties:
+        credits: { $ref: '#/components/schemas/AssistantConversationCredits' }
         id: { type: string, format: uuid }
         title:
           type: [string, 'null']
@@ -21591,6 +21699,9 @@ components:
       type: object
       required: [id, conversationId, role, status, text, createdAt]
       properties:
+        credits:
+          $ref: '#/components/schemas/AssistantTurnCredits'
+          description: Always present on assistant messages; omitted on user messages.
         id: { type: string, format: uuid }
         conversationId: { type: string, format: uuid }
         role: { type: string, enum: [user, assistant] }
@@ -21629,8 +21740,9 @@ components:
           $ref: '#/components/schemas/ErrorEnvelope'
     AssistantMessagePage:
       type: object
-      required: [items, nextCursor]
+      required: [items, nextCursor, conversationCredits]
       properties:
+        conversationCredits: { $ref: '#/components/schemas/AssistantConversationCredits' }
         items:
           type: array
           description: Newest first.
@@ -21638,8 +21750,9 @@ components:
         nextCursor: { type: [string, 'null'] }
     AssistantTurn:
       type: object
-      required: [userMessage, assistantMessage]
+      required: [userMessage, assistantMessage, conversationCredits]
       properties:
+        conversationCredits: { $ref: '#/components/schemas/AssistantConversationCredits' }
         userMessage: { $ref: '#/components/schemas/AssistantMessage' }
         assistantMessage:
           $ref: '#/components/schemas/AssistantMessage'
@@ -22495,8 +22608,8 @@ components:
       description: >
         `RATE_LIMITED` (`retryable: true`) for the per-minute burst limit
         (default 5 accepted messages in any rolling minute), or
-        `ASSISTANT_DAILY_LIMIT` (`retryable: false`) when the account's daily
-        message budget is spent (default 30 accepted messages per day, reset
+        Legacy policy only: `ASSISTANT_DAILY_LIMIT` (`retryable: false`) when the account's daily
+        message budget is spent (configured accepted free sends per day, reset
         at midnight Asia/Ho_Chi_Minh). Both carry `Retry-After`; for the daily
         limit it points at the reset. Defaults are provisional and
         configurable — `GET /assistant/status` carries the current values.

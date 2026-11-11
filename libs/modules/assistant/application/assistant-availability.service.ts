@@ -1,3 +1,9 @@
+import {
+  AssistantCreditSpendRepository,
+  type SpendControl,
+  type FundingSnapshot,
+} from '../infrastructure/assistant-credit-spend.repository';
+import { reserveCredits } from '../domain/credit-cost';
 import { creditBalance } from '../../shared/assistant-credits';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { Db } from '@gogo/database';
@@ -44,6 +50,8 @@ export class AssistantAvailabilityService {
     @Inject(APP_CONFIG) private readonly config: AssistantConfig,
     private readonly repo: AssistantRepository,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
+    @Optional()
+    private readonly spend: AssistantCreditSpendRepository = new AssistantCreditSpendRepository(db),
   ) {}
 
   /**
@@ -150,39 +158,135 @@ export class AssistantAvailabilityService {
     );
   }
 
-  async status(userId: string, now = new Date()) {
-    const resetsAt = vnNextReset(now).toISOString();
-    const balance = await creditBalance(this.db, userId);
-    const limits = this.limits();
-    const readiness = await this.readiness(this.db, now);
-    if (!limits) {
+  /** Binding must be installed by an audited D2 readiness operation. D1 never binds it. */
+  async paidReadiness(exec: Exec, facts: FundingSnapshot): Promise<number | null> {
+    const bound = this.config.ASSISTANT_CREDIT_BOUND_USD;
+    const version = this.config.ASSISTANT_CREDIT_BOUND_VERSION;
+    if (
+      facts.policy_key !== 'free_then_actual_cost_v1' ||
+      facts.quarantined ||
+      !bound ||
+      !version ||
+      facts.bound_version !== version
+    )
+      return null;
+    for (const key of [
+      'assistant_credits.spend_enabled',
+      'assistant_credits.settlement_enabled',
+    ] as const) {
+      if (
+        !(await resolveBooleanFlag(exec, key, {
+          environment: flagEnvironmentOf(this.config.APP_ENV),
+        }))
+      )
+        return null;
+    }
+    try {
+      return reserveCredits(bound);
+    } catch {
+      return null;
+    }
+  }
+
+  async funding(tx: Tx, userId: string, limits: AssistantLimits, now: Date, control: SpendControl) {
+    // Both the active subject and money facts are re-read after all admission locks.
+    const facts = await this.spend.snapshot(tx, userId, vnDayStart(now));
+    if (facts.policy_key !== control.policy_key || facts.epoch !== control.epoch)
+      throw AppError.serviceUnavailable('ASSISTANT_DISABLED', 'Spend policy changed', false);
+    if (control.policy_key === 'legacy_allowance_v1') {
       return {
-        state: 'disabled',
-        creditBalance: balance,
-        dailyMessageLimit: 0,
-        remainingToday: 0,
-        resetsAt,
-        messagesPerMinuteLimit: 0,
+        allowanceSource: await this.requireAllowance(tx, userId, limits, now),
+        required: 0,
+        boundVersion: null,
       };
     }
     const usage = await this.repo.allowanceUsage(
-      this.db,
+      tx,
       userId,
       vnDayStart(now),
       new Date(now.getTime() - BURST_WINDOW_MS),
     );
-    const remainingToday = Math.max(0, limits.dailyMessageLimit - usage.acceptedToday);
-    return {
-      state: !readiness.ok
-        ? 'disabled'
-        : remainingToday === 0 && balance === 0
-          ? 'limit_reached'
-          : 'enabled',
-      creditBalance: balance,
-      dailyMessageLimit: limits.dailyMessageLimit,
-      remainingToday,
-      resetsAt,
-      messagesPerMinuteLimit: limits.messagesPerMinuteLimit,
-    };
+    const decision = decideAllowance(
+      limits,
+      { acceptedToday: facts.accepted_today, burstAcceptedAt: usage.burst },
+      now,
+    );
+    if (!decision.ok && decision.code === 'RATE_LIMITED')
+      throw AppError.tooManyRequests(
+        'Too many assistant messages; slow down',
+        decision.retryAfterSeconds,
+      );
+    if (decision.ok) return { allowanceSource: 'daily' as const, required: 0, boundVersion: null };
+    const required = await this.paidReadiness(tx, facts);
+    if (required === null)
+      throw AppError.serviceUnavailable(
+        'ASSISTANT_DISABLED',
+        'Paid assistant sending is unavailable',
+        false,
+      );
+    const reserved = Number(BigInt(facts.reserved));
+    const available = Number(BigInt(facts.balance) - BigInt(facts.reserved));
+    if (!Number.isSafeInteger(reserved) || available < 0)
+      throw AppError.serviceUnavailable('ASSISTANT_DISABLED', 'Credit funding unavailable', false);
+    if (available < required)
+      throw new AppError('ASSISTANT_INSUFFICIENT_CREDIT', 'Insufficient assistant credit', 409, {
+        retryable: false,
+        details: {
+          creditBalance: facts.balance,
+          creditReserved: reserved,
+          creditAvailable: available,
+          requiredCredits: required,
+          remainingToday: 0,
+          resetsAt: vnNextReset(now).toISOString(),
+        },
+      });
+    return { allowanceSource: 'credit' as const, required, boundVersion: control.bound_version };
+  }
+
+  async status(userId: string, now = new Date()) {
+    return this.db.transaction(
+      async (tx) => {
+        const facts = await this.spend.snapshot(tx, userId, vnDayStart(now));
+        const limits = this.limits();
+        const readiness = await this.readiness(tx, now);
+        const paidCreditsRequired = await this.paidReadiness(tx, facts);
+        const reserved = Number(BigInt(facts.reserved));
+        const available = Number(BigInt(facts.balance) - BigInt(facts.reserved));
+        if (!Number.isSafeInteger(reserved) || available < 0)
+          throw AppError.serviceUnavailable(
+            'ASSISTANT_DISABLED',
+            'Credit funding unavailable',
+            false,
+          );
+        const remainingToday = Math.max(0, (limits?.dailyMessageLimit ?? 0) - facts.accepted_today);
+        return {
+          state: !readiness.ok
+            ? 'disabled'
+            : remainingToday > 0
+              ? 'enabled'
+              : facts.policy_key === 'legacy_allowance_v1'
+                ? facts.balance > 0
+                  ? 'enabled'
+                  : 'limit_reached'
+                : paidCreditsRequired === null
+                  ? 'disabled'
+                  : available < paidCreditsRequired
+                    ? 'insufficient_credit'
+                    : 'enabled',
+          creditBalance: facts.balance,
+          creditReserved: reserved,
+          creditAvailable: available,
+          creditPolicy: facts.policy_key,
+          paidCreditsRequired,
+          paidSendEnabled: paidCreditsRequired !== null,
+          asOf: facts.as_of,
+          dailyMessageLimit: limits?.dailyMessageLimit ?? 0,
+          remainingToday,
+          resetsAt: vnNextReset(now).toISOString(),
+          messagesPerMinuteLimit: limits?.messagesPerMinuteLimit ?? 0,
+        };
+      },
+      { isolationLevel: 'repeatable read', accessMode: 'read only' },
+    );
   }
 }

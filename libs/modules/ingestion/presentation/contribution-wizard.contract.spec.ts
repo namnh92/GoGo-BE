@@ -24,7 +24,7 @@ describe('contribution wizard additive contract (#796)', () => {
     >();
   });
   it('keeps legacy submission valid and pins additive version', () => {
-    expect(doc.info.version).toBe('9.5.1-alpha.1');
+    expect(doc.info.version).toBe('10.0.0-alpha.1');
     const submit =
       doc.paths['/place-submissions'].post.requestBody.content['application/json'].schema;
     expect(submit.required).toEqual(['googlePlaceId']);
@@ -80,7 +80,11 @@ describe('contribution wizard additive contract (#796)', () => {
   it('allows bonus approval credits and keeps CMS ledger deltas extensible', () => {
     const delta = doc.components.schemas.CmsAssistantCreditEntry.properties.delta;
     expect(delta.type).toBe('integer');
-    expect(delta['x-extensible-enum']).toEqual([20, 50, 70, -1]);
+    expect(delta).toMatchObject({
+      minimum: -9007199254740991,
+      maximum: 9007199254740991,
+      not: { const: 0 },
+    });
     expect(delta).not.toHaveProperty('enum');
     expectTypeOf<
       components['schemas']['CmsAssistantCreditEntry']['delta']

@@ -109,3 +109,19 @@ export const COPY_KEYS = {
   disabled: 'assistant.notice.disabled',
   limit: 'assistant.notice.limit',
 } as const;
+
+export type AssistantTurnCredits = {
+  policyKey: string;
+  fundingSource: string;
+  state: string;
+  creditsCharged: number | null;
+  creditsReserved: number | null;
+  updatedAt: string;
+};
+export type AssistantConversationCredits = {
+  creditsUsed: number | null;
+  creditsReserved: number;
+  pendingTurns: number;
+  state: string;
+  asOf: string;
+};

@@ -252,10 +252,12 @@ describe('V3 lifetime arithmetic and forward-compatible projection', () => {
     expect(JSON.stringify(page)).not.toContain(usage);
     for (const entry of page.items)
       expect(Object.keys(entry).sort()).toEqual([
+        'conversation',
         'createdAt',
         'delta',
         'direction',
         'eventKey',
+        'eventLabels',
         'id',
         'source',
       ]);
@@ -313,5 +315,260 @@ describe('V3 lifetime arithmetic and forward-compatible projection', () => {
       await client.query('rollback');
       client.release();
     }
+  });
+});
+
+describe('Owner 2026-11-11 credit history grouping facts', () => {
+  async function conversation(userId: string, title: string | null) {
+    const id = randomUUID();
+    await pool.query('insert into assistant_conversations(id,user_id,title) values ($1,$2,$3)', [
+      id,
+      userId,
+      title,
+    ]);
+    return { id, title };
+  }
+
+  async function legacyUsage(
+    ledgerUserId: string,
+    conversationId: string,
+    usageUserId = ledgerUserId,
+    messageUserId = usageUserId,
+  ) {
+    const messageId = randomUUID();
+    const usageId = randomUUID();
+    const id = randomUUID();
+    await pool.query(
+      `insert into assistant_messages(id,conversation_id,user_id,role,status)
+       values ($1,$2,$3,'assistant','complete')`,
+      [messageId, conversationId, messageUserId],
+    );
+    await pool.query(
+      `insert into assistant_usage_ledger(id,user_id,message_id,allowance_source)
+       values ($1,$2,$3,'credit')`,
+      [usageId, usageUserId, messageId],
+    );
+    await pool.query(
+      `insert into assistant_credit_ledger(id,user_id,delta,reason,usage_ledger_id)
+       values ($1,$2,-1,'message_spent',$3)`,
+      [id, ledgerUserId, usageId],
+    );
+    return { id, usageId, messageId };
+  }
+
+  async function turnUsage(
+    ledgerUserId: string,
+    conversationId: string,
+    turnUserId = ledgerUserId,
+  ) {
+    const usageId = randomUUID();
+    const id = randomUUID();
+    // D attribution survives retained usage/message removal. No such rows are seeded.
+    await pool.query(
+      `insert into assistant_credit_turns(usage_ledger_id,user_id,conversation_id,accepted_at,
+         policy_key,policy_epoch,funding_source,reserved_ceiling,held_credits,applied_credits,
+         bound_version,cost_revision,applied_cost_revision,state,finalized_at)
+       values ($1,$2,$3,now(),'free_then_actual_cost_v1',1,'credit',12,0,12,
+         'history-test-bound',1,1,'settled',now())`,
+      [usageId, turnUserId, conversationId],
+    );
+    await pool.query(
+      `insert into assistant_credit_ledger(id,user_id,delta,reason,usage_ledger_id,cost_revision)
+       values ($1,$2,-12,'message_spent',$3,1)`,
+      [id, ledgerUserId, usageId],
+    );
+    return { id, usageId };
+  }
+
+  it.each(['settled', 'pending'] as const)(
+    'includes a retained %s D turn in conversation/list/page totals without double counting (#852 F-02)',
+    async (state) => {
+      await pool.query(
+        `insert into feature_flags(key,enabled) values ('assistant_credits.display_enabled',true)
+         on conflict(key,environment,platform) do update set enabled=true`,
+      );
+      const user = await register();
+      const own = await conversation(user.userId, 'Retained accounting');
+      await grant(user.userId);
+      const retained = await turnUsage(user.userId, own.id);
+      if (state === 'pending') {
+        await pool.query('delete from assistant_credit_ledger where id=$1', [retained.id]);
+        await pool.query(
+          `update assistant_credit_turns set applied_credits=0,held_credits=12,
+             cost_revision=0,applied_cost_revision=0,state='pending',finalized_at=null,
+             message_id=$2 where usage_ledger_id=$1`,
+          [retained.usageId, randomUUID()],
+        );
+      }
+      const expected = {
+        creditsUsed: state === 'settled' ? 12 : 0,
+        creditsReserved: state === 'pending' ? 12 : 0,
+        pendingTurns: state === 'pending' ? 1 : 0,
+        state,
+      };
+      async function assertTotals(messageCount: number) {
+        const read = (suffix: string) =>
+          api().inject({
+            method: 'GET',
+            url: `/v1/assistant/conversations${suffix}`,
+            headers: auth(user.accessToken),
+            remoteAddress: ip(),
+          });
+        const detail = await read(`/${own.id}`);
+        expect(detail.statusCode).toBe(200);
+        expect(detail.json().credits).toMatchObject(expected);
+        const list = await read('');
+        expect(list.statusCode).toBe(200);
+        expect(
+          list.json().items.find((item: { id: string }) => item.id === own.id).credits,
+        ).toMatchObject(expected);
+        const page = await read(`/${own.id}/messages?limit=1`);
+        expect(page.statusCode).toBe(200);
+        expect(page.json().items).toHaveLength(messageCount);
+        expect(page.json().conversationCredits).toMatchObject(expected);
+        if (messageCount) {
+          expect(page.json().nextCursor).not.toBeNull();
+          const next = await read(
+            `/${own.id}/messages?limit=1&cursor=${encodeURIComponent(page.json().nextCursor)}`,
+          );
+          expect(next.statusCode).toBe(200);
+          expect(next.json().conversationCredits).toMatchObject(expected);
+        }
+      }
+      // No source usage/message exists, but the stored conversation remains readable.
+      await assertTotals(0);
+      expect((await get(user.accessToken)).json().reserved).toBe(expected.creditsReserved);
+
+      await legacyUsage(user.userId, own.id);
+      const linked = await legacyUsage(user.userId, own.id);
+      await pool.query(`update assistant_credit_ledger set delta=-5,cost_revision=1 where id=$1`, [
+        linked.id,
+      ]);
+      await pool.query(
+        `insert into assistant_credit_turns(usage_ledger_id,user_id,message_id,conversation_id,
+           accepted_at,policy_key,policy_epoch,funding_source,reserved_ceiling,held_credits,
+           applied_credits,bound_version,cost_revision,applied_cost_revision,state,finalized_at)
+         values ($1,$2,$3,$4,now(),'free_then_actual_cost_v1',1,'credit',5,0,5,
+           'history-test-bound',1,1,'settled',now())`,
+        [linked.usageId, user.userId, linked.messageId, own.id],
+      );
+      // A foreign owner's retained record must not enter this owner's totals.
+      const other = await register();
+      await turnUsage(other.userId, own.id);
+      expected.creditsUsed += 6; // legacy 1 + D 5, each counted exactly once.
+      await assertTotals(1);
+    },
+  );
+
+  it('returns two own conversations on legacy/D usage and refunds, plus exact catalogue grant labels', async () => {
+    const user = await register();
+    const first = await conversation(user.userId, 'Dinner plans');
+    const second = await conversation(user.userId, null);
+    const legacy = await legacyUsage(user.userId, first.id);
+    const turn = await turnUsage(user.userId, second.id);
+    const refundId = randomUUID();
+    await pool.query(
+      `insert into assistant_credit_ledger(id,user_id,delta,reason,usage_ledger_id,cost_revision)
+       values ($1,$2,3,'assistant_usage_adjustment',$3,2)`,
+      [refundId, user.userId, turn.usageId],
+    );
+    await pool.query(
+      `update assistant_credit_turns set applied_credits=9,cost_revision=2,applied_cost_revision=2
+       where usage_ledger_id=$1`,
+      [turn.usageId],
+    );
+    const eventId = randomUUID();
+    const grantId = randomUUID();
+    const labels = { vi: `Thưởng ${eventId}`, en: `Reward ${eventId}` };
+    await pool.query(
+      `insert into credit_events(id,key,labels,trigger_event_type,trigger_schema_version,condition,
+         audience,dedup_scope,amount)
+       values ($1,'history_test_reward',$2,'history.test',1,'{"all":[]}',
+         'individual','per_subject',5)`,
+      [eventId, labels],
+    );
+    await pool.query(
+      `insert into assistant_credit_ledger(id,user_id,delta,reason,credit_event_id,entitlement_key)
+       values ($1,$2,5,'history_test_reward',$3,$4)`,
+      [grantId, user.userId, eventId, randomUUID()],
+    );
+    const historicalGrantId = await grant(user.userId);
+    const response = await get(user.accessToken, '/ledger');
+    expect(response.statusCode).toBe(200);
+    const page = response.json();
+    expect(page.items).toHaveLength(5);
+    expect(page.nextCursor).toBeNull();
+    const entry = (id: string) => page.items.find((item: { id: string }) => item.id === id);
+    expect(entry(legacy.id)).toMatchObject({ conversation: first, eventLabels: null });
+    expect(entry(turn.id)).toMatchObject({ conversation: second, eventLabels: null });
+    expect(entry(refundId)).toMatchObject({
+      conversation: second,
+      eventLabels: null,
+      direction: 'adjustment',
+    });
+    expect(entry(grantId)).toMatchObject({ conversation: null, eventId, eventLabels: labels });
+    expect(entry(historicalGrantId)).toMatchObject({ conversation: null, eventLabels: null });
+    expect(JSON.stringify(page)).not.toContain(legacy.usageId);
+    expect(JSON.stringify(page)).not.toContain(legacy.messageId);
+    expect(JSON.stringify(page)).not.toContain(turn.usageId);
+  });
+
+  it('returns null after conversation deletion or expiry and for unknown usage', async () => {
+    const user = await register();
+    const deleted = await conversation(user.userId, 'Deleted private title');
+    const expired = await conversation(user.userId, 'Expired private title');
+    await legacyUsage(user.userId, deleted.id);
+    await turnUsage(user.userId, deleted.id);
+    await legacyUsage(user.userId, expired.id);
+    await turnUsage(user.userId, expired.id);
+    await pool.query('delete from assistant_conversations where id=$1', [deleted.id]);
+    await pool.query(
+      `update assistant_conversations set last_message_at=now()-interval '91 days' where id=$1`,
+      [expired.id],
+    );
+    await pool.query(
+      `insert into assistant_credit_ledger(user_id,delta,reason,usage_ledger_id)
+       values ($1,-1,'message_spent',$2)`,
+      [user.userId, randomUUID()],
+    );
+    const response = await get(user.accessToken, '/ledger');
+    expect(response.statusCode).toBe(200);
+    expect(response.json().items).toHaveLength(5);
+    for (const entry of response.json().items)
+      expect(entry).toMatchObject({ conversation: null, eventLabels: null });
+    expect(JSON.stringify(response.json())).not.toContain(deleted.title);
+    expect(JSON.stringify(response.json())).not.toContain(expired.title);
+  });
+
+  it('never follows foreign usage, messages, turns or conversations, or a fallback for a known D turn', async () => {
+    const user = await register();
+    const other = await register();
+    const own = await conversation(user.userId, 'Own conversation');
+    const foreign = await conversation(other.userId, 'Other user secret');
+    // Deliberately inconsistent links verify each boundary independently.
+    await legacyUsage(user.userId, own.id, other.userId, user.userId);
+    await legacyUsage(user.userId, own.id, user.userId, other.userId);
+    await legacyUsage(user.userId, foreign.id);
+    await turnUsage(user.userId, own.id, other.userId);
+    await turnUsage(user.userId, foreign.id);
+    const legacy = await legacyUsage(user.userId, own.id);
+    await pool.query(
+      `insert into assistant_credit_turns(usage_ledger_id,user_id,conversation_id,accepted_at,
+         policy_key,policy_epoch,funding_source,reserved_ceiling,held_credits,applied_credits,
+         bound_version,cost_revision,applied_cost_revision,state,finalized_at)
+       values ($1,$2,$3,now(),'free_then_actual_cost_v1',1,'credit',1,0,1,
+         'history-test-bound',1,1,'settled',now())`,
+      [legacy.usageId, user.userId, foreign.id],
+    );
+    const otherEntry = await legacyUsage(other.userId, foreign.id);
+    const response = await get(user.accessToken, '/ledger');
+    expect(response.statusCode).toBe(200);
+    const page = response.json();
+    expect(page.items).toHaveLength(6);
+    for (const entry of page.items)
+      expect(entry).toMatchObject({ conversation: null, eventLabels: null });
+    expect(JSON.stringify(page)).not.toContain(foreign.id);
+    expect(JSON.stringify(page)).not.toContain(foreign.title);
+    expect(JSON.stringify(page)).not.toContain(otherEntry.id);
   });
 });

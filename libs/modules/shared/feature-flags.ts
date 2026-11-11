@@ -59,6 +59,20 @@ export type FlagDefinition = {
  * together, so a key can never sit in the console with nothing behind it.
  */
 export const FEATURE_FLAGS = {
+  'assistant_credits.spend_enabled': {
+    valueType: 'boolean',
+    defaultValue: false,
+    platformScoped: false,
+    description:
+      'Admit new paid reservations only with an audited billing bound; free allowance is independent.',
+  },
+  'assistant_credits.settlement_enabled': {
+    valueType: 'boolean',
+    defaultValue: true,
+    platformScoped: false,
+    description:
+      'Allow financial application/release; pausing also disables new paid reservations, preserving holds.',
+  },
   'assistant_credits.display_enabled': {
     valueType: 'boolean',
     defaultValue: false,

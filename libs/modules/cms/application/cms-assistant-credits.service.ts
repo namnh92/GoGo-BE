@@ -22,7 +22,7 @@ type LedgerRow = {
   id: string | null;
   created_at: string | null;
   delta: number | null;
-  reason: 'submission_approved' | 'submission_evidence' | 'message_spent' | null;
+  reason: string | null;
   submission_id: string | null;
   venue_identity: string | null;
   place_id: string | null;
@@ -84,8 +84,7 @@ export class CmsAssistantCreditsService {
         id: row.id!,
         createdAt: row.created_at!,
         delta: row.delta!,
-        // S2 keeps the existing closed public enum; S3 exposes catalogue keys.
-        reason: row.reason === 'submission_evidence' ? 'submission_approved' : row.reason!,
+        reason: row.reason!,
         submissionId: row.submission_id,
         venueIdentity: row.venue_identity,
         placeId: row.place_id,

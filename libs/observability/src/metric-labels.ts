@@ -399,6 +399,7 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // Closed sets only; never a user, conversation, message or text.
   // `outcome`: accepted | kill_switch | unconfigured | budget_exhausted |
   // byok_unverified | daily_limit | rate_limited.
+  assistant_credit_admission_total: ['funding', 'outcome'],
   assistant_admission_total: ['outcome'],
   // `source`: decision_model | fallback; `intent`: the four ASSISTANT_INTENTS.
   assistant_decisions_total: ['source', 'intent'],

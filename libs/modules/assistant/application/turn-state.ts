@@ -16,6 +16,7 @@ import type { LedgerCosts } from '../infrastructure/assistant.repository';
 export type TurnState = {
   text: string;
   textStarted: boolean;
+  dispatchClosed: boolean;
   cards: AssistantCardRef[];
   sources: AssistantSourceData[];
   followUps: AssistantFollowUpGroup[];
@@ -54,6 +55,7 @@ export function newTurnState(): TurnState {
   return {
     text: '',
     textStarted: false,
+    dispatchClosed: false,
     cards: [],
     sources: [],
     followUps: [],

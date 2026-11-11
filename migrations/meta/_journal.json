@@ -680,6 +680,13 @@
       "when": 1794268800098,
       "tag": "0098_credit-events-catalogue",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1794268800099,
+      "tag": "0099_assistant-cost-credit-spending",
+      "breakpoints": true
     }
   ]
 }

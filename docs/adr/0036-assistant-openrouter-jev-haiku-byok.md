@@ -1,5 +1,10 @@
 # ADR-0036 — GoGo AI Assistant: OpenRouter-direct Jev and Anthropic-BYOK Claude Haiku
 
+Pricing successor (2026-11-11): [ADR-0054](0054-assistant-actual-cost-credit-funding.md)
+free-first actual-cost holds supersedes the daily-then-one-credit rule only after
+audited spend-policy cutover. The daily limit is configured, DEV 5; legacy policy
+stays unchanged until that switch. D1 does not enable paid billing.
+
 - **Status:** Accepted (owner decisions, 2026-10-27; BYOK routing/billing clarified 2026-10-27); implemented in GoGo-BE#713 PR 3 (see `docs/assistant.md` → As built)
 - **Scope:** GoGo-BE runtime, GoGo-MobileApp assistant
 - **Related:** GoGo-BE#713, #709, #711; GoGo-Infra#257; GoGo-MobileApp#377

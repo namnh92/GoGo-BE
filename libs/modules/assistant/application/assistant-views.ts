@@ -1,3 +1,4 @@
+import { assertPublicCredits } from '../domain/credit-cost';
 import type { AssistantCardRef, AssistantSourceData } from '../domain/assistant.types';
 import { publicProposalStatus } from '../domain/proposal';
 import type {
@@ -13,6 +14,11 @@ import { RETENTION_DAYS } from '../infrastructure/assistant.repository';
 export type ContextLabel = { kind: 'place' | 'plan'; id: string; label: string };
 
 export function conversationView(row: ConversationRow, context: ContextLabel | null) {
+  assertPublicCredits([
+    row.credits.creditsUsed,
+    row.credits.creditsReserved,
+    row.credits.pendingTurns,
+  ]);
   const expiresAt = new Date(
     Date.parse(row.last_message_at) + RETENTION_DAYS * 86_400_000,
   ).toISOString();
@@ -24,6 +30,7 @@ export function conversationView(row: ConversationRow, context: ContextLabel | n
     lastMessageAt: row.last_message_at,
     expiresAt,
     messageCount: row.message_count,
+    credits: row.credits,
     ...(row.preview ? { preview: row.preview.slice(0, 160) } : {}),
     ...(row.match_field
       ? {
@@ -71,6 +78,8 @@ export function messageView(
   },
 ) {
   const isAssistant = row.role === 'assistant';
+  if (isAssistant && row.credits)
+    assertPublicCredits([row.credits.creditsCharged, row.credits.creditsReserved]);
   return {
     id: row.id,
     conversationId: row.conversation_id,
@@ -82,6 +91,14 @@ export function messageView(
     ...(extras.context ? { context: extras.context } : {}),
     ...(isAssistant
       ? {
+          credits: row.credits ?? {
+            policyKey: 'legacy_allowance_v1',
+            fundingSource: 'unavailable',
+            state: 'unavailable',
+            creditsCharged: null,
+            creditsReserved: null,
+            updatedAt: row.completed_at ?? row.created_at,
+          },
           sources: extras.sources,
           cards: extras.cards,
           proposals: extras.proposals.map((p) => proposalView(p)),

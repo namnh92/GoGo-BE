@@ -2132,6 +2132,7 @@ export class AssistantOrchestrator {
     | { kind: 'truncated' }
     | { kind: 'fallback'; reason: 'timeout' | 'provider_unavailable' | 'invalid_output' }
   > {
+    if (state.dispatchClosed) throw new Error('Dispatch fenced');
     const llm = this.llm!;
     // A-R-06: an abort that fired before this point must still stop the call.
     signal.throwIfAborted();
@@ -2297,6 +2298,7 @@ export function firstTextGuard(deadline: number, signal: AbortSignal): FirstText
  * unknown, counted at the ceiling, never a partial sum.
  */
 function beginJevCall(state: TurnState, signal: AbortSignal): void {
+  if (state.dispatchClosed) throw new Error('Dispatch fenced');
   signal.throwIfAborted();
   state.costs.jevCalls += 1;
   state.jevInFlight += 1;

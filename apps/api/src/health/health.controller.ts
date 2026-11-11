@@ -1,3 +1,4 @@
+import { assertAssistantCreditSpendReady } from '@gogo/modules';
 import { Controller, Get, Inject } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import IORedis from 'ioredis';
@@ -36,6 +37,7 @@ export class HealthController {
     try {
       await this.db.execute(sql`select 1`);
       await assertCreditWriterReady(this.db);
+      await assertAssistantCreditSpendReady(this.db);
       checks.db = 'ok';
     } catch {
       checks.db = 'failed';

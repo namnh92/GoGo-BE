@@ -55,6 +55,8 @@ function harness(
       purged.push([...ids]);
     },
     setTitleIfEmpty: async () => undefined,
+    runnableFunding: async () => true,
+    releaseUndispatchedTurn: async () => undefined,
     completeLedger: async (_id: string, status: string) => {
       ledger.push({ status });
     },

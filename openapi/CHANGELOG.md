@@ -8,6 +8,33 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 10.0.0-alpha.1 — Free-first actual-cost credit funding (#851 / #832 D1)
+
+MAJOR: after the configured free daily allowance, accepted sends require a
+versioned whole-turn credit hold rather than exactly one credit. Positive posted
+balance can be insufficient. New refusal: 409 ASSISTANT_INSUFFICIENT_CREDIT with
+required typed details, retryable false; paid unavailability is 503, burst is 429.
+No hardcoded daily limit; DEV is configured to 5. Legacy policy remains unchanged
+until audited cutover; D1 does not bind or enable paid billing.
+
+AssistantStatus requires reserved/available, effective policy, nullable required
+hold, paid readiness and snapshot time; state includes insufficient_credit.
+MyCredits reports actual holds and effective policy. Assistant messages always
+carry turn credit facts; conversation projections, acceptance/replay and message
+pages carry full-conversation totals. Unknown historical attribution stays null.
+CMS reason is now an open string; delta is any signed nonzero safe integer,
+including refunds. Tolerant consumer readers must deploy before activation.
+D2 provider evidence, settlement worker/finality and privacy/export remain deferred.
+Rollback disables new paid admission and preserves funded work; no hold-blind binary.
+
+Additive within this MAJOR (owner 2026-11-11): MyCreditEntry adds optional nullable
+`conversation: {id, title}` for usage entries still readable by their owner,
+including D turns and legacy usage/message links. Deleted, expired, unknown,
+foreign and non-usage conversations return null. Optional nullable
+`eventLabels: {vi, en}` comes directly from the event grant's catalogue labels;
+other entries return null. Clients group by local day and conversation. The
+10-row page, stable cursor and descending ordering are unchanged.
+
 ## 9.5.1-alpha.1 — Đồng bộ rating Google trên thẻ trợ lý (#834)
 
 PATCH: `AssistantPlaceCard.providerRating`, `providerRatingCount` và
