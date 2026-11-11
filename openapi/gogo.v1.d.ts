@@ -11383,11 +11383,11 @@ export interface components {
             /** Format: date-time */
             urlExpiresAt?: string;
         };
-        /** @description Optional source-bound follow-up fields are reserved by contract 10.1 (S1); S3 implements validation/state before any emitter or consumer submits them. Send both or neither: the server enforces the pairing and answers `400 VALIDATION_FAILED` when only one is present (the schema carries no dependency keyword). Until S3 the server refuses either field with the same 400. Typed messages omit both fields. Stale/expired/disabled QA options must never resume a recommendation. */
+        /** @description Optional source-bound follow-up fields use contract 10.1 (S1). S3 validates state and emits branch options while the route stays dark. Send both or neither: the server enforces the pairing and answers `400 VALIDATION_FAILED` when only one is present (the schema carries no dependency keyword). Valid pairs bind only to the latest accessible QA message. Typed messages omit both fields. Stale/expired/disabled QA options must never resume a recommendation. */
         AssistantMessageSend: {
             /**
              * Format: uuid
-             * @description Latest accessible assistant message owning the option. Send only together with followUpOptionId; alone it is a 400. Not accepted until S3.
+             * @description Latest accessible assistant message owning the option. Send only together with followUpOptionId; alone it is a 400.
              */
             replyToMessageId?: string;
             /** @description Opaque server option id, not a place id. Send only together with replyToMessageId; alone it is a 400. S3 validates kind, config, expiry and latest source. */
@@ -11692,7 +11692,7 @@ export interface components {
             confirmedAt: string;
         };
         /**
-         * @description A missing detail the assistant asks for, with quick answers. At most two groups per reply; the user may type instead. Place QA uses place_choice, place_confirm and place_topic. Labels are derived from current identity/eligible topic keys at read time, never retained facts. Option ids are specified in S1 but not emitted before S3/S4 integration.
+         * @description A missing detail the assistant asks for, with quick answers. At most two groups per reply; the user may type instead. Place QA uses place_choice, place_confirm and place_topic. Labels are derived from current identity/eligible topic keys at read time, never retained facts. S3 emits source-bound branch option ids; topic consumers remain pending S4.
          * @example {
          *       "field": "date",
          *       "label": "Which day?",

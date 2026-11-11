@@ -1,3 +1,4 @@
+import { QA_COPY } from '../domain/place-qa/copy';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { APP_CONFIG } from '../../shared/config';
@@ -145,6 +146,7 @@ export class PlaceAnswerReader {
             hasMalformedCapacity(row.text) ? UNSUPPORTED_CAPACITY[locale] : SAFE_LABEL[locale],
             'unknown_token',
           );
+        else if (group.kind === 'notice') rendered = empty(QA_COPY[group.message!][locale], 'ok');
         else if (overflow.has(row.id))
           rendered = {
             ...empty(
@@ -176,7 +178,9 @@ export class PlaceAnswerReader {
             const match = /^\uE000place:([0-9a-f-]+)\uE001$/.exec(token);
             if (match && group.cards.includes(match[1]!)) {
               const p = context.places.get(match[1]!);
-              return p?.available ? safeText(p.name) : SAFE_LABEL[locale];
+              return p?.available
+                ? `${safeText(p.name)}${group.kind === 'clarification' && p.areaLabel ? ` ${locale === 'en' ? 'in' : 'ở'} ${safeText(p.areaLabel)}` : ''}`
+                : SAFE_LABEL[locale];
             }
             unknown = true;
             return SAFE_LABEL[locale];
@@ -199,6 +203,7 @@ export class PlaceAnswerReader {
             if ('none' in o)
               return [
                 {
+                  id: o.id,
                   label: locale === 'en' ? 'None of these' : 'Không phải các quán này',
                   text: locale === 'en' ? 'None of these' : 'Không phải các quán này',
                 },
@@ -208,17 +213,20 @@ export class PlaceAnswerReader {
               if (!p?.available) return [];
               const ordinal = group.cards.indexOf(o.placeId) + 1;
               const label = `${ordinal}. ${safeText(p.name)}`.slice(0, 40);
-              return [{ label, text: String(ordinal) }];
+              return [{ id: o.id, label, text: String(ordinal) }];
             }
             const q = parseAnswerToken(o.query)!;
             const p = context.places.get(q.placeId);
             const a = renderPlaceAnswer(q, context);
             if (!p?.available || !a.eligible) return [];
             const label = TOPIC_LABELS[locale][q.topic];
-            return [{ label, text: label }];
+            return [{ id: o.id, label, text: label }];
           });
           rendered = {
-            text,
+            text:
+              group.kind === 'clarification'
+                ? `${group.legacyArea ? (locale === 'en' ? 'GoGo does not search by old districts. ' : 'GoGo không tra theo quận/huyện cũ. ') : ''}${locale === 'en' ? 'Did you mean' : group.prompt === 'place_confirm' ? 'Ý bạn là' : 'Bạn muốn hỏi chi nhánh nào'}: ${text}?`
+                : text,
             cards: group.cards.map((id) => card(context.places.get(id), id, locale)),
             sources,
             followUps: opts.length

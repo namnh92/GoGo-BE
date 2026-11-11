@@ -83,7 +83,7 @@ describe('atomic response reader boundary', () => {
     expect(result.cards[0]?.facts.priceMin).toBe(12000);
     expect(result.sources).toHaveLength(2);
     expect(result.sources[0]?.checkedAt).toBeUndefined();
-    expect(result.followUps[0]?.options).toEqual([{ label: 'Hours', text: 'Hours' }]); // optional ids are reserved, not emitted by S1
+    expect(result.followUps[0]?.options).toEqual([{ id: 'hours', label: 'Hours', text: 'Hours' }]);
     expect(JSON.stringify(row)).not.toMatch(/Lantern|12000|Fictional Street/);
   });
   it('rechecks fact, source and option eligibility on every connection and suppresses stale card values', async () => {
@@ -257,7 +257,11 @@ describe('atomic response reader boundary', () => {
     const result = (await new PlaceAnswerReader(port).page([row], 'history')).get('choices')!;
     expect(result.cards).toHaveLength(3);
     expect(result.followUps[0]?.options).toHaveLength(4);
-    expect(result.followUps[0]?.options[0]).toEqual({ label: '1. Fictional 1', text: '1' });
+    expect(result.followUps[0]?.options[0]).toEqual({
+      id: 'c0',
+      label: '1. Fictional 1',
+      text: '1',
+    });
     expect(port.placeFacts).toHaveBeenCalledOnce();
     expect(result.text).toContain('Fictional 3');
   });

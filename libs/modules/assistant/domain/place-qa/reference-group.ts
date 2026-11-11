@@ -1,3 +1,4 @@
+import { QA_COPY, type QaCopyKey } from './copy';
 import {
   answerQueries,
   answerTextValidity,
@@ -13,7 +14,9 @@ import {
  */
 export type PlaceAnswerGroup = Readonly<{
   v: 1;
-  kind: 'answer' | 'compare' | 'clarification';
+  kind: 'answer' | 'compare' | 'clarification' | 'notice';
+  message?: QaCopyKey;
+  legacyArea?: true;
   prompt?: 'place_choice' | 'place_confirm';
   cards: readonly string[];
   sources: readonly string[];
@@ -56,10 +59,13 @@ export function parseReferenceGroup(value: unknown, text: string): PlaceAnswerGr
   const g = value as PlaceAnswerGroup;
   if (
     Object.keys(g).some(
-      (k) => !['v', 'kind', 'prompt', 'cards', 'sources', 'options'].includes(k),
+      (k) =>
+        !['v', 'kind', 'prompt', 'cards', 'sources', 'options', 'message', 'legacyArea'].includes(
+          k,
+        ),
     ) ||
     g.v !== 1 ||
-    !['answer', 'compare', 'clarification'].includes(g.kind) ||
+    !['answer', 'compare', 'clarification', 'notice'].includes(g.kind) ||
     !Array.isArray(g.cards) ||
     !Array.isArray(g.sources) ||
     !Array.isArray(g.options) ||
@@ -67,6 +73,22 @@ export function parseReferenceGroup(value: unknown, text: string): PlaceAnswerGr
     g.sources.length > 8 ||
     // Only references and their separators; writer prose is never data.
     !referenceOnlyText(text)
+  )
+    return null;
+  if (g.kind === 'notice')
+    return g.message &&
+      Object.hasOwn(QA_COPY, g.message) &&
+      !text &&
+      !g.cards.length &&
+      !g.sources.length &&
+      !g.options.length &&
+      !g.prompt &&
+      !g.legacyArea
+      ? Object.freeze(g)
+      : null;
+  if (
+    g.message !== undefined ||
+    (g.legacyArea !== undefined && (g.legacyArea !== true || g.kind !== 'clarification'))
   )
     return null;
   if (

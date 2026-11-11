@@ -741,3 +741,65 @@ current-record updates, omission, and ref-only storage. Also run
 `apps/api/test/search.int.spec.ts` against Docker/PostGIS. No new telemetry:
 existing place-detail read/error metrics remain the source. Rollback removes
 the optional projection; no database migration is involved.
+
+## Named-place QA — S3, default off (#864 / #844)
+
+`assistant.place_qa.enabled` is a server flag with `defaultValue: false`.
+S3 does not enable it. Enablement requires the combined S4 + S5 behavioural gate,
+source-bound client compatibility and the separate DEV acceptance chain.
+
+Inside the existing first-text deadline, before `resolveEpisode`, the newest
+text is classified deterministically. Source-bound controls are validated first,
+including while disabled. Injection/action/guide and actual recommendation
+clauses retain the existing guarded path. Single-place factual questions use
+S2's canonical name resolver and fact policy; CMS amenity/suitability labels and synonyms use a separate QA-only vocabulary cache, outside the intent taxonomy; S1's semantic tokens and atomic
+reader render the answer, card and sources. QA never asks Jev, relevance or Haiku,
+never offers a proposal/budget question, and never bypasses admission, funding,
+master readiness, rate limits or credit settlement. Missing direct price uses
+“GoGo chưa có giá đã xác minh của địa điểm này” (owner Q-2).
+
+Recommendation history removes QA assistant rows and their server-associated
+user rows **in SQL before LIMIT**, independently of the flag. Episode-reference
+reads apply the same exclusion. The separate QA view reads the true latest
+accessible assistant message, including failed/empty turns. The send transaction
+records the server's question association; the QA producer durably marks
+`route: place_qa` before resolver/area/fact reads. Finalization merges trace,
+and stop/reaper retain this association. No QA text, chip, token or trace enters
+recommendation episode construction or model requests.
+
+An equality-only name probe is fenced before lookup. A complete probe with no
+whole canonical match restores the ordinary path before emitting a frame; a
+lost turn cannot proceed to a model. Fuzzy name-only matches do not claim a QA
+answer. Factual unresolved names always remain QA and never borrow the opened
+context place. Explicit context-place referents work; previous-card and ordinal
+card referents remain S4.
+
+`trace.placeQa.pending` v1 stores references, closed semantic keys and arguments,
+config/semantic versions, source/assistant message IDs, candidate IDs, option
+IDs, timestamps and a retry count. It expires after 30 minutes, including across
+retries, or earlier when superseded, inaccessible or incompatible. Send
+`replyToMessageId` and `followUpOptionId` together or omit both (`400` for an
+unpaired field). Only a matching option on the latest accessible QA message
+selects a place. Typed ordinals/names ask for explicit confirmation; a confirmed
+name or valid source-bound selection rechecks current availability/eligibility.
+Ambiguous replies receive one retry, then a restatement request. Current-area
+refinement reruns the complete original name query. Old districts require
+explicit branch confirmation; successor mapping is not implemented in S3.
+
+S3 emits no `place_topic` chips. Comparisons are recognized and consume a QA
+turn with neutral “chưa hỗ trợ” copy, with zero model calls. Full compare,
+previous-card references, topic chips/client consumers (S4), and curated aliases
+(S5) remain pending. The reader compatibility floor remains S1 after emission;
+rollback disables the flag and retains readers, filtering and control handling.
+
+Telemetry uses closed class/topic/outcome/tier/row labels. Trace retains
+semantic/config versions and references, never names, text or fact snapshots.
+`assistant_place_qa_total`, S2 resolution metrics, S1 reader/fact metrics and
+`assistant_turn_duration_seconds{route="place_qa"}` distinguish production,
+delivery and failure. Zero calls have known zero model cost; an orphan's QA
+cost is zero only with a durable QA marker and no provider attempts. Ordinary
+unknown-cost treatment and credit reservations remain unchanged.
+
+Validation, the corpus, the authority conflict in existing case vi-065 and the
+reproducible baseline procedure are recorded in
+[864-s3-validation.md](plans/864-s3-validation.md). S3 is not #844 acceptance.

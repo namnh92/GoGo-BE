@@ -1,3 +1,4 @@
+import { PlaceQaService } from './place-qa.service';
 import { flagEnvironmentOf } from '../../shared/feature-flags';
 import { AssistantUsageEvidenceRepository } from '../infrastructure/assistant-usage-evidence.repository';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
@@ -110,6 +111,8 @@ const secondsSince = (startedAtMs: number) => (Date.now() - startedAtMs) / 1000;
 
 export type TurnInput = {
   messageId: string;
+  replyToMessageId?: string | undefined;
+  followUpOptionId?: string | undefined;
   /** The turn's ledger row: its reservation, and where a BYOK violation is marked. */
   ledgerId: string;
   conversationId: string;
@@ -338,6 +341,7 @@ export class AssistantOrchestrator {
     @Inject(ASSISTANT_LLM) private readonly llm: AssistantLlmPort | null,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
     @Optional() private readonly evidence?: AssistantUsageEvidenceRepository,
+    @Optional() private readonly placeQa?: PlaceQaService,
   ) {}
 
   async run(
@@ -357,6 +361,7 @@ export class AssistantOrchestrator {
     try {
       return await this.runStages(input, state, sink, signal, startedAt, deadline, guard);
     } catch (err) {
+      if (state.trace.route === 'place_qa') throw err;
       if (!(err instanceof FirstTextDeadlineError) || state.textStarted) throw err;
       signal.throwIfAborted();
       await sink.emit({ type: 'delta', text: timeoutReply(input.locale) });
@@ -386,6 +391,13 @@ export class AssistantOrchestrator {
     const remaining = () => deadline - Date.now();
 
     // ── context ──────────────────────────────────────────────────────────────
+    // Admission already ran. QA control precedence and lookups share the same
+    // first-text guard, before any episode/recommendation state is touched.
+    if (
+      this.placeQa &&
+      (await guard.run(() => this.placeQa!.handle(input, state, sink, guard.signal, deadline)))
+    )
+      return { status: 'complete' };
     const { history, currentId } = await guard.run(() => this.historyFor(input));
     const taxonomy = await guard.run(() => this.taxonomy.taxonomy());
     const labels = this.taxonomy.labels(taxonomy);

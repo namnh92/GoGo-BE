@@ -32,6 +32,8 @@ export type PlaceFacts = Readonly<{
   available: boolean;
   /** Published canonical identity; unavailable rows expose no previous name. */
   name: string;
+  /** Published dataset identity, used only to distinguish branch confirmations. */
+  areaLabel?: string;
   facts: Readonly<{
     /** Exactly one complete schedule per weekday, with per-interval evidence. */
     hours?: readonly ScheduleFact[];

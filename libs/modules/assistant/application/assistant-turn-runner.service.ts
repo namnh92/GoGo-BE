@@ -207,6 +207,11 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
           // Producer progress only for QA references; visible delivery is measured
           // by the reader within the remaining accepted-turn allowance.
           state.textStarted = true;
+          if (referenceOnly && frame.text === '') {
+            flushDelta();
+            push(frame);
+            return;
+          }
           deltaBuffer += frame.text;
           if (deltaBuffer.length >= DELTA_FLUSH_CHARS) flushDelta();
           else deltaTimer ??= setTimeout(flushDelta, DELTA_FLUSH_MS);
@@ -427,7 +432,7 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
         notice: state.notice,
         error,
         frames: all,
-        trace: { orphaned: true },
+        trace: { ...row.trace, orphaned: true },
         sources: state.sources,
       },
       options,

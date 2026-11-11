@@ -225,11 +225,15 @@ export class AssistantConversationsService {
       context?: AssistantContextInput | undefined;
       attachments?: { uploadKey: string }[] | undefined;
       locale?: 'vi' | 'en' | undefined;
+      replyToMessageId?: string | undefined;
+      followUpOptionId?: string | undefined;
     },
     scope: IdempotencyScope,
   ): Promise<{ replay: boolean; status: number; body: unknown }> {
     const userId = requireUser(actor);
     const conversation = await this.requireConversation(actor, conversationId);
+    if ((input.replyToMessageId === undefined) !== (input.followUpOptionId === undefined))
+      throw AppError.badRequest('VALIDATION_FAILED', 'Send both follow-up fields or neither');
     // Only the server writes place tokens (A-R-04); their delimiters typed by
     // a person are dropped.
     const text = stripTokenDelimiters(input.text).trim();
@@ -352,6 +356,8 @@ export class AssistantConversationsService {
         conversationId,
         userId,
         ledgerId: turn.ledgerId,
+        replyToMessageId: input.replyToMessageId,
+        followUpOptionId: input.followUpOptionId,
         text,
         locale,
         context: context ? { kind: context.kind, id: context.id } : null,

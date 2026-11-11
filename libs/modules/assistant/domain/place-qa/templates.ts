@@ -70,6 +70,7 @@ export type PlaceAnswer = {
   sources: RenderedSource[];
   eligible: boolean;
   unavailable: boolean;
+  tier: 'verified_current' | 'verified_reference' | 'absent' | 'unavailable';
 };
 /** Pure templates over S2's eligible projection. No DB, model, persistence or TTL. */
 export function renderPlaceAnswer(query: AnswerQuery, context: PlaceFactContext): PlaceAnswer {
@@ -77,7 +78,13 @@ export function renderPlaceAnswer(query: AnswerQuery, context: PlaceFactContext)
     en = locale === 'en';
   const p = context.places.get(query.placeId);
   if (!p?.available)
-    return { text: UNAVAILABLE[locale], sources: [], eligible: false, unavailable: true };
+    return {
+      text: UNAVAILABLE[locale],
+      sources: [],
+      eligible: false,
+      unavailable: true,
+      tier: 'unavailable',
+    };
   const name = safeText(p.name) || SAFE_LABEL[locale];
   const decorate = (body: string, fact: VerifiedFact<unknown>) => {
     return (
@@ -114,6 +121,11 @@ export function renderPlaceAnswer(query: AnswerQuery, context: PlaceFactContext)
       sources,
       eligible: facts.length > 0,
       unavailable: false,
+      tier: facts.length
+        ? facts.some((f) => f.tier === 'verified_reference')
+          ? 'verified_reference'
+          : 'verified_current'
+        : 'absent',
     };
   };
   // A direct price question is the one place a missing price is said in words

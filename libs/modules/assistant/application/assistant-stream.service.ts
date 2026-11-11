@@ -43,7 +43,8 @@ export function synthesizeFrames(row: MessageRow): AssistantFrame[] {
   const frames: AssistantFrame[] = [];
   let seq = 0;
   const id = row.id;
-  if (row.text) frames.push({ type: 'delta', seq: ++seq, messageId: id, text: row.text });
+  if (row.text || isPlaceAnswerRow(row))
+    frames.push({ type: 'delta', seq: ++seq, messageId: id, text: row.text });
   for (const card of row.cards ?? [])
     frames.push({ type: 'card', seq: ++seq, messageId: id, card });
   if (row.follow_ups?.length)
@@ -438,6 +439,8 @@ export function renderGroupFrames(
     if (f.type === 'sources') return failed ? [] : [{ ...f, sources: group.sources }];
     if (f.type === 'follow_ups') return failed ? [] : [{ ...f, groups: group.followUps }];
     if (f.type === 'proposal') return [];
+    if (f.type === 'error' && !textSent && group.text)
+      return [{ ...f, error: { ...f.error, message: group.text } }];
     if (f.type === 'done' && failed)
       return [
         {

@@ -1,3 +1,4 @@
+import { PlaceQaService } from '../application/place-qa.service';
 import { AssistantUsageEvidenceRepository } from '../infrastructure/assistant-usage-evidence.repository';
 import { AssistantCreditSpendRepository } from '../infrastructure/assistant-credit-spend.repository';
 import { Module } from '@nestjs/common';
@@ -77,6 +78,7 @@ type BufferConfig = { NODE_ENV: string; REDIS_URL?: string };
   ],
   providers: [
     PlaceAnswerReader,
+    PlaceQaService,
     AssistantRepository,
     AssistantCreditRepository,
     AssistantCreditSpendRepository,

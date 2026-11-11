@@ -30,7 +30,7 @@ export async function renderPlaceTexts(
   );
   const render = (names: ReadonlyMap<string, string>) =>
     items.map(({ text, trace }) =>
-      renderPlaceTokens(text, names, UNKNOWN_PLACE_LABEL[locale], unknown, trace),
+      renderPlaceTokens(text, names, UNKNOWN_PLACE_LABEL[locale], unknown, trace, locale),
     );
   // A malformed answer message contributes no id: it is neutralized without a read.
   const ids = [...new Set(items.flatMap(({ text, trace }) => placeIdsIn(text, trace)))].slice(

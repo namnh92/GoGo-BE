@@ -66,6 +66,12 @@ export class AssistantAvailabilityService {
     });
   }
 
+  placeQaEnabled(): Promise<boolean> {
+    return resolveBooleanFlag(this.db, 'assistant.place_qa.enabled', {
+      environment: flagEnvironmentOf(this.config.APP_ENV),
+    });
+  }
+
   /** The configured limits, or null when any of them is missing. */
   limits(): AssistantLimits | null {
     const daily = this.config.ASSISTANT_USER_DAILY_MAX_MESSAGES;

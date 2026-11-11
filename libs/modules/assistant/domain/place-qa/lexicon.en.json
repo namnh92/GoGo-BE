@@ -1,0 +1,22 @@
+{
+  "guard": "^(?:ignore (?:previous|all) instructions|system prompt|jailbreak|developer mode|(?:how (?:do i|to)|create|make|invite|vote) (?:.* )?(?:room|plan|gogo))",
+  "recommend": "(?:^(?:please )?(?:recommend|suggest|find|show me)|(?:^|[.;!?] | and )(?:recommend|suggest|find)|(?:which|what) (?:place|cafe|restaurant) (?:is )?(?:near|like)| (?:other|similar) (?:places|cafes|restaurants)|^(?:resume recommendations|continue (?:the )?previous request))",
+  "category": "^(?:cafes?|restaurants?|bars?)(?: (?:nearby|near me|in .+|romantic|quiet))*[?.!]*$",
+  "deictic": "^(?:this|that|the) (?:place|cafe|restaurant)$",
+  "prefix": "^(?:(?:what (?:is|are) (?:the )?)?(?:opening hours|price|address|phone number|information|rating)(?: of| for| about)?|tell me about|where is|how far is|does|is) ",
+  "suffix": " (?:opening hours|price|address|rating|(?:have|has) (?:wifi|parking).*|(?:is |are )?open.*|(?:is |are )?closed.*|phone number|menu|suitable.*|(?:have|has) .+)$",
+  "compare": "(?:^compare |(?: with | versus | vs | and ).*(?:which is cheaper|cheaper|more expensive|compare))",
+  "topics": {
+    "hours": "opening hours|(?:is |are )?open|closed",
+    "price": "price|cost|cheaper|expensive",
+    "address": "address|where is",
+    "directions": "directions|how far",
+    "parking": "parking",
+    "amenity": "wi-?fi|air conditioning",
+    "suitability": "suitable|dating",
+    "rating": "rating|stars",
+    "contact": "phone|contact",
+    "overview": "information|tell me about",
+    "out_of_data": "menu|promotion|tables? available|crowded|capacity"
+  }
+}

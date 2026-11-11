@@ -1,0 +1,22 @@
+{
+  "guard": "(?:^(?:(?:go ?go )?(?:tao|lap|len|mo) (?:keo|phong|room|plan|ke hoach)(?= (?:o|tai|cho|voi|di|the nao)|$)|(?:huong dan|cach|lam sao) (?:.* )?(?:go ?go|tao|moi|binh chon)|(?:bo qua|ignore) (?:tat ca |all |previous )?(?:huong dan|chi dan|instructions|prompt)|(?:reveal|show|print) (?:the )?system prompt)|(?:^|[.;!?] )(?:go ?go )?(?:tao|lap|len) (?:keo|phong|plan)(?= (?:o|tai|cho|voi|di|the nao)|$)|^go ?go (?:tao|moi|binh chon|dang nhap|dang ky|tai khoan|lap|len|mo|gui loi moi|chot) .*(?:the nao|lam sao)|(?:^| )va (?:tao|lap) (?:keo|phong)|^gia vang(?: |$)|^mua dien thoai(?: |$))",
+  "recommend": "(?:^(?:hay |vui long |ban |giup minh )?(?:goi y|de xuat|tim (?:cho|quan|nha hang|dia diem)|cho (?:minh|toi) (?:mot |vai |mot vai )?(?:quan|nha hang|dia diem))|(?:^|[.;!?] | va )(?:goi y|de xuat|tim quan)| (?:goi y|de xuat) (?:quan|dia diem)|(?:quan|cho|dia diem) nao (?:gan|giong)| (?:tim|goi y) (?:cho|quan)| (?:co )?(?:quan|cho) (?:nao )?(?:khac|tuong tu)|(?:^| )ru .+ di(?: |$)|^(?:toi nay|cuoi tuan|ca nha|nhom \\d+|\\d+ cu cho|muon (?:ngoi|di)|can cho|di (?:an|choi|bar|bowling|cam trai))(?: |$)|^cho nao |^(?:an chay|an dem|ca phe muoi|ga ran|bun dau mam tom|banh mi)(?: ngon nhat .+)? o dau(?: |$)|^quan an (?:gia dinh|co cho)|^nha hang chay .+ cho \\d+ nguoi|^cafe san vuon .+ cho nhom|^quan pho mo cua khuya gan |^tiep tuc (?:yeu cau|goi y|tim)|^co (?:cho|quan|rap chieu phim|dia diem) .*(?:nao|gi) .+khong$|^gan day co gi vui khong$|^(?:quan|cho|dia diem) nay co ngon khong$)",
+  "category": "^(?:(?:quan |cho |mot |vai )?(?:ca phe|cafe|nha hang|bar|an uong|an toi|di choi))(?: (?:lang man|yen tinh|gan day|o .+|tai .+|cho .+|chill|gia re|ngon|moi))*[?.!]*$",
+  "deictic": "^(?:quan|cho|dia diem)(?: nay| do| ay)?$",
+  "prefix": "^(?:(?:cho (?:minh|toi) biet|thong tin phu hop|thong tin|gio mo cua|gio dong cua|dia chi|so dien thoai|danh gia|gia|cho dau xe|wifi|menu|chi duong)(?: cua| ve| den)?|ve) ",
+  "suffix": " (?:(?:hom nay|ngay mai|thu [2-7]|chu nhat|cn) )?(?:(?:co|khong co) )?(?:mo cua.*|dong cua.*|gia bao nhieu|gia the nao|o dau|dia chi.*|di duong nao|bao xa|(?:cho |bai )?(?:dau|do|gui) xe.*|wifi.*|hop hen ho.*|phu hop.*|di nhom.*|danh gia.*|may sao|so dien thoai.*|menu.*|thuc don.*|khuyen mai.*|con ban.*|dong khong|thong tin.*|co .+ khong)$",
+  "compare": "(?:^so sanh |(?: voi | versus | vs ).*(?:quan nao|re hon|dat hon|tot hon|so sanh)|(?: va ).*(?:quan nao re hon|quan nao dat hon))",
+  "topics": {
+    "hours": "gio mo cua|mo cua|dong cua",
+    "price": "gia bao nhieu|gia the nao|^gia(?: cua| ve)?|(?:^| )gia(?:\\?|$)|re hon|dat hon",
+    "address": "dia chi|o dau",
+    "directions": "di duong nao|chi duong|bao xa",
+    "parking": "(?:cho |bai )?(?:dau|do|gui) xe",
+    "amenity": "wifi|wi-fi|may lanh|dieu hoa",
+    "suitability": "hop hen ho|phu hop|di nhom",
+    "rating": "danh gia|may sao",
+    "contact": "so dien thoai|lien he",
+    "overview": "thong tin|^ve ",
+    "out_of_data": "menu|thuc don|khuyen mai|con ban|dong khong|suc chua"
+  }
+}

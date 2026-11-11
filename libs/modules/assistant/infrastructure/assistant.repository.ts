@@ -313,8 +313,54 @@ export class AssistantRepository {
       where m.conversation_id = ${conversationId}
         and m.created_at < (select created_at from assistant_messages where id = ${beforeMessageId})
         and m.status <> 'streaming' and m.text <> ''
+        and coalesce(m.trace->>'route', '') <> 'place_qa'
+        and not exists (
+          select 1 from assistant_messages qa
+          where qa.conversation_id=m.conversation_id and qa.user_id=m.user_id
+            and qa.role='assistant' and qa.trace->>'route'='place_qa'
+            and qa.trace->>'questionMessageId'=m.id::text
+        )
       order by m.created_at desc, m.id desc limit ${limit}`);
     return rowsOf<MessageRow>(res).reverse();
+  }
+
+  /** The true latest accessible assistant turn, including failed/empty QA turns. */
+  async latestAssistant(
+    userId: string,
+    conversationId: string,
+    beforeMessageId: string,
+  ): Promise<MessageRow | null> {
+    const result = await this.db.execute(sql`
+      select ${MESSAGE_COLUMNS} from assistant_messages m
+      join assistant_conversations c on c.id=m.conversation_id and c.user_id=m.user_id
+      where m.conversation_id=${conversationId} and m.user_id=${userId}
+        and c.last_message_at > ${LIVE} and m.role='assistant'
+        and m.created_at < (select created_at from assistant_messages where id=${beforeMessageId} and user_id=${userId} and conversation_id=${conversationId})
+      order by m.created_at desc,m.id desc limit 1`);
+    return rowsOf<MessageRow>(result)[0] ?? null;
+  }
+
+  /** Durable route fence BEFORE resolver/fact/area reads; never accepts client pair IDs. */
+  async markPlaceQa(
+    userId: string,
+    conversationId: string,
+    messageId: string,
+  ): Promise<string | null> {
+    const result = await this.db.execute(sql`
+      update assistant_messages m set trace=coalesce(m.trace,'{}'::jsonb) || jsonb_build_object('route','place_qa','streamRoute','place_qa')
+      where m.id=${messageId} and m.user_id=${userId} and m.conversation_id=${conversationId}
+        and m.role='assistant' and m.status='streaming'
+        and m.trace->>'questionMessageId' is not null
+      returning m.trace->>'questionMessageId' as question_id`);
+    return rowsOf<{ question_id: string }>(result)[0]?.question_id ?? null;
+  }
+
+  /** A complete non-matching name-only probe restores the ordinary path before any frame. */
+  async clearPlaceQa(userId: string, conversationId: string, messageId: string): Promise<boolean> {
+    const result = await this.db
+      .execute(sql`update assistant_messages set trace=trace-'route'-'streamRoute'
+      where id=${messageId} and user_id=${userId} and conversation_id=${conversationId} and status='streaming' returning id`);
+    return result.rows.length === 1;
   }
 
   /** Bounded episode sources, scoped to the already-authorized conversation. */
@@ -327,6 +373,7 @@ export class AssistantRepository {
       select ${MESSAGE_COLUMNS} from assistant_messages m
       where m.conversation_id = ${conversationId} and m.role = 'user'
         and m.created_at > ${LIVE}
+        and not exists (select 1 from assistant_messages qa where qa.conversation_id=m.conversation_id and qa.user_id=m.user_id and qa.role='assistant' and qa.trace->>'route'='place_qa' and qa.trace->>'questionMessageId'=m.id::text)
         and m.id in (${sql.join(
           messageIds.map((id) => sql`${id}::uuid`),
           sql`, `,
@@ -439,10 +486,11 @@ export class AssistantRepository {
     const assistantRes = await tx.execute(sql`
       insert into assistant_messages as m
         (conversation_id, user_id, role, status, text, locale, context_kind, context_id,
-         lease_owner, lease_expires_at, created_at)
+         lease_owner, lease_expires_at, created_at, trace)
       values (${input.conversationId}, ${input.userId}, 'assistant', 'streaming', '', ${input.locale},
         ${ctxKind}, ${ctxId}, ${input.leaseOwner},
-        clock_timestamp() + (${input.leaseMs} * interval '1 millisecond'), clock_timestamp())
+        clock_timestamp() + (${input.leaseMs} * interval '1 millisecond'), clock_timestamp(),
+        jsonb_build_object('questionMessageId', ${rowsOf<MessageRow>(userRes)[0]!.id}::text))
       returning ${MESSAGE_COLUMNS}`);
     const user = rowsOf<MessageRow>(userRes)[0]!;
     const assistant = rowsOf<MessageRow>(assistantRes)[0]!;
@@ -553,7 +601,7 @@ export class AssistantRepository {
           notice = ${update.notice ? JSON.stringify(update.notice) : null}::jsonb,
           error = ${update.error ? JSON.stringify(update.error) : null}::jsonb,
           frames = ${update.frames ? JSON.stringify(update.frames) : null}::jsonb,
-          trace = ${update.trace ? JSON.stringify(update.trace) : null}::jsonb,
+          trace = coalesce(m.trace, '{}'::jsonb) || ${JSON.stringify(update.trace ?? {})}::jsonb,
           completed_at = now(), lease_owner = null, lease_expires_at = null
         where m.id = ${messageId} and m.status = 'streaming' ${leaseLapsed}
         returning ${MESSAGE_COLUMNS}`);
@@ -665,15 +713,21 @@ export class AssistantRepository {
   async completeLedger(ledgerId: string, status: string, costs: LedgerCosts): Promise<void> {
     await new AssistantUsageEvidenceRepository(this.db).closeDispatch(ledgerId);
     await this.db.execute(sql`
+      with qa_zero as (
+        select u.id from assistant_usage_ledger u join assistant_messages m on m.id=u.message_id
+        where u.id=${ledgerId} and m.status<>'streaming' and m.trace->>'route'='place_qa'
+          and u.jev_calls=0 and u.haiku_calls=0 and ${costs.jevCalls}=0 and ${costs.haikuCalls}=0
+          and not exists(select 1 from assistant_usage_calls c where c.usage_ledger_id=u.id)
+      )
       update assistant_usage_ledger set
         status = ${status}, completed_at = now(),
         jev_calls = ${costs.jevCalls}, jev_model = ${costs.jevModel},
         jev_input_tokens = ${costs.jevInputTokens}, jev_output_tokens = ${costs.jevOutputTokens},
-        jev_cost_usd = ${costs.jevCostUsd},
+        jev_cost_usd = case when id in (select id from qa_zero) then 0::numeric else ${costs.jevCostUsd}::numeric end,
         haiku_calls = ${costs.haikuCalls}, haiku_model = ${costs.haikuModel},
         haiku_input_tokens = ${costs.haikuInputTokens}, haiku_output_tokens = ${costs.haikuOutputTokens},
-        haiku_upstream_cost_usd = ${costs.haikuUpstreamCostUsd},
-        haiku_openrouter_cost_usd = ${costs.haikuOpenrouterCostUsd},
+        haiku_upstream_cost_usd = case when id in (select id from qa_zero) then 0::numeric else ${costs.haikuUpstreamCostUsd}::numeric end,
+        haiku_openrouter_cost_usd = case when id in (select id from qa_zero) then 0::numeric else ${costs.haikuOpenrouterCostUsd}::numeric end,
         haiku_is_byok = ${costs.haikuIsByok}
       where id = ${ledgerId}`);
   }
@@ -685,6 +739,14 @@ export class AssistantRepository {
    * (A-R-02). A runner still alive overwrites it with what it reported.
    */
   async closeLedgerForMessage(messageId: string): Promise<void> {
+    // A durable QA route proves no model dispatch is permitted. Still require
+    // zero attempts, so a corrupt/mixed trace can never launder unknown cost.
+    await this.db.execute(sql`update assistant_usage_ledger u set status=m.status,
+      completed_at=now(),jev_cost_usd=0,haiku_upstream_cost_usd=0,haiku_openrouter_cost_usd=0
+      from assistant_messages m where u.message_id=${messageId} and m.id=u.message_id
+      and u.status='accepted' and m.status<>'streaming' and m.trace->>'route'='place_qa'
+      and u.jev_calls=0 and u.haiku_calls=0
+      and not exists(select 1 from assistant_usage_calls c where c.usage_ledger_id=u.id)`);
     await this.db.execute(sql`
       update assistant_usage_ledger set status = 'unsettled', completed_at = now()
       where message_id = ${messageId} and status = 'accepted'`);
