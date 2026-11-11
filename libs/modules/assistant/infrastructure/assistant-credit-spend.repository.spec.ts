@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import { NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { AssistantCreditSpendRepository } from './assistant-credit-spend.repository';
 const dialect = new PgDialect();
 function harness(overrides: Record<string, unknown> = {}, flags = true) {
   const turn = {
+    accepted_at: '2026-11-11T00:00:00Z',
     funding_source: 'credit',
     reserved_ceiling: 20,
     held_credits: 20,
@@ -46,7 +48,10 @@ function harness(overrides: Record<string, unknown> = {}, flags = true) {
     insert: () => ({ values: vi.fn(async () => undefined) }),
   };
   const db = { transaction: async (fn: (tx: unknown) => unknown) => fn(tx) };
-  return { repo: new AssistantCreditSpendRepository(db as never), queries, turn };
+  const metrics: MetricsPort = new NoopMetrics();
+  vi.spyOn(metrics, 'increment');
+  vi.spyOn(metrics, 'observe');
+  return { repo: new AssistantCreditSpendRepository(db as never, metrics), queries, turn, metrics };
 }
 describe('#851 settlement repository primitives (no worker)', () => {
   it('account lock precedes turn and usage locks; initial application writes a base debit', async () => {
@@ -165,4 +170,41 @@ it('policy A acknowledges a post-final upward revision without debiting or quara
   ).toBe(false);
   const advance = h.queries.find((q) => q.sql.includes('set applied_credits='))!;
   expect(advance.params).toEqual(expect.arrayContaining([10, 0, '2', 'settled']));
+});
+
+it('F-05 counts a post-final 12→10 correction only as a refund, without another release or latency', async () => {
+  const h = harness({
+    finalized_at: 'final',
+    held_credits: 0,
+    applied_credits: 12,
+    applied_cost_revision: '1',
+    cost_revision: '2',
+    state: 'settled',
+  });
+  expect(await h.repo.applyRevision('user', 'usage', 2n, 10, 'dev', true)).toBe('applied');
+  expect(h.metrics.increment).toHaveBeenCalledWith('assistant_credit_refunded_total', {}, 2);
+  expect
+    .soft(
+      vi
+        .mocked(h.metrics.increment)
+        .mock.calls.filter(([name]) => name === 'assistant_credit_released_total'),
+    )
+    .toEqual([]);
+  expect(h.metrics.observe).not.toHaveBeenCalled();
+});
+
+it('F-05 records released hold and latency once on the transition to finality', async () => {
+  const h = harness({
+    held_credits: 8,
+    applied_credits: 12,
+    applied_cost_revision: '1',
+    state: 'reconciling',
+  });
+  expect(await h.repo.applyRevision('user', 'usage', 1n, 12, 'dev', true)).toBe('applied');
+  expect(h.metrics.increment).toHaveBeenCalledWith('assistant_credit_released_total', {}, 8);
+  expect(h.metrics.observe).toHaveBeenCalledExactlyOnceWith(
+    'assistant_credit_settlement_latency_seconds',
+    expect.any(Number),
+    {},
+  );
 });

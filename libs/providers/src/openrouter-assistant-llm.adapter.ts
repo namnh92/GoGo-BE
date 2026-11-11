@@ -95,7 +95,13 @@ export class OpenRouterAssistantLlmAdapter implements AssistantLlmPort {
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
-    const state: StreamState = { buffer: '', usage: null, finish: null, model: null };
+    const state: StreamState = {
+      buffer: '',
+      usage: null,
+      finish: null,
+      model: null,
+      persistedGenerationIds: new Set(),
+    };
     const onAbort = () => void reader.cancel().catch(() => undefined);
     request.signal.addEventListener('abort', onAbort, { once: true });
     try {
@@ -165,6 +171,7 @@ type StreamState = {
   finish: 'stop' | 'length' | 'other' | null;
   model: string | null;
   evidence?: Record<string, unknown>[];
+  persistedGenerationIds: Set<string>;
 };
 
 /** Consumes complete SSE lines from the buffer. */
@@ -284,7 +291,11 @@ async function* drainBillingLines(
   }
   for (const raw of state.evidence ?? []) {
     const id = billingGenerationId(raw.id);
-    if (id) await call?.generation(id);
+    if (id && call && !state.persistedGenerationIds.has(id)) {
+      await call.generation(id);
+      // Only successful persistence suppresses later copies in this attempt.
+      state.persistedGenerationIds.add(id);
+    }
     if (raw.usage && typeof raw.usage === 'object') {
       const receipt = openRouterReceipt('haiku', raw.usage as Record<string, unknown>, 1n, id);
       if (receipt) await call?.receipt(receipt);

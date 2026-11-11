@@ -36,13 +36,21 @@ export async function eraseAssistantDataForUser(tx: Exec, userId: string): Promi
   await eraseCreditSubjectKeys(tx, userId);
   await tx.execute(sql`update assistant_usage_calls set provider_request_id=null,provider_generation_id=null,correlation_id=null
     where usage_ledger_id in (select id from assistant_usage_ledger where user_id=${userId})`);
-  await tx.execute(sql`update outbox_events set actor_id=null,correlation_id=null,payload='{}'::jsonb,
-    resource_id='erased',published_at=coalesce(published_at,now()),last_error=null,next_attempt_at=null
-    where event_type in ('assistant.cost_reconcile','assistant.credit_applied')
-    and resource_id in (select usage_ledger_id::text from assistant_credit_turns where user_id=${userId})`);
-  await tx.execute(sql`update assistant_credit_turns set user_id=null,message_id=null,conversation_id=null,
+  // Account -> turn -> outbox, shared with worker completion. Capture the IDs
+  // before clearing ownership so all delivered/undelivered linkage is scrubbed.
+  const erased =
+    await tx.execute(sql`update assistant_credit_turns set user_id=null,message_id=null,conversation_id=null,
     held_credits=0,state='erased',lease_owner=null,lease_expires_at=null,next_reconcile_at=null,updated_at=now()
-    where user_id=${userId}`);
+    where user_id=${userId} returning usage_ledger_id`);
+  const usageIds = erased.rows.map((r) => (r as { usage_ledger_id: string }).usage_ledger_id);
+  if (usageIds.length)
+    await tx.execute(sql`update outbox_events set actor_id=null,correlation_id=null,payload='{}'::jsonb,
+      resource_id='erased',published_at=coalesce(published_at,now()),last_error=null,next_attempt_at=null
+      where event_type in ('assistant.cost_reconcile','assistant.credit_applied')
+      and resource_id in (${sql.join(
+        usageIds.map((id) => sql`${id}`),
+        sql`,`,
+      )})`);
   await tx.execute(sql`delete from assistant_credit_accounts where user_id = ${userId}`);
   await tx.execute(
     sql`update assistant_credit_ledger set user_id = null where user_id = ${userId}`,
@@ -159,7 +167,7 @@ export type AssistantRetentionReport = {
 
 /** The daily 90-day purge (owner decision). Dry run counts without deleting. */
 export async function purgeAssistantRetention(
-  db: Exec,
+  db: Pick<Db, 'execute' | 'transaction'>,
   dryRun: boolean,
 ): Promise<AssistantRetentionReport> {
   const window = sql.raw(`now() - interval '${RETENTION_DAYS} days'`);
@@ -170,7 +178,10 @@ export async function purgeAssistantRetention(
     and (coalesce(billing_policy,'legacy_allowance_v1')='legacy_allowance_v1'
       or (dispatch_closed_at is not null and cost_finalized_at is not null
         and not exists(select 1 from assistant_credit_turns t where t.usage_ledger_id=assistant_usage_ledger.id
-          and t.state in ('pending','reconciling','quarantined'))))`;
+          and (t.state in ('pending','reconciling','quarantined')
+            or (t.funding_source='credit' and t.state<>'erased'
+              and (t.applied_cost_revision<assistant_usage_ledger.cost_revision
+                or t.applied_cost_revision<t.cost_revision))))))`;
   if (dryRun) {
     const res = await db.execute(sql`
       select
@@ -184,13 +195,30 @@ export async function purgeAssistantRetention(
   }
   const conversations = await db.execute(sql`
     delete from assistant_conversations where last_message_at <= ${window} returning id`);
-  await db.execute(sql`update assistant_usage_calls c set provider_request_id=null,provider_generation_id=null,correlation_id=null
-    where exists(select 1 from assistant_usage_ledger where id=c.usage_ledger_id and accepted_at<=${ledgerWindow} and ${resolved})`);
-  const ledger = await db.execute(sql`
-    delete from assistant_usage_ledger where accepted_at <= ${ledgerWindow} and ${resolved} returning id`);
+  // Discover without locks, then recheck eligibility under the same account
+  // lock as ingestion. Scrub and delete commit together; a correction cannot
+  // land between them. One account per transaction avoids cross-account cycles.
+  const candidates = await db.execute(sql`select id,user_id from assistant_usage_ledger
+    where accepted_at<=${ledgerWindow} and ${resolved}`);
+  let purged = 0;
+  for (const candidate of candidates.rows as { id: string; user_id: string | null }[]) {
+    purged += await db.transaction(async (tx) => {
+      if (candidate.user_id) await lockAssistantAccount(tx, candidate.user_id);
+      const eligible = await tx.execute(sql`select id from assistant_usage_ledger
+        where id=${candidate.id} and user_id is not distinct from ${candidate.user_id}::uuid
+        and accepted_at<=${ledgerWindow} and ${resolved} for update`);
+      if (!eligible.rows.length) return 0;
+      await tx.execute(sql`update assistant_usage_calls c set provider_request_id=null,provider_generation_id=null,correlation_id=null
+        where usage_ledger_id=${candidate.id}`);
+      const deleted = await tx.execute(
+        sql`delete from assistant_usage_ledger where id=${candidate.id} returning id`,
+      );
+      return deleted.rows.length;
+    });
+  }
   return {
     assistantConversationsPurged: conversations.rows.length,
-    assistantLedgerRowsPurged: ledger.rows.length,
+    assistantLedgerRowsPurged: purged,
   };
 }
 

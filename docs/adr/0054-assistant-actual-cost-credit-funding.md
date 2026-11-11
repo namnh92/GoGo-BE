@@ -95,7 +95,9 @@ D2 (#853) implementation decisions:
   safeguards, terminal-message fence and live generation lease. A claim can be
   ambiguous across a crash; recovery never repeats inference. Provider generation
   identity is persisted as soon as a chunk/response supplies it, even if text or
-  answer validation subsequently fails. No prompt/header/token/payload copy is
+  answer validation subsequently fails. Each streaming attempt remembers IDs
+  only after successful persistence; repeated chunk IDs add no database work.
+  A new attempt has its own ID set. No prompt/header/token/payload copy is
   admitted to billing storage. The correlation UUID is metadata, not a token.
 - Numeric JSON cost lexemes use Node >=22 source context, before Number rounding.
   Exact per-call decimals remain unconstrained numeric. Direct Jev uses its
@@ -127,7 +129,10 @@ D2 (#853) implementation decisions:
   either correction. Finality never reopens on a non-final correction receipt.
   One base debit survives refund-to-zero; later deltas are revision-unique signed
   adjustments. Ledger/account/A/H/applied revision/audit/notification marker are
-  atomic. Financial counters emit after commit. Int32 refund overflow and missing
+  atomic. Financial counters emit after commit. Hold-release credits and
+  accepted-to-final latency emit only on the first transition to financial
+  finality; a later downward correction emits refund credits without another
+  hold release or latency sample. Int32 refund overflow and missing
   wallet arithmetic quarantine, preserving funds instead of retrying a debit or
   creating debt. Public contracts remain 10.0.0-alpha.1; D2 adds no wire fields.
 - Migration 0101 adds durable per-usage `recovery_attempts/recovery_next_at`,
@@ -140,7 +145,15 @@ D2 (#853) implementation decisions:
 - The worker has a dedicated outbox consumer (notification fanout excludes its
   events), bounded indexed sweep, expiring per-turn CAS claims, retry/backoff and
   the existing periodic worker_leases row. Discovery holds no usage-row lock while
-  waiting for an account. Recovery reads generation metadata only. A lost ACK
+  waiting for an account. Completion/ACK takes account → turn → outbox locks,
+  matching erasure; identity is discovered before waiting and rechecked after
+  acquiring the account lock. The sweep uses separate existing
+  `(state,next_reconcile_at)` index ranges: pending/reconciling NULLs discover
+  initial reservations, while settled turns require a non-NULL due marker.
+  Ingestion sets that marker atomically with the revision and wakeup; completion
+  checks for an unapplied intervening revision under the same account lock.
+  Settled NULL history is excluded before usage checks (the sweep needs none).
+  Recovery reads generation metadata only. A lost ACK
   replays the revision; a missed wakeup is repaired by the sweep. Financial pause
   keeps inline cost capture and bounded missing-cost recovery running and retains holds.
   Only unknown paid calls with generation identity can GET. The budget is **five
@@ -163,11 +176,16 @@ D2 (#853) implementation decisions:
   attempt/abort/fee coverage are required. Digests reference reviewed evidence;
   they do not certify it themselves. No artifact is shipped by this change.
 - Account erasure under the common lock clears turn/user/message/conversation
-  linkage, call/provider correlations, wallet and queued payload/linkage. Late work
-  rechecks identity and cannot recreate a wallet. Scrubbed financial evidence and
+  linkage, call/provider correlations, wallet and queued payload/linkage. It
+  captures usage IDs while clearing the turns, before scrubbing their outbox
+  records. Late work rechecks identity and cannot recreate a wallet. Scrubbed financial evidence and
   safety incidents remain. Conversation deletion keeps funding. Unresolved D cost
-  is excluded from the 400-day usage purge; resolved provider correlation is
-  removed at that retention boundary. Self export pages own credit facts/holds
+  is excluded from the 400-day usage purge, including a settled paid turn with
+  an unapplied received revision. Retention discovers candidates without locks,
+  then rechecks identity, age, incidents, finality and applied revisions under
+  the ingestion account lock in a transaction per candidate. Correlation scrub
+  and usage deletion commit together. Resolved provider correlation is removed
+  at that retention boundary. Self export pages own credit facts/holds
   and signed ledger entries through the existing byte budget, excluding provider
   identifiers. Existing balance export remains available.
 

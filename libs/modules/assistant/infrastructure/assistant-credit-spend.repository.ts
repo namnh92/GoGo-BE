@@ -308,8 +308,9 @@ export class AssistantCreditSpendRepository {
         values('assistant.credit_applied','assistant_usage',${usageId},${JSON.stringify({ revision: revision.toString() })}::jsonb)`);
       committed = {
         delta: next.delta,
-        released: t.held_credits + next.delta - next.held,
-        finalized: next.finalized,
+        released:
+          t.finalized_at === null && next.finalized ? t.held_credits + next.delta - next.held : 0,
+        finalized: t.finalized_at === null && next.finalized,
         acceptedAt: t.accepted_at,
       };
       return 'applied' as const;

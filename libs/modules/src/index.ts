@@ -638,3 +638,5 @@ export {
   RECEIPT_RECOVERY_BACKOFF_SECONDS,
   RECEIPT_RECOVERY_WINDOW_SECONDS,
 } from '../assistant/domain/receipt-recovery';
+
+export { lockAssistantAccount } from '../shared/assistant-credits';

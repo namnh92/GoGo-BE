@@ -4,6 +4,7 @@ import type { Db } from '@gogo/database';
 import {
   AssistantCreditSettlementService,
   COST_RECONCILE_EVENT,
+  lockAssistantAccount,
   RECEIPT_RECOVERY_BACKOFF_SECONDS,
   RECEIPT_RECOVERY_WINDOW_SECONDS,
 } from '@gogo/modules';
@@ -26,11 +27,16 @@ export class AssistantCreditSettlementWorker {
       .execute(sql`select id,resource_id,extract(epoch from now()-occurred_at)::float8 as lag
       from outbox_events where event_type=${COST_RECONCILE_EVENT} and published_at is null
       and (next_attempt_at is null or next_attempt_at<=now()) order by next_attempt_at nulls first,occurred_at limit ${limit}`);
-    const sweep = await this.db.execute(sql`select usage_ledger_id from assistant_credit_turns
-      where funding_source='credit' and state in ('pending','reconciling','settled') and (next_reconcile_at is null or next_reconcile_at<=now())
-      and exists(select 1 from assistant_usage_ledger u where u.id=usage_ledger_id and u.user_id is not null
-        and (u.cost_finalized_at is null or (funding_source='credit' and u.cost_revision>applied_cost_revision)))
-      order by state,next_reconcile_at nulls first limit ${limit}`);
+    // Separate index ranges: settled NULL schedules are finished history and
+    // must never be visited. Pending/reconciling NULLs discover initial holds;
+    // ingestion durably sets a due marker even if its outbox delivery is lost.
+    const sweep = await this.db.execute(sql`(select usage_ledger_id from assistant_credit_turns
+      where funding_source='credit' and state in ('pending','reconciling')
+      and (next_reconcile_at is null or next_reconcile_at<=now())
+      order by state,next_reconcile_at nulls first limit ${limit})
+      union all (select usage_ledger_id from assistant_credit_turns
+      where funding_source='credit' and state='settled' and next_reconcile_at<=now()
+      order by state,next_reconcile_at limit ${limit}) limit ${limit}`);
     const ids = new Set<string>([
       ...outbox.rows.map((r) => (r as { resource_id: string }).resource_id),
       ...sweep.rows.map((r) => (r as { usage_ledger_id: string }).usage_ledger_id),
@@ -63,7 +69,14 @@ export class AssistantCreditSettlementWorker {
       const delivered = outbox.rows.filter(
         (r) => (r as { resource_id: string }).resource_id === usageId,
       ) as { id: string; lag: number }[];
+      // Unlocked identity discovery; never hold a turn while waiting for account.
+      const subject = await this.db.execute(
+        sql`select user_id from assistant_credit_turns where usage_ledger_id=${usageId}`,
+      );
+      const userId = (subject.rows[0] as { user_id: string | null } | undefined)?.user_id;
+      if (!userId) continue;
       await this.db.transaction(async (tx) => {
+        await lockAssistantAccount(tx, userId);
         // A usage owns its recovery schedule, independent of deliveries/ticks.
         // Exhausted attempts wait for the 24h quarantine deadline.
         const next = sql`case
@@ -82,7 +95,8 @@ export class AssistantCreditSettlementWorker {
           await tx.execute(sql`update assistant_credit_turns set lease_owner=null,lease_expires_at=null,
           retry_count=case when ${retry} then least(retry_count+1,1000000) else 0 end,
           next_reconcile_at=${next}
-          where usage_ledger_id=${usageId} and lease_owner=${owner} returning usage_ledger_id,next_reconcile_at`);
+          where usage_ledger_id=${usageId} and user_id=${userId} and state<>'erased'
+          and lease_owner=${owner} returning usage_ledger_id,next_reconcile_at`);
         if (!owned.rows.length) return;
         const scheduled = (owned.rows[0] as { next_reconcile_at: string | null }).next_reconcile_at;
         for (const event of delivered) {

@@ -212,3 +212,82 @@ Policy A adds `migrations/0101_assistant-receipt-finality.sql`,
 and updates the schema/readiness/ops validation and existing settlement tests.
 Deferred CHECK validation stays outside the short additive migration. No git
 command, deployment, migration execution, remote write or policy switch was used.
+
+## PR #858 — Astra round 1 repairs (2026-11-11)
+
+Scope: the five supplied findings on owner-identified head
+`8c72b276d9854e03d7c2fc291e267f046ded4b42`. No git commands were used to
+verify or change that identity. Production files were copied to
+`/tmp/be858-astra-r1-before/` before editing. The final F-03/F-05 pre-fix run
+restored those original files temporarily with the final unit regressions,
+then restored the fixes in a `finally` block. No dependencies were installed.
+Policy A remains as decided on 2026-11-11: final known receipts, bounded
+missing-paid-cost recovery, no free GET, no post-final upward user debit,
+and normal-path downward refunds. No OpenAPI/schema/migration change.
+
+| Finding | Change and regression                                                                                                                                                                                                                                                                                                                                                                                                              | FAIL-before evidence                                                                                                                                                                                            | After-fix evidence                                                                                               |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| F-01 P1 | Retention excludes settled paid usages with unapplied revisions. Recheck eligibility and ownership, scrub correlations and delete in one transaction under the ingestion account lock. Test retains a 401-day-old 12→10 correction until refund application, then permits purge; a second Testcontainers test probes the account lock while scrub is held before delete.                                                           | DB assertions **BLOCKED**: Testcontainers setup failed before any scenario. Code inspection showed the old state-only predicate and separate autocommit scrub/delete. This is not a reproduced product failure. | DB execution required in DEV; collection/typecheck only here.                                                    |
+| F-02 P2 | Worker completion takes account → turn → outbox locks and rechecks the subject; erasure captures turn usage IDs before clearing linkage and scrubs outbox after turn update. Barrier test pauses worker after its turn write, starts erasure, observes its PG lock wait, then releases completion. Both must commit and queued linkage must stay scrubbed.                                                                         | DB assertions **BLOCKED** by container setup. On the original code the arranged turn/outbox overlap is expected to deadlock; that expectation has not been executed here.                                       | DB execution required in DEV; existing worker ACK/backoff/lease unit cases pass with account identity discovery. |
+| F-03 P2 | Remember successfully persisted generation IDs per streaming attempt. First ID still commits before text; 80 text chunks plus final receipt share one ID, then a second call persists again.                                                                                                                                                                                                                                       | **FAIL**: expected one generation persistence, received **81**.                                                                                                                                                 | **PASS**: one write per attempt, first-ID gate and final receipt both checked.                                   |
+| F-04 P2 | Split pending/reconciling discovery from settled due-marker scanning using the existing `(state,next_reconcile_at)` index; settled NULL history never enters the usage check. No correlated usage checks remain. Test seeds 5,000 finished usage/turn pairs, checks EXPLAIN ANALYZE rows examined across both tables <100, discovers a reservation without enqueue, and refunds a settled revision after losing its outbox wakeup. | DB assertions **BLOCKED** by container setup. The original sweep included settled NULL schedules and per-row usage probes; its plan has not been measured here.                                                 | DB execution required in DEV; worker unit checks cover the new query and existing recovery scheduling.           |
+| F-05 P2 | Release amount and latency emit only when financial finality changes from false to true. A post-final 12→10 correction emits two refunded credits, no released credits, no new latency sample; initial finalization still releases eight and samples once.                                                                                                                                                                         | **FAIL**: late refund also emitted `assistant_credit_released_total({},2)` and one `assistant_credit_settlement_latency_seconds` sample.                                                                        | **PASS** for both late correction and initial-finality cases.                                                    |
+
+Pre-fix evidence logs (local, not committed):
+
+- `/tmp/be858-astra-r1-unit-before-final.log`: 2 failing tests / 19 passing;
+  F-05 reports both release and latency failures.
+- `/tmp/be858-astra-r1-integration-before.log`: selected F-01/F-02/F-04
+  Testcontainers run stopped in `creditDatabase()` with
+  `Could not find a working container runtime strategy`; all 33 cases skipped.
+- `docker info --format '{{.ServerVersion}}'`: permission denied connecting to
+  `/Users/maxnguyen/.docker/run/docker.sock`.
+
+Current local gates: focused unit **31/31 PASS**, typecheck **8/8 packages PASS**
+(26.733s; sandbox Turbo cache warnings), ESLint **PASS** on all 10 changed TS files.
+
+| Final gate                                                      | Result                                                                                                                                                                                                                                                                                                                                                                                       |
+| --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Focused units (adapter, spend repository, worker, erasure seam) | PASS: 31/31 across four files.                                                                                                                                                                                                                                                                                                                                                               |
+| Full `pnpm -s vitest run --project unit --maxWorkers=2`         | 4,155 PASS, one test skipped because its unchanged suite setup failed with `listen EPERM: operation not permitted 127.0.0.1` (`apps/api/src/sentry-request.spec.ts`). 323 files PASS, one suite BLOCKED by the sandbox; 102.19s. The supplied 4,153-test baseline plus three new unit cases totals 4,156. Full green baseline is not claimed. Log: `/tmp/be858-astra-r1-unit-all-final.log`. |
+| Typecheck                                                       | PASS: all eight packages (26.733s); API typecheck also passed after final restoration of the integration spec.                                                                                                                                                                                                                                                                               |
+| ESLint / Prettier                                               | PASS on the ten changed TS / thirteen supported changed files.                                                                                                                                                                                                                                                                                                                               |
+| Integration collection                                          | PASS: 33 settlement + 10 admission + 6 migration = 49 D1/D2 cases, including all four new DB regressions. Whole project inventory: 2,387 cases. No integration hooks or SQL assertions ran during collection.                                                                                                                                                                                |
+| Integration execution                                           | BLOCKED by Docker socket permission/runtime setup. The supplied 315-case integration baseline cannot be verified here; DEV must run its original scope and the new regressions.                                                                                                                                                                                                              |
+
+The existing erasure seam test also checks that multiple preserved usage IDs
+become separate SQL parameters and are scrubbed after the turn update. This
+checks Drizzle parameter construction; it does not replace the DB overlap test.
+
+DEV must obtain actual FAIL-before/PASS-after for the DB cases, using the same
+new tests with the original and repaired production files. Collection is not
+SQL, retention, locking, migration or performance acceptance. In the original
+production version, the F-01 refund case should lose its source usage, the F-01
+lock probe should acquire the unheld account lock, F-02 should reject one of the
+overlapping transactions, and F-04 should examine the seeded settled history.
+
+```sh
+# Focus the four new DB regressions (F-01 has two cases).
+pnpm -s vitest run --project integration apps/api/test/assistant-credit-settlement.int.spec.ts -t '#858 Astra round 1 DB regressions'
+# Run all D1/D2 funding, settlement, privacy, policy-A, and migration regressions.
+pnpm -s vitest run --project integration apps/api/test/assistant-credit-settlement.int.spec.ts apps/api/test/assistant-credit-spend-admission.int.spec.ts apps/api/test/assistant-credit-spend-migration.int.spec.ts
+# Recheck the sandbox-blocked real-HTTP unit test with listen permission.
+pnpm -s vitest run --project unit apps/api/src/sentry-request.spec.ts
+# Recheck the supplied 315-integration baseline in the DEV role's baseline scope.
+pnpm -s test:integration
+```
+
+The new tests reside in `assistant-credit-settlement.int.spec.ts` under
+`#858 Astra round 1 DB regressions`, with IDs F-01/F-02/F-04 in their names.
+The integration baseline remains **unverified here** and is not waived. DEV acceptance and exact-head CI/review remain separate.
+
+Collection-command recovery: `vitest list --json <spec>` consumed the spec
+path as the JSON output destination. The overwritten spec was restored from the
+provided commit using the read-only GitHub file API (blob
+`8dfc5d5d661207d8295a3882362c07350e64a8a2`), then the four regressions were
+reapplied. A prefix comparison confirms that all original test source is
+unchanged except the added imports. Final API typecheck, ESLint and formatting
+passed. Corrected collection uses
+`--json=/tmp/be858-astra-r1-d2-collected.json`, collected all 49 cases including
+the four regressions, and verifies the source SHA-256 before/after. Final suite
+backup: `/tmp/be858-astra-r1-integration-final.ts`. No git command was used.

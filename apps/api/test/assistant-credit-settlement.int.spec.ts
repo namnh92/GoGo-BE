@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { beforeAll, afterAll, beforeEach, describe, it, expect, vi } from 'vitest';
 import type { Db } from '@gogo/database';
 import { NoopMetrics } from '@gogo/observability';
@@ -605,5 +606,239 @@ describe('#853 policy A bounded recovery and finality', () => {
     await repo.ingest(t.usageId, 0, receipt(4n, '0.00010'));
     await service().reconcile(t.usageId, signal);
     expect(await facts(t)).toMatchObject({ a: 10, h: 0, balance: 40, state: 'settled' });
+  });
+});
+
+// Real PostgreSQL regressions in this suite's Testcontainer. Barriers hold exact
+// transaction boundaries; lock waits are observed in pg_stat_activity.
+function barrier() {
+  let release!: () => void;
+  const reached = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { reached, release };
+}
+const dialect = new PgDialect();
+function observedDb(
+  after: (query: { sql: string; params: unknown[] }, tx: Pick<Db, 'execute'>) => Promise<void>,
+) {
+  const wrap = <T extends Pick<Db, 'execute'>>(target: T): T =>
+    new Proxy(target, {
+      get(object, key) {
+        if (key === 'execute')
+          return async (query: SQL) => {
+            const value = await object.execute(query);
+            await after(dialect.sqlToQuery(query), object);
+            return value;
+          };
+        const value = Reflect.get(object, key);
+        return typeof value === 'function' ? value.bind(object) : value;
+      },
+    });
+  return new Proxy(wrap(f.db), {
+    get(object, key) {
+      if (key === 'transaction')
+        return (fn: Parameters<Db['transaction']>[0]) => f.db.transaction((tx) => fn(wrap(tx)));
+      return Reflect.get(object, key);
+    },
+  });
+}
+
+describe('#858 Astra round 1 DB regressions', () => {
+  beforeEach(async () => {
+    // Keep other cases' accounting evidence, without delivering their work here.
+    await f.pool.query(
+      "update outbox_events set published_at=now() where event_type='assistant.cost_reconcile'",
+    );
+    await f.pool.query(
+      "update assistant_credit_turns set next_reconcile_at=now()+interval '1 year' where state in ('pending','reconciling','settled')",
+    );
+  });
+
+  it('F-01 retains a >400-day settled usage with an unapplied 12→10 refund, then purges after application', async () => {
+    const t = await turn();
+    const call = await evidence
+      .observer({ ...t, ledgerId: t.usageId }, 'dev')
+      .start('jev', 'fixture/model');
+    await call.generation('gen-retention-refund');
+    await end(t);
+    await evidence.ingest(t.usageId, 0, receipt(1n, '0.00012', true));
+    await service().reconcile(t.usageId, signal);
+    await f.pool.query(
+      "update assistant_usage_ledger set accepted_at=now()-interval '401 days' where id=$1",
+      [t.usageId],
+    );
+    await evidence.ingest(t.usageId, 0, receipt(2n, '0.00010', true));
+    const dry = await purgeAssistantRetention(f.db, true);
+    await purgeAssistantRetention(f.db, false);
+    expect(
+      (await f.pool.query('select id from assistant_usage_ledger where id=$1', [t.usageId]))
+        .rowCount,
+    ).toBe(1);
+    expect(
+      (
+        await f.pool.query(
+          'select provider_generation_id from assistant_usage_calls where usage_ledger_id=$1',
+          [t.usageId],
+        )
+      ).rows[0],
+    ).toEqual({ provider_generation_id: 'gen-retention-refund' });
+    await service().reconcile(t.usageId, signal);
+    expect(await facts(t)).toMatchObject({ a: 10, h: 0, balance: 40, net: -10 });
+    expect((await purgeAssistantRetention(f.db, true)).assistantLedgerRowsPurged).toBe(
+      dry.assistantLedgerRowsPurged + 1,
+    );
+    await purgeAssistantRetention(f.db, false);
+    expect(
+      (await f.pool.query('select id from assistant_usage_ledger where id=$1', [t.usageId]))
+        .rowCount,
+    ).toBe(0);
+  });
+
+  it('F-01 holds the ingestion account lock through retention correlation scrub and deletion', async () => {
+    const t = await turn();
+    await end(t);
+    await service().reconcile(t.usageId, signal);
+    await f.pool.query(
+      "update assistant_usage_ledger set accepted_at=now()-interval '401 days' where id=$1",
+      [t.usageId],
+    );
+    const scrubbed = barrier(),
+      finish = barrier();
+    const db = observedDb(async (query) => {
+      if (query.sql.includes('update assistant_usage_calls c set provider_request_id=null')) {
+        scrubbed.release();
+        await finish.reached;
+      }
+    });
+    const purge = purgeAssistantRetention(db, false);
+    try {
+      await scrubbed.reached;
+      const lock = await f.pool.query(
+        'select pg_try_advisory_xact_lock(hashtextextended($1,0)) as acquired',
+        [`assistant:${t.userId}`],
+      );
+      expect(lock.rows[0].acquired).toBe(false);
+    } finally {
+      finish.release();
+      await purge;
+    }
+    expect(
+      (await f.pool.query('select id from assistant_usage_ledger where id=$1', [t.usageId]))
+        .rowCount,
+    ).toBe(0);
+  });
+
+  it('F-02 erasure overlapping worker completion cannot deadlock or restore scrubbed queue linkage', async () => {
+    const t = await turn();
+    await evidence.observer({ ...t, ledgerId: t.usageId }, 'dev').start('jev', 'fixture/model');
+    await end(t);
+    await evidence.ingest(t.usageId, 0, receipt(1n, '0.00012', true));
+    const lockedTurn = barrier(),
+      finish = barrier();
+    const db = observedDb(async (query) => {
+      if (
+        query.sql.includes('returning usage_ledger_id,next_reconcile_at') &&
+        query.params.includes(t.usageId)
+      ) {
+        lockedTurn.release();
+        await finish.reached;
+      }
+    });
+    const tick = new AssistantCreditSettlementWorker(db, service()).tick(signal);
+    await lockedTurn.reached;
+    let erasurePid = 0;
+    const erase = f.db.transaction(async (tx) => {
+      await tx.execute(sql`set local statement_timeout='10s'`);
+      erasurePid = Number((await tx.execute(sql`select pg_backend_pid() as pid`)).rows[0]!.pid);
+      await eraseAssistantDataForUser(tx, t.userId);
+    });
+    const outcomes = Promise.allSettled([tick, erase]);
+    try {
+      await vi.waitFor(
+        async () => {
+          expect(erasurePid).toBeGreaterThan(0);
+          const waiting = await f.pool.query(
+            'select wait_event_type from pg_stat_activity where pid=$1',
+            [erasurePid],
+          );
+          expect(waiting.rows[0]?.wait_event_type).toBe('Lock');
+        },
+        { timeout: 3000, interval: 10 },
+      );
+    } finally {
+      finish.release();
+    }
+    expect((await outcomes).map((r) => r.status)).toEqual(['fulfilled', 'fulfilled']);
+    expect(await facts(t)).toMatchObject({ state: 'erased', h: 0 });
+    expect(
+      (
+        await f.pool.query(
+          "select count(*)::int n from outbox_events where resource_id=$1 and event_type in ('assistant.cost_reconcile','assistant.credit_applied')",
+          [t.usageId],
+        )
+      ).rows[0].n,
+    ).toBe(0);
+  });
+
+  it('F-04 excludes settled history from sweep work, discovers initial holds and repairs lost refund wakeups', async () => {
+    const t = await turn();
+    await evidence.observer({ ...t, ledgerId: t.usageId }, 'dev').start('jev', 'fixture/model');
+    await end(t);
+    await evidence.ingest(t.usageId, 0, receipt(1n, '0.00012', true));
+    const settlement = service();
+    await new AssistantCreditSettlementWorker(f.db, settlement).tick(signal);
+    await evidence.ingest(t.usageId, 0, receipt(2n, '0.00010', true));
+    await f.pool.query('update outbox_events set published_at=now() where resource_id=$1', [
+      t.usageId,
+    ]);
+    const initial = await turn(); // Reservation discovery, before any enqueue.
+    await f.pool.query(
+      `with history as (
+      insert into assistant_usage_ledger(user_id,billing_policy,billing_epoch,allowance_source,
+        dispatch_closed_at,cost_finalized_at,cost_revision)
+      select $1,'free_then_actual_cost_v1',1,'credit',now(),now(),1 from generate_series(1,5000)
+      returning id,user_id,accepted_at
+    ) insert into assistant_credit_turns(usage_ledger_id,user_id,accepted_at,policy_key,policy_epoch,
+      funding_source,reserved_ceiling,held_credits,applied_credits,bound_version,state,finalized_at,cost_revision,applied_cost_revision)
+      select id,user_id,accepted_at,'free_then_actual_cost_v1',1,'credit',20,0,12,'fixture-only','settled',now(),1,1 from history`,
+      [t.userId],
+    );
+    await f.pool.query('analyze assistant_credit_turns');
+    await f.pool.query('analyze assistant_usage_ledger');
+    const sweeps: { sql: string; params: unknown[] }[] = [];
+    const db = observedDb(async (q) => {
+      if (q.sql.includes('select usage_ledger_id from assistant_credit_turns')) sweeps.push(q);
+    });
+    const reconcile = vi.spyOn(settlement, 'reconcile');
+    await new AssistantCreditSettlementWorker(db, settlement).tick(signal, 10);
+    expect(reconcile.mock.calls.map(([id]) => id)).toEqual(
+      expect.arrayContaining([initial.usageId, t.usageId]),
+    );
+    expect(await facts(t)).toMatchObject({ a: 10, h: 0, balance: 40 });
+    expect(sweeps).toHaveLength(1);
+    const plan = (
+      await f.pool.query(
+        'explain (analyze, buffers, format json) ' + sweeps[0]!.sql,
+        sweeps[0]!.params,
+      )
+    ).rows[0]['QUERY PLAN'][0].Plan;
+    type Plan = {
+      'Relation Name'?: string;
+      'Actual Rows': number;
+      'Actual Loops': number;
+      'Rows Removed by Filter'?: number;
+      Plans?: Plan[];
+    };
+    const nodes = (p: Plan): Plan[] => [p, ...(p.Plans ?? []).flatMap(nodes)];
+    const examined = nodes(plan)
+      .filter((p) =>
+        ['assistant_credit_turns', 'assistant_usage_ledger'].includes(p['Relation Name'] ?? ''),
+      )
+      .reduce(
+        (n, p) => n + (p['Actual Rows'] + (p['Rows Removed by Filter'] ?? 0)) * p['Actual Loops'],
+        0,
+      );
+    expect(examined).toBeLessThan(100); // A LIMIT alone still examines settled history.
   });
 });
