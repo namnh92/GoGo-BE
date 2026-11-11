@@ -1,0 +1,20 @@
+$ git apply -R <patch of templates.ts>   # tests stay at their fixed version
+$ pnpm -s vitest run --project unit libs/modules/assistant/domain/place-qa/templates.spec.ts libs/modules/assistant/application/place-answer-reader.spec.ts
+(condensed: result lines and error headlines of 98 output lines)
+     × direct price question without an eligible price points to the card (vi) 4ms
+     × direct price question without an eligible price points to the card (en) 1ms
+     × the missing side carries the wording and card pointer; the other side keeps its price (vi) 11ms
+     × the missing side carries the wording and card pointer; the other side keeps its price (en) 1ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+AssertionError: expected [ …(2) ] to deeply equal [ StringContaining{…}, …(1) ]
+AssertionError: expected [ …(2) ] to deeply equal [ StringContaining{…}, …(1) ]
+AssertionError: expected 'Fictional Lantern: GoGo chưa có giá đ…' to be 'Fictional Lantern: GoGo chưa có giá đ…' // Object.is equality
+Expected: "Fictional Lantern: GoGo chưa có giá đã xác minh của địa điểm này. Bạn xem thông tin trong thẻ địa điểm nhé."
+Received: "Fictional Lantern: GoGo chưa có giá đã xác minh của địa điểm này."
+AssertionError: expected 'Fictional Lantern: GoGo has no verifi…' to be 'Fictional Lantern: GoGo has no verifi…' // Object.is equality
+Expected: "Fictional Lantern: GoGo has no verified price for this place. Please see the place card for details."
+Received: "Fictional Lantern: GoGo has no verified price for this place."
+ Test Files  2 failed (2)
+      Tests  4 failed | 58 passed (62)
+exit=1
+$ git apply <patch>   # fix restored

@@ -32,7 +32,7 @@ snapshot = hashlib.sha256(source_rows.encode()).hexdigest()
 report = (evidence / 'validation.md').read_text()
 assert f'Source snapshot: `{snapshot}`' in report, 'Validation is not bound to final source content'
 # Every log the report cites exists, and every round-3 log is cited.
-cited = set(re.findall(r'`(round-3-[a-z-]+\.txt)`', report))
+cited = set(re.findall(r'`(round-3-[a-z0-9-]+\.txt)`', report))
 present = {p.name for p in evidence.glob('round-3-*.txt')}
 assert cited == present, f'Report and round-3 logs differ: {sorted(cited ^ present)}'
 for name in present:

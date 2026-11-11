@@ -1,9 +1,9 @@
 {
   "round": 3,
-  "committedHead": "56df5af34bf33dcd756e3f1e0c0c4e06fb5f0acd",
-  "base": "66ff0ddcd518a46e6a01abf31ec31e142ac275eb",
+  "committedHead": "1dc9ac11f8e97fa3e64b7dbe49c8c856f36fef68",
+  "base": "09b865417949701c7793f53ce0feccbf21c7f6b9",
   "baseRef": "origin/re-design",
-  "basis": "committed head plus the uncommitted round-3 working tree, identified by content hash (files.sha256 and the source snapshot in validation.md), not by a commit SHA",
+  "basis": "committed head plus the uncommitted F-04 working tree, identified by content hash (files.sha256 and the source snapshot in validation.md), not by a commit SHA",
   "manifest": "changed-files.txt = git diff --name-only origin/re-design, plus untracked files",
   "gitUse": "read-only commands (status, diff, show, ls-files, log) and git apply / git apply -R of a local patch to measure FAIL-before; no commit, push, checkout, stash or rebase",
   "roundThreeSourceFiles": [
@@ -26,6 +26,14 @@
   ],
   "historicalHeads": {
     "round1Reviewed": "89483f359cb173f6f574fe1c532c8fd2aba81abd",
-    "round2Reviewed": "56df5af34bf33dcd756e3f1e0c0c4e06fb5f0acd"
-  }
+    "round2Reviewed": "56df5af34bf33dcd756e3f1e0c0c4e06fb5f0acd",
+    "round3PreRebase": "56df5af34bf33dcd756e3f1e0c0c4e06fb5f0acd plus working tree (source snapshot 06c1e7b6418f8360b10227965befbfa9bb4dbac46ca6d0eeda1dd31492fb3517)"
+  },
+  "uncommittedSourceFiles": [
+    "docs/infrastructure.md",
+    "libs/modules/assistant/application/assistant-turn-runner.service.ts",
+    "libs/modules/assistant/application/place-answer-reader.spec.ts",
+    "libs/modules/assistant/domain/place-qa/templates.spec.ts",
+    "libs/modules/assistant/domain/place-qa/templates.ts"
+  ]
 }

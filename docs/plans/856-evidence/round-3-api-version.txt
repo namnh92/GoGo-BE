@@ -1,5 +1,5 @@
 $ pnpm -s api:version <tmp>/be860/base.yaml openapi/gogo.v1.yaml
-started: 2026-11-11T10:29:06Z
+started: 2026-11-11T11:04:35Z
 $ SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register scripts/check-openapi-version.ts <tmp>/be860/base.yaml openapi/gogo.v1.yaml
 ✔ OpenAPI version bumped to 10.1.0-alpha.1
 exit=0

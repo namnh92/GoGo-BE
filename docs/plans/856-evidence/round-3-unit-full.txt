@@ -1,7 +1,7 @@
 $ pnpm -s vitest run --project unit
-started: 2026-11-11T10:28:36Z
+started: 2026-11-11T11:04:01Z
 (condensed: lines matching /Test Files|Tests |Duration|FAIL|×/ of 428 output lines)
- Test Files  326 passed (326)
-      Tests  4253 passed (4253)
-   Duration  27.86s (transform 10.26s, setup 0ms, import 127.95s, tests 68.49s, environment 17ms)
+ Test Files  332 passed (332)
+      Tests  4303 passed (4303)
+   Duration  31.52s (transform 13.67s, setup 0ms, import 152.32s, tests 70.49s, environment 18ms)
 exit=0

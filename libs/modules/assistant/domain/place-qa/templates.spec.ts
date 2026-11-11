@@ -57,6 +57,44 @@ describe('read-time templates over eligible facts', () => {
     }
     expect(render('overview', { ...p, facts: {} }).text).not.toContain('giá');
   });
+  // Sol confirm F-04, rev3 §3.5 / owner Q-2: a direct price question with no
+  // eligible price gets the permitted wording plus the generic card pointer.
+  it.each([
+    [
+      'vi',
+      'GoGo chưa có giá đã xác minh của địa điểm này. Bạn xem thông tin trong thẻ địa điểm nhé.',
+    ],
+    ['en', 'GoGo has no verified price for this place. Please see the place card for details.'],
+  ] as const)(
+    'direct price question without an eligible price points to the card (%s)',
+    (locale, wording) => {
+      const p = fictionalPlace();
+      const { price: _price, ...withoutPrice } = p.facts;
+      expect(render('price', { ...p, facts: withoutPrice }, { locale }).text).toBe(
+        `Fictional Lantern: ${wording}`,
+      );
+      for (const price of [
+        [],
+        [{ ...p.facts.price![0]!, tier: 'unconfirmed' }],
+        [
+          {
+            ...p.facts.price![0]!,
+            source: { kind: 'google', collectedAt: '2026-11-10T00:00:00Z' },
+          },
+        ],
+      ]) {
+        const a = render(
+          'price',
+          { ...p, facts: { ...p.facts, price: price as VerifiedFact<readonly PriceFact[]>[] } },
+          { locale },
+        );
+        expect(a.text).toBe(`Fictional Lantern: ${wording}`);
+        expect(a.text).not.toMatch(/12000|24000|\d{4}-\d{2}-\d{2}/);
+        expect(a.sources).toEqual([]);
+        expect(a.eligible).toBe(false);
+      }
+    },
+  );
   it('reference facts carry their own verification date and never assert current availability', () => {
     const p = fictionalPlace();
     const a = render('price', {

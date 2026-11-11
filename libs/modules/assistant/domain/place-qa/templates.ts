@@ -116,12 +116,15 @@ export function renderPlaceAnswer(query: AnswerQuery, context: PlaceFactContext)
       unavailable: false,
     };
   };
+  // A direct price question is the one place a missing price is said in words
+  // (owner Q-2); it still carries the generic card pointer, like every other
+  // missing fact. Cards and other surfaces keep omitting an unknown price.
   const missing = () =>
     result(
       topic === 'price'
         ? en
-          ? 'GoGo has no verified price for this place.'
-          : 'GoGo chưa có giá đã xác minh của địa điểm này.'
+          ? 'GoGo has no verified price for this place. ' + POINTER.en
+          : 'GoGo chưa có giá đã xác minh của địa điểm này. ' + POINTER.vi
         : en
           ? 'GoGo has no verified data for this question. ' + POINTER.en
           : 'GoGo chưa có dữ liệu đã xác minh về việc này. ' + POINTER.vi,

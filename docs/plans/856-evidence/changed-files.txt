@@ -29,6 +29,7 @@ docs/plans/856-evidence/round-3-boundaries.txt
 docs/plans/856-evidence/round-3-build.txt
 docs/plans/856-evidence/round-3-eslint.txt
 docs/plans/856-evidence/round-3-fail-before-build.txt
+docs/plans/856-evidence/round-3-fail-before-f04.txt
 docs/plans/856-evidence/round-3-fail-before-integration.txt
 docs/plans/856-evidence/round-3-fail-before-unit.txt
 docs/plans/856-evidence/round-3-integration-assistant.txt

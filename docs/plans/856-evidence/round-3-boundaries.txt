@@ -1,6 +1,6 @@
 $ pnpm -s check:boundaries
-started: 2026-11-11T10:29:09Z
+started: 2026-11-11T11:04:38Z
 $ SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register scripts/check-package-boundaries.ts
-checked 787 files under libs/
+checked 797 files under libs/
 OK: no package imports an app, and nothing below modules imports modules.
 exit=0

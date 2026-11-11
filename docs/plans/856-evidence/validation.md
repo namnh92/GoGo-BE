@@ -1,20 +1,33 @@
 # PR #860 round-3 validation (escalation fix)
 
-Source snapshot: `06c1e7b6418f8360b10227965befbfa9bb4dbac46ca6d0eeda1dd31492fb3517`
+Source snapshot: `c98432f8ccb2aec9a91a56b708b2e0268659a6dd7c54f8f411027acb967f55e3`
 
-Basis: committed head `56df5af34bf33dcd756e3f1e0c0c4e06fb5f0acd` on base
-`origin/re-design` `66ff0ddcd518a46e6a01abf31ec31e142ac275eb`, plus the
-uncommitted round-3 working tree. The working tree is identified by content:
-`files.sha256` hashes every manifest entry except itself, and the source
-snapshot above hashes the sorted `sha256  path` lines of every manifest entry
-outside this evidence directory. `changed-files.txt` is
-`git diff --name-only origin/re-design` plus untracked files. The commit that
-lands this tree gets a new SHA; `python3 docs/plans/856-evidence/verify-evidence.py`
-proves the committed content is the content these results were measured on.
+Basis: committed head `1dc9ac11f8e97fa3e64b7dbe49c8c856f36fef68` (the round-3
+fixes, rebased after #858) on base `origin/re-design`
+`09b865417949701c7793f53ce0feccbf21c7f6b9`, plus the uncommitted F-04 working
+tree. The working tree is identified by content: `files.sha256` hashes every
+manifest entry except itself, and the source snapshot above hashes the sorted
+`sha256  path` lines of every manifest entry outside this evidence directory.
+`changed-files.txt` is `git diff --name-only origin/re-design` plus untracked
+files. The commit that lands this tree gets a new SHA;
+`python3 docs/plans/856-evidence/verify-evidence.py` proves the committed
+content is the content these results were measured on.
 
 Every PASS below comes from one gate pass on the frozen tree, 2026-11-11. The
 source snapshot was computed before and after that pass and did not move. Only
 files in this evidence directory were written afterwards.
+
+That pass was the second attempt on the same snapshot. The first attempt, run
+while the machine's load average was about 200, had two failures: the
+pre-existing timing budget in `grounding.spec.ts` ("S2-F-03 … stays cheap",
+1351 ms against a 1000 ms limit) and a Testcontainers "ports not bound within
+10000ms" start-up timeout in `assistant-frame-buffer-redis.int.spec.ts`
+(4 tests skipped). Neither touches code changed here; both passed on the
+second attempt with no source change in between.
+
+The four items in the table were measured on the pre-rebase tree (head
+`56df5af34bf33dcd756e3f1e0c0c4e06fb5f0acd`, base `66ff0ddc`); their FAIL-before
+logs are from that tree. The F-04 section and every gate result are from this tree.
 
 ## Round-3 items
 
@@ -24,6 +37,22 @@ files in this evidence directory were written afterwards.
 | CI build TS6059     | `apps/api/src/assistant/assistant-stream-http.spec.ts` imported six lib files by relative path; `tsconfig.build.json` compiles specs under `src`, so the lib sources fell outside `rootDir`. The spec now imports from `@gogo/modules`, which exports those six symbols.                                                                                                                                                | `turbo run build --filter @gogo/api` on the clean head: exit 2, 122 × TS6059, no other error code (`round-3-fail-before-build.txt`, trimmed). After: `turbo run build --force` exit 0, 2 tasks, 0 cached. |
 | CI contract-compat  | `dependentRequired` removed from `AssistantMessageSend`. Both-or-neither is stated in the schema and both field descriptions and enforced by the server. `openapi/gogo.v1.d.ts` regenerated; CHANGELOG and the plan corrected. Version stays `10.1.0-alpha.1`.                                                                                                                                                          | Contract test asserted the keyword's absence: failed before (`expected … to not have property "dependentRequired"`), passes after.                                                                        |
 | Sol confirm F-02 P2 | This directory regenerated: manifest, hashes, this report, `review-basis.json`, verifier.                                                                                                                                                                                                                                                                                                                               | `verify-evidence.py` PASS on the final tree.                                                                                                                                                              |
+
+### Sol confirm F-04 P2 (added after the rebase)
+
+A direct price question, or one side of a price comparison, with no eligible
+verified price now renders the permitted wording plus the generic card pointer
+(`templates.ts`, rev3 §3.5 / owner Q-2), in vi and en. Cards and every other
+surface still omit an unknown price. Four new tests (direct vi/en in
+`templates.spec.ts`; one-missing-side comparison vi/en in
+`place-answer-reader.spec.ts`) failed on the wording assertion with
+`templates.ts` reverse-applied and pass after: `round-3-fail-before-f04.txt`
+(4 failed / 58 passed → 62 passed).
+
+Two leftovers of the rebase conflict resolution failed gates on `1dc9ac11` and
+are fixed here: an unused `flagEnvironmentOf` import in
+`assistant-turn-runner.service.ts` (eslint; the base had removed its only use)
+and four unformatted table rows in `docs/infrastructure.md` (prettier).
 
 ### How FAIL-before was measured
 
@@ -53,7 +82,7 @@ from a patch (`git apply -R`), the tests run, and the patch applied again. Logs:
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- | ----------------------------------- |
 | `pnpm -s turbo run build --force`                                                                                                                                             | PASS: 2 tasks, 0 cached               | `round-3-build.txt`                 |
 | `pnpm -s turbo run typecheck --force`                                                                                                                                         | PASS: 8 packages, 0 cached            | `round-3-typecheck.txt`             |
-| `pnpm -s vitest run --project unit`                                                                                                                                           | PASS: 4253 tests, 326 files           | `round-3-unit-full.txt`             |
+| `pnpm -s vitest run --project unit`                                                                                                                                           | PASS: 4303 tests, 332 files           | `round-3-unit-full.txt`             |
 | `pnpm -s vitest run --project integration --no-file-parallelism` on `assistant-place-answer.int.spec.ts`, `assistant.int.spec.ts`, `assistant-frame-buffer-redis.int.spec.ts` | PASS: 50 tests, 3 files               | `round-3-integration-assistant.txt` |
 | same command on `privacy-export.int.spec.ts`, `privacy-export-round2.int.spec.ts`                                                                                             | PASS: 53 tests, 2 files               | `round-3-integration-export.txt`    |
 | `pnpm -s api:check`                                                                                                                                                           | PASS                                  | `round-3-api-check.txt`             |
@@ -78,8 +107,6 @@ expect the gate to pass, not a measurement; CI on the committed head decides.
 
 ## Not covered by this round
 
-- Sol confirm F-04 P2 (a fully suppressed price answer omits the generic
-  pointer, `templates.ts`) was outside the four escalated items and is open.
 - Sol proposed an `.github/oasdiff-exceptions.json` entry for the dependency
   keyword. The escalation instead removed the keyword, so no exception and no
   MAJOR are needed. This changes the contract Astra reviewed; the earlier
@@ -96,7 +123,8 @@ snapshots (round-1 fixes on the rebased tree; reviewed head
 F-01/F-02 and Astra F-01/F-02/F-03 with 11 failing-before assertions
 (`round-1-fail-before.txt`). The 4227-unit and 48-integration totals quoted in
 the round-2 reviews were reported by DEV for `56df5af` and were not produced in
-this session.
+this session. The first round-3 pass on the pre-rebase tree measured 4253 unit,
+50 + 53 integration; this tree's results replace it.
 
 ## Integration files and what they cover
 

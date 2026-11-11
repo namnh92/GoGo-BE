@@ -22,6 +22,54 @@ const context = (): PlaceFactContext => ({
   ]),
 });
 afterEach(() => vi.useRealTimers());
+describe('Sol confirm F-04: price comparison with one side missing', () => {
+  it.each([
+    [
+      'vi',
+      'GoGo chưa có giá đã xác minh của địa điểm này. Bạn xem thông tin trong thẻ địa điểm nhé.',
+      '/người',
+    ],
+    [
+      'en',
+      'GoGo has no verified price for this place. Please see the place card for details.',
+      '/person',
+    ],
+  ] as const)(
+    'the missing side carries the wording and card pointer; the other side keeps its price (%s)',
+    async (locale, wording, unit) => {
+      const queries = [FIXTURE_A, FIXTURE_B].map((placeId) =>
+        answerToken({ placeId, locale, topic: 'price' }),
+      );
+      const base = fixtureRow('m', [FIXTURE_A, FIXTURE_B]);
+      const row = {
+        ...base,
+        locale,
+        text: queries.join('\n'),
+        trace: {
+          ...base.trace,
+          placeAnswerGroup: { ...base.trace.placeAnswerGroup, sources: queries, options: [] },
+        },
+      };
+      const harbor = fictionalPlace(FIXTURE_B, 'Fictional Harbor');
+      const { price: _price, ...withoutPrice } = harbor.facts;
+      const places = new Map([
+        [FIXTURE_A, fictionalPlace()],
+        [FIXTURE_B, { ...harbor, facts: withoutPrice }],
+      ]);
+      const result = (
+        await new PlaceAnswerReader({ placeFacts: async () => ({ places }) }).page([row], 'history')
+      ).get('m')!;
+      expect(result.result).toBe('ok');
+      expect(result.text.split('\n')).toEqual([
+        expect.stringContaining(`Fictional Lantern: 12000–24000 VND${unit}`),
+        `Fictional Harbor: ${wording}`,
+      ]);
+      // Unknown price stays hidden on the card; only the known side is a source.
+      expect(result.cards.map((c) => c.facts.priceMin)).toEqual([12000, undefined]);
+      expect(result.sources).toHaveLength(1);
+    },
+  );
+});
 describe('atomic response reader boundary', () => {
   it('reads both compare slots once and uses the same snapshot for prose/cards/source/options', async () => {
     const port = { placeFacts: vi.fn(async (_ids: readonly string[]) => context()) };

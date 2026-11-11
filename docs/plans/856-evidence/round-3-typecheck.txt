@@ -1,30 +1,30 @@
 $ pnpm -s turbo run typecheck --force
-started: 2026-11-11T10:28:07Z
+started: 2026-11-11T11:03:29Z
 • turbo 2.10.11
 
    • Packages in scope: @gogo/api, @gogo/cost-observability, @gogo/database, @gogo/modules, @gogo/observability, @gogo/providers, @gogo/scripts, @gogo/worker
    • Running typecheck in 8 packages
    • Remote caching disabled, using shared worktree cache
 
-@gogo/observability:typecheck: cache bypass, force executing 93a169b3c63586a7
-@gogo/providers:typecheck: cache bypass, force executing 1d098c4b46141617
-@gogo/database:typecheck: cache bypass, force executing f892d33e599442d8
-@gogo/providers:typecheck: $ tsc --noEmit
+@gogo/providers:typecheck: cache bypass, force executing 98c4c471c3ab5c97
+@gogo/database:typecheck: cache bypass, force executing b202344acba89747
+@gogo/observability:typecheck: cache bypass, force executing 8b716ccdba7531ff
 @gogo/observability:typecheck: $ tsc --noEmit
 @gogo/database:typecheck: $ tsc --noEmit
-@gogo/cost-observability:typecheck: cache bypass, force executing cba3e156ee895a4c
+@gogo/providers:typecheck: $ tsc --noEmit
+@gogo/cost-observability:typecheck: cache bypass, force executing ec9db8f09bd220af
 @gogo/cost-observability:typecheck: $ tsc --noEmit
-@gogo/modules:typecheck: cache bypass, force executing 3ded1479c4a74e6f
+@gogo/modules:typecheck: cache bypass, force executing 8336c71bb7ec3c3e
 @gogo/modules:typecheck: $ tsc --noEmit
-@gogo/scripts:typecheck: cache bypass, force executing 9c13edb2257618f0
-@gogo/worker:typecheck: cache bypass, force executing 69454ef61d2f3ea9
-@gogo/api:typecheck: cache bypass, force executing dad42cf422e93646
+@gogo/worker:typecheck: cache bypass, force executing 76c554923c5a05ec
+@gogo/scripts:typecheck: cache bypass, force executing f0563a2e1edb3221
+@gogo/api:typecheck: cache bypass, force executing 87c10aedd73a4a33
+@gogo/api:typecheck: $ tsc --noEmit
 @gogo/worker:typecheck: $ tsc --noEmit
 @gogo/scripts:typecheck: $ tsc --noEmit
-@gogo/api:typecheck: $ tsc --noEmit
 
  Tasks:    8 successful, 8 total
 Cached:    0 cached, 8 total
-  Time:    28.874s 
+  Time:    31.691s 
 
 exit=0

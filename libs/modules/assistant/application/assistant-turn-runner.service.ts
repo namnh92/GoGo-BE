@@ -1,5 +1,4 @@
 import { isPlaceAnswerRow } from '../domain/place-qa/reference-group';
-import { flagEnvironmentOf } from '../../shared/feature-flags';
 import {
   Inject,
   Injectable,
