@@ -152,7 +152,7 @@ export function vnDayMinute(at: Date): { dow: number; minute: number } {
  * unavailable place is excluded or warned, never presented as certain. GoGo has
  * no warning surface on a search result today, so it is excluded.
  */
-function notProviderClosed(): SQL {
+export function notProviderClosed(): SQL {
   return sql`not exists (
     select 1 from place_provider_sources ps
     where ps.place_id = p.id and ps.source_status in ('closed', 'temporarily_closed')
@@ -597,7 +597,7 @@ export function publicVerificationSql(): SQL {
 }
 
 /** Current verified administrative label, shared by search and detail; `p` is the place. */
-function publicAreaSummarySql(locale: 'vi' | 'en'): SQL {
+export function publicAreaSummarySql(locale: 'vi' | 'en'): SQL {
   return sql`(select json_build_object('datasetVersion', p.administrative_dataset_version, 'provinceCode', p.province_code,
           'communeCode', case when u.level = 'COMMUNE' then u.code else null end, 'label', case when ${locale} = 'en' then coalesce(u.name_en, u.name) else u.name end,
           'locale', case when ${locale} = 'en' and u.name_en is not null then 'en' else 'vi' end)

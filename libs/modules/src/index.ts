@@ -649,3 +649,10 @@ export {
 } from '../assistant/domain/receipt-recovery';
 
 export { lockAssistantAccount } from '../shared/assistant-credits';
+
+export type {
+  PlaceFactContext,
+  PlaceFactsReader,
+  PlaceFacts,
+} from '../assistant/domain/place-qa/place-facts';
+export { PLACE_FACTS_READER } from '../assistant/domain/place-qa/place-facts';

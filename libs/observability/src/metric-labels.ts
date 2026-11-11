@@ -32,6 +32,8 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   my_place_submission_display_total: ['outcome'],
   // #774: whole counted-query duration; no query, place or location labels.
   search_count_duration_ms: [],
+  // #857: closed truth-table rows 1..6. Fact duration reuses S1's entry below.
+  assistant_place_resolution_total: ['row'],
 
   // Consumer recovery: action is request | verify | complete (failed also permits send).
   // adapter is sink | ses. No identity, proof, digest or free-text values.

@@ -55,5 +55,7 @@ it('policy A uses an additive migration and bounded durable usage recovery, with
   const journal = JSON.parse(
     readFileSync(path.join(root, 'migrations/meta/_journal.json'), 'utf8'),
   );
-  expect(journal.entries.at(-1).tag).toBe('0101_assistant-receipt-finality');
+  expect(journal.entries.find((e: { idx: number }) => e.idx === 101).tag).toBe(
+    '0101_assistant-receipt-finality',
+  );
 });

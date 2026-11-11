@@ -4,6 +4,8 @@ import { sql } from 'drizzle-orm';
 import { type Db } from '@gogo/database';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { APP_CONFIG, type MediaConfig } from '../../shared/config';
+import { PLACE_NAME_READING_LIMIT } from '../../assistant/domain/place-qa/span';
+import { assertPlaceNameKeyReady } from '../../shared/place-name-key-readiness';
 import { AppError } from '../../shared/app-error';
 import { normalizeGoogleAttribution } from '../../shared/attribution';
 import { iso, num, toPhotos, type PlacePhotoRow } from '../domain/place-dto';
@@ -24,6 +26,28 @@ import { validateAreaSelection } from '../../administrative/application/area-sel
 import { gogoRatingOutcome, toGogoRating } from '../../reviews/domain/gogo-rating';
 import { loadGogoRatings } from '../../reviews/infrastructure/gogo-ratings';
 import { normalizeVietnamese } from '../domain/normalize';
+import { freezeFactContext, projectPlaceFacts, type PlaceFactRow } from '../domain/place-facts';
+import type {
+  PlaceFactContext,
+  PlaceFactsReader,
+} from '../../assistant/domain/place-qa/place-facts';
+import {
+  PLACE_QA_CANDIDATE_LIMIT,
+  PLACE_QA_WEAK_THRESHOLD,
+  PLACE_QA_RETRIEVAL_THRESHOLD,
+  placeNameVariants,
+  resolvePlaceNameOutcome,
+  type PlaceNameArea,
+  type PlaceNameCandidate,
+  type PlaceNameMatches,
+} from '../../assistant/domain/place-qa/resolution';
+import { placeFactsQuery, resolvePlaceNameQuery } from '../infrastructure/place-qa-queries';
+import {
+  placeQaRead,
+  PlaceQaReadError,
+  safePlaceQaReadError,
+  type PlaceQaReadOptions,
+} from '../infrastructure/place-qa-read';
 import {
   SearchRepository,
   vnDayMinute,
@@ -128,13 +152,128 @@ export function decodeCursor(cursor: string): { v: number; id: string; scoredAt:
 
 /** SE-004/005 + SE-010 — search orchestration, reason codes, zero-result telemetry. */
 @Injectable()
-export class SearchService {
+export class SearchService implements PlaceFactsReader {
   constructor(
     private readonly repo: SearchRepository,
     @Inject(DB) private readonly db: Db,
     @Optional() @Inject(APP_CONFIG) private readonly config?: MediaConfig,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
   ) {}
+
+  /** Catalogue-only S2 read; S3 decides route admission and owns pending controls. */
+  async resolvePlaceName(
+    span: string,
+    options: PlaceQaReadOptions & {
+      area?: PlaceNameArea;
+      limit?: number;
+      ambiguous?: boolean;
+      /**
+       * `PlaceNameSpan.alternates`: longer whole-name readings of the same
+       * message. Probed for exact equality only, so a boundary token that may
+       * belong to the name can never make the shorter core a silent unique answer.
+       */
+      alternates?:
+        readonly Readonly<{ text: string; includesArea?: boolean | undefined }>[] | undefined;
+    } = {},
+  ) {
+    const limit = options.limit ?? PLACE_QA_CANDIDATE_LIMIT;
+    if (!Number.isInteger(limit) || limit < 1 || limit > PLACE_QA_CANDIDATE_LIMIT)
+      throw new RangeError('Place resolver limit must be 1..8');
+    if (options.signal?.aborted) {
+      this.metrics.increment('assistant_place_resolution_total', { row: '1' });
+      throw new PlaceQaReadError('cancelled');
+    }
+    const variants = placeNameVariants(span);
+    const alternates = options.alternates ?? [];
+    if (
+      alternates.length + 1 > PLACE_NAME_READING_LIMIT ||
+      alternates.some(
+        (a) => !a.text.trim() || a.text.length > 120 || /[\uE000\uE001]/u.test(a.text),
+      ) ||
+      options.ambiguous ||
+      options.area?.kind === 'unresolved' ||
+      !variants.length ||
+      span.length > 120 ||
+      /[\uE000\uE001]/u.test(span)
+    ) {
+      this.metrics.increment('assistant_place_resolution_total', { row: '2' });
+      return resolvePlaceNameOutcome(
+        { candidates: [], overflow: false, areaMismatch: false },
+        { ambiguous: true },
+      );
+    }
+    const readings = {
+      scoped: alternates.filter((a) => !a.includesArea).flatMap((a) => placeNameVariants(a.text)),
+      unscoped: alternates.filter((a) => a.includesArea).flatMap((a) => placeNameVariants(a.text)),
+    };
+    const matches = await placeQaRead(this.db, 1000, options, async (read) => {
+      await assertPlaceNameKeyReady(read);
+      await read.execute(sql`select
+        set_config('pg_trgm.word_similarity_threshold', ${String(PLACE_QA_RETRIEVAL_THRESHOLD)}, true),
+        set_config('pg_trgm.similarity_threshold', ${String(PLACE_QA_RETRIEVAL_THRESHOLD)}, true)`);
+      const lookup = async (
+        area?: Extract<PlaceNameArea, { kind: 'current' }>,
+      ): Promise<PlaceNameMatches> => {
+        const result = await read.execute(resolvePlaceNameQuery(variants, limit, area, readings));
+        const rows = result.rows as (PlaceNameCandidate & { distinct_count: number })[];
+        return {
+          candidates: rows.slice(0, limit).map(({ id, exact, score }) => ({ id, exact, score })),
+          overflow: (rows[0]?.distinct_count ?? 0) > limit,
+          areaMismatch: false,
+        };
+      };
+      const currentArea = options.area?.kind === 'current' ? options.area : undefined;
+      const scoped = await lookup(currentArea);
+      // Exactly one relaxation pass, inside the same total deadline. It offers
+      // elsewhere candidates for choice; it can never silently answer there.
+      if (
+        currentArea &&
+        !scoped.overflow &&
+        !scoped.candidates.some((c) => c.exact || c.score >= Math.fround(PLACE_QA_WEAK_THRESHOLD))
+      )
+        return { ...(await lookup()), areaMismatch: true };
+      return scoped;
+    }).catch((error: unknown) => {
+      this.metrics.increment('assistant_place_resolution_total', { row: '1' });
+      throw safePlaceQaReadError(error);
+    });
+    const result = resolvePlaceNameOutcome(matches, options);
+    this.metrics.increment('assistant_place_resolution_total', { row: String(result.row) });
+    return result;
+  }
+
+  /** One bounded batched fact snapshot for S1's group renderer. No provider/model work. */
+  async placeFacts(
+    ids: readonly string[],
+    options: Parameters<PlaceFactsReader['placeFacts']>[1],
+  ): Promise<PlaceFactContext> {
+    const distinct = [...new Set(ids)];
+    if (
+      distinct.length > 30 ||
+      distinct.some(
+        (id) => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id),
+      )
+    )
+      throw new RangeError('Place facts require at most 30 canonical UUIDs');
+    // No duration metric here: S1's PlaceAnswerReader owns
+    // assistant_place_facts_duration_seconds and its read-surface label.
+    try {
+      return await placeQaRead(this.db, 2000, options, async (read) => {
+        const result = distinct.length
+          ? await read.execute(placeFactsQuery(distinct))
+          : { rows: [] };
+        const now = new Date();
+        const places = new Map<string, ReturnType<typeof projectPlaceFacts>>(
+          distinct.map((id) => [id, { id, available: false, name: '', facts: {} }]),
+        );
+        for (const row of result.rows as PlaceFactRow[])
+          places.set(row.id, projectPlaceFacts(row, now));
+        return freezeFactContext(places);
+      });
+    } catch (error) {
+      throw safePlaceQaReadError(error);
+    }
+  }
 
   /**
    * SE-006 — one upsert into the daily aggregate.
