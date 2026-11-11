@@ -100,7 +100,7 @@ describe('#829 S2 catalogue migration and writer readiness', () => {
       "insert into assistant_credit_ledger(delta,reason,usage_ledger_id) values(-1,'message_spent',gen_random_uuid())",
     );
     for (const statement of [
-      "insert into assistant_credit_ledger(delta,reason,usage_ledger_id) values(-2,'message_spent',gen_random_uuid())",
+      "insert into assistant_credit_ledger(delta,reason,usage_ledger_id) values(0,'message_spent',gen_random_uuid())",
       `insert into assistant_credit_ledger(delta,reason,credit_event_id) values(5,'review_published','${CREDIT_SEEDS[2].id}')`,
       `insert into assistant_credit_ledger(delta,reason,credit_event_id,entitlement_key) values(5,'wrong_key','${CREDIT_SEEDS[2].id}','key')`,
       "insert into assistant_credit_ledger(delta,reason) values(50,'unbound')",

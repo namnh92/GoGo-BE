@@ -624,3 +624,9 @@ export { InboxReadAllWorker } from '../notifications/application/inbox-read-oper
 
 export { assertCreditWriterReady } from '../shared/credit-catalogue';
 export { CreditEvaluator } from '../shared/credit-evaluator';
+
+export { publicErrorDetails, type AssistantInsufficientCreditDetails } from '../shared/app-error';
+
+export { assertAssistantCreditSpendReady } from '../shared/assistant-credit-readiness';
+
+export { reserveCredits } from '../assistant/domain/credit-cost';

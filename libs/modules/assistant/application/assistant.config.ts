@@ -5,6 +5,8 @@ export type AssistantConfig = {
   OPENROUTER_ASSISTANT_API_KEY: string;
   /** Jev, OpenRouter-direct (gogo_be_<env>) — GoGo-BE#731. */
   OPENROUTER_API_KEY: string;
+  ASSISTANT_CREDIT_BOUND_USD?: string | undefined;
+  ASSISTANT_CREDIT_BOUND_VERSION?: string | undefined;
   ASSISTANT_USER_DAILY_MAX_MESSAGES?: number | undefined;
   ASSISTANT_USER_PER_MINUTE_MAX_MESSAGES: number;
   ASSISTANT_MONTHLY_MAX_USD?: number | undefined;

@@ -13,6 +13,7 @@ import {
   resolveR2AccountId,
 } from '@gogo/providers';
 import {
+  reserveCredits,
   type ConfigCatalogueEntry,
   EDGE_AUTH_TOKEN_MIN_LENGTH,
   parseExportKeyring,
@@ -591,6 +592,25 @@ const envSchema = z
      * Counted against the ceiling for a turn whose cost is not (yet) reported —
      * worst case, so an unknown can only stop spend sooner.
      */
+    // Exact versioned billing bound, independently audited from the calibrated budget ceiling.
+    ASSISTANT_CREDIT_BOUND_USD: z
+      .string()
+      .max(1000)
+      .refine((s) => {
+        try {
+          reserveCredits(s);
+          return true;
+        } catch {
+          return false;
+        }
+      }, 'Invalid positive billing bound or credit overflow')
+      .optional(),
+    ASSISTANT_CREDIT_BOUND_VERSION: z
+      .string()
+      .min(1)
+      .max(200)
+      .regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/)
+      .optional(),
     ASSISTANT_TURN_COST_CEILING_USD: z.coerce.number().min(0).max(1).default(0.005),
     /** End-to-end first-text deadline (Jev + retrieval + Haiku). Never above 15 s. */
     ASSISTANT_FIRST_TEXT_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(15_000).default(15_000),
@@ -618,6 +638,20 @@ const envSchema = z
     SECRETS_READINESS_FILE: z.string().default(''),
   })
   .superRefine((env, ctx) => {
+    if (
+      (env.ASSISTANT_CREDIT_BOUND_USD === undefined) !==
+      (env.ASSISTANT_CREDIT_BOUND_VERSION === undefined)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [
+          env.ASSISTANT_CREDIT_BOUND_USD === undefined
+            ? 'ASSISTANT_CREDIT_BOUND_USD'
+            : 'ASSISTANT_CREDIT_BOUND_VERSION',
+        ],
+        message: 'Billing bound USD and version must be configured together',
+      });
+    }
     if (env.AUTH_RECOVERY_MAIL_ADAPTER === 'ses') {
       const required = [
         'AUTH_RECOVERY_MAIL_SENDER',
@@ -952,6 +986,8 @@ const envSchema = z
  * endpoint. `env.spec.ts` derives the set from a deployed fixture and pins it.
  */
 export const CONDITIONALLY_REQUIRED_ENV_KEYS = [
+  'ASSISTANT_CREDIT_BOUND_USD',
+  'ASSISTANT_CREDIT_BOUND_VERSION',
   'AUTH_RECOVERY_MAIL_SENDER',
   'AUTH_RECOVERY_MAIL_REGION',
   'AUTH_RECOVERY_MAIL_CONFIGURATION_SET',

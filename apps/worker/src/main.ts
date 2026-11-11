@@ -1,3 +1,4 @@
+import { assertAssistantCreditSpendReady } from '@gogo/modules';
 import os from 'node:os';
 import { createDb } from '@gogo/database';
 import {
@@ -211,6 +212,7 @@ async function bootstrap(): Promise<void> {
     runtime: { metrics: registry, operation: NEON_POSTGRES_OPERATIONS.query },
   });
   await assertCreditWriterReady(db);
+  await assertAssistantCreditSpendReady(db);
   const creditEvaluator = new CreditEvaluator(db, {
     environment: process.env.APP_ENV ?? 'dev',
     subjectKeySecret: process.env.CREDITS_SUBJECT_KEY_SECRET ?? '',

@@ -1,3 +1,4 @@
+import { AssistantCreditSpendRepository } from '../infrastructure/assistant-credit-spend.repository';
 import { spendAssistantCredit } from '../../shared/assistant-credits';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { Db } from '@gogo/database';
@@ -59,6 +60,7 @@ export class AssistantConversationsService {
     @Inject(ASSISTANT_FRAME_BUFFER) private readonly buffer: AssistantFrameBuffer,
     @Inject(ASSISTANT_INSTANCE_ID) private readonly instanceId: string,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
+    private readonly spend: AssistantCreditSpendRepository,
   ) {}
 
   status(actor: Actor) {
@@ -195,10 +197,13 @@ export class AssistantConversationsService {
       cursor: decodeCursor(query.cursor),
     });
     const page = rows.slice(0, query.limit);
+    const facts = await this.spend.facts(this.db, requireUser(actor), conversationId);
+    for (const r of page) if (r.role === 'assistant') r.credits = facts.turns[r.id]!;
     const items = await this.views(actor, page);
     const last = page[page.length - 1];
     return {
       items,
+      conversationCredits: facts.credits,
       nextCursor: rows.length > query.limit && last ? encodeCursor(last.created_at, last.id) : null,
     };
   }
@@ -247,21 +252,19 @@ export class AssistantConversationsService {
         : conversation.context_kind && conversation.context_id
           ? { kind: conversation.context_kind, id: conversation.context_id, label: '' }
           : null;
-      const limits = await this.availability.requireReady();
+      await this.availability.requireReady();
       const locale = input.locale ?? 'vi';
       const turn = await this.db.transaction(async (tx) => {
+        const control = await this.spend.lockControl(tx);
         await this.repo.lockAccount(tx, userId);
         // A-R-01: the budget is re-read under one lock shared by every account
         // and reserved (the ledger row) before that lock is released.
         await this.repo.lockBudget(tx);
-        const acceptedAt = new Date();
-        await this.availability.requireReady(tx, acceptedAt);
-        const allowanceSource = await this.availability.requireAllowance(
-          tx,
-          userId,
-          limits,
-          acceptedAt,
-        );
+        await this.repo.lockAdmissionSubject(tx, userId, conversationId);
+        const acceptedAt = await this.repo.acceptanceTime(tx);
+        const limits = await this.availability.requireReady(tx, acceptedAt);
+        const funding = await this.availability.funding(tx, userId, limits, acceptedAt, control);
+        const { allowanceSource } = funding;
         let inserted;
         try {
           inserted = await this.repo.insertTurn(tx, {
@@ -274,6 +277,8 @@ export class AssistantConversationsService {
             leaseMs: LEASE_MS,
             acceptedAt,
             allowanceSource,
+            billingPolicy: control.policy_key,
+            billingEpoch: control.epoch,
           });
         } catch (err) {
           if (isUniqueViolation(err)) {
@@ -284,8 +289,25 @@ export class AssistantConversationsService {
           }
           throw err;
         }
-        if (allowanceSource === 'credit') await spendAssistantCredit(tx, userId, inserted.ledgerId);
+        if (control.policy_key === 'legacy_allowance_v1') {
+          if (allowanceSource === 'credit')
+            await spendAssistantCredit(tx, userId, inserted.ledgerId);
+        } else {
+          await this.spend.reserveWithin(tx, {
+            usageId: inserted.ledgerId,
+            userId,
+            messageId: inserted.assistant.id,
+            conversationId,
+            acceptedAt,
+            control,
+            required: funding.required,
+            boundVersion: funding.boundVersion,
+          });
+        }
+        const facts = await this.spend.facts(tx, userId, conversationId);
+        inserted.assistant.credits = facts.turns[inserted.assistant.id]!;
         const body = {
+          conversationCredits: facts.credits,
           userMessage: messageView(inserted.user, {
             context: context?.label ? context : null,
             sources: [],
@@ -315,9 +337,13 @@ export class AssistantConversationsService {
             'Original request is still processing',
           );
         }
-        return { ...inserted, body };
+        return { ...inserted, body, funding: allowanceSource === 'daily' ? 'free' : 'credit' };
       });
       this.metrics.increment('assistant_admission_total', { outcome: 'accepted' });
+      this.metrics.increment('assistant_credit_admission_total', {
+        funding: turn.funding,
+        outcome: 'accepted',
+      });
       this.runner.start({
         messageId: turn.assistant.id,
         conversationId,
@@ -329,6 +355,16 @@ export class AssistantConversationsService {
       });
       return { replay: false, status: 202, body: turn.body };
     } catch (err) {
+      this.metrics.increment('assistant_credit_admission_total', {
+        funding:
+          err instanceof AppError && err.code === 'ASSISTANT_INSUFFICIENT_CREDIT'
+            ? 'credit'
+            : 'unavailable',
+        outcome:
+          err instanceof AppError && err.code === 'ASSISTANT_INSUFFICIENT_CREDIT'
+            ? 'insufficient_credit'
+            : 'rejected',
+      });
       await releaseIdempotent(this.db, claim).catch(() => undefined);
       throw err;
     }
@@ -346,8 +382,14 @@ export class AssistantConversationsService {
       this.repo.findMessage(userId, record.conversationId, record.assistantMessageId),
     ]);
     if (!user || !assistant) throw AppError.notFound();
+    const facts = await this.spend.facts(this.db, userId, record.conversationId);
+    assistant.credits = facts.turns[assistant.id]!;
     const [userView, assistantView] = await this.views(actor, [user, assistant]);
-    return { userMessage: userView, assistantMessage: assistantView };
+    return {
+      userMessage: userView,
+      assistantMessage: assistantView,
+      conversationCredits: facts.credits,
+    };
   }
 
   /** Stop: idempotent; the message as stored after stopping. */

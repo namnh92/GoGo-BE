@@ -28,7 +28,10 @@ export async function creditIndexes(pool: Pool) {
     await pool.query(statement);
 }
 /** A populated S1 -> S2 forward migration, with indexes built outside its transaction. */
-export async function creditDatabase(beforeS2?: (pool: Pool) => Promise<void>) {
+export async function creditDatabase(
+  beforeS2?: (pool: Pool) => Promise<void>,
+  beforeD1?: (pool: Pool) => Promise<void>,
+) {
   const container = await new PostgreSqlContainer('postgis/postgis:16-3.4').start();
   const pool = new Pool({ connectionString: container.getConnectionUri(), max: 12 });
   const db = drizzle(pool, { schema });
@@ -43,8 +46,21 @@ export async function creditDatabase(beforeS2?: (pool: Pool) => Promise<void>) {
       await cp(path.join(migrations, `${entry.tag}.sql`), path.join(folder, `${entry.tag}.sql`));
     await migrate(db, { migrationsFolder: folder });
     await beforeS2?.(pool);
+    if (beforeD1) {
+      const d1Journal = JSON.parse(
+        await readFile(path.join(migrations, 'meta/_journal.json'), 'utf8'),
+      );
+      d1Journal.entries = d1Journal.entries.filter((e: { idx: number }) => e.idx < 99);
+      await writeFile(path.join(folder, 'meta/_journal.json'), JSON.stringify(d1Journal));
+      for (const entry of d1Journal.entries)
+        await cp(path.join(migrations, entry.tag + '.sql'), path.join(folder, entry.tag + '.sql'));
+      await migrate(db, { migrationsFolder: folder });
+      await creditIndexes(pool);
+      await beforeD1(pool);
+    }
     await migrate(db, { migrationsFolder: migrations });
     await creditIndexes(pool);
+    await assistantSpendIndexes(pool);
   } catch (error) {
     await pool.end();
     await container.stop();
@@ -97,6 +113,14 @@ export async function migrateWithCreditIndexes(db: Db, config: Parameters<typeof
     .split(';')
     .filter((s) => s.trim()))
     await db.execute(sql.raw(statement));
+  const spend = await db.execute(sql`select to_regclass('assistant_credit_spend_control') as name`);
+  if (!(spend.rows[0] as { name: string | null }).name) return;
+  const spendScript = await readFile(creditOps('index-assistant-credit-spend.sql'), 'utf8');
+  for (const s of spendScript
+    .replace(/--[^\n]*/g, '')
+    .split(';')
+    .filter((s) => s.trim()))
+    await db.execute(sql.raw(s));
 }
 
 /** Test grants acquire the same tiers as production's decision entry. */
@@ -114,4 +138,14 @@ export async function grantLockedSubmissionCredits(
   const accounts = [userId, ...legacy.flatMap((row) => (row.user_id ? [row.user_id] : []))];
   await lockCreditRecipients(tx, accounts);
   await grantSubmissionCredits(tx, userId, submissionId, venue, evidence, base, new Set(accounts));
+}
+
+/** D1 builds the existing-ledger index outside the migration transaction. */
+export async function assistantSpendIndexes(pool: Pool) {
+  const script = await readFile(creditOps('index-assistant-credit-spend.sql'), 'utf8');
+  for (const s of script
+    .replace(/--[^\n]*/g, '')
+    .split(';')
+    .filter((s) => s.trim()))
+    await pool.query(s);
 }

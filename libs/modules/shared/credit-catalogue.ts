@@ -162,7 +162,20 @@ export async function assertCreditWriterReady(db: CreditExec): Promise<void> {
   );
   await db.execute(sql`select labels,trigger_event_type,trigger_schema_version,condition,condition_version,audience,dedup_scope,
     amount,starts_at,ends_at,status,closed_reason,max_per_user,max_per_group,budget_total,budget_used from credit_events limit 0`);
-  for (const index of CREDIT_INDEXES) {
+  await assertCreditIndexes(db, CREDIT_INDEXES);
+}
+export type CreditIndexDefinition = {
+  name: string;
+  table: string;
+  keys: readonly string[];
+  unique: boolean;
+  predicate?: string;
+};
+export async function assertCreditIndexes(
+  db: CreditExec,
+  indexes: readonly CreditIndexDefinition[],
+): Promise<void> {
+  for (const index of indexes) {
     const result = await db.execute(sql`select i.indexrelid from pg_index i
       join pg_class x on x.oid=i.indexrelid
       where x.oid=to_regclass(${index.name}) and i.indrelid=to_regclass(${index.table})
@@ -175,7 +188,7 @@ export async function assertCreditWriterReady(db: CreditExec): Promise<void> {
           index.keys.map((key) => sql`${key}`),
           sql`, `,
         )}]::text[]
-      and regexp_replace(replace(coalesce(pg_get_expr(i.indpred,i.indrelid),''),'::text',''),'[[:space:]()]','','g')=${'predicate' in index ? index.predicate : ''}`);
+      and regexp_replace(replace(coalesce(pg_get_expr(i.indpred,i.indrelid),''),'::text',''),'[[:space:]()]','','g')=${index.predicate ?? ''}`);
     if (!result.rows.length)
       throw AppError.serviceUnavailable(
         'CREDIT_INDEX_NOT_READY',
@@ -202,5 +215,21 @@ export async function lockSyncCreditRules(tx: CreditExec): Promise<void> {
       'CREDIT_SEED_MISMATCH',
       'Sync credit rule is missing or incompatible',
       false,
+    );
+}
+
+export const RESERVED_CREDIT_KEYS = [
+  'message_spent',
+  'assistant_usage',
+  'assistant_usage_adjustment',
+] as const;
+export function validateCreditEventKey(key: string): void {
+  if (
+    !/^[a-z][a-z0-9_]{2,63}$/.test(key) ||
+    (RESERVED_CREDIT_KEYS as readonly string[]).includes(key)
+  )
+    throw AppError.badRequest(
+      'INVALID_CREDIT_EVENT_KEY',
+      'Credit event key is reserved or invalid',
     );
 }

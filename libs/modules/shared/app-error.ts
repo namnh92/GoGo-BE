@@ -11,6 +11,47 @@ export type DuplicateCandidate = {
   nameSimilarity: number;
 };
 
+export type AssistantInsufficientCreditDetails = {
+  creditBalance: number;
+  creditReserved: number;
+  creditAvailable: number;
+  requiredCredits: number;
+  remainingToday: 0;
+  resetsAt: string;
+};
+/** Explicit transport allowlist: reconstruct fields; never forward an arbitrary payload. */
+export function publicErrorDetails(
+  error: AppError,
+): AssistantInsufficientCreditDetails | undefined {
+  const d = error.options.details;
+  if (error.code !== 'ASSISTANT_INSUFFICIENT_CREDIT' || error.httpStatus !== 409 || !d)
+    return undefined;
+  const {
+    creditBalance,
+    creditReserved,
+    creditAvailable,
+    requiredCredits,
+    remainingToday,
+    resetsAt,
+  } = d;
+  if (
+    ![creditBalance, creditReserved, creditAvailable, requiredCredits].every(
+      (n) => Number.isSafeInteger(n) && n >= 0,
+    ) ||
+    requiredCredits < 1 ||
+    remainingToday !== 0 ||
+    !Number.isFinite(Date.parse(resetsAt))
+  )
+    return undefined;
+  return {
+    creditBalance,
+    creditReserved,
+    creditAvailable,
+    requiredCredits,
+    remainingToday,
+    resetsAt,
+  };
+}
 export type FieldError = {
   field: string;
   code: string;
@@ -28,6 +69,7 @@ export class AppError extends Error {
     override readonly message: string,
     readonly httpStatus: number,
     readonly options: {
+      details?: AssistantInsufficientCreditDetails;
       fieldErrors?: FieldError[];
       retryable?: boolean;
       cause?: unknown;

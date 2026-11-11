@@ -1,3 +1,4 @@
+import { flagEnvironmentOf } from '../../shared/feature-flags';
 import {
   Inject,
   Injectable,
@@ -225,6 +226,12 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
     let status: AssistantTerminalStatus;
     let error: ErrorEnvelope | null = null;
     try {
+      if (!(await this.repo.runnableFunding(turn.userId, turn.ledgerId, turn.messageId)))
+        throw new Error('Assistant funding or master readiness unavailable');
+      if (!(await this.availability.killSwitchOn())) {
+        this.abort(entry, 'kill_switch');
+        signal.throwIfAborted();
+      }
       const outcome = await this.orchestrator.run(turn, state, sink, signal);
       // A-R-06: a turn aborted while it was finishing ends as the abort says.
       signal.throwIfAborted();
@@ -273,6 +280,7 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
       clearInterval(lease);
     }
 
+    state.dispatchClosed = true;
     try {
       flushDelta();
       // Bounded: a stalled buffer delays nothing durable (A-R2-07).
@@ -314,6 +322,14 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
       else if (!(await this.repo.findMessageById(turn.messageId))) {
         // Deleted (conversation or account) while it ran: no copy stays behind.
         await this.buffer.drop(turn.messageId).catch(() => undefined);
+      }
+      if (row && state.costs.jevCalls === 0 && state.costs.haikuCalls === 0) {
+        await this.repo.releaseUndispatchedTurn(
+          turn.userId,
+          turn.ledgerId,
+          turn.messageId,
+          flagEnvironmentOf(this.config.APP_ENV),
+        );
       }
       await this.repo.completeLedger(turn.ledgerId, status, state.costs);
       this.metrics.increment('assistant_turns_total', { status });

@@ -1,3 +1,9 @@
+import { AppError } from '../../shared/app-error';
+import {
+  AssistantCreditSpendRepository,
+  conversationCreditsSql,
+  turnCreditsSql,
+} from './assistant-credit-spend.repository';
 import { lockAssistantAccount } from '../../shared/assistant-credits';
 import { Inject, Injectable } from '@nestjs/common';
 import { sql, type SQL } from 'drizzle-orm';
@@ -7,6 +13,8 @@ import type { Tx } from '../../shared/outbox';
 import { isoUs } from '../domain/cursor';
 import { truncateTokenSafe } from '../domain/place-tokens';
 import type {
+  AssistantTurnCredits,
+  AssistantConversationCredits,
   AssistantCardRef,
   AssistantContextKind,
   AssistantFollowUpGroup,
@@ -25,6 +33,7 @@ export const RETENTION_DAYS = 90;
 const LIVE = sql.raw(`now() - interval '${RETENTION_DAYS} days'`);
 
 export type ConversationRow = {
+  credits: AssistantConversationCredits;
   id: string;
   user_id: string;
   title: string | null;
@@ -40,6 +49,7 @@ export type ConversationRow = {
 };
 
 export type MessageRow = {
+  credits?: AssistantTurnCredits;
   id: string;
   conversation_id: string;
   user_id: string;
@@ -101,14 +111,14 @@ type Exec = Pick<Db, 'execute'>;
 
 const rowsOf = <T>(res: { rows: unknown[] }) => res.rows as T[];
 
-const CONVERSATION_COLUMNS = sql.raw(`c.id, c.user_id, c.title, c.context_kind, c.context_id,
-  c.message_count, c.preview, ${isoUs('c.created_at')} as created_at,
-  ${isoUs('c.last_message_at')} as last_message_at`);
+const CONVERSATION_COLUMNS = sql`c.id, c.user_id, c.title, c.context_kind, c.context_id,
+  c.message_count, c.preview, ${sql.raw(isoUs('c.created_at'))} as created_at,
+  ${sql.raw(isoUs('c.last_message_at'))} as last_message_at, ${conversationCreditsSql(sql`c.id`)} as credits`;
 
-const MESSAGE_COLUMNS = sql.raw(`m.id, m.conversation_id, m.user_id, m.role, m.status, m.text,
+const MESSAGE_COLUMNS = sql`m.id, m.conversation_id, m.user_id, m.role, m.status, m.text,
   m.locale, m.context_kind, m.context_id, m.cards, m.follow_ups, m.notice, m.error, m.frames,
-  m.trace, m.lease_owner, ${isoUs('m.lease_expires_at')} as lease_expires_at,
-  ${isoUs('m.created_at')} as created_at, ${isoUs('m.completed_at')} as completed_at`);
+  m.trace, m.lease_owner, ${sql.raw(isoUs('m.lease_expires_at'))} as lease_expires_at,
+  ${sql.raw(isoUs('m.created_at'))} as created_at, ${sql.raw(isoUs('m.completed_at'))} as completed_at, ${turnCreditsSql(sql`m.id`, sql`m.user_id`)} as credits`;
 
 /** `%`, `_` and `\` are literal in a user's search text. */
 export function likePattern(q: string): string {
@@ -407,6 +417,8 @@ export class AssistantRepository {
       leaseOwner: string;
       leaseMs: number;
       allowanceSource?: 'daily' | 'credit';
+      billingPolicy?: string;
+      billingEpoch?: string;
       acceptedAt?: Date;
     },
   ): Promise<{ user: MessageRow; assistant: MessageRow; ledgerId: string }> {
@@ -431,7 +443,7 @@ export class AssistantRepository {
     const user = rowsOf<MessageRow>(userRes)[0]!;
     const assistant = rowsOf<MessageRow>(assistantRes)[0]!;
     const ledgerRes = await tx.execute(sql`
-      insert into assistant_usage_ledger (user_id, message_id, allowance_source, accepted_at) values (${input.userId}, ${assistant.id}, ${input.allowanceSource ?? 'daily'}, ${input.acceptedAt?.toISOString() ?? new Date().toISOString()}::timestamptz)
+      insert into assistant_usage_ledger (user_id, message_id, allowance_source, billing_policy, billing_epoch, accepted_at) values (${input.userId}, ${assistant.id}, ${input.allowanceSource ?? 'daily'}, ${input.billingPolicy ?? null}, ${input.billingEpoch ?? null}::bigint, ${input.acceptedAt?.toISOString() ?? new Date().toISOString()}::timestamptz)
       returning id`);
     await tx.execute(sql`
       update assistant_conversations set
@@ -442,6 +454,22 @@ export class AssistantRepository {
     return { user, assistant, ledgerId: rowsOf<{ id: string }>(ledgerRes)[0]!.id };
   }
 
+  async acceptanceTime(tx: Tx): Promise<Date> {
+    const r = await tx.execute(sql`select clock_timestamp() as accepted_at`);
+    return new Date((r.rows[0] as { accepted_at: Date | string }).accepted_at);
+  }
+
+  async lockAdmissionSubject(tx: Tx, userId: string, conversationId: string): Promise<void> {
+    const u = await tx.execute(
+      sql`select id from users where id=${userId} and status='active' for share`,
+    );
+    if (!u.rows.length)
+      throw AppError.unauthorized('ACCOUNT_UNAVAILABLE', 'Account is not available');
+    const c = await tx.execute(
+      sql`select id from assistant_conversations where id=${conversationId} and user_id=${userId} and last_message_at>${LIVE} for update`,
+    );
+    if (!c.rows.length) throw AppError.notFound();
+  }
   /** Serializes one account's sends so two cannot both take the last slot. */
   async lockAccount(tx: Tx, userId: string): Promise<void> {
     await lockAssistantAccount(tx, userId);
@@ -584,6 +612,33 @@ export class AssistantRepository {
         end), 0)::float8 as usd
       from assistant_usage_ledger where accepted_at >= ${monthStart.toISOString()}::timestamptz`);
     return rowsOf<{ usd: number }>(res)[0]!.usd;
+  }
+
+  /** Frozen policy, identity and funding are checked before the runner starts. */
+  async runnableFunding(userId: string, usageId: string, messageId: string): Promise<boolean> {
+    const r = await this.db.execute(sql`select u.id from assistant_usage_ledger u
+      left join assistant_credit_turns t on t.usage_ledger_id=u.id
+      where u.id=${usageId} and u.user_id=${userId} and u.message_id=${messageId}
+      and (coalesce(u.billing_policy,'legacy_allowance_v1')='legacy_allowance_v1'
+        or (u.billing_policy='free_then_actual_cost_v1' and t.policy_key=u.billing_policy and t.policy_epoch=u.billing_epoch
+          and t.user_id=u.user_id and t.message_id=u.message_id and t.state<>'erased'
+          and ((t.funding_source='free' and t.state='settled' and t.reserved_ceiling=0)
+            or (t.funding_source='credit' and t.state='pending' and t.applied_credits=0 and t.held_credits=t.reserved_ceiling and t.held_credits>0))))`);
+    return r.rows.length === 1;
+  }
+
+  async releaseUndispatchedTurn(
+    userId: string,
+    usageId: string,
+    messageId: string,
+    environment: 'all' | 'dev' | 'staging' | 'production',
+  ): Promise<void> {
+    await new AssistantCreditSpendRepository(this.db).releaseUndispatched(
+      userId,
+      usageId,
+      environment,
+      { messageId },
+    );
   }
 
   async completeLedger(ledgerId: string, status: string, costs: LedgerCosts): Promise<void> {

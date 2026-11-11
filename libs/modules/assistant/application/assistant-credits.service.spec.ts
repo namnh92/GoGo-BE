@@ -14,6 +14,8 @@ const actor: Actor = { type: 'user', id: randomUUID(), sessionId: randomUUID() }
 function setup(enabled = true) {
   const summary = vi.fn().mockResolvedValue({
     balance: 139,
+    reserved: '0',
+    policy_key: 'legacy_allowance_v1',
     earned: '140',
     spent: '1',
     as_of: '2026-11-10T00:00:00.123456Z',
@@ -84,7 +86,14 @@ describe('V own credit reads', () => {
 
   it('returns zero/empty for no account, refuses missing/inactive users', async () => {
     const { service, summary, history } = setup();
-    summary.mockResolvedValueOnce({ balance: 0, earned: '0', spent: '0', as_of: 'now' });
+    summary.mockResolvedValueOnce({
+      reserved: '0',
+      policy_key: 'legacy_allowance_v1',
+      balance: 0,
+      earned: '0',
+      spent: '0',
+      as_of: 'now',
+    });
     expect(await service.summary(actor)).toMatchObject({ balance: 0, earned: 0, spent: 0 });
     expect(await service.history(actor, {})).toEqual({ items: [], nextCursor: null });
     summary.mockResolvedValueOnce(undefined);
@@ -95,10 +104,19 @@ describe('V own credit reads', () => {
 
   it('monitors mismatch without repair or replacing posted balance; refuses unsafe JSON integers', async () => {
     const { service, summary, increment } = setup();
-    summary.mockResolvedValueOnce({ balance: 7, earned: '140', spent: '1', as_of: 'now' });
+    summary.mockResolvedValueOnce({
+      reserved: '0',
+      policy_key: 'legacy_allowance_v1',
+      balance: 7,
+      earned: '140',
+      spent: '1',
+      as_of: 'now',
+    });
     expect(await service.summary(actor)).toMatchObject({ balance: 7, earned: 140, spent: 1 });
     expect(increment).toHaveBeenCalledWith('assistant_credit_account_mismatch_total');
     summary.mockResolvedValueOnce({
+      reserved: '0',
+      policy_key: 'legacy_allowance_v1',
       balance: 0,
       earned: '9007199254740992',
       spent: '9007199254740992',

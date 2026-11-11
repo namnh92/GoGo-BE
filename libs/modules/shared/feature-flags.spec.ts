@@ -124,3 +124,22 @@ describe('feature flag registry (BE-CMS-G3 #221)', () => {
     expect(flagEnvironmentOf('anything-else')).toBe('dev');
   });
 });
+
+describe('#851 billing switches', () => {
+  it('ships paid off and settlement on, independent of display and evaluator', () => {
+    expect(FEATURE_FLAGS['assistant_credits.spend_enabled']).toMatchObject({
+      defaultValue: false,
+      valueType: 'boolean',
+      platformScoped: false,
+    });
+    expect(FEATURE_FLAGS['assistant_credits.settlement_enabled']).toMatchObject({
+      defaultValue: true,
+      valueType: 'boolean',
+      platformScoped: false,
+    });
+    for (const key of ['assistant_credits.spend_enabled', 'assistant_credits.settlement_enabled']) {
+      expect(validateFlagValue(key, null)).toBeNull();
+      expect(() => validateFlagValue(key, 'true')).toThrow();
+    }
+  });
+});

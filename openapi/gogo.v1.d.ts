@@ -853,7 +853,7 @@ export interface paths {
          *
          *     `context` overrides the conversation's context for this turn only (same rules as on create: place **or** plan, readable by the caller, else `404 CONTEXT_NOT_FOUND`). `attachments` are image upload keys from `POST /uploads` with `purpose: assistant_image` — images only, at most 3, each bound to the caller; anything else is `400 ATTACHMENT_INVALID` without saying which reason.
          *
-         *     One reply at a time per conversation: sending while a reply is still streaming is `409 ASSISTANT_TURN_IN_PROGRESS` — stop it first. The per-account daily message limit (default 30 per day, resetting at midnight Asia/Ho_Chi_Minh) and the per-minute burst limit (default 5 in any rolling minute) both answer `429` with `Retry-After`. Defaults are provisional and configurable: the current values are in `GET /assistant/status` (`dailyMessageLimit`, `messagesPerMinuteLimit`) — never hardcode them. Only an accepted send counts; an idempotent replay consumes nothing. An unconfigured limit refuses with `503 ASSISTANT_DISABLED`, never unlimited.
+         *     One reply at a time per conversation: sending while a reply is still streaming is `409 ASSISTANT_TURN_IN_PROGRESS` — stop it first. Free accepted sends use the configured daily allowance, resetting at midnight Asia/Ho_Chi_Minh. Exhausted free allowance requires paid readiness and sufficient available credits for the verified hold: unavailable is 503 ASSISTANT_DISABLED; insufficient is 409 ASSISTANT_INSUFFICIENT_CREDIT with typed details and retryable false. Burst remains 429 RATE_LIMITED. Legacy policy retains its daily-limit 429. The current limits are in `GET /assistant/status` (`dailyMessageLimit`, `messagesPerMinuteLimit`) — never hardcode them. Only an accepted send counts; an idempotent replay consumes nothing. An unconfigured limit refuses with `503 ASSISTANT_DISABLED`, never unlimited.
          */
         post: operations["sendAssistantMessage"];
         delete?: never;
@@ -6146,7 +6146,7 @@ export interface components {
             availableBalance: number;
             /** Format: date-time */
             asOf: string;
-            /** @description Open policy key; legacy_allowance_v1 in V. Unknown values must be tolerated. */
+            /** @description Open policy key; known legacy_allowance_v1 and free_then_actual_cost_v1. Unknown values must be tolerated. */
             policyKey: string;
         };
         MyCreditEntry: {
@@ -8181,10 +8181,10 @@ export interface components {
              * @description UTC ledger timestamp, including all six fractional digits.
              */
             createdAt: string;
-            /** @description Signed credits; +50 or +70 for approval, +20 for accepted evidence on merge (ledger reason submission_approved), -1 for message_spent. Bonus requires approved menu/bill evidence (#794). Values are extensible; consumers must accept unknown integer deltas. */
+            /** @description Signed nonzero credits. Usage debits are negative; usage corrections can be positive refunds or negative charges. Positive adjustments are not grants. */
             delta: number;
-            /** @enum {string} */
-            reason: "submission_approved" | "message_spent";
+            /** @description Open reason; known catalogue keys, submission_approved, message_spent and assistant_usage_adjustment. */
+            reason: string;
             /**
              * Format: uuid
              * @description Immutable contribution reference, even after source deletion; null for spending.
@@ -9361,7 +9361,19 @@ export interface components {
             /** @description Access token TTL in seconds. */
             expiresIn: number;
         };
+        AssistantInsufficientCreditDetails: {
+            creditBalance: number;
+            creditReserved: number;
+            creditAvailable: number;
+            requiredCredits: number;
+            /** @constant */
+            remainingToday: 0;
+            /** Format: date-time */
+            resetsAt: string;
+        };
         ErrorEnvelope: {
+            /** @description Required for ASSISTANT_INSUFFICIENT_CREDIT (409); no internal provider/usage data. */
+            details?: components["schemas"]["AssistantInsufficientCreditDetails"];
             /** @description Stable machine-readable error code. */
             code: string;
             message: string;
@@ -11211,20 +11223,54 @@ export interface components {
             }[];
         };
         AssistantStatus: {
-            /** @description No-expiry contributor credits. Prospective registered-user submission approval grants +50 once, or +70 with at least one approved menu/bill photo; merge grants +20 only when menu/bill evidence is accepted. All bill uploads require public consent; approved menu/bill photos appear in userPhotos with uploader credit, separately from the official gallery/cover. Daily allowance first, then one credit per accepted user send (202), including later provider failure. Replay/rejection costs zero; credits never bypass burst/readiness/budget gates. */
+            /** @description Posted no-expiry credit balance. Free allowance first; actual-cost paid funding reserves credits without posting a debit. Replays and refusals consume nothing. */
             creditBalance: number;
-            /** @description `enabled` — sending works. `disabled` — kill switch off (`assistant.enabled`), or the environment cannot take new replies (for example its spending limit is reached). `limit_reached` — this account's daily messages and contributor credits are both spent until `resetsAt`. Unknown values mean "cannot send now". */
+            creditReserved: number;
+            creditAvailable: number;
+            /** @description Open effective admission policy, independent of temporary paid availability. */
+            creditPolicy: string;
+            /** @description Required hold from the verified whole-turn bound; null when unavailable. Independent of remaining free sends. */
+            paidCreditsRequired: number | null;
+            /** @description Spend and settlement switches plus bound/finality/config readiness and settlement health. General readiness still applies; POST repeats every check. */
+            paidSendEnabled: boolean;
+            /** Format: date-time */
+            asOf: string;
+            /** @description Open state. General unavailability or exhausted free allowance with paid admission off is disabled. With free allowance remaining, enabled regardless of balance. Otherwise insufficient_credit means available credits are below the required hold. limit_reached is legacy-only. Unknown values mean sending is unavailable. Burst/busy may still reject a send. */
             state: string;
-            /** @description Accepted messages this account may send per day (default **30**; provisional and configurable — read it from here, never hardcode it). Only an accepted send (`202`) counts; an idempotent replay (`x-idempotent-replay: true`) consumes nothing. A limit that is not configured refuses (`503 ASSISTANT_DISABLED`), it never means unlimited. */
+            /** @description Configured ASSISTANT_USER_DAILY_MAX_MESSAGES free accepted sends per Asia/Ho_Chi_Minh day; no hardcoded default. Paid sends do not consume free allowance. Missing configuration disables admission. Replays/refusals consume nothing; accepted failures still consume their free slot. */
             dailyMessageLimit: number;
             remainingToday: number;
             /**
              * Format: date-time
-             * @description When `remainingToday` refills: midnight Asia/Ho_Chi_Minh (start of the next local day), expressed in UTC.
+             * @description Next Asia/Ho_Chi_Minh midnight in UTC. Only free allowance refills; credits never expire or refill here.
              */
             resetsAt: string;
-            /** @description 2.0.0-alpha.3. Accepted messages this account may send in any rolling 60-second window (default **5**; provisional and configurable — read it from here, never hardcode it). Same counting as `dailyMessageLimit`: replays consume nothing. Exceeding it is `429 RATE_LIMITED` with `Retry-After`. */
+            /** @description Configured rolling-minute burst limit across all funding sources. Exceeding it is 429 RATE_LIMITED with Retry-After. */
             messagesPerMinuteLimit?: number;
+        };
+        AssistantTurnCredits: {
+            /** @description Open frozen billing policy. */
+            policyKey: string;
+            /** @description Open funding source; free stays free even when provider accounting is pending. */
+            fundingSource: string;
+            /** @description Open state. Quarantined turns remain pending or reconciling, never settled. */
+            state: string;
+            /** @description Latest net POSTED charge, not a final-cost promise. Initial paid reservation is 0. Missing historical attribution is null, never invented zero. */
+            creditsCharged: number | null;
+            /** @description Residual held credits, not the original ceiling. Unknown historical attribution is null. */
+            creditsReserved: number | null;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        AssistantConversationCredits: {
+            /** @description Full conversation net posted usage, including failed/stopped turns and refunds. Null if historical attribution is incomplete. */
+            creditsUsed: number | null;
+            creditsReserved: number;
+            pendingTurns: number;
+            /** @description Open state. Incomplete history takes precedence over pending paid turns. New conversations are settled with zero amounts. */
+            state: string;
+            /** Format: date-time */
+            asOf: string;
         };
         /** @description What the assistant was opened from. Exactly one of `placeId` / `planId`. Used only when sent, only when the caller may read it. */
         AssistantContext: {
@@ -11259,11 +11305,19 @@ export interface components {
          *       "createdAt": "2026-10-26T02:10:00Z",
          *       "lastMessageAt": "2026-10-26T02:14:31Z",
          *       "expiresAt": "2027-01-24T02:14:31Z",
+         *       "credits": {
+         *         "creditsUsed": 0,
+         *         "creditsReserved": 0,
+         *         "pendingTurns": 0,
+         *         "state": "settled",
+         *         "asOf": "2026-10-26T02:14:31Z"
+         *       },
          *       "messageCount": 4,
          *       "preview": "I found 3 cafés that match."
          *     }
          */
         AssistantConversation: {
+            credits: components["schemas"]["AssistantConversationCredits"];
             /** Format: uuid */
             id: string;
             /** @description User-set, or derived after the first exchange. `null` until then; the client shows its own "New chat" copy. */
@@ -11332,6 +11386,8 @@ export interface components {
         /** @description `streaming` — being generated. `complete` — ended normally. `stopped` — the user pressed Stop; `text` is what was written. `fallback` — the model did not answer within 15 s; a deterministic reply was stored. `failed` — ended by an error; `text` keeps any partial answer. `truncated` (2.0.0-alpha.3) — the reply hit the server's hard ceiling (length or time) before it finished: `text` is the partial answer as persisted, and structured outputs (cards, proposals, follow-ups) that had not completed are discarded, never half-rendered. The client shows "Reply cut short" with an explicit retry action; there is no automatic continuation. User messages are always `complete`. As with every `x-extensible-enum`, treat an unknown value as a finished message. */
         AssistantMessageStatus: string;
         AssistantMessage: {
+            /** @description Always present on assistant messages; omitted on user messages. */
+            credits?: components["schemas"]["AssistantTurnCredits"];
             /** Format: uuid */
             id: string;
             /** Format: uuid */
@@ -11357,11 +11413,13 @@ export interface components {
             error?: components["schemas"]["ErrorEnvelope"];
         };
         AssistantMessagePage: {
+            conversationCredits: components["schemas"]["AssistantConversationCredits"];
             /** @description Newest first. */
             items: components["schemas"]["AssistantMessage"][];
             nextCursor: string | null;
         };
         AssistantTurn: {
+            conversationCredits: components["schemas"]["AssistantConversationCredits"];
             userMessage: components["schemas"]["AssistantMessage"];
             /** @description `status: streaming`; attach to `streamAssistantMessage` with its `id`. */
             assistantMessage: components["schemas"]["AssistantMessage"];
@@ -12081,7 +12139,7 @@ export interface components {
                 "application/json": components["schemas"]["ErrorEnvelope"];
             };
         };
-        /** @description `RATE_LIMITED` (`retryable: true`) for the per-minute burst limit (default 5 accepted messages in any rolling minute), or `ASSISTANT_DAILY_LIMIT` (`retryable: false`) when the account's daily message budget is spent (default 30 accepted messages per day, reset at midnight Asia/Ho_Chi_Minh). Both carry `Retry-After`; for the daily limit it points at the reset. Defaults are provisional and configurable — `GET /assistant/status` carries the current values. Idempotent replays consume nothing; an unconfigured limit is `503 ASSISTANT_DISABLED`, never unlimited. */
+        /** @description `RATE_LIMITED` (`retryable: true`) for the per-minute burst limit (default 5 accepted messages in any rolling minute), or Legacy policy only: `ASSISTANT_DAILY_LIMIT` (`retryable: false`) when the account's daily message budget is spent (configured accepted free sends per day, reset at midnight Asia/Ho_Chi_Minh). Both carry `Retry-After`; for the daily limit it points at the reset. Defaults are provisional and configurable — `GET /assistant/status` carries the current values. Idempotent replays consume nothing; an unconfigured limit is `503 ASSISTANT_DISABLED`, never unlimited. */
         AssistantRateLimited: {
             headers: {
                 "Retry-After": components["headers"]["RetryAfter"];
@@ -13812,7 +13870,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description `ASSISTANT_TURN_IN_PROGRESS` — a reply in this conversation is still streaming; or `IDEMPOTENT_REQUEST_IN_FLIGHT`. */
+            /** @description `ASSISTANT_TURN_IN_PROGRESS` — a reply in this conversation is still streaming; `IDEMPOTENT_REQUEST_IN_FLIGHT`; or `ASSISTANT_INSUFFICIENT_CREDIT` with required typed details and retryable false. */
             409: {
                 headers: {
                     [name: string]: unknown;

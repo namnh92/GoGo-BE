@@ -6,6 +6,8 @@ import type { CreditCursor } from '../domain/credit-visibility';
 
 export type CreditSummaryRow = {
   balance: number;
+  reserved: string;
+  policy_key: string;
   earned: string;
   spent: string;
   as_of: string;
@@ -28,6 +30,8 @@ export class AssistantCreditRepository {
     // source rows or entitlements, and GET never repairs/creates accounts.
     const result = await this.db.execute(sql`
       select coalesce(a.balance, 0)::int as balance,
+        (select coalesce(sum(held_credits),0)::text from assistant_credit_turns where user_id=u.id) as reserved,
+        (select policy_key from assistant_credit_spend_control where singleton=true) as policy_key,
         coalesce(t.earned, 0)::text as earned, coalesce(t.spent, 0)::text as spent,
         to_char(statement_timestamp() at time zone 'UTC',
           'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as as_of

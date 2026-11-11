@@ -13,9 +13,9 @@ import {
 } from '../domain/credit-visibility';
 import { AssistantCreditRepository } from '../infrastructure/assistant-credit.repository';
 
-function integer(value: string | number): number {
+function integer(value: string | number | bigint): number {
   const result = Number(value);
-  if (!Number.isSafeInteger(result))
+  if (!Number.isSafeInteger(result) || result < 0)
     throw AppError.internal('Credit total is outside the supported range');
   return result;
 }
@@ -47,14 +47,16 @@ export class AssistantCreditsService {
     if (BigInt(row.balance) !== BigInt(row.earned) - BigInt(row.spent)) {
       this.metrics.increment('assistant_credit_account_mismatch_total');
     }
+    if (BigInt(row.reserved) > BigInt(row.balance))
+      throw AppError.internal('Credit hold invariant violation');
     return {
       balance: integer(row.balance),
       earned: integer(row.earned),
       spent: integer(row.spent),
-      reserved: 0,
-      availableBalance: integer(row.balance),
+      reserved: integer(row.reserved),
+      availableBalance: integer(BigInt(row.balance) - BigInt(row.reserved)),
       asOf: row.as_of,
-      policyKey: 'legacy_allowance_v1',
+      policyKey: row.policy_key,
     };
   }
 

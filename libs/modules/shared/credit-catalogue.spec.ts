@@ -1,6 +1,10 @@
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { describe, expect, it, vi } from 'vitest';
-import { assertCreditWriterReady, lockSyncCreditRules } from './credit-catalogue';
+import {
+  assertCreditWriterReady,
+  lockSyncCreditRules,
+  validateCreditEventKey,
+} from './credit-catalogue';
 const dialect = new PgDialect();
 describe('#829 compatible writer readiness', () => {
   it('requires complete seed definitions and every valid required index', async () => {
@@ -46,4 +50,14 @@ describe('#829 compatible writer readiness', () => {
       'order by id for update',
     );
   });
+});
+
+describe('#851 reserved catalogue keys', () => {
+  it.each(['message_spent', 'assistant_usage', 'assistant_usage_adjustment'])(
+    'rejects reserved %s',
+    async (key) => {
+      expect(() => validateCreditEventKey(key)).toThrow();
+      expect(() => validateCreditEventKey('future_reward')).not.toThrow();
+    },
+  );
 });

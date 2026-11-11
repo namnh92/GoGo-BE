@@ -528,6 +528,8 @@ describe('envCatalogue (GoGo-BE#727)', () => {
     ...base,
     NODE_ENV: 'production',
     APP_ENV: 'dev',
+    ASSISTANT_CREDIT_BOUND_USD: '0.00012',
+    ASSISTANT_CREDIT_BOUND_VERSION: 'test-billing-artifact',
     DATABASE_URL: 'postgres://gogo:gogo@db:5432/gogo?sslmode=require',
     TRUST_PROXY: '1',
     AUTH_JWT_SECRET: 'x'.repeat(48),
@@ -567,5 +569,38 @@ describe('envCatalogue (GoGo-BE#727)', () => {
     }
     for (const name of derived) expect(conditional.has(name), name).toBe(true);
     expect(derived.length).toBeGreaterThan(5);
+  });
+});
+
+describe('#851 exact billing bound configuration', () => {
+  it('has no default and preserves all decimal digits', () => {
+    expect(loadEnv(base).ASSISTANT_CREDIT_BOUND_USD).toBeUndefined();
+    expect(
+      loadEnv({
+        ...base,
+        ASSISTANT_CREDIT_BOUND_USD: '0.000010000000000001',
+        ASSISTANT_CREDIT_BOUND_VERSION: 'artifact-v1',
+      }).ASSISTANT_CREDIT_BOUND_USD,
+    ).toBe('0.000010000000000001');
+  });
+  it.each(['0', '-1', '1e-5', 'NaN', 'Infinity', '21474.83648', '0.00001 '])(
+    'rejects invalid/nonpositive/overflow bound %s',
+    (value) => {
+      expect(() =>
+        loadEnv({
+          ...base,
+          ASSISTANT_CREDIT_BOUND_USD: value,
+          ASSISTANT_CREDIT_BOUND_VERSION: 'artifact-v1',
+        }),
+      ).toThrow('ASSISTANT_CREDIT_BOUND_USD');
+    },
+  );
+  it('requires bound and evidence version together', () => {
+    expect(() => loadEnv({ ...base, ASSISTANT_CREDIT_BOUND_USD: '0.00001' })).toThrow(
+      'ASSISTANT_CREDIT_BOUND_VERSION',
+    );
+    expect(() => loadEnv({ ...base, ASSISTANT_CREDIT_BOUND_VERSION: 'artifact-v1' })).toThrow(
+      'ASSISTANT_CREDIT_BOUND_USD',
+    );
   });
 });

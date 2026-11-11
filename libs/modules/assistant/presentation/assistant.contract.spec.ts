@@ -273,24 +273,43 @@ describe('GoGo AI contract (GoGo-BE#713)', () => {
 
   // ── 2.0.0-alpha.3: SA decisions on GoGo-BE#713 (owner-delegated) ────────
 
-  it('Q1 — status carries both limits, with the provisional defaults stated', () => {
+  it('D1 status carries configured funding allowance and billing readiness', () => {
     const status = schema('AssistantStatus');
-    expect(Object.keys(status.properties ?? {})).toEqual(
-      expect.arrayContaining(['dailyMessageLimit', 'messagesPerMinuteLimit', 'resetsAt']),
+    expect(status.required).toEqual(
+      expect.arrayContaining([
+        'creditReserved',
+        'creditAvailable',
+        'creditPolicy',
+        'paidCreditsRequired',
+        'paidSendEnabled',
+        'asOf',
+      ]),
     );
-    const daily = String(status.properties!.dailyMessageLimit!.description);
-    expect(daily).toContain('30');
-    expect(daily).toMatch(/never hardcode/);
-    expect(daily).toMatch(/replay[^.]*consumes nothing/);
-    expect(daily).toMatch(/never means\s+unlimited/);
-    expect(String(status.properties!.messagesPerMinuteLimit!.description)).toMatch(
-      /rolling 60-second window \(default \*\*5\*\*/,
+    expect(String(status.properties!.dailyMessageLimit!.description)).toContain(
+      'ASSISTANT_USER_DAILY_MAX_MESSAGES',
     );
-    expect(String(status.properties!.resetsAt!.description)).toMatch(/midnight Asia\/Ho_Chi_Minh/);
-    const limited = String(doc.components.responses.AssistantRateLimited!.description);
-    expect(limited).toMatch(/default 5[\s\S]*rolling minute/);
-    expect(limited).toMatch(/default 30[\s\S]*midnight Asia\/Ho_Chi_Minh/);
-    expect(limited).toMatch(/never unlimited/);
+    expect(String(status.properties!.dailyMessageLimit!.description)).not.toContain('30');
+    expect(status.properties!.state!['x-extensible-enum']).toContain('insufficient_credit');
+    expect(schema('AssistantTurn').required).toContain('conversationCredits');
+    expect(schema('AssistantMessagePage').required).toContain('conversationCredits');
+    expect(schema('AssistantConversation').required).toContain('credits');
+    expect(schema('AssistantTurnCredits').required).toEqual([
+      'policyKey',
+      'fundingSource',
+      'state',
+      'creditsCharged',
+      'creditsReserved',
+      'updatedAt',
+    ]);
+    expect(schema('AssistantInsufficientCreditDetails').required).toEqual([
+      'creditBalance',
+      'creditReserved',
+      'creditAvailable',
+      'requiredCredits',
+      'remainingToday',
+      'resetsAt',
+    ]);
+    expect(schema('CmsAssistantCreditEntry').properties!.reason!.enum).toBeUndefined();
   });
 
   it('Q5 — a reply cut off by the hard ceiling ends as `truncated`, not `complete`', () => {
