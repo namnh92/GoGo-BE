@@ -50,6 +50,18 @@ published guarantees. Unknown historical attribution stays null/unavailable;
 This MAJOR covers D1 only. S3 must reclassify any later breaking changes against
 this shipped contract; it cannot reuse a release number for unshipped changes.
 
+Owner addition 2026-11-11 (credit history by day and conversation): within this
+MAJOR, MyCreditEntry adds optional nullable conversation {id,title} and
+eventLabels {vi,en}. Usage resolves through the D turn's conversation_id, or
+for legacy usage through usage_ledger_id -> usage.message_id -> message ->
+conversation. Every link is owner-scoped; deleted, expired (the existing 90-day
+read rule), foreign or unknown conversations return null. A known D turn never
+falls back to a legacy link. Non-usage rows return null. Event grant labels
+come from credit_events.labels, not composed text. Page selection remains 11
+ledger rows for a 10-row response with the existing ordering/cursor; only then
+do primary-key joins enrich the page, requiring no new indexes. Clients group
+the UTC facts by their local day and conversation.
+
 Ops sequence: apply DDL; run index-assistant-credit-spend.sql in autocommit;
 validate-assistant-credit-spend.sql; deploy compatible fleet and tolerant readers;
 fence/drain old writers; review release/evidence manifest; execute audited policy

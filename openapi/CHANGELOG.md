@@ -27,6 +27,14 @@ including refunds. Tolerant consumer readers must deploy before activation.
 D2 provider evidence, settlement worker/finality and privacy/export remain deferred.
 Rollback disables new paid admission and preserves funded work; no hold-blind binary.
 
+Additive within this MAJOR (owner 2026-11-11): MyCreditEntry adds optional nullable
+`conversation: {id, title}` for usage entries still readable by their owner,
+including D turns and legacy usage/message links. Deleted, expired, unknown,
+foreign and non-usage conversations return null. Optional nullable
+`eventLabels: {vi, en}` comes directly from the event grant's catalogue labels;
+other entries return null. Clients group by local day and conversation. The
+10-row page, stable cursor and descending ordering are unchanged.
+
 ## 9.5.1-alpha.1 — Đồng bộ rating Google trên thẻ trợ lý (#834)
 
 PATCH: `AssistantPlaceCard.providerRating`, `providerRatingCount` và

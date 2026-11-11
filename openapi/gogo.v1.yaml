@@ -13169,6 +13169,25 @@ components:
           type: string
           format: uuid
           description: Catalogue event ID when present; never an entitlement or source-subject key.
+        conversation:
+          type: [object, 'null']
+          required: [id, title]
+          description: >
+            Conversation of this owner's usage entry (message_spent or assistant_usage_adjustment),
+            resolved from the credit turn or legacy usage/message link. Null for non-usage,
+            deleted, expired, unknown or otherwise unreadable conversations. Never another user's
+            conversation. Clients group by local day and conversation; pagination and ordering
+            remain unchanged.
+          properties:
+            id: { type: string, format: uuid }
+            title: { type: [string, 'null'] }
+        eventLabels:
+          type: [object, 'null']
+          required: [vi, en]
+          description: Catalogue credit_events.labels for an event-sourced grant; null otherwise. Facts, not composed copy.
+          properties:
+            vi: { type: string }
+            en: { type: string }
         messageId:
           type: string
           format: uuid

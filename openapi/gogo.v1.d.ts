@@ -6168,6 +6168,17 @@ export interface components {
              * @description Catalogue event ID when present; never an entitlement or source-subject key.
              */
             eventId?: string;
+            /** @description Conversation of this owner's usage entry (message_spent or assistant_usage_adjustment), resolved from the credit turn or legacy usage/message link. Null for non-usage, deleted, expired, unknown or otherwise unreadable conversations. Never another user's conversation. Clients group by local day and conversation; pagination and ordering remain unchanged. */
+            conversation?: {
+                /** Format: uuid */
+                id: string;
+                title: string | null;
+            } | null;
+            /** @description Catalogue credit_events.labels for an event-sourced grant; null otherwise. Facts, not composed copy. */
+            eventLabels?: {
+                vi: string;
+                en: string;
+            } | null;
             /**
              * Format: uuid
              * @description Optional only if still readable by this actor; omitted in V.

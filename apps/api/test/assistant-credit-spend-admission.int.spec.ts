@@ -25,6 +25,7 @@ beforeAll(async () => {
 }, 240000);
 beforeEach(async () => {
   start.mockClear();
+  await f.setFlag(true);
   await f.db.execute(
     sql`insert into feature_flags(key,environment,platform,enabled) values('assistant_credits.display_enabled','all','all',true) on conflict(key,environment,platform) do update set enabled=true`,
   );

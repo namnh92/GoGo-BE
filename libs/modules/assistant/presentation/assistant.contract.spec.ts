@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
+import type { components } from '../../../../openapi/gogo.v1';
+import type { MyCreditEntryDto } from '../application/assistant-credits.service';
 import { parse as parseYaml } from 'yaml';
 import { SearchService } from '../../search/application/search.service';
 import { AssistantCardHydrator } from '../application/card-hydrator.service';
@@ -310,6 +312,27 @@ describe('GoGo AI contract (GoGo-BE#713)', () => {
       'resetsAt',
     ]);
     expect(schema('CmsAssistantCreditEntry').properties!.reason!.enum).toBeUndefined();
+  });
+
+  it('credit history exposes optional nullable conversation and catalogue labels without changing the page', () => {
+    const entry = schema('MyCreditEntry');
+    expect(entry.required).not.toContain('conversation');
+    expect(entry.required).not.toContain('eventLabels');
+    expect(entry.properties!.conversation).toMatchObject({
+      type: ['object', 'null'],
+      required: ['id', 'title'],
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        title: { type: ['string', 'null'] },
+      },
+    });
+    expect(entry.properties!.eventLabels).toMatchObject({
+      type: ['object', 'null'],
+      required: ['vi', 'en'],
+      properties: { vi: { type: 'string' }, en: { type: 'string' } },
+    });
+    expect(schema('MyCreditPage').properties!.items!.maxItems).toBe(10);
+    expectTypeOf<MyCreditEntryDto>().toMatchTypeOf<components['schemas']['MyCreditEntry']>();
   });
 
   it('Q5 — a reply cut off by the hard ceiling ends as `truncated`, not `complete`', () => {

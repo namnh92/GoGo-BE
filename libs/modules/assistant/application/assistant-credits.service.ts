@@ -13,6 +13,19 @@ import {
 } from '../domain/credit-visibility';
 import { AssistantCreditRepository } from '../infrastructure/assistant-credit.repository';
 
+/** Public credit-history facts; clients group by local day and conversation. */
+export type MyCreditEntryDto = {
+  id: string;
+  createdAt: string;
+  delta: number;
+  direction: string;
+  eventKey: string;
+  source: { type: string };
+  eventId?: string;
+  conversation?: { id: string; title: string | null } | null;
+  eventLabels?: { vi: string; en: string } | null;
+};
+
 function integer(value: string | number | bigint): number {
   const result = Number(value);
   if (!Number.isSafeInteger(result) || result < 0)
@@ -69,12 +82,14 @@ export class AssistantCreditsService {
     const page = ledger.slice(0, 10);
     const last = page.at(-1);
     return {
-      items: page.map((row) => ({
+      items: page.map((row): MyCreditEntryDto => ({
         id: row.id!,
         createdAt: row.created_at!,
         delta: row.delta!,
         ...creditEntryFacts(row.reason!, row.delta!, row.usage_linked === true),
         ...(row.event_id ? { eventId: row.event_id } : {}),
+        conversation: row.conversation ?? null,
+        eventLabels: row.event_labels ?? null,
       })),
       nextCursor:
         ledger.length > 10 && last
