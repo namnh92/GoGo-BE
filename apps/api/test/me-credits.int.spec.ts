@@ -282,7 +282,7 @@ describe('V3 lifetime arithmetic and forward-compatible projection', () => {
         'create table visibility_compat.assistant_credit_ledger as select * from public.assistant_credit_ledger where false',
       );
       await client.query(
-        'alter table visibility_compat.assistant_credit_ledger add column credit_event_id uuid',
+        'alter table visibility_compat.assistant_credit_ledger add column if not exists credit_event_id uuid',
       );
       await client.query('create table visibility_compat.credit_entitlements(ledger_id uuid)');
       const historical = randomUUID();
