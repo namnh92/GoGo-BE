@@ -425,3 +425,338 @@ describe('QA-only CMS vocabulary wiring', () => {
     });
   });
 });
+
+/** One fictional conversation over several turns: each turn reads the previous
+ * turn's persisted trace and the user messages by id, as the repository does. */
+function qaConversation() {
+  const users = new Map<string, { id: string; role: 'user'; text: string; locale: 'vi' }>();
+  const places = new Map([
+    [FIXTURE_A, fictionalPlace(FIXTURE_A, 'Song Ngọc')],
+    [FIXTURE_B, fictionalPlace(FIXTURE_B, 'Song Ngọc')],
+  ]);
+  let previous: { id: string; status: 'complete'; trace: Record<string, unknown> } | null = null;
+  let n = 0;
+  const send = async (
+    text: string,
+    configure: (f: ReturnType<typeof qaFixture>) => void = () => {},
+  ) => {
+    n += 1;
+    const f = qaFixture();
+    const userId = `0000000${n}-0000-4000-8000-00000000000a`;
+    const assistantId = `0000000${n}-0000-4000-8000-00000000000b`;
+    users.set(userId, { id: userId, role: 'user', text, locale: 'vi' });
+    f.input.text = text;
+    f.input.messageId = assistantId;
+    f.repo.markPlaceQa.mockResolvedValue(userId);
+    f.repo.findMessage.mockImplementation(
+      (async (_u: string, _c: string, id: string) => users.get(id) ?? null) as never,
+    );
+    f.repo.latestAssistant.mockResolvedValue(previous);
+    f.search.placeFacts.mockImplementation((async () => ({ places })) as never);
+    configure(f);
+    const handled = await f.run();
+    if (handled)
+      previous = { id: assistantId, status: 'complete', trace: structuredClone(f.state.trace) };
+    const view = (
+      await new PlaceAnswerReader({ placeFacts: async () => ({ places }) }).page(
+        [{ id: assistantId, text: f.state.text, trace: f.state.trace, locale: 'vi' }],
+        'history',
+      )
+    ).get(assistantId)!;
+    const qa = f.state.trace.placeQa as
+      { outcome: string; topic: string; args: unknown; pending?: Record<string, any> } | undefined;
+    return { f, userId, assistantId, handled, view, qa };
+  };
+  return { send, users, places };
+}
+const exact = (...ids: string[]) =>
+  resolvePlaceNameOutcome({
+    candidates: ids.map((id) => ({ id, exact: true, score: 1 })),
+    overflow: false,
+    areaMismatch: false,
+  });
+const currentArea = {
+  kind: 'resolved',
+  value: { area: { datasetVersion: 'fixture', provinceCode: '01', communeCode: '00001' } },
+} as never;
+
+describe('Fable fix round — Sol F-02: old client types the emitted confirm option', () => {
+  it('two-turn confirmation: emitted ordinal for a choice, then the emitted singleton confirm text, answers', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const c = qaConversation();
+    const choice = await c.send('Song Ngọc mở cửa mấy giờ thứ tư?', (f) =>
+      f.search.resolvePlaceName.mockResolvedValue(exact(FIXTURE_A, FIXTURE_B)),
+    );
+    expect(choice.qa).toMatchObject({ outcome: 'choice', topic: 'hours' });
+    // The client ignores replyToMessageId/followUpOptionId and types the option text.
+    const first = await c.send(choice.view.followUps[0]!.options[1]!.text);
+    expect(first.qa).toMatchObject({ outcome: 'confirm', pending: { kind: 'confirm' } });
+    expect(first.qa!.pending!.slots[0].candidateIds).toEqual([FIXTURE_B]);
+    expect(first.f.search.placeFacts).not.toHaveBeenCalled();
+    const emitted = first.view.followUps[0]!.options[0]!.text;
+    const second = await c.send(emitted);
+    expect(second.qa).toMatchObject({ outcome: 'answer', topic: 'hours', args: choice.qa!.args });
+    expect(second.qa!.pending).toBeUndefined();
+    // Eligibility is re-read for exactly the confirmed candidate before answering.
+    expect(second.f.search.placeFacts).toHaveBeenCalledWith([FIXTURE_B], expect.anything());
+    expect(second.f.state.trace.placeAnswerGroup).toMatchObject({
+      kind: 'answer',
+      cards: [FIXTURE_B],
+    });
+  });
+  it('the exact place name confirms a singleton confirm without an invented prefix', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const c = qaConversation();
+    c.places.set(FIXTURE_A, fictionalPlace(FIXTURE_A, 'Fictional Lantern'));
+    await c.send('Fictional Lantren giá bao nhiêu?', (f) =>
+      f.search.resolvePlaceName.mockResolvedValue(
+        resolvePlaceNameOutcome({
+          candidates: [{ id: FIXTURE_A, exact: false, score: 0.6 }],
+          overflow: false,
+          areaMismatch: false,
+        }),
+      ),
+    );
+    const named = await c.send('Fictional Lantern', (f) =>
+      f.search.resolvePlaceName.mockResolvedValue(
+        resolvePlaceNameOutcome({ candidates: [], overflow: false, areaMismatch: false }),
+      ),
+    );
+    expect(named.qa).toMatchObject({ outcome: 'answer', topic: 'price' });
+    expect(named.view.text).toContain('12000–24000 VND/người');
+  });
+  it('legacy-district confirm (§4.4) is answered after the emitted option text, with the original topic', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const c = qaConversation();
+    const confirm = await c.send('Song Ngọc mở cửa mấy giờ thứ tư ở Quận 1?', (f) =>
+      f.search.resolvePlaceName.mockImplementation(async (_name: any, o: any) =>
+        resolvePlaceNameOutcome(
+          {
+            candidates: [{ id: FIXTURE_A, exact: true, score: 1 }],
+            overflow: false,
+            areaMismatch: false,
+          },
+          o,
+        ),
+      ),
+    );
+    expect(confirm.qa).toMatchObject({ outcome: 'confirm', topic: 'hours' });
+    expect(confirm.view.text).toContain('GoGo không tra theo quận/huyện cũ');
+    const answered = await c.send(confirm.view.followUps[0]!.options[0]!.text);
+    expect(answered.qa).toMatchObject({
+      outcome: 'answer',
+      topic: 'hours',
+      args: confirm.qa!.args,
+    });
+    expect(answered.f.search.placeFacts).toHaveBeenCalledWith([FIXTURE_A], expect.anything());
+  });
+  it('a confirmed candidate that became unavailable is rechecked and never answered with facts', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const c = qaConversation();
+    const choice = await c.send('Song Ngọc giá bao nhiêu?', (f) =>
+      f.search.resolvePlaceName.mockResolvedValue(exact(FIXTURE_A, FIXTURE_B)),
+    );
+    const confirm = await c.send(choice.view.followUps[0]!.options[0]!.text);
+    const emitted = confirm.view.followUps[0]!.options[0]!.text;
+    c.places.set(FIXTURE_A, { ...fictionalPlace(FIXTURE_A, 'Song Ngọc'), available: false });
+    const closed = await c.send(emitted);
+    expect(closed.qa).toMatchObject({ outcome: 'unavailable' });
+    expect(closed.view.text).not.toMatch(/12000|VND/);
+  });
+  it('an ordinal outside a singleton confirm is not a confirmation', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const c = qaConversation();
+    const choice = await c.send('Song Ngọc giá bao nhiêu?', (f) =>
+      f.search.resolvePlaceName.mockResolvedValue(exact(FIXTURE_A, FIXTURE_B)),
+    );
+    await c.send(choice.view.followUps[0]!.options[0]!.text);
+    const other = await c.send('2', (f) =>
+      f.search.resolvePlaceName.mockResolvedValue(
+        resolvePlaceNameOutcome({ candidates: [], overflow: false, areaMismatch: false }),
+      ),
+    );
+    expect(other.qa).toMatchObject({ outcome: 'retry' });
+    expect(other.f.search.placeFacts).toHaveBeenCalledTimes(1);
+    expect(other.f.state.trace.placeAnswerGroup).toMatchObject({ kind: 'notice' });
+  });
+});
+
+describe('Fable fix round — Astra F-01: referent continuation keeps the name-bearing source', () => {
+  const start = async () => {
+    const c = qaConversation();
+    const question = await c.send('Giá bao nhiêu?');
+    expect(question.qa).toMatchObject({ outcome: 'clarify_referent', topic: 'price' });
+    const name = await c.send('Song Ngọc', (f) =>
+      f.search.resolvePlaceName.mockResolvedValue(exact(FIXTURE_A, FIXTURE_B)),
+    );
+    expect(name.qa).toMatchObject({
+      outcome: 'choice',
+      topic: 'price',
+      pending: { questionMessageId: question.userId },
+    });
+    return { c, question, name };
+  };
+  const area = (result = exact(FIXTURE_A)) =>
+    [
+      'Phường Cầu Giấy, Hà Nội',
+      (f: ReturnType<typeof qaFixture>) => {
+        f.areas.resolve.mockResolvedValue(currentArea);
+        f.search.resolvePlaceName.mockResolvedValue(result);
+      },
+    ] as const;
+  it.each(['choice → area', 'typed none → area', 'structured none → area'] as const)(
+    '%s resolves the supplied name inside the area and answers the original question',
+    async (path) => {
+      vi.spyOn(Date, 'now').mockReturnValue(now);
+      const { c, question, name } = await start();
+      if (path === 'typed none → area') {
+        const none = await c.send('Không phải các quán này');
+        expect(none.qa).toMatchObject({ outcome: 'narrow', topic: 'price' });
+      }
+      if (path === 'structured none → area') {
+        const none = await c.send('Không phải các quán này', (f) => {
+          f.input.replyToMessageId = name.assistantId;
+          f.input.followUpOptionId = 'none';
+        });
+        expect(none.qa).toMatchObject({ outcome: 'narrow', topic: 'price' });
+      }
+      const refined = await c.send(...area());
+      expect(refined.f.search.resolvePlaceName).toHaveBeenCalledTimes(1);
+      expect(refined.f.search.resolvePlaceName).toHaveBeenCalledWith(
+        'Song Ngọc',
+        expect.objectContaining({ area: expect.objectContaining({ kind: 'current' }) }),
+      );
+      expect(refined.qa).toMatchObject({
+        outcome: 'answer',
+        topic: 'price',
+        args: question.qa!.args,
+      });
+      expect(refined.view.text).toContain('12000–24000 VND/người');
+    },
+  );
+  it('a branch choice inside the area keeps question, name source, topic and the original expiry', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    const { c, question, name } = await start();
+    const original = question.qa!.pending!;
+    clock.mockReturnValue(now + 10 * 60_000);
+    await c.send('Không phải các quán này');
+    clock.mockReturnValue(now + 20 * 60_000);
+    const refined = await c.send(...area(exact(FIXTURE_A, FIXTURE_B)));
+    expect(refined.qa).toMatchObject({
+      outcome: 'choice',
+      topic: 'price',
+      pending: {
+        kind: 'choice',
+        questionMessageId: question.userId,
+        topic: 'price',
+        createdAt: original.createdAt,
+        expiresAt: original.expiresAt,
+      },
+    });
+    expect(refined.qa!.pending!.slots[0].sourceMessageId).toBe(name.userId);
+    const picked = await c.send('2', (f) => {
+      f.input.replyToMessageId = refined.assistantId;
+      f.input.followUpOptionId = 'pick_2';
+    });
+    expect(picked.qa).toMatchObject({ outcome: 'answer', topic: 'price' });
+    expect(picked.f.search.placeFacts).toHaveBeenCalledWith([FIXTURE_B], expect.anything());
+    // The original 30-minute lifetime still ends on time.
+    clock.mockReturnValue(now + 30 * 60_000 + 1);
+    const late = await c.send('2', (f) => {
+      f.input.replyToMessageId = refined.assistantId;
+      f.input.followUpOptionId = 'pick_2';
+    });
+    expect(late.qa).toMatchObject({ outcome: 'stale_choice' });
+  });
+  it.each(['question', 'name'] as const)(
+    'an inaccessible %s source invalidates the continuation before any lookup',
+    async (lost) => {
+      vi.spyOn(Date, 'now').mockReturnValue(now);
+      const { c, question, name } = await start();
+      c.users.delete(lost === 'question' ? question.userId : name.userId);
+      const refined = await c.send(...area());
+      expect(refined.qa).toMatchObject({ outcome: 'stale_choice' });
+      expect(refined.f.search.resolvePlaceName).not.toHaveBeenCalled();
+      expect(refined.f.search.placeFacts).not.toHaveBeenCalled();
+      const structured = await c.send('1', (f) => {
+        f.input.replyToMessageId = name.assistantId;
+        f.input.followUpOptionId = 'pick_1';
+      });
+      expect(structured.qa).toMatchObject({ outcome: 'stale_choice' });
+      expect(structured.f.search.placeFacts).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe('Fable fix round — Sol F-01: admission fence before cancellable work', () => {
+  it('admit writes the durable association with no signal; handle reuses its reads', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const f = qaFixture();
+    await f.service.admit(f.input, f.state);
+    expect(f.repo.markPlaceQa).toHaveBeenCalledOnce();
+    expect(f.search.resolvePlaceName).not.toHaveBeenCalled();
+    expect(f.state.trace).toMatchObject({
+      route: 'place_qa',
+      questionMessageId: FIXTURE_A,
+      placeAnswerGroup: { kind: 'notice', message: 'read_error' },
+    });
+    // Unknown cost stays unknown until the producer runs; nothing is dispatched.
+    expect(f.state.costs).toMatchObject({ jevCalls: 0, haikuCalls: 0, jevCostUsd: null });
+    // A flag flip after admission cannot send a fenced turn to the model path.
+    f.availability.placeQaEnabled.mockResolvedValue(false);
+    expect(await f.run()).toBe(true);
+    expect(f.availability.placeQaEnabled).toHaveBeenCalledOnce();
+    expect(f.repo.latestAssistant).toHaveBeenCalledOnce();
+    expect(f.repo.markPlaceQa).toHaveBeenCalledOnce();
+    expect(f.state.trace.placeQa).toMatchObject({ outcome: 'answer', topic: 'price' });
+    expect(f.state.trace.placeAnswerGroup).toMatchObject({ kind: 'answer' });
+  });
+  it.each([
+    ['flag off', 'Fictional Lantern giá bao nhiêu?', false],
+    ['recommendation', 'Gợi ý quán cafe ở Hà Nội giá 100k', true],
+  ])('admit leaves a non-QA turn untouched (%s)', async (_name, text, enabled) => {
+    const f = qaFixture();
+    f.input.text = text;
+    f.availability.placeQaEnabled.mockResolvedValue(enabled);
+    await f.service.admit(f.input, f.state);
+    expect(f.repo.markPlaceQa).not.toHaveBeenCalled();
+    expect(f.state.trace).toEqual({});
+    expect(await f.run()).toBe(false);
+    expect(f.state.trace).toEqual({});
+    expect(f.availability.placeQaEnabled).toHaveBeenCalledOnce();
+  });
+  it.each(['structured control', 'typed reply to the latest QA turn'] as const)(
+    'admit fences %s even with the flag off',
+    async (mode) => {
+      vi.spyOn(Date, 'now').mockReturnValue(now);
+      const f = qaFixture();
+      f.setPending();
+      f.availability.placeQaEnabled.mockResolvedValue(false);
+      f.input.text = '1';
+      if (mode === 'structured control') {
+        f.input.replyToMessageId = FIXTURE_B;
+        f.input.followUpOptionId = 'pick_1';
+      }
+      await f.service.admit(f.input, f.state);
+      expect(f.state.trace.route).toBe('place_qa');
+      expect(f.repo.markPlaceQa).toHaveBeenCalledOnce();
+      expect(await f.run()).toBe(true);
+      expect(f.state.trace.placeQa).toMatchObject({ outcome: 'disabled' });
+    },
+  );
+  it('a failed name-only probe after admission restores the ordinary turn completely', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const f = qaFixture();
+    f.input.text = 'Cầu Giấy';
+    f.search.resolvePlaceName.mockResolvedValue(
+      resolvePlaceNameOutcome({ candidates: [], overflow: false, areaMismatch: false }),
+    );
+    await f.service.admit(f.input, f.state);
+    expect(f.state.trace.route).toBe('place_qa');
+    expect(await f.run()).toBe(false);
+    expect(f.repo.clearPlaceQa).toHaveBeenCalledOnce();
+    expect(f.state.trace).toEqual({});
+    expect(f.state.costs).toMatchObject({ jevCostUsd: null, haikuUpstreamCostUsd: null });
+    expect(f.frames).toEqual([]);
+  });
+});

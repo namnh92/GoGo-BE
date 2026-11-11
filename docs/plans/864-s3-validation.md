@@ -167,3 +167,98 @@ clarification with zero Haiku calls and byte-identical adapter requests on clean
 and QA-interposed histories (shape rev3 §3.2). Index setup still executes the
 base/head's actual `scripts/ops/index-place-name-key.sql` in autocommit; migration
 0102 remains verify-only. No production fallback or second index path was added.
+
+## Fable fix round (2026-11-11, after the confirm round)
+
+Starting head: `1c2dc953775c6a9c2d83452adc660cc82e6c799b`, clean. Authority: the
+confirm-round outputs of Sol and Astra, shape rev3 §§3.1, 3.2, 4.3–4.5, and the
+owner's "Fable sửa" decision. Worktree changes only; no commit. Every regression
+test below was written and run against the unchanged `1c2dc953` production code
+first (FAIL), then against the fix (PASS). vi-065 stays named-place QA.
+
+| Finding                           | Root cause                                                                                                                                                                                              | Change                                                                                                                                                                                                                                                                                                                                                                                |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sol F-01 (P1)                     | The `place_qa` fence was first written inside `PlaceQaService.handle`, after funding, the kill switch and an abortable flag read. A stop or orphan finalization before that left the pair unfenced.     | `PlaceQaService.admit` makes the same fence decisions (structured control; enabled + classified QA; typed reply to the latest QA turn) and writes the durable route with no abort signal. `AssistantTurnRunner` awaits it before `runnableFunding`. `handle` reuses the flag and latest-turn reads from `admit`, so the two cannot disagree. Send/admission (`insertTurn`) unchanged. |
+| Sol F-02 (P2)                     | A typed ordinal or name always produced another `confirm`, including when the pending state already was a one-candidate `confirm` whose emitted option text is that ordinal.                            | For `kind: confirm` with exactly one candidate, the ordinal or the exact name is the confirmation. `answer` re-reads publication and fact eligibility first. A singleton `choice`, and any other ordinal, still go to `confirm`/retry.                                                                                                                                                |
+| Astra F-01 (P2)                   | After a referent clarification the name arrived in a later message, but pending state kept only the question's id; area refinement re-parsed the question, which has no name.                           | `slots[0].sourceMessageId` (shape §4.5) now holds the name-bearing message, separate from `questionMessageId`. Both are re-read under user + conversation on the typed and structured paths; a missing one is `stale_choice` before any lookup. Area refinement reruns the name from the name source with the question's topic, arguments and `createdAt`/`expiresAt`.                |
+| S1 reader race (owner-authorized) | The allowance timer called `controller.abort()` before rejecting `RenderTimeout`; the cancellation branch rejected first and the result depended on whether `Date.now()` had reached the allowance yet. | The timer records `timedOut` and rejects `RenderTimeout` before it aborts; classification reads that flag. A caller cancellation is still `read_error`.                                                                                                                                                                                                                               |
+
+Changed expectation (one): `pending.spec.ts` no longer treats
+`slots[0].sourceMessageId !== questionMessageId` as an invalid state. Shape rev3
+§4.5 defines the slot source as its own reference; authorization is the scoped
+re-read of both ids in the service, covered by "an inaccessible question/name
+source invalidates the continuation before any lookup". The mutation case now
+uses a non-UUID id (still rejected) and a positive case was added. No Layer A
+expectation and no other existing assertion changed.
+
+### Regression tests, fail-before / pass-after
+
+| Finding    | Test (file → name)                                                                                                                                                                                                                                                                                         | FAIL on `1c2dc953`                                                                                                                                                                                              | After |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| Sol F-01   | `assistant-place-qa-s3-fence.int.spec.ts` → "public stop during funding resolution: both rows stay out of recommendation history and model requests"; "another writer (stop fallback / reaper) finalizing during funding resolution keeps the association"                                                 | Stored trace has no `route`; the user row id is in `repo.history`; history text contains `Quán Sao Lạ`; the captured Jev/Haiku requests match `/Quán Sao Lạ/` and differ from the clean conversation's requests | PASS  |
+| Sol F-02   | `place-qa.service.spec.ts` → "two-turn confirmation…", "the exact place name confirms a singleton confirm…", "legacy-district confirm (§4.4)…", "a confirmed candidate that became unavailable…"; int → "choice → emitted ordinal → singleton confirm → emitted text → answer", "legacy-district confirm…" | outcome `confirm` again instead of `answer` / `unavailable`                                                                                                                                                     | PASS  |
+| Astra F-01 | `place-qa.service.spec.ts` → "choice → area / typed none → area / structured none → area resolves the supplied name…", "a branch choice inside the area keeps question, name source, topic and the original expiry", "an inaccessible name source invalidates…"; int → "choice → area", "none → area"      | `resolvePlaceName` never called with `Song Ngọc`; outcome `retry` instead of `answer`/`choice`/`stale_choice`                                                                                                   | PASS  |
+| S1 race    | `place-answer-reader.spec.ts` → "S1 race: the allowance timer decides timeout before it aborts (rejects on cancel / ignores cancel), whatever the wall clock reads" (fake `setTimeout` only, `Date.now` pinned)                                                                                            | `expected 'read_error' to be 'timeout'`                                                                                                                                                                         | PASS  |
+
+Fail-before logs (local scratchpad, not in the repo): `/private/tmp/claude-501/-Users-maxnguyen-MyWorks-GoGo/3887d62f-9086-42b1-acb1-ae3d94169004/scratchpad/be873/f4-before.log`,
+`/private/tmp/claude-501/-Users-maxnguyen-MyWorks-GoGo/3887d62f-9086-42b1-acb1-ae3d94169004/scratchpad/be873/f23-before.log`, `/private/tmp/claude-501/-Users-maxnguyen-MyWorks-GoGo/3887d62f-9086-42b1-acb1-ae3d94169004/scratchpad/be873/int-fence-before.log` (the integration log is the
+second run: the first was overwritten when the leak assertions were made
+`expect.soft` so all of them report). The spec files were prettier-formatted
+after these runs; no assertion changed.
+
+Fail-before runs (unchanged production code): reader spec 2 failed / 35 passed,
+exit 1; service spec 9 failed / 24 passed, exit 1; new integration spec 6 failed
+/ 1 passed, exit 1 (the passing cell is the non-QA control "a recommendation
+stopped at the same point is not fenced"). Supplementary cells added with the
+fix (not fail-before evidence): admission-fence unit tests in
+`place-qa.service.spec.ts` and `assistant-turn-runner.spec.ts`.
+
+The new public regressions live in their own spec because
+`assistant-place-qa-s3.int.spec.ts` is byte-bound to the base/head Layer A
+evidence (`place-qa-layer-a-base.sh` overlay hash); that file is unchanged. The
+recorded head evidence above is for `e320db61` and is **not** relabeled: Layer A
+on this revision is the integration row below, and the base/head pair must be
+re-recorded by DEV on the commit that carries this round.
+
+### Gates on the fix-round worktree
+
+Run on the dirty worktree over `1c2dc953` (2026-11-11/12, local, Docker 29.7.2). All
+rows ran serially on one frozen tree: SHA-256 of `git diff --binary HEAD`
+(excluding this document) followed by the untracked fence spec was
+`b5bd111c95a6ffb08b78d40f9674735f3506767bed445268da45c0a205fb94ce` before and
+after the runs.
+
+| Command                                                                                                                                                           | Exit  | Result                                                                                                 |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------ |
+| `pnpm -s typecheck`                                                                                                                                               | 0     | all packages                                                                                           |
+| `pnpm -s vitest run --project unit`                                                                                                                               | 0     | 343 files, 4,861 tests passed                                                                          |
+| `pnpm -s vitest run --project integration --no-file-parallelism apps/api/test/assistant-place-qa-s3.int.spec.ts apps/api/test/assistant-place-answer.int.spec.ts` | 0     | 2 files, 428 tests passed (Layer A spec bytes unchanged)                                               |
+| `pnpm -s vitest run --project integration --no-file-parallelism apps/api/test/assistant-place-qa-s3-fence.int.spec.ts` (extra)                                    | 0     | 8 passed (one earlier attempt was BLOCKED by a Testcontainers reaper port timeout before any test ran) |
+| `prettier --check` / `eslint` on the nine touched `.ts` files and this document                                                                                   | 0 / 0 |                                                                                                        |
+| `pnpm -s api:check`                                                                                                                                               | 0     | generated declarations match; no contract change in this round                                         |
+
+NOT RUN: base-side Layer A (`place-qa-layer-a-base.sh`), remote CI, any DEV
+deployment or flag change.
+
+### Residuals for the owner / SA
+
+- **Flag-on behaviour change for bare text (pinned by a test).** With the flag
+  on, any short topicless text is a name-only probe. At `1c2dc953` it was fenced
+  only while the resolver probe ran; it is now fenced from admission. A bare
+  non-QA reply (e.g. "Cầu Giấy" answering a recommendation's area question)
+  that is stopped, or fails funding/kill switch, before the probe can clear it
+  stays `place_qa`: it is absent from recommendation history, reads as the
+  load-error notice, and a repeated bare reply is then answered as QA control
+  (`stale_choice`, zero model calls). An explicit request recovers. Flag off is
+  unaffected. Narrowing it either re-opens Sol F-01 for genuine name-only QA or
+  moves the probe into admission; both are shape decisions.
+
+- A process that dies between the send's commit and the end of `admit` (a few
+  DB reads) still leaves that one turn unfenced when the reaper ends it.
+  Closing it needs the fence inside the admission transaction, which shape
+  §3.1 keeps unchanged ("Admission stays outside and unchanged").
+- Sol F-02 as instructed accepts the bare ordinal for a singleton confirm. An
+  old client that taps a chip of an **earlier** choice message ("1") after a
+  confirm for another candidate is read as confirming the shown candidate
+  (§4.5 "never silently choose a different latest branch"). The alternative is
+  an explicit emitted confirm text; that changes the S1 reader output.

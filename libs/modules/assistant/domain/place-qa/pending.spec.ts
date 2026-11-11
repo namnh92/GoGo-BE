@@ -38,11 +38,25 @@ describe('pending v1 reference validation', () => {
     }),
     (p: ReturnType<typeof make>) => ({
       ...p,
-      slots: [{ slot: 0, sourceMessageId: FIXTURE_B, candidateIds: [FIXTURE_A] }],
+      slots: [{ slot: 0, sourceMessageId: 'not-a-message-id', candidateIds: [FIXTURE_A] }],
     }),
   ])('invalid state never authorizes a lookup', (mutate) =>
     expect(readQaPending(mutate(make()), FIXTURE_B, now)).toBeNull(),
   );
+  // GoGo-BE#873 Astra F-01, shape rev3 §4.5: a slot's `sourceMessageId` (the
+  // name-bearing message) is a reference of its own, distinct from
+  // `questionMessageId`. Parsing accepts it; PlaceQaService re-reads BOTH ids
+  // under the user and conversation before any lookup (place-qa.service.spec).
+  it('keeps a distinct name-bearing source reference', () => {
+    const p = {
+      ...make(),
+      slots: [{ slot: 0 as const, sourceMessageId: FIXTURE_B, candidateIds: [FIXTURE_A] }],
+    };
+    expect(readQaPending(p, FIXTURE_B, now)).toMatchObject({
+      questionMessageId: make().questionMessageId,
+      slots: [{ sourceMessageId: FIXTURE_B }],
+    });
+  });
 });
 
 describe('fixed no-reference groups across text/export readers', () => {

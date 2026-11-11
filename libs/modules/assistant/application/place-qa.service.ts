@@ -2,7 +2,7 @@ import { Injectable, Inject, Optional } from '@nestjs/common';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { SearchService } from '../../search/application/search.service';
 import { normalizeVietnamese } from '../../search/domain/normalize';
-import { AssistantRepository } from '../infrastructure/assistant.repository';
+import { AssistantRepository, type MessageRow } from '../infrastructure/assistant.repository';
 import {
   PlaceQaClassifier,
   isNewNonQaRequest,
@@ -40,10 +40,22 @@ type QaTrace = {
   pending?: QaPending;
 };
 
+/** What `admit` read while deciding the fence; `handle` reuses it, never a second read. */
+type QaAdmission = { enabled: boolean; latest: MessageRow | null };
+const UNPRODUCED: PlaceAnswerGroup = {
+  v: 1,
+  kind: 'notice',
+  message: 'read_error',
+  cards: [],
+  sources: [],
+  options: [],
+};
+
 /** S3 producer. One admitted turn; no model, card hydrator or recommendation state. */
 @Injectable()
 export class PlaceQaService {
   private readonly classifier = new PlaceQaClassifier();
+  private readonly admissions = new WeakMap<TurnState, QaAdmission>();
   constructor(
     private readonly repo: AssistantRepository,
     private readonly search: SearchService,
@@ -53,6 +65,54 @@ export class PlaceQaService {
     @Optional() private readonly qaTaxonomy?: AssistantTaxonomyService,
   ) {}
 
+  /**
+   * GoGo-BE#873 Sol F-01. The durable QA association of one admitted turn,
+   * decided and written before any cancellable post-admission work (funding,
+   * kill switch, the first-text guard). It takes no AbortSignal on purpose: a
+   * stop or a kill switch arriving meanwhile ends a turn that is already
+   * fenced, so its question cannot reach recommendation history or a model.
+   * Same decisions, in the same order, as `handle` made at its start; `handle`
+   * reuses the flag and latest-turn reads so the two can never disagree.
+   */
+  async admit(input: TurnInput, state: TurnState): Promise<void> {
+    const structured = input.replyToMessageId !== undefined || input.followUpOptionId !== undefined;
+    const classified = this.classifier.classify(input.text, input.context, {
+      now: new Date(),
+      locale: input.locale,
+    });
+    // Structured QA control is fenced before every lookup, even when disabled.
+    if (structured) await this.fence(input, state);
+    const enabled = await this.availability.placeQaEnabled();
+    if (!structured && enabled && classified.kind !== 'not_qa') await this.fence(input, state);
+    const latest = await this.repo.latestAssistant(
+      input.userId,
+      input.conversationId,
+      input.messageId,
+    );
+    if (!structured && continuesQa(latest, input.text, classified)) await this.fence(input, state);
+    this.admissions.set(state, { enabled, latest });
+  }
+
+  /** Idempotent for one turn: the in-process marker first, then the durable row. */
+  private async fence(input: TurnInput, state: TurnState): Promise<string> {
+    if (state.trace.route === 'place_qa' && typeof state.trace.questionMessageId === 'string')
+      return state.trace.questionMessageId;
+    // Set the in-process marker before awaiting persistence, too. A stop or
+    // first-text deadline cannot reclassify this turn as a recommendation.
+    state.trace.route = 'place_qa';
+    const questionId = await this.repo.markPlaceQa(
+      input.userId,
+      input.conversationId,
+      input.messageId,
+    );
+    if (!questionId) throw new Error('Place QA route fence lost');
+    state.trace.questionMessageId = questionId;
+    // A fenced turn that ends before it produces a group reads as the fixed
+    // load-error notice, exactly like one cancelled during resolution.
+    state.trace.placeAnswerGroup ??= UNPRODUCED;
+    return questionId;
+  }
+
   async handle(
     input: TurnInput,
     state: TurnState,
@@ -60,6 +120,8 @@ export class PlaceQaService {
     signal: AbortSignal,
     deadlineAt: number,
   ): Promise<boolean> {
+    const admission = this.admissions.get(state);
+    this.admissions.delete(state);
     const originalCosts = { ...state.costs };
     const started = Date.now();
     const now = new Date(started);
@@ -70,17 +132,11 @@ export class PlaceQaService {
     const structured = input.replyToMessageId !== undefined || input.followUpOptionId !== undefined;
     let trace: QaTrace | undefined;
     let pendingCreatedAt: number | undefined;
+    // The message the place name is read from, when it is not the question
+    // itself (a name supplied after a referent clarification). Astra F-01.
+    let nameSourceId: string | undefined;
     const mark = async (kind: QaTrace['class'], topic: AnswerTopic, args: QaArgs) => {
-      // Set the in-process marker before awaiting persistence, too. A stop or
-      // first-text deadline cannot reclassify this turn as a recommendation.
-      state.trace.route = 'place_qa';
-      const questionId = await this.repo.markPlaceQa(
-        input.userId,
-        input.conversationId,
-        input.messageId,
-      );
-      if (!questionId) throw new Error('Place QA route fence lost');
-      state.trace.questionMessageId = questionId;
+      const questionId = await this.fence(input, state);
       trace = {
         configVersion: PLACE_QA_CONFIG_VERSION,
         class: kind,
@@ -123,6 +179,7 @@ export class PlaceQaService {
       const p = makeQaPending({
         kind,
         questionMessageId,
+        sourceMessageId: nameSourceId,
         assistantMessageId: input.messageId,
         now: pendingCreatedAt ?? started,
         topic: trace!.topic,
@@ -175,6 +232,23 @@ export class PlaceQaService {
       const token = answerToken(query);
       await group({ v: 1, kind: 'answer', cards: [placeId], sources: [token], options: [] }, token);
     };
+    // Both references of a pending state, each re-read under the current user
+    // and conversation (deleted, expired or foreign rows read as missing).
+    const sourcesOf = async (p: QaPending) => {
+      const question = await this.repo.findMessage(
+        input.userId,
+        input.conversationId,
+        p.questionMessageId,
+      );
+      const nameId = p.slots[0]!.sourceMessageId;
+      const name =
+        nameId === p.questionMessageId
+          ? question
+          : await this.repo.findMessage(input.userId, input.conversationId, nameId);
+      if (!question || question.role !== 'user' || !name || name.role !== 'user') return null;
+      nameSourceId = name.id === question.id ? undefined : name.id;
+      return { question, name };
+    };
     const resolve = async (
       c: Extract<QaClassification, { kind: 'named_place_question' | 'name_only' }>,
       source: string,
@@ -208,6 +282,7 @@ export class PlaceQaService {
         delete state.trace.route;
         delete state.trace.placeQa;
         delete state.trace.questionMessageId;
+        delete state.trace.placeAnswerGroup;
         state.costs = originalCosts;
         trace = undefined;
         return false;
@@ -229,7 +304,7 @@ export class PlaceQaService {
       // Structured QA control is fenced before all control/source lookups,
       // including when disabled. It can never enter the model pipeline.
       if (structured) await mark('control', 'overview', {});
-      const enabled = await this.availability.placeQaEnabled();
+      const enabled = admission ? admission.enabled : await this.availability.placeQaEnabled();
       signal.throwIfAborted();
       if (!structured && enabled && classified.kind !== 'not_qa')
         await mark(classified.kind, classified.topic, classified.args);
@@ -254,11 +329,9 @@ export class PlaceQaService {
           trace.args = classified.args;
         }
       }
-      const latest = await this.repo.latestAssistant(
-        input.userId,
-        input.conversationId,
-        input.messageId,
-      );
+      const latest = admission
+        ? admission.latest
+        : await this.repo.latestAssistant(input.userId, input.conversationId, input.messageId);
       const isQa = latest?.trace?.route === 'place_qa';
       const qa = latest?.trace?.placeQa as { pending?: unknown } | undefined;
       const p =
@@ -285,12 +358,7 @@ export class PlaceQaService {
           await notice('disabled');
           return true;
         }
-        const source = await this.repo.findMessage(
-          input.userId,
-          input.conversationId,
-          p.questionMessageId,
-        );
-        if (!source || source.role !== 'user') {
+        if (!(await sourcesOf(p))) {
           await notice('stale_choice');
           return true;
         }
@@ -306,8 +374,7 @@ export class PlaceQaService {
         }
         return true;
       }
-      const explicitNewQa = classified.kind !== 'not_qa' && classified.kind !== 'name_only';
-      if (isQa && !isNewNonQaRequest(input.text) && !explicitNewQa) {
+      if (continuesQa(latest, input.text, classified)) {
         await mark('control', p?.topic ?? 'overview', p?.args ?? {});
         if (!enabled) {
           await notice('disabled');
@@ -340,12 +407,8 @@ export class PlaceQaService {
           return true;
         }
         pendingCreatedAt = Date.parse(p.createdAt);
-        const source = await this.repo.findMessage(
-          input.userId,
-          input.conversationId,
-          p.questionMessageId,
-        );
-        if (!source || source.role !== 'user') {
+        const sources = await sourcesOf(p);
+        if (!sources) {
           await notice('stale_choice');
           return true;
         }
@@ -358,20 +421,32 @@ export class PlaceQaService {
           return true;
         }
         const candidates = p.slots[0]!.candidateIds ?? [];
+        // Sol F-02: the one candidate of a `confirm` was already shown back to
+        // the user. Its emitted ordinal or exact name is that confirmation —
+        // an old client has nothing else to send. `answer` re-reads the place's
+        // publication and fact eligibility before any fact is rendered.
+        const confirming = p.kind === 'confirm' && candidates.length === 1;
         const ordinal = /^(?:quan |chi nhanh |so |place )?([1-3])$/u.exec(t);
         if (ordinal && candidates[Number(ordinal[1]) - 1]) {
+          if (confirming) {
+            trace!.row = 3;
+            await answer(candidates[0]!);
+            return true;
+          }
           // Old clients' text is not proof of which source chip was tapped.
           await clarify('confirm', [candidates[Number(ordinal[1]) - 1]!], p.questionMessageId);
           return true;
         }
         const a = await this.area(input.text);
         if (a.kind === 'current') {
-          const original = this.classifier.classify(source.text, null, {
+          // The whole name query is rerun from the name-bearing message; the
+          // topic, arguments and lifetime stay those of the original question.
+          const original = this.classifier.classify(sources.name.text, null, {
             now: new Date(p.createdAt),
-            locale: source.locale ?? input.locale,
+            locale: sources.name.locale ?? input.locale,
           });
           if (original.kind === 'named_place_question' || original.kind === 'name_only') {
-            return await resolve(original, source.id, a, source.text);
+            return await resolve(original, sources.question.id, a, sources.name.text);
           }
         }
         if (candidates.length) {
@@ -385,8 +460,10 @@ export class PlaceQaService {
             );
           });
           if (named.length === 1) {
-            if (explicit && p.kind === 'confirm') await answer(named[0]!);
-            else await clarify('confirm', named, p.questionMessageId);
+            if (p.kind === 'confirm' && (explicit || confirming)) {
+              trace!.row = 3;
+              await answer(named[0]!);
+            } else await clarify('confirm', named, p.questionMessageId);
             return true;
           }
         }
@@ -402,6 +479,13 @@ export class PlaceQaService {
               trace!.topic = 'overview';
               trace!.args = {};
               pendingCreatedAt = undefined;
+              nameSourceId = undefined;
+            } else {
+              // This reply carries the name; the question keeps its own id.
+              nameSourceId =
+                trace!.questionMessageId === p.questionMessageId
+                  ? undefined
+                  : trace!.questionMessageId;
             }
             trace!.row = fresh.row;
             const ids = fresh.candidates.filter((c) => c.exact).map((c) => c.id);
@@ -458,14 +542,7 @@ export class PlaceQaService {
             : signal.aborted
               ? 'cancelled'
               : 'read_error';
-        state.trace.placeAnswerGroup = {
-          v: 1,
-          kind: 'notice',
-          message: 'read_error',
-          cards: [],
-          sources: [],
-          options: [],
-        } satisfies PlaceAnswerGroup;
+        state.trace.placeAnswerGroup = UNPRODUCED;
         if (!signal.aborted) await sink.emit({ type: 'delta', text: '' });
       }
       throw error;
@@ -501,4 +578,15 @@ export class PlaceQaService {
       ? { kind: 'current', ...result.value.area }
       : { kind: 'unresolved' };
   }
+}
+
+/** A typed reply to the latest QA turn that is neither a new non-QA request nor
+ * a new explicit QA question: QA control, whatever the flag says (§3.2). */
+function continuesQa(
+  latest: Pick<MessageRow, 'trace'> | null,
+  text: string,
+  classified: QaClassification,
+): boolean {
+  const explicitNewQa = classified.kind !== 'not_qa' && classified.kind !== 'name_only';
+  return latest?.trace?.route === 'place_qa' && !isNewNonQaRequest(text) && !explicitNewQa;
 }

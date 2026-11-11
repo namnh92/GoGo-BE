@@ -23,6 +23,7 @@ import {
 } from '../infrastructure/frame-buffer';
 import { ASSISTANT_INSTANCE_ID, LEASE_MS, LEASE_RENEW_MS } from './assistant.config';
 import { AssistantAvailabilityService } from './assistant-availability.service';
+import { PlaceQaService } from './place-qa.service';
 import {
   AssistantOrchestrator,
   HaikuMidStreamError,
@@ -78,6 +79,7 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
     @Inject(ASSISTANT_INSTANCE_ID) private readonly instanceId: string,
     @Inject(APP_CONFIG) private readonly config: AssistantConfig,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
+    @Optional() private readonly placeQa?: PlaceQaService,
   ) {}
 
   onModuleInit(): void {
@@ -251,6 +253,9 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
     let status: AssistantTerminalStatus;
     let error: ErrorEnvelope | null = null;
     try {
+      // GoGo-BE#873: the QA association is durable before funding, the kill
+      // switch or any stage a stop can interrupt. Not cancellable by design.
+      await this.placeQa?.admit(turn, state);
       if (!(await this.repo.runnableFunding(turn.userId, turn.ledgerId, turn.messageId)))
         throw new Error('Assistant funding or master readiness unavailable');
       if (!(await this.availability.killSwitchOn())) {

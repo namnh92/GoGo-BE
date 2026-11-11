@@ -37,6 +37,9 @@ function harness(
     /** Holds finalizeMessage's answer until it resolves. */
     finalizeGate?: Promise<void>;
     metrics?: NoopMetrics;
+    /** GoGo-BE#873: the QA admission fence and the funding read it must precede. */
+    admit?: (turn: TurnInput, state: TurnState) => Promise<void>;
+    funding?: () => Promise<boolean>;
     persistRoute?: (
       messageId: string,
       owner: string,
@@ -64,7 +67,7 @@ function harness(
       purged.push([...ids]);
     },
     setTitleIfEmpty: async () => undefined,
-    runnableFunding: async () => true,
+    runnableFunding: async () => (opts.funding ? opts.funding() : true),
     releaseUndispatchedTurn: async () => undefined,
     completeLedger: async (_id: string, status: string) => {
       ledger.push({ status });
@@ -91,6 +94,7 @@ function harness(
     'test-instance',
     config,
     opts.metrics,
+    opts.admit ? ({ admit: opts.admit } as never) : undefined,
   );
   const turn = {
     messageId: 'm1',
@@ -513,3 +517,44 @@ it.each(['failed write', 'lost lease'] as const)(
     expect(persistRoute).toHaveBeenCalledOnce();
   },
 );
+
+describe('GoGo-BE#873 Sol F-01: QA admission precedes cancellable work', () => {
+  it('a Stop while funding is unresolved finalizes a turn that is already fenced', async () => {
+    const order: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // The scripted orchestrator has no first-text guard; the real one refuses
+    // an aborted signal before PlaceQaService.handle (covered at the API level).
+    const h = harness(async () => ({ status: 'complete' }), {
+      admit: async (_turn, state) => {
+        order.push('admit');
+        state.trace.route = 'place_qa';
+        state.trace.questionMessageId = 'q1';
+      },
+      funding: async () => {
+        order.push('funding');
+        await gate;
+        return true;
+      },
+    });
+    h.runner.start(h.turn);
+    await until(() => order.includes('funding'));
+    const stopping = h.runner.stopLocal(h.turn.messageId);
+    release();
+    await stopping;
+    expect(order).toEqual(['admit', 'funding']);
+    expect(h.finalized).toHaveLength(1);
+    expect(h.finalized[0]).toMatchObject({
+      status: 'stopped',
+      trace: { route: 'place_qa', questionMessageId: 'q1' },
+    });
+  });
+  it('without the QA service the runner is unchanged', async () => {
+    const h = harness(async () => ({ status: 'complete' }));
+    h.runner.start(h.turn);
+    await until(() => h.finalized.length === 1);
+    expect(h.finalized[0]).toMatchObject({ status: 'complete', trace: {} });
+  });
+});

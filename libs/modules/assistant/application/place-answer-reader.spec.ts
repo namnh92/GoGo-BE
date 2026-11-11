@@ -165,6 +165,49 @@ describe('atomic response reader boundary', () => {
     expect((await pending).get('message-a')?.result).toBe('timeout');
     expect(signal?.aborted).toBe(true);
   });
+  it.each(['rejects on cancel', 'ignores cancel'] as const)(
+    'S1 race: the allowance timer decides timeout before it aborts (%s), whatever the wall clock reads',
+    async (adapter) => {
+      // Only the scheduler is faked. Date stays pinned, as when a timer fires a
+      // tick early: elapsed wall-clock time can never rescue the classification.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-11-11T10:00:00Z'));
+      try {
+        let signal: AbortSignal | undefined;
+        const reader = new PlaceAnswerReader({
+          placeFacts: (_ids, o) => {
+            signal = o.signal;
+            return new Promise((_resolve, reject) => {
+              if (adapter === 'rejects on cancel')
+                o.signal.addEventListener('abort', () => reject(new Error('query cancelled')), {
+                  once: true,
+                });
+            });
+          },
+        });
+        const pending = reader.page([fixtureRow()], 'replay');
+        await vi.advanceTimersByTimeAsync(2000);
+        expect((await pending).get('message-a')?.result).toBe('timeout');
+        expect(signal?.aborted).toBe(true);
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+  it('S1 race: a caller cancellation before the allowance stays read_error with a pinned clock', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-11-11T10:00:00Z'));
+    try {
+      const abort = new AbortController();
+      const reader = new PlaceAnswerReader({ placeFacts: () => new Promise(() => {}) });
+      const pending = reader.page([fixtureRow()], 'replay', { signal: abort.signal });
+      await vi.advanceTimersByTimeAsync(1999);
+      abort.abort();
+      expect((await pending).get('message-a')?.result).toBe('read_error');
+    } finally {
+      clock.mockRestore();
+    }
+  });
   it('includes all DB work in the remaining first-visible allowance, with no extra 2s', async () => {
     vi.useFakeTimers();
     const now = Date.now();

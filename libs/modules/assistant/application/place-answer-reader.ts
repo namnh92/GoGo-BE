@@ -88,6 +88,10 @@ export class PlaceAnswerReader {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let context: PlaceFactContext = { places: new Map() };
     let failure: 'read_error' | 'timeout' | undefined;
+    // Set by the allowance timer BEFORE it aborts: aborting rejects the
+    // cancellation branch (and a cancellable adapter) synchronously, so the
+    // race winner and the wall clock cannot decide timeout versus read error.
+    let timedOut = false;
     try {
       if (allowance <= 0) throw new RenderTimeout();
       if (controller.signal.aborted) throw new Error('reader cancelled');
@@ -98,8 +102,9 @@ export class PlaceAnswerReader {
         const deadlineAt = started + allowance;
         const deadline = new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
-            controller.abort();
+            timedOut = true;
             reject(new RenderTimeout());
+            controller.abort();
           }, allowance);
         });
         const aborted = new Promise<never>((_, reject) =>
@@ -125,7 +130,9 @@ export class PlaceAnswerReader {
       }
     } catch (e) {
       failure =
-        e instanceof RenderTimeout || (allowance > 0 && Date.now() - started >= allowance)
+        timedOut ||
+        e instanceof RenderTimeout ||
+        (allowance > 0 && Date.now() - started >= allowance)
           ? 'timeout'
           : 'read_error';
     } finally {

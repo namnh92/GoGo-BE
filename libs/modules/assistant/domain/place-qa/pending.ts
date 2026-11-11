@@ -58,6 +58,12 @@ const schema = z
       .max(4),
   })
   .strict();
+/** `questionMessageId` is the message whose question (topic, arguments) is being
+ * answered. `slots[0].sourceMessageId` is the message the place NAME is read from
+ * (shape rev3 §4.5). They differ only after a referent clarification, where the
+ * name arrives in a later reply. Both are server-authored references: the reader
+ * of this state re-validates each against the user and conversation before use.
+ */
 export type QaPending = Omit<z.infer<typeof schema>, 'args'> & { args: QaArgs };
 export function readQaPending(
   value: unknown,
@@ -73,8 +79,7 @@ export function readQaPending(
     p.assistantMessageId !== assistantMessageId ||
     created > now ||
     expires <= now ||
-    expires - created !== PLACE_QA_PENDING_TTL_MS ||
-    p.slots[0]!.sourceMessageId !== p.questionMessageId
+    expires - created !== PLACE_QA_PENDING_TTL_MS
   )
     return null;
   const candidates = p.slots[0]!.candidateIds ?? [];
@@ -101,6 +106,8 @@ export function readQaPending(
 export function makeQaPending(input: {
   kind: QaPending['kind'];
   questionMessageId: string;
+  /** Name-bearing message; defaults to the question itself. */
+  sourceMessageId?: string | undefined;
   assistantMessageId: string;
   now: number;
   topic: AnswerTopic;
@@ -121,7 +128,13 @@ export function makeQaPending(input: {
     retryCount: input.retryCount ?? 0,
     topic: input.topic,
     args: input.args,
-    slots: [{ slot: 0, sourceMessageId: input.questionMessageId, candidateIds: candidates }],
+    slots: [
+      {
+        slot: 0,
+        sourceMessageId: input.sourceMessageId ?? input.questionMessageId,
+        candidateIds: candidates,
+      },
+    ],
     activeSlot: 0,
     options: [
       ...candidates.map((placeId, i) => ({
