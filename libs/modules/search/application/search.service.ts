@@ -4,6 +4,8 @@ import { sql } from 'drizzle-orm';
 import { type Db } from '@gogo/database';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { APP_CONFIG, type MediaConfig } from '../../shared/config';
+import { PLACE_NAME_READING_LIMIT } from '../../assistant/domain/place-qa/span';
+import { assertPlaceNameKeyReady } from '../../shared/place-name-key-readiness';
 import { AppError } from '../../shared/app-error';
 import { normalizeGoogleAttribution } from '../../shared/attribution';
 import { iso, num, toPhotos, type PlacePhotoRow } from '../domain/place-dto';
@@ -183,12 +185,8 @@ export class SearchService implements PlaceFactsReader {
     }
     const variants = placeNameVariants(span);
     const alternates = options.alternates ?? [];
-    const readings = {
-      scoped: alternates.filter((a) => !a.includesArea).flatMap((a) => placeNameVariants(a.text)),
-      unscoped: alternates.filter((a) => a.includesArea).flatMap((a) => placeNameVariants(a.text)),
-    };
     if (
-      alternates.length > 4 ||
+      alternates.length + 1 > PLACE_NAME_READING_LIMIT ||
       alternates.some(
         (a) => !a.text.trim() || a.text.length > 120 || /[\uE000\uE001]/u.test(a.text),
       ) ||
@@ -204,7 +202,12 @@ export class SearchService implements PlaceFactsReader {
         { ambiguous: true },
       );
     }
+    const readings = {
+      scoped: alternates.filter((a) => !a.includesArea).flatMap((a) => placeNameVariants(a.text)),
+      unscoped: alternates.filter((a) => a.includesArea).flatMap((a) => placeNameVariants(a.text)),
+    };
     const matches = await placeQaRead(this.db, 1000, options, async (read) => {
+      await assertPlaceNameKeyReady(read);
       await read.execute(sql`select
         set_config('pg_trgm.word_similarity_threshold', ${String(PLACE_QA_RETRIEVAL_THRESHOLD)}, true),
         set_config('pg_trgm.similarity_threshold', ${String(PLACE_QA_RETRIEVAL_THRESHOLD)}, true)`);

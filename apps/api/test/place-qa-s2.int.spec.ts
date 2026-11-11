@@ -1,3 +1,5 @@
+import { placeNameKeyIndex } from './support/place-name-key';
+import { PLACE_NAME_READING_LIMIT } from '../../../libs/modules/assistant/domain/place-qa/span';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { sql } from 'drizzle-orm';
@@ -70,6 +72,7 @@ beforeAll(async () => {
     .start();
   ({ db, pool } = createDb(container.getConnectionUri(), { max: 1 }));
   await migrate(db, { migrationsFolder: path.resolve(__dirname, '../../../migrations') });
+  await placeNameKeyIndex(db);
   service = new SearchService(new SearchRepository(db), db);
   const [dataset] = await db
     .insert(schema.administrativeDatasetVersions)
@@ -405,9 +408,29 @@ describe('matrix 2: catalogue resolution, real indexed SQL', () => {
     expect(both.candidates.map((c) => c.id).sort()).toEqual([short, long].sort());
     await expect(
       service.resolvePlaceName('Cafe', {
-        alternates: Array.from({ length: 5 }, (_, i) => ({ text: `Cafe ${i}` })),
+        alternates: Array.from({ length: PLACE_NAME_READING_LIMIT }, (_, i) => ({
+          text: `Cafe ${i}`,
+        })),
       }),
     ).resolves.toMatchObject({ kind: 'narrow' });
+  });
+  it('round-4: explicit-topic collision never directly answers for Cafe', async () => {
+    const long = await place('Cafe Không Có Wifi');
+    try {
+      const span = extractPlaceNameSpan('Giờ mở cửa của Cafe Không Có Wifi?');
+      expect(span.kind).toBe('span');
+      if (span.kind !== 'span') return;
+      const result = await service.resolvePlaceName(span.text, { alternates: span.alternates });
+      expect(result.kind).toBe('choice');
+      expect(
+        result.candidates
+          .filter((c) => c.exact)
+          .map((c) => c.id)
+          .sort(),
+      ).toEqual([ids['common'], long].sort());
+    } finally {
+      await pool.query('delete from places where id=$1', [long]);
+    }
   });
   it('Sol F-01 / Astra F-03: canonical reader returns a map and renderer-facing snapshot', async () => {
     const reader: PlaceFactsReader = service;
@@ -772,8 +795,8 @@ describe('DEV query-plan and latency evidence', () => {
     expect(
       selective.filter((n) => n['Node Type'] === 'Seq Scan' && n['Relation Name'] === 'places'),
     ).toEqual([]);
-    // The ops script (large-table path) is idempotent after the migration and
-    // its readiness check accepts exactly the migrated index shape.
+    // The mandatory ops phase is idempotent after bootstrap and its readiness
+    // check accepts exactly the index shape required by the resolver.
     const ops = await readFile(
       path.resolve(__dirname, '../../../scripts/ops/index-place-name-key.sql'),
       'utf8',

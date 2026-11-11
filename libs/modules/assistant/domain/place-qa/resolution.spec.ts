@@ -286,6 +286,44 @@ describe('round-3 boundary regressions: grammar-like name tokens', () => {
     );
     return { parsed, outcome };
   };
+  it('round-4: explicit topic retains the complete Cafe Không Có Wifi reading', () => {
+    expect(
+      resolveReadings(['Cafe', 'Cafe Không Có Wifi'], 'Giờ mở cửa của Cafe Không Có Wifi?').outcome,
+    ).toMatchObject({ kind: 'choice' });
+  });
+  it('round-4: generated grammar/name collisions preserve every boundary combination', () => {
+    for (const prefix of ['', 'Giờ mở cửa của ', 'Thông tin về ', 'opening hours of ']) {
+      for (const clause of [
+        'không có wifi',
+        'có chỗ đậu xe không',
+        'mở cửa mấy giờ',
+        'địa chỉ là gì',
+      ]) {
+        const message = `${prefix}Cafe ${clause}?`;
+        const prefixTokens = prefix.trim().split(/\s+/).filter(Boolean);
+        const suffixTokens = clause.split(' ');
+        const parsed = extractPlaceNameSpan(message);
+        expect(parsed.kind).toBe('span');
+        // A complete bounded set or explicit ambiguity; never a partial set.
+        for (let left = 0; left <= prefixTokens.length; left++) {
+          for (let right = 0; right <= suffixTokens.length; right++) {
+            const name = [
+              ...prefixTokens.slice(left),
+              'Cafe',
+              ...suffixTokens.slice(0, right),
+            ].join(' ');
+            if (name === 'Cafe' || parsed.kind === 'ambiguous') continue;
+            expect(
+              resolveReadings(['Cafe', name], message).outcome,
+              `${message} / ${name}`,
+            ).toMatchObject({ kind: 'choice' });
+            for (const reading of [parsed, ...(parsed.alternates ?? [])])
+              expect(message.slice(reading.start, reading.end)).toBe(reading.text);
+          }
+        }
+      }
+    }
+  });
   it.each([
     ['Cafe Cỏ mở cửa mấy giờ?', 'Cafe Cỏ'],
     ['Cafe Cỏ có wifi không?', 'Cafe Cỏ'],
@@ -362,23 +400,34 @@ describe('round-3 boundary regressions: grammar-like name tokens', () => {
     const unaccented = extractPlaceNameSpan('Pho O Quan 9 mo cua may gio?');
     expect(unaccented).toMatchObject({ kind: 'span', text: 'Pho', statedArea: 'O Quan 9' });
     expect(unaccented).toMatchObject({
-      alternates: [{ text: 'Pho O Quan 9', includesArea: true }],
+      alternates: expect.arrayContaining([
+        expect.objectContaining({ text: 'Pho O Quan 9', includesArea: true }),
+      ]),
     });
     const typed = extractPlaceNameSpan('Tonkin ở Quận 9 có wifi không?');
     expect(typed).toMatchObject({
       text: 'Tonkin',
-      alternates: [{ text: 'Tonkin ở Quận 9', includesArea: true }],
+      alternates: expect.arrayContaining([
+        expect.objectContaining({ text: 'Tonkin ở Quận 9', includesArea: true }),
+      ]),
     });
     // A topic prefix with no "của/về" may be the start of the name.
     const prefixed = extractPlaceNameSpan('Thông tin Cafe mở cửa mấy giờ?');
     expect(prefixed).toMatchObject({ kind: 'span', text: 'Cafe' });
     if (prefixed.kind === 'span')
-      expect(prefixed.alternates!.map((a) => a.text)).toEqual([
-        'Thông tin Cafe',
-        'Cafe mở',
-        'Cafe mở cửa',
-      ]);
-    expect(extractPlaceNameSpan('Thông tin về Cafe Gần Tìm Mới')).not.toHaveProperty('alternates');
+      expect(prefixed.alternates!.map((a) => a.text)).toEqual(
+        expect.arrayContaining([
+          'Thông tin Cafe',
+          'Cafe mở',
+          'Cafe mở cửa',
+          'Thông tin Cafe mở cửa mấy giờ',
+        ]),
+      );
+    expect(extractPlaceNameSpan('Thông tin về Cafe Gần Tìm Mới')).toMatchObject({
+      alternates: expect.arrayContaining([
+        expect.objectContaining({ text: 'Thông tin về Cafe Gần Tìm Mới' }),
+      ]),
+    });
     // Comparison operands keep alternates on original-message offsets.
     const text = 'So sánh Cafe Co mo cua khong và Tonkin về giá?';
     const compared = extractComparisonPlaceNameSpans(text);
@@ -386,5 +435,17 @@ describe('round-3 boundary regressions: grammar-like name tokens', () => {
     if (compared.kind === 'spans')
       for (const a of compared.spans[0].alternates ?? [])
         expect(text.slice(a.start, a.end)).toBe(a.text);
+  });
+});
+
+it('round-4: reading budget overflow and unrepresentable full readings clarify without truncation', () => {
+  const atLimit = extractPlaceNameSpan('Thông tin về Cafe ở Quận 9 có mở cửa không?');
+  expect(atLimit.kind).toBe('span');
+  if (atLimit.kind === 'span') expect(atLimit.alternates).toHaveLength(31);
+  expect(extractPlaceNameSpan('Giờ mở cửa của Cafe ở Quận 9 có chỗ đậu xe không?')).toEqual({
+    kind: 'ambiguous',
+  });
+  expect(extractPlaceNameSpan(`Giờ mở cửa của ${'a'.repeat(115)} có wifi không?`)).toEqual({
+    kind: 'ambiguous',
   });
 });

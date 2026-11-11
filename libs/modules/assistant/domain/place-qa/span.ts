@@ -1,5 +1,8 @@
 import { normalizeVietnamese } from '../../../search/domain/normalize';
 
+// Shared with the resolver: at most 32 readings / 96 punctuation keys, never truncated.
+export const PLACE_NAME_READING_LIMIT = 32;
+
 /**
  * A longer whole-name reading of the same message: a token at a name/grammar
  * boundary (a stripped topic prefix, the first tokens of the question clause,
@@ -174,11 +177,8 @@ export function extractPlaceNameSpan(
   // A bare single-word topic can also identify a venue (Gia Bảo, Price Cafe).
   // Keep it when a terminal question supplies the topic; otherwise clarify.
   const bareTopic = !!leading && /^(?:gia|price|address)\s+$/u.test(leading[0]);
-  // "Thông tin Cafe": without của/về/of/for the prefix may start the name.
-  let prefixReading: number | undefined;
   if (leading && !bareTopic) {
     const count = leading[0].trim().split(/\s+/).length;
-    if (!leading[1] && !leading[2]) prefixReading = tokens[0]!.start;
     start = tokens[count]?.start ?? end;
   }
   // A terminal question clause is unambiguous only when its first token is
@@ -230,7 +230,6 @@ export function extractPlaceNameSpan(
   consumeQuestion();
   // Ambiguous segmentation clarifies; it never yields a guessed exact core.
   if (uncertain || (bareTopic && !clause)) return { kind: 'ambiguous' };
-  const nameTokens = tokens.filter((t) => t.start >= start && t.start < end);
   let span = text.slice(start, end);
   const left = span.length - span.trimStart().length;
   start += left;
@@ -252,36 +251,30 @@ export function extractPlaceNameSpan(
       end: detectedArea.end - (rawArea.length - rawArea.trimEnd().length),
     };
   }
-  // Longer whole-name readings across ONE boundary each. They are probes for
-  // exact equality only, so an unlikely reading costs nothing and a real
-  // catalogue collision (Cafe / Cafe Cỏ typed "Cafe Co …") becomes a choice.
+  // Enumerate the Cartesian product of EVERY token cut across both boundaries.
+  // This includes zero consumed grammar (the full unstripped message), all
+  // partial topic prefixes, and every clause/area suffix, not only two tokens.
+  // Even explicit "của/of" may occur inside a published name. Catalogue equality,
+  // not grammar plausibility, decides whether any of these readings exists.
+  const starts = [start, ...tokens.filter((t) => t.start < start).map((t) => t.start)];
+  const ends = [end, ...tokens.filter((t) => t.wordEnd > end).map((t) => t.wordEnd)];
+  if (starts.length * ends.length > PLACE_NAME_READING_LIMIT) return { kind: 'ambiguous' };
   const alternates: PlaceNameAlternate[] = [];
-  const reading = (from: number, to: number, includesArea?: true) => {
-    const candidate = text.slice(from, to);
-    if (unusable(candidate) || candidate === span) return;
-    if (alternates.some((a) => a.start === from && a.end === to)) return;
-    alternates.push({
-      text: candidate,
-      start: from,
-      end: to,
-      ...(includesArea ? { includesArea } : {}),
-    });
-  };
-  const lastName = nameTokens.length ? tokens.indexOf(nameTokens[nameTokens.length - 1]!) : -1;
-  if (prefixReading !== undefined) reading(prefixReading, end);
-  // The first one or two clause tokens directly after the name (có, không có,
-  // mấy, ở, giá …) could be its last words.
-  if (clause && lastName >= 0 && clause.first === lastName + 1)
-    for (let extra = 0; extra < Math.min(2, clause.length); extra++)
-      reading(start, tokens[clause.first + extra]!.wordEnd);
-  // An area the grammar detected (not one the caller resolved) directly after
-  // the name: "Pho O Quan 9" may be the venue's whole name.
-  if (detectedArea && !area && lastName >= 0) {
-    const inArea = tokens.filter(
-      (t) => t.start >= detectedArea!.start && t.start < detectedArea!.end,
-    );
-    if (inArea.length && tokens.indexOf(inArea[0]!) === lastName + 1)
-      reading(start, inArea[inArea.length - 1]!.wordEnd, true);
+  for (const from of starts) {
+    for (const to of ends) {
+      const candidate = text.slice(from, to);
+      // An unrepresentable reading cannot silently disappear from the set.
+      if (unusable(candidate)) return { kind: 'ambiguous' };
+      if (from === start && to === end) continue;
+      alternates.push({
+        text: candidate,
+        start: from,
+        end: to,
+        // Any overlap can be name text, so don't hide that collision behind
+        // an area filter (including externally supplied area boundaries).
+        ...(detectedArea && to > detectedArea.start ? { includesArea: true as const } : {}),
+      });
+    }
   }
   return {
     kind: 'span',

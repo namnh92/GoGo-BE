@@ -6,6 +6,89 @@ Basis: Astra rev3 `dev/handoffs/sa-shape-be-844-ai-place-qa.rev3.astra.md`
 `feature/GOGO-856-place-answer-tokens` (PR #860). No git commands were run;
 branch/SHA identities were not independently verified.
 
+## Round-4 fixes (2026-11-11, SA Astra, owner-authorized fixer)
+
+This section supersedes the earlier gate/deployment summaries below. Owner-provided
+basis: PR #859, head `1f788e61`, branch `feature/GOGO-857-place-resolver-facts`.
+No git commands were run; those identities were not independently verified.
+The initial production hashes match the prior source manifest for the four changed
+production inputs. This is an uncommitted worktree result for DEV to commit.
+No S1 source files were changed; no compilation exception was needed.
+
+Evidence: [round4-verification.json](857-s2-evidence/round4-verification.json)
+records commands, exit status, assertion failures, initial/final source hashes,
+and unchanged S1-domain hashes. Older source manifests and SQL-performance files
+are historical evidence, not measurements of this round's tree.
+
+| Finding                                    | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | FAIL before / verification after                                                                                                                                                                                                                                                                                                                                                           |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Astra F-01 P1, span completeness           | Every token cut through both stripped boundaries is enumerated as a Cartesian product, including explicit-topic prefixes, complete terminal grammar, area overlaps, and the full unstripped reading (without sentence punctuation). Budget: **32 total readings**, including the primary; at most 96 punctuation keys. Over-budget or unrepresentable readings return `ambiguous`; an oversized resolver input returns `narrow`. No truncation. Area-overlapping readings probe exact equality without the area filter.                                                                   | Before: `Cafe` + `Cafe Không Có Wifi`, message `Giờ mở cửa của Cafe Không Có Wifi?`, returned `answer`, expected `choice`. Generated name/grammar collisions failed for the same reason. After: explicit regression and generated boundary combinations pass; 32-read boundary, overflow, offsets and overlength cases pass. Real-SQL collision regression added but blocked before setup. |
+| Sol F-01 P1 / Astra F-02 P2, index rollout | Migration 0102 is `SELECT 1`, never a blocking build. **Mandatory** `scripts/ops/index-place-name-key.sql` builds CONCURRENTLY. Resolver checks readiness on every read, inside its existing 1-second total budget; missing/wrong/invalid index becomes `read_error`, never a scan-based answer. Ops and runtime share tested equivalent checks for table, valid/ready/live, btree, expression, key count, uniqueness/exclusion, opclass, collation, ordering and predicate. Expression comparison preserves SQL string literals. Ops failure gives DROP CONCURRENTLY/rerun instructions. | Before: regression detected ordinary `CREATE INDEX` in the transaction. After: no-build migration and ops/runtime shape parity unit tests pass. Missing-index, seven wrong shapes, genuinely cancelled concurrent build, recovery, rollback, idempotency and concurrent-writer integration coverage added; execution blocked by Docker access.                                             |
+
+The existing shared post-migration test bootstrap now runs the mandatory ops script
+when journal 0102 is present; the direct S2 fixture does the same. The ops helper
+uses one dedicated connection in autocommit so session settings cannot switch
+connections. S1 reader/template/token code is untouched. S3 still must pass the
+whole extraction result's `alternates` and treat `ambiguous` as clarification.
+
+### Gates on this worktree
+
+| Gate                                                       | Result                                                                                                                                                                                                       |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pnpm -s turbo run typecheck --force`                      | PASS, 8/8 tasks. Shared cache writes warned `Operation not permitted`; compiler tasks completed successfully.                                                                                                |
+| `pnpm -s turbo run build --force`                          | PASS, 2/2 tasks; same cache warning.                                                                                                                                                                         |
+| `pnpm -s vitest run --project unit`                        | **Not fully green**: 336 files / 4,381 tests passed; 1 file failed in setup, 1 test skipped. `apps/api/src/sentry-request.spec.ts`: `listen EPERM: operation not permitted 127.0.0.1`. No failed assertions. |
+| Focused span/migration/readiness units                     | PASS, 3 files / 63 tests, including the final exact-budget assertion.                                                                                                                                        |
+| Requested five integration suites, `--no-file-parallelism` | **BLOCKED**, 5 suite setup failures / 78 tests skipped: `Could not find a working container runtime strategy`. Docker CLI confirms socket access is denied by this sandbox. No SQL acceptance claimed.       |
+| `pnpm -s api:check`                                        | PASS.                                                                                                                                                                                                        |
+| `pnpm -s eslint .`                                         | PASS, full repository.                                                                                                                                                                                       |
+| `pnpm -s prettier --check .`                               | PASS, full repository (including final documentation/evidence).                                                                                                                                              |
+
+Requested integration command (rerun with Docker access):
+
+```bash
+pnpm -s vitest run --project integration --no-file-parallelism \
+  apps/api/test/place-qa-s2.int.spec.ts \
+  apps/api/test/place-qa-s2-wiring.int.spec.ts \
+  apps/api/test/place-name-key-migration.int.spec.ts \
+  apps/api/test/assistant-place-answer.int.spec.ts \
+  apps/api/test/assistant.int.spec.ts
+```
+
+Not done: a fully green unit gate, executable SQL fail-before/pass-after and index
+recovery/writer proof, fresh query plans/p95 (including the larger alternate budget),
+DEV deployment/acceptance, CI, independent review, or any git/remote write. Those
+remain acceptance work; the historical SQL timings do not validate these changes.
+
+### Exact DEV deploy order
+
+1. DEV commits the patch and uses the normal deploy pipeline, including
+   `pnpm -s db:migrate`. Migration 0102 does no index work. Already-applied 0102
+   databases are covered by the new runtime check too; no journal edit/replay is
+   needed. Existing valid exact-shape indexes are reused.
+2. **Immediately after deployment/migrations**, run the release's mandatory ops
+   script against the same DEV database, in autocommit (no `BEGIN` or `psql -1`):
+
+   ```bash
+   psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -f scripts/ops/index-place-name-key.sql
+   ```
+
+3. Require exit 0 and `places_name_key_idx_ready = 1` before accepting the S2
+   resolver rollout. While absent or incompatible, the resolver returns a safe
+   read error. Readiness is not cached, so successful ops needs no restart.
+4. If ops reports a wrong/invalid same-name index, keep resolver acceptance
+   blocked and recover explicitly, outside a transaction:
+
+   ```bash
+   psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -c 'DROP INDEX CONCURRENTLY IF EXISTS places_name_key_idx'
+   psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -f scripts/ops/index-place-name-key.sql
+   ```
+
+5. Rerun the five integration suites and the full unit suite in an environment
+   that permits Docker/localhost, then verify DEV collision behavior and the
+   real-catalogue query plans/latency. Dropping the index is the index rollback;
+   this release intentionally refuses resolver reads until it is restored.
+
 ## Round-3 fixes (2026-11-11, escalation fixer, owner exception)
 
 Basis: uncommitted working tree on `6f1ec606` (single S2 commit on

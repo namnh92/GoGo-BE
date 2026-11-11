@@ -1,0 +1,143 @@
+{
+  "recordedAt": "2026-11-11T12:32:16.162116+00:00",
+  "basis": "Owner-provided PR #859 head 1f788e61. No git commands; no independent head check. Four pre-fix production hashes match existing source manifest. Uncommitted fixer worktree, not CI/DEV acceptance.",
+  "initialProductionHashes": {
+    "libs/modules/assistant/domain/place-qa/span.ts": "f0ba1772f846f3f43a857546ddb2d5e8d472431f1bf869795d891b3027d0ce5c",
+    "libs/modules/search/application/search.service.ts": "215129b14b3e8c5589c57eb491b65cf6819ededc1d12c3e215cf56bf48afd75e",
+    "migrations/0102_place-name-key-index.sql": "0448fd89960a3e949e7c7e1f2d9d769332980c19b4dd624a74bea164d2c0ab91",
+    "scripts/ops/index-place-name-key.sql": "08b459bcca72c99f34023fb2c623b8a606e24f9e93f00651b44414498fbf30ae"
+  },
+  "changedCodeAndTests": [
+    "libs/modules/assistant/domain/place-qa/span.ts",
+    "libs/modules/assistant/domain/place-qa/resolution.spec.ts",
+    "libs/modules/search/application/search.service.ts",
+    "libs/modules/search/infrastructure/place-qa-queries.ts",
+    "libs/modules/shared/place-name-key-readiness.ts",
+    "libs/modules/shared/place-name-key-readiness.spec.ts",
+    "libs/database/src/place-name-key-migration.spec.ts",
+    "apps/api/test/place-name-key-migration.int.spec.ts",
+    "apps/api/test/place-qa-s2.int.spec.ts",
+    "apps/api/test/support/place-name-key.ts",
+    "apps/api/test/support/credit-events.ts",
+    "migrations/0102_place-name-key-index.sql",
+    "scripts/ops/index-place-name-key.sql"
+  ],
+  "sourceHashes": {
+    "apps/api/test/place-name-key-migration.int.spec.ts": "c10ce0c3e6df3f39cfe6fc5e0581ec39499182676388d2641dc64b14c71b40b9",
+    "apps/api/test/place-qa-s2-wiring.int.spec.ts": "351c053cef1a704ce1f3feec3778a56f4fe9d4d9f2d41a448823f66675296531",
+    "apps/api/test/place-qa-s2.int.spec.ts": "cfde0520a5f4beaaf3360325b0d878eb097a9fa9a0f0a82afc624a657d0cb932",
+    "apps/api/test/support/credit-events.ts": "8502c22418b2a594c34a2903e3f1a97a6d32785aebda1fa294a17a2659f5d493",
+    "apps/api/test/support/place-name-key.ts": "b3c24ab0067edcda65a665b1b60b07ce0f28122574c0db027d6bbbc881188d5d",
+    "docs/infrastructure.md": "0000c7e321f45a984d9453f21f23ea6eb554322798ec9b787c5877e91520f577",
+    "libs/database/src/assistant-credit-spend-migration.spec.ts": "623d0a70f91bd0184a0709d6cdbf19741d6549250d7cd9938ee4e906999c2f94",
+    "libs/database/src/place-name-key-migration.spec.ts": "0576516b707957f85aa754befac00aba64fa273c5738cb9d648da05949e8bc58",
+    "libs/database/src/schema/places.ts": "9d1486593a18c689d233d8ed93a076dcfd3053054e7a60a4ac6677981049e13c",
+    "libs/modules/assistant/domain/place-qa/resolution.spec.ts": "cc3032ca4ab707ca18bd84fca59cdd274268768ce45af71dd3bd8d69469fbea5",
+    "libs/modules/assistant/domain/place-qa/resolution.ts": "e5f5dd679f2a131dd4e70b2480f9faaa6d2f2e3f95c895386902ec60d0c51fb3",
+    "libs/modules/assistant/domain/place-qa/span.ts": "f6c09a56bf4f7e3ffc84f79741290664bebc87460e24aebf61292d0796ac13e4",
+    "libs/modules/search/application/search.service.ts": "bcf5c3049f84feb26a928ad264f3aba75dedd61ee7bf66d46966f364d8fb7c1a",
+    "libs/modules/search/domain/place-facts.spec.ts": "d71da62e22b5fa7427171abe263c70495517c4c8b7c7b425cda4be7e8b1f3722",
+    "libs/modules/search/domain/place-facts.ts": "be914bad187e80864caca73ea0b53019fe1992ff99a315f99b0e92bb403dbca2",
+    "libs/modules/search/infrastructure/place-qa-queries.ts": "c7fbc23e2079333ca110b6a44383198823fc834747c3e2822e0c10fa035c7892",
+    "libs/modules/search/infrastructure/place-qa-read.spec.ts": "208229f7ec153629243222b46bce947e15976d5c8228f991f74912ac680429d1",
+    "libs/modules/search/infrastructure/place-qa-read.ts": "80666fae454217cf1943767aad1ad3498ad97821b5f6fe6c81d036038aa18adf",
+    "libs/modules/search/infrastructure/search.repository.ts": "07fefb712d3cc0ce7ce98aa605f50d9051db363b4912b64362ec8f28e86a6fda",
+    "libs/modules/search/presentation/search.module.ts": "aeaca8abf32090112e7c84808e9bb70103023275feb351990d2dcbc8f355f2ca",
+    "libs/modules/shared/place-name-key-readiness.spec.ts": "2d0d67491beb0c073f155926aa1e947a9d433e04eaf9552a65a5498f7a53825a",
+    "libs/modules/shared/place-name-key-readiness.ts": "9856b95d838248bb0871538c10844e605f534fddb635ac850bd3f215038d8b65",
+    "libs/modules/src/index.ts": "c442ca61afe4642c9d79d11226f5643a491ed3bc4f727223bd2ac9ab4d7fd0ec",
+    "libs/observability/src/metric-labels.ts": "72695bc4dd34d6223acaf85d3bac8de5e767cf6a67fba5fbfd5d2c4ce4e60ed4",
+    "migrations/0102_place-name-key-index.sql": "fea02720a6c1391a032c20ba7b760d3d7a3e0ac0e3901059cb73392235af8e7a",
+    "migrations/meta/_journal.json": "04b56ac50e2b5bca0ba7a98aa128ad7f9208dc8086581d5eba411731d9483e9a",
+    "scripts/ops/index-place-name-key.sql": "7dd4b58db557abc5e1ac6768c061084bb24ff0bc88f9f45c9890b46db01da1d4"
+  },
+  "s1DomainUnchanged": true,
+  "s1DomainHashes": {
+    "libs/modules/assistant/domain/place-qa/fixtures.ts": "f2a859de994e60b789f4f48305111711f28c6610a1f0a160ef40b34ca84c6a2a",
+    "libs/modules/assistant/domain/place-qa/reference-group.ts": "43ad4f185f8c742bd0814cdabf448809d958b4db501d6522543fc2b66be6a379",
+    "libs/modules/assistant/domain/place-qa/templates.ts": "27bc46d647da9aa132b2288afa6624cf933cfc54d205711d4c20be2209370003",
+    "libs/modules/assistant/domain/place-qa/templates.spec.ts": "45e69b9d35a30b556cba6ab9bd5c2d875da2e91e94077ee542a139c7a9a535fe",
+    "libs/modules/assistant/domain/place-qa/tokens.ts": "df3fba8922a82ad0f539a48836a14c678e1117f97b4de3e479d4e6df0c6e549f",
+    "libs/modules/assistant/domain/place-qa/place-facts.ts": "c143403a0e8ea42e769ff3750e4ca2c1c124c513a626f24d94ba9fb1592b6e4b",
+    "libs/modules/assistant/domain/place-qa/tokens.spec.ts": "3d324eddb45f922cd002998df00bc41750feaa9b6018a53093cf477ed3afc886"
+  },
+  "failBefore": {
+    "command": "pnpm -s vitest run --project unit libs/modules/assistant/domain/place-qa/resolution.spec.ts libs/database/src/place-name-key-migration.spec.ts",
+    "exitCode": 1,
+    "summary": "3 regressions failed, 57 passed: explicit-topic collision answer instead of choice; generated collision answer instead of choice; ordinary CREATE INDEX detected.",
+    "output": "⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯\n\n FAIL  |unit| libs/database/src/place-name-key-migration.spec.ts > round-4: transactional migration never builds an index or locks places\nAssertionError: expected '\\n\\n\\n\\n\\n\\n\\n\\nSET LOCAL lock_timeou…' not to match /CREATE\\s+(?:UNIQUE\\s+)?INDEX|LOCK\\s+…/i\n\n- Expected:\n/CREATE\\s+(?:UNIQUE\\s+)?INDEX|LOCK\\s+TABLE/i\n\n+ Received:\n\"\n\n\n\n\n\n\n\nSET LOCAL lock_timeout = '5s';\nCREATE INDEX IF NOT EXISTS places_name_key_idx ON places ((btrim(regexp_replace(name_normalized, '[\\\\s\\\\u00a0\\\\u1680\\\\u2000-\\\\u200a\\\\u2028\\\\u2029\\\\u202f\\\\u205f\\\\u3000\\\\ufeff]+', ' ', 'g'), ' ')));\nSET LOCAL lock_timeout TO DEFAULT;\n\"\n\n ❯ libs/database/src/place-name-key-migration.spec.ts:44:25\n     42| it('round-4: transactional migration never builds an index or locks pl…\n     43|   const migration = read(path.join(root, 'migrations/0102_place-name-k…\n     44|   expect(migration).not.toMatch(/CREATE\\s+(?:UNIQUE\\s+)?INDEX|LOCK\\s+T…\n       |                         ^\n     45| });\n     46|\n\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯\n\n FAIL  |unit| libs/modules/assistant/domain/place-qa/resolution.spec.ts > round-3 boundary regressions: grammar-like name tokens > round-4: explicit topic retains the complete Cafe Không Có Wifi reading\nAssertionError: expected { candidates: [ { …(3) } ], …(4) } to match object { kind: 'choice' }\n(4 matching properties omitted from actual)\n\n- Expected\n+ Received\n\n  {\n-   \"kind\": \"choice\",\n+   \"kind\": \"answer\",\n  }\n\n ❯ libs/modules/assistant/domain/place-qa/resolution.spec.ts:291:54\n    289|   it('round-4: explicit topic retains the complete Cafe Không Có Wifi …\n    290|     expect(resolveReadings(['Cafe', 'Cafe Không Có Wifi'],\n    291|       'Giờ mở cửa của Cafe Không Có Wifi?').outcome).toMatchObject({ k…\n       |                                                      ^\n    292|   });\n    293|   it('round-4: generated grammar/name collisions preserve every bounda…\n\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯\n\n FAIL  |unit| libs/modules/assistant/domain/place-qa/resolution.spec.ts > round-3 boundary regressions: grammar-like name tokens > round-4: generated grammar/name collisions preserve every boundary combination\nAssertionError: Cafe không có wifi? / Cafe không có wifi: expected { candidates: [ { …(3) } ], …(4) } to match object { kind: 'choice' }\n(4 matching properties omitted from actual)\n\n- Expected\n+ Received\n\n  {\n-   \"kind\": \"choice\",\n+   \"kind\": \"answer\",\n  }\n\n ❯ libs/modules/assistant/domain/place-qa/resolution.spec.ts:306:16\n    304|             if (name === 'Cafe' || parsed.kind === 'ambiguous') contin…\n    305|             expect(resolveReadings(['Cafe', name], message).outcome, `…\n    306|               .toMatchObject({ kind: 'choice' });\n       |                ^\n    307|             for (const reading of [parsed, ...(parsed.alternates ?? []…\n    308|               expect(message.slice(reading.start, reading.end)).toBe(r…\n\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯\n\n\n Test Files  2 failed (2)\n      Tests  3 failed | 57 passed (60)\n   Start at  19:23:30\n   Duration  512ms (transform 164ms, setup 0ms, import 448ms, tests 38ms, environment 0ms)\n\n",
+    "sqlCommand": "pnpm -s vitest run --project integration --no-file-parallelism apps/api/test/place-qa-s2.int.spec.ts -t 'round-4'",
+    "sqlStatus": "BLOCKED before setup, Docker socket access denied; no SQL fail-before claim.",
+    "sqlOutput": "⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯\n\n FAIL  |integration| apps/api/test/place-qa-s2.int.spec.ts [ apps/api/test/place-qa-s2.int.spec.ts ]\nError: Could not find a working container runtime strategy\n ❯ getContainerRuntimeClient node_modules/.pnpm/testcontainers@12.1.0_supports-color@10.2.2/node_modules/testcontainers/build/container-runtime/clients/client.js:67:11\n ❯ PostgreSqlContainer.start node_modules/.pnpm/testcontainers@12.1.0_supports-color@10.2.2/node_modules/testcontainers/build/generic-container/generic-container.js:62:24\n ❯ PostgreSqlContainer.start node_modules/.pnpm/@testcontainers+postgresql@12.1.0_supports-color@10.2.2/node_modules/@testcontainers/postgresql/build/postgresql-container.js:119:47\n ❯ apps/api/test/place-qa-s2.int.spec.ts:68:15\n     66|\n     67| beforeAll(async () => {\n     68|   container = await new PostgreSqlContainer('postgis/postgis:16-3.4')\n       |               ^\n     69|     .withDatabase('gogo_qa_s2')\n     70|     .start();\n\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯\n\n\n Test Files  1 failed (1)\n      Tests  25 skipped (25)\n   Start at  19:23:31\n   Duration  2.01s (transform 462ms, setup 106ms, import 1.75s, tests 18ms, environment 0ms)\n\n"
+  },
+  "gates": [
+    {
+      "command": "pnpm -s turbo run typecheck --force",
+      "exitCode": 0,
+      "result": "PASS 8/8 tasks; shared cache write warnings only",
+      "output": " WARNING  IO error: Operation not permitted (os error 1)\n@gogo/modules:typecheck: cache bypass, force executing 0e0d1f05d9fc1987\n@gogo/modules:typecheck: $ tsc --noEmit\n WARNING  IO error: Operation not permitted (os error 1)\n@gogo/worker:typecheck: cache bypass, force executing 34e5ebb990fddf3b\n@gogo/api:typecheck: cache bypass, force executing c0a687946416de72\n@gogo/scripts:typecheck: cache bypass, force executing 497dd4ffe765d08b\n@gogo/scripts:typecheck: $ tsc --noEmit\n@gogo/worker:typecheck: $ tsc --noEmit\n@gogo/api:typecheck: $ tsc --noEmit\n\n Tasks:    8 successful, 8 total\nCached:    0 cached, 8 total\n  Time:    1m0.194s \n"
+    },
+    {
+      "command": "pnpm -s turbo run build --force",
+      "exitCode": 0,
+      "result": "PASS 2/2 tasks; shared cache write warnings only",
+      "output": "   • Packages in scope: @gogo/api, @gogo/cost-observability, @gogo/database, @gogo/modules, @gogo/observability, @gogo/providers, @gogo/scripts, @gogo/worker\n   • Running build in 8 packages\n   • Remote caching disabled, using shared worktree cache\n\n@gogo/api:build: cache bypass, force executing 3a302a2a502ee41e\n@gogo/worker:build: cache bypass, force executing e70a1157d87e92f8\n@gogo/worker:build: $ tsc -p tsconfig.build.json\n@gogo/api:build: $ tsc -p tsconfig.build.json\n WARNING  IO error: Operation not permitted (os error 1)\n\n Tasks:    2 successful, 2 total\nCached:    0 cached, 2 total\n  Time:    25.633s \n\n WARNING  IO error: Operation not permitted (os error 1)"
+    },
+    {
+      "command": "pnpm -s vitest run --project unit",
+      "exitCode": 1,
+      "result": "4381 passed, 1 skipped; 336 files passed, 1 setup failure: listen EPERM on localhost in sentry-request.spec.ts. No failed assertions.",
+      "output": "⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯\n\n FAIL  |unit| apps/api/src/sentry-request.spec.ts [ apps/api/src/sentry-request.spec.ts ]\nError: listen EPERM: operation not permitted 127.0.0.1\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯\n\n\n Test Files  1 failed | 336 passed (337)\n      Tests  4381 passed | 1 skipped (4382)\n   Start at  19:27:40\n   Duration  50.66s (transform 29.12s, setup 0ms, import 274.94s, tests 97.89s, environment 23ms)\n\n"
+    },
+    {
+      "command": "pnpm -s vitest run --project unit libs/modules/assistant/domain/place-qa/resolution.spec.ts libs/database/src/place-name-key-migration.spec.ts libs/modules/shared/place-name-key-readiness.spec.ts",
+      "exitCode": 0,
+      "result": "PASS 3 files / 63 tests; final exact-budget assertion included",
+      "output": "(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:\n  - ESM syntax in a file loaded as CommonJS (vitest.config.ts:1:1). Use a `.mjs` extension or set `\"type\": \"module\"` in the closest package.json\nSet `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.\n\n RUN  v4.1.11 /Users/maxnguyen/MyWorks/GoGo/dev/worktrees/be-857\n\n\n Test Files  3 passed (3)\n      Tests  63 passed (63)\n   Start at  19:29:00\n   Duration  548ms (transform 259ms, setup 0ms, import 777ms, tests 83ms, environment 0ms)\n"
+    },
+    {
+      "command": "pnpm -s vitest run --project integration --no-file-parallelism apps/api/test/place-qa-s2.int.spec.ts apps/api/test/place-qa-s2-wiring.int.spec.ts apps/api/test/place-name-key-migration.int.spec.ts apps/api/test/assistant-place-answer.int.spec.ts apps/api/test/assistant.int.spec.ts",
+      "exitCode": 1,
+      "result": "BLOCKED 5 suite setup failures / 78 tests skipped. Docker unavailable to sandbox.",
+      "output": "⎯⎯⎯⎯⎯⎯ Failed Suites 5 ⎯⎯⎯⎯⎯⎯⎯\n\n FAIL  |integration| apps/api/test/assistant-place-answer.int.spec.ts [ apps/api/test/assistant-place-answer.int.spec.ts ]\nError: Could not find a working container runtime strategy\n ❯ getContainerRuntimeClient node_modules/.pnpm/testcontainers@12.1.0_supports-color@10.2.2/node_modules/testcontainers/build/container-runtime/clients/client.js:67:11\n ❯ PostgreSqlContainer.start node_modules/.pnpm/testcontainers@12.1.0_supports-color@10.2.2/node_modules/testcontainers/build/generic-container/generic-container.js:62:24\n ❯ PostgreSqlContainer.start node_modules/.pnpm/@testcontainers+postgresql@12.1.0_supports-color@10.2.2/node_modules/@testcontainers/postgresql/build/postgresql-container.js:119:47\n ❯ startAssistantFixture apps/api/test/support/assistant-fixture.ts:80:17\n     78|     };\n     79|   } else {\n     80|     container = await new PostgreSqlContainer('postgis/postgis:16-3.4')\n       |                 ^\n     81|       .withDatabase('gogo_assistant_test')\n     82|       .start();\n ❯ apps/api/test/assistant-place-answer.int.spec.ts:61:7\n\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯\n\n FAIL  |integration| apps/api/test/assistant.int.spec.ts [ apps/api/test/assistant.int.spec.ts ]\nError: Could not find a working container runtime strategy\n ❯ getContainerRuntimeClient node_modules/.pnpm/testcontainers@12.1.0_supports-color@10.2.2/node_modules/testcontainers/build/container-runtime/clients/client.js:67:11\n ❯ PostgreSqlContainer.start node_modules/.pnpm/testcontainers@12.1.0_supports-color@10.2.2/node_modules/testcontainers/build/generic-container/generic-container.js:62:24\n ❯ PostgreSqlContainer.start node_modules/.pnpm/@testcontainers+postgresql@12.1.0_supports-color@10.2.2/node_modules/@testcontainers/postgresql/build/postgresql-container.js:119:47\n ❯ startAssistantFixture apps/api/test/support/assistant-fixture.ts:80:17\n     78|     };\n     79|   } else {\n     80|     container = await new PostgreSqlContainer('postgis/postgis:16-3.4')\n       |                 ^\n     81|       .withDatabase('gogo_assistant_test')\n     82|       .start();\n ❯ apps/api/test/assistant.int.spec.ts:96:7\n\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯\n\n FAIL  |integration| apps/api/test/place-name-key-migration.int.spec.ts [ apps/api/test/place-name-key-migration.int.spec.ts ]\nError: Could not find a working container runtime strategy\n ❯ getContainerRuntimeClient node_modules/.pnpm/testcontainers@12.1.0_supports-color@10.2.2/node_modules/testcontainers/build/container-runtime/clients/client.js:67:11\n ❯ PostgreSqlContainer.start node_modules/.pnpm/testcontainers@12.1.0_supports-color@10.2.2/node_modules/testcontainers/build/generic-container/generic-container.js:62:24\n ❯ PostgreSqlContainer.start node_modules/.pnpm/@testcontainers+postgresql@12.1.0_supports-color@10.2.2/node_modules/@testcontainers/postgresql/build/postgresql-container.js:119:47\n ❯ apps/api/test/place-name-key-migration.int.spec.ts:101:15\n     99|\n    100| beforeAll(async () => {\n    101|   container = await new PostgreSqlContainer('postgis/postgis:16-3.4').…\n       |               ^\n    102| });\n    103| afterAll(async () => {\n\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯\n\n FAIL  |integration| apps/api/test/place-qa-s2-wiring.int.spec.ts [ apps/api/test/place-qa-s2-wiring.int.spec.ts ]\nError: Could not find a working container runtime strategy\n ❯ getContainerRuntimeClient node_modules/.pnpm/testcontainers@12.1.0_supports-color@10.2.2/node_modules/testcontainers/build/container-runtime/clients/client.js:67:11\n ❯ PostgreSqlContainer.start node_modules/.pnpm/testcontainers@12.1.0_supports-color@10.2.2/node_modules/testcontainers/build/generic-container/generic-container.js:62:24\n ❯ PostgreSqlContainer.start node_modules/.pnpm/@testcontainers+postgresql@12.1.0_supports-color@10.2.2/node_modules/@testcontainers/postgresql/build/postgresql-container.js:119:47\n ❯ startAssistantFixture apps/api/test/support/assistant-fixture.ts:80:17\n     78|     };\n     79|   } else {\n     80|     container = await new PostgreSqlContainer('postgis/postgis:16-3.4')\n       |                 ^\n     81|       .withDatabase('gogo_assistant_test')\n     82|       .start();\n ❯ apps/api/test/place-qa-s2-wiring.int.spec.ts:16:7\n\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯\n\n FAIL  |integration| apps/api/test/place-qa-s2.int.spec.ts [ apps/api/test/place-qa-s2.int.spec.ts ]\nError: Could not find a working container runtime strategy\n ❯ getContainerRuntimeClient node_modules/.pnpm/testcontainers@12.1.0_supports-color@10.2.2/node_modules/testcontainers/build/container-runtime/clients/client.js:67:11\n ❯ PostgreSqlContainer.start node_modules/.pnpm/testcontainers@12.1.0_supports-color@10.2.2/node_modules/testcontainers/build/generic-container/generic-container.js:62:24\n ❯ PostgreSqlContainer.start node_modules/.pnpm/@testcontainers+postgresql@12.1.0_supports-color@10.2.2/node_modules/@testcontainers/postgresql/build/postgresql-container.js:119:47\n ❯ apps/api/test/place-qa-s2.int.spec.ts:70:15\n     68|\n     69| beforeAll(async () => {\n     70|   container = await new PostgreSqlContainer('postgis/postgis:16-3.4')\n       |               ^\n     71|     .withDatabase('gogo_qa_s2')\n     72|     .start();\n\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/5]⎯\n\n\n Test Files  5 failed (5)\n      Tests  78 skipped (78)\n   Start at  19:27:40\n   Duration  27.24s (transform 10.35s, setup 701ms, import 25.24s, tests 203ms, environment 0ms)\n\n"
+    },
+    {
+      "command": "pnpm -s api:check",
+      "exitCode": 0,
+      "result": "PASS",
+      "output": "$ openapi-typescript openapi/gogo.v1.yaml -o /tmp/gogo.v1.d.ts && diff -q /tmp/gogo.v1.d.ts openapi/gogo.v1.d.ts\n✨ openapi-typescript 7.13.0\n🚀 openapi/gogo.v1.yaml → /tmp/gogo.v1.d.ts [2.6s]\n"
+    },
+    {
+      "command": "pnpm -s eslint .",
+      "exitCode": 0,
+      "result": "PASS full repo",
+      "output": ""
+    },
+    {
+      "command": "pnpm -s eslint apps/api/test/place-name-key-migration.int.spec.ts apps/api/test/place-qa-s2.int.spec.ts libs/modules/assistant/domain/place-qa/resolution.spec.ts",
+      "exitCode": 0,
+      "result": "PASS after final test cleanup/exact-budget assertion"
+    },
+    {
+      "command": "pnpm -s prettier --check .",
+      "exitCode": 0,
+      "result": "PASS full repository; new documentation/evidence formatted and rechecked before handoff"
+    }
+  ],
+  "integrationCoverageAddedButNotExecuted": [
+    "Explicit-topic published collision: Cafe / Cafe Không Có Wifi",
+    "Missing index gates real resolver; post-migration ops enables it",
+    "Wrong column, wrong replacement literal, hash method, text_pattern_ops, DESC, partial index and INCLUDE column all fail ops/runtime readiness",
+    "Cancel real CREATE INDEX CONCURRENTLY behind writer; invalid/not-ready remnant rejected until DROP CONCURRENTLY and rerun",
+    "Migration completes while a writer is open; concurrent ops allows another writer",
+    "Prebuild and postdeploy ops idempotency; maintained expression index; rollback disables resolver"
+  ],
+  "notDone": [
+    "Fully green unit gate (localhost socket denied)",
+    "SQL fail-before/pass-after; interrupted-index and concurrent-writer execution proof",
+    "Refreshed SQL plans and p95, including expanded reading budget",
+    "DEV deployment/acceptance",
+    "CI and independent review",
+    "Git commands, commits, pushes, PR writes"
+  ]
+}

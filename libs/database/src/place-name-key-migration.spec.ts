@@ -13,10 +13,7 @@ it('#857 ships the exact-name key as an additive, non-rewriting successor migrat
     '',
   );
   // An expression index: no column, no table rewrite, no data change.
-  expect(migration).toContain(
-    `CREATE INDEX IF NOT EXISTS places_name_key_idx ON places ((${expression}))`,
-  );
-  expect(migration).toMatch(/SET LOCAL lock_timeout = '5s'/);
+  expect(migration.trim()).toBe('SELECT 1;');
   expect(migration).not.toMatch(/\b(?:UPDATE|DELETE|TRUNCATE|ALTER|DROP)\b/i);
   expect(migration).not.toMatch(/CONCURRENTLY/i);
   const journal = JSON.parse(read(path.join(root, 'migrations/meta/_journal.json')) || '{}') as {
@@ -29,7 +26,7 @@ it('#857 ships the exact-name key as an additive, non-rewriting successor migrat
   expect(journal.entries.filter((e) => e.idx === 102)).toHaveLength(1);
 });
 
-it('#857 offers the same index CONCURRENTLY for a large table, with an exact-shape readiness check', () => {
+it('#857 requires the index CONCURRENTLY outside the migration, with an exact-shape readiness check', () => {
   const ops = read(path.join(root, 'scripts/ops/index-place-name-key.sql'));
   expect(ops).toContain(
     `CREATE INDEX CONCURRENTLY IF NOT EXISTS places_name_key_idx ON places ((${expression}))`,
@@ -37,4 +34,12 @@ it('#857 offers the same index CONCURRENTLY for a large table, with an exact-sha
   expect(ops).toContain('places_name_key_idx_ready');
   expect(ops).toMatch(/i\.indisvalid AND i\.indisready/);
   expect(ops.replace(/--[^\n]*/g, '')).not.toMatch(/\bBEGIN\b/i);
+});
+
+it('round-4: transactional migration never builds an index or locks places', () => {
+  const migration = read(path.join(root, 'migrations/0102_place-name-key-index.sql')).replace(
+    /--[^\n]*/g,
+    '',
+  );
+  expect(migration).not.toMatch(/CREATE\s+(?:UNIQUE\s+)?INDEX|LOCK\s+TABLE/i);
 });

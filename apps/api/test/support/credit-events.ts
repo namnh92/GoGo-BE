@@ -1,3 +1,4 @@
+import { placeNameKeyIndex } from './place-name-key';
 import { sql } from 'drizzle-orm';
 import {
   type CreditExec,
@@ -105,6 +106,11 @@ export async function creditOutbox(
  * Prefix/snapshot tests before 0098 deliberately have no catalogue yet. */
 export async function migrateWithCreditIndexes(db: Db, config: Parameters<typeof migrate>[1]) {
   await migrate(db, config);
+  const journal = JSON.parse(
+    await readFile(path.join(config.migrationsFolder, 'meta/_journal.json'), 'utf8'),
+  );
+  if (journal.entries.some((entry: { tag: string }) => entry.tag === '0102_place-name-key-index'))
+    await placeNameKeyIndex(db);
   const result = await db.execute(sql`select to_regclass('credit_events') as name`);
   if (!(result.rows[0] as { name: string | null }).name) return;
   const script = await readFile(creditOps('index-credit-events.sql'), 'utf8');

@@ -14,8 +14,8 @@ const textArray = (values: readonly string[]) =>
  * `places_normalize_name` trigger only lowercases and unaccents. Whole-name
  * equality is therefore decided on this column-side key, so `Mây Lam` and
  * `Mây  Lam` are ONE exact family for either input instead of one exact row
- * plus a fuzzy twin. Migration 0102 indexes exactly this expression
- * (`places_name_key_idx`); it lives beside the schema so they cannot drift.
+ * plus a fuzzy twin. Mandatory post-0102 ops indexes exactly this expression
+ * (`places_name_key_idx`); the resolver requires it before querying.
  */
 export const placeNameKeySql = schema.placeNameKey;
 
