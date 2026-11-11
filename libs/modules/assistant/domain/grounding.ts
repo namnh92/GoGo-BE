@@ -228,8 +228,9 @@ export class StreamSanitizer {
     private readonly sourceCount: number,
     private readonly places: readonly Pick<GroundedPlace, 'position' | 'placeId' | 'name'>[] = [],
     locale: 'vi' | 'en' = 'vi',
+    administrativeNames: ReadonlySet<string> = new Set(),
   ) {
-    this.patterns = namePatterns(places, SHARED_RUN_LABEL[locale]);
+    this.patterns = namePatterns(places, SHARED_RUN_LABEL[locale], administrativeNames);
   }
 
   /**
@@ -422,6 +423,7 @@ const SHARED_RUN_LABEL = {
 function namePatterns(
   places: readonly Pick<GroundedPlace, 'placeId' | 'name'>[],
   sharedLabel: string,
+  administrativeNames: ReadonlySet<string>,
 ): NamePattern[] {
   const full = new Map<string, string>();
   const runs = new Map<string, Set<string>>();
@@ -435,6 +437,9 @@ function namePatterns(
         const run = words.slice(i, i + len);
         if (isCommonRun(run)) continue;
         const folded = run.join(' ');
+        // #854: an exact canonical area name is geography, not an identifying
+        // short name. Full names above and longer identifying runs still win.
+        if (administrativeNames.has(folded)) continue;
         runs.set(folded, (runs.get(folded) ?? new Set()).add(token));
       }
     }

@@ -2146,77 +2146,109 @@ export class AssistantOrchestrator {
       },
       Math.max(1, deadline - Date.now()),
     );
-    const sanitizer = new StreamSanitizer(state.sources.length, ctx.places, ctx.locale);
-    const started = Date.now();
-    state.costs.haikuCalls += 1;
-    state.costs.haikuModel = llm.model;
+    const vocabularyGuard = firstTextGuard(deadline, AbortSignal.any([signal, local.signal]));
     let finish: 'stop' | 'length' | 'other' = 'other';
     try {
-      for await (const event of llm.stream({
+      let administrativeNames: ReadonlySet<string>;
+      try {
+        administrativeNames = ctx.places.length
+          ? await vocabularyGuard.run(() => this.areas.administrativeNames())
+          : new Set<string>();
+        // A dataset read must not let an expired/cancelled turn start a paid call.
+        AbortSignal.any([signal, local.signal]).throwIfAborted();
+      } catch (err) {
+        if (signal.aborted) throw err;
+        const outcome =
+          local.signal.aborted || err instanceof FirstTextDeadlineError ? 'timeout' : 'unavailable';
+        this.metrics.increment('assistant_vocabulary_preflight_failures_total', { outcome });
+        this.logger.warn({
+          msg: 'assistant vocabulary preflight failed',
+          event: 'assistant.vocabulary_preflight_failed',
+          outcome,
+        });
+        return {
+          kind: 'fallback',
+          reason: outcome === 'timeout' ? 'timeout' : 'provider_unavailable',
+        };
+      }
+      const sanitizer = new StreamSanitizer(
+        state.sources.length,
+        ctx.places,
+        ctx.locale,
+        administrativeNames,
+      );
+      const request = {
         messages: buildComposerMessages(ctx, history, input.text),
         maxOutputTokens: this.config.ASSISTANT_MAX_OUTPUT_TOKENS,
         signal: AbortSignal.any([signal, local.signal]),
-      })) {
-        if (event.type === 'delta') {
-          const clean = sanitizer.push(event.text);
-          if (clean) await sink.emit({ type: 'delta', text: clean });
-        } else if (event.type === 'usage') {
-          const u = event.usage;
-          state.costs.haikuModel = u.model ?? llm.model;
-          state.costs.haikuInputTokens = u.inputTokens;
-          state.costs.haikuOutputTokens = u.outputTokens;
-          state.costs.haikuUpstreamCostUsd = u.upstreamCostUsd;
-          state.costs.haikuOpenrouterCostUsd = u.openRouterCostUsd;
-          state.costs.haikuIsByok = u.isByok;
-          this.metrics.increment('assistant_haiku_calls_total', {
-            billing_source: u.billingSource,
-          });
-          if (u.isByok === false) {
-            // Billed to OpenRouter credits instead of GoGo's Anthropic key:
-            // stop taking sends until someone looks (ADR-0036 strict BYOK).
-            await this.availability.recordByokViolation(input.ledgerId);
-            this.logger.error({
-              msg: 'assistant haiku call was not routed through Anthropic BYOK',
-              event: 'assistant.byok_violation',
-              provider: u.provider,
+      };
+      state.costs.haikuCalls += 1;
+      state.costs.haikuModel = llm.model;
+      const started = Date.now();
+      try {
+        for await (const event of llm.stream(request)) {
+          if (event.type === 'delta') {
+            const clean = sanitizer.push(event.text);
+            if (clean) await sink.emit({ type: 'delta', text: clean });
+          } else if (event.type === 'usage') {
+            const u = event.usage;
+            state.costs.haikuModel = u.model ?? llm.model;
+            state.costs.haikuInputTokens = u.inputTokens;
+            state.costs.haikuOutputTokens = u.outputTokens;
+            state.costs.haikuUpstreamCostUsd = u.upstreamCostUsd;
+            state.costs.haikuOpenrouterCostUsd = u.openRouterCostUsd;
+            state.costs.haikuIsByok = u.isByok;
+            this.metrics.increment('assistant_haiku_calls_total', {
+              billing_source: u.billingSource,
             });
+            if (u.isByok === false) {
+              // Billed to OpenRouter credits instead of GoGo's Anthropic key:
+              // stop taking sends until someone looks (ADR-0036 strict BYOK).
+              await this.availability.recordByokViolation(input.ledgerId);
+              this.logger.error({
+                msg: 'assistant haiku call was not routed through Anthropic BYOK',
+                event: 'assistant.byok_violation',
+                provider: u.provider,
+              });
+            }
+          } else {
+            finish = event.finishReason;
           }
-        } else {
-          finish = event.finishReason;
         }
+        const rest = sanitizer.flush();
+        if (rest) await sink.emit({ type: 'delta', text: rest });
+        this.metrics.observe('assistant_provider_duration_seconds', secondsSince(started), {
+          provider: 'haiku',
+          outcome: 'ok',
+        });
+        if (!state.textStarted) return { kind: 'fallback', reason: 'invalid_output' };
+        return finish === 'length' ? { kind: 'truncated' } : { kind: 'ok' };
+      } catch (err) {
+        if (signal.aborted) throw err;
+        const reason: 'timeout' | 'provider_unavailable' | 'invalid_output' =
+          (local.signal.aborted || err instanceof FirstTextDeadlineError) && !state.textStarted
+            ? 'timeout'
+            : err instanceof AssistantLlmError && err.kind === 'invalid_output'
+              ? 'invalid_output'
+              : 'provider_unavailable';
+        this.metrics.observe('assistant_provider_duration_seconds', secondsSince(started), {
+          provider: 'haiku',
+          outcome: reason,
+        });
+        this.logger.warn({
+          msg: 'assistant haiku composition failed',
+          event: 'assistant.haiku_failed',
+          kind: err instanceof AssistantLlmError ? err.kind : 'unknown',
+          textStarted: state.textStarted,
+        });
+        if (state.textStarted) {
+          // After text started, the contract ends the turn with an error frame.
+          throw new HaikuMidStreamError(err);
+        }
+        return { kind: 'fallback', reason };
       }
-      const rest = sanitizer.flush();
-      if (rest) await sink.emit({ type: 'delta', text: rest });
-      this.metrics.observe('assistant_provider_duration_seconds', secondsSince(started), {
-        provider: 'haiku',
-        outcome: 'ok',
-      });
-      if (!state.textStarted) return { kind: 'fallback', reason: 'invalid_output' };
-      return finish === 'length' ? { kind: 'truncated' } : { kind: 'ok' };
-    } catch (err) {
-      if (signal.aborted) throw err;
-      const reason: 'timeout' | 'provider_unavailable' | 'invalid_output' =
-        local.signal.aborted && !state.textStarted
-          ? 'timeout'
-          : err instanceof AssistantLlmError && err.kind === 'invalid_output'
-            ? 'invalid_output'
-            : 'provider_unavailable';
-      this.metrics.observe('assistant_provider_duration_seconds', secondsSince(started), {
-        provider: 'haiku',
-        outcome: reason,
-      });
-      this.logger.warn({
-        msg: 'assistant haiku composition failed',
-        event: 'assistant.haiku_failed',
-        kind: err instanceof AssistantLlmError ? err.kind : 'unknown',
-        textStarted: state.textStarted,
-      });
-      if (state.textStarted) {
-        // After text started, the contract ends the turn with an error frame.
-        throw new HaikuMidStreamError(err);
-      }
-      return { kind: 'fallback', reason };
     } finally {
+      vocabularyGuard.dispose();
       clearTimeout(firstTextTimer);
     }
   }

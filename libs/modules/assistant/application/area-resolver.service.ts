@@ -100,6 +100,20 @@ type Unit = Snapshot['currentProvinces'][number];
 export class AssistantAreaResolver {
   constructor(private readonly query: AdministrativeQueryService) {}
 
+  /** #854: published canonical names only; never inferred from place names. */
+  async administrativeNames(): Promise<ReadonlySet<string>> {
+    const snapshot = await this.query.snapshot();
+    const cached = administrativeVocabularies.get(snapshot);
+    if (cached) return cached;
+    const names = new Set<string>();
+    for (const { unit } of [...snapshot.currentSearch, ...snapshot.legacySearch]) {
+      names.add(normalizeVietnamese(unit.name));
+      names.add(normalizeVietnamese(unit.fullName));
+    }
+    administrativeVocabularies.set(snapshot, names);
+    return names;
+  }
+
   /**
    * #733 D-5 — whether the text, on its own, names an area: a current unit's
    * full dataset name ("Phường Sài Gòn"), a province alias ("Hà Nội", "SG"),
@@ -318,6 +332,8 @@ type LegacyIndex = {
 
 /** Built once per snapshot: snapshots are immutable (ADR-0019 §8). */
 const legacyIndexes = new WeakMap<Snapshot, LegacyIndex>();
+/** Snapshots are immutable; a newly published version gets its own vocabulary. */
+const administrativeVocabularies = new WeakMap<Snapshot, ReadonlySet<string>>();
 
 function legacyIndex(snapshot: Snapshot): LegacyIndex {
   const cached = legacyIndexes.get(snapshot);
