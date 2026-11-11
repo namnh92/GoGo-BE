@@ -148,6 +148,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/password-recovery/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check a recovery code before entering a new password
+         * @description Returns 204 only for a matching, unexpired, unconsumed proof bound to
+         *     the original active password account. Does not consume the code, reset
+         *     the password, verify the account email, or revoke sessions.
+         *     Complete still revalidates and consumes the proof exactly once.
+         *     Wrong, expired, consumed, exhausted, superseded, mismatched or ineligible
+         *     proofs return 400 RECOVERY_INVALID. Failed proof checks against a live
+         *     challenge count toward the same maximum of five failures as complete,
+         *     including mismatched challenge IDs. Five failures invalidate the challenge.
+         *     Shares complete limits: 10/15 minutes/email, 30/15 minutes/IP, including
+         *     repeated checks. Every call revalidates; Idempotency-Key does not replay
+         *     a prior success or suppress failed attempts.
+         */
+        post: operations["verifyPasswordRecovery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/password-recovery/complete": {
         parameters: {
             query?: never;
@@ -12241,6 +12271,53 @@ export interface operations {
             };
             429: components["responses"]["RateLimited"];
             /** @description RECOVERY_MAIL_NOT_CONFIGURED (retryable false), or global RECOVERY_UNAVAILABLE (retryable true) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    verifyPasswordRecovery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: email */
+                    email: string;
+                    /** Format: uuid */
+                    challengeId: string;
+                    code: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Recovery proof is valid and remains unconsumed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description RECOVERY_INVALID or VALIDATION_FAILED */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            /** @description RECOVERY_MAIL_NOT_CONFIGURED (retryable false), or RECOVERY_UNAVAILABLE (retryable true) */
             503: {
                 headers: {
                     [name: string]: unknown;

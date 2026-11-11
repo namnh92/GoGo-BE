@@ -398,6 +398,128 @@ describe('consumer password recovery', () => {
     expect(audit).toBe(1);
   });
 
+  it('verifies repeatedly without consuming, resetting, revoking or saving a replay', async () => {
+    await service.request({ email }, ctx('request-1'));
+    const input = body();
+    const before = JSON.stringify({ user, challenge, sessions, attempts, audit });
+    const replays = [...records];
+    await service.verify({ ...input, email: ' PERSON@EXAMPLE.COM ' }, ctx('verify-1'));
+    await service.verify(input, ctx('verify-1'));
+    expect(JSON.stringify({ user, challenge, sessions, attempts, audit })).toBe(before);
+    expect([...records]).toEqual(replays);
+    expect(revokeMany).not.toHaveBeenCalled();
+    await service.complete(input, ctx('complete-1'));
+    await expect(service.verify(input, ctx('verify-1'))).rejects.toMatchObject({
+      httpStatus: 400,
+      code: 'RECOVERY_INVALID',
+    });
+    expect(audit).toBe(1);
+  });
+
+  it.each([
+    'expired',
+    'consumed',
+    'exhausted',
+    'superseded',
+    'wrong-code',
+    'wrong-email',
+    'missing-user',
+    'replacement-user',
+    'inactive',
+    'passwordless',
+  ])('verify rejects %s proofs with the complete error', async (kind) => {
+    await service.request({ email }, ctx('request-1'));
+    const input = body();
+    if (kind === 'expired') now += 300_000;
+    if (kind === 'consumed') challenge.consumedAt = new Date(now);
+    if (kind === 'exhausted') challenge.attempts = 5;
+    if (kind === 'superseded') input.challengeId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    if (kind === 'wrong-code') input.code = input.code === '000000' ? '111111' : '000000';
+    if (kind === 'wrong-email') input.email = 'other@example.com';
+    if (kind === 'missing-user') user = undefined;
+    if (kind === 'replacement-user') user.id = 'replacement-user';
+    if (kind === 'inactive') user.status = 'suspended';
+    if (kind === 'passwordless') user.passwordHash = null;
+    await expect(service.verify(input, ctx('verify-1'))).rejects.toMatchObject({
+      httpStatus: 400,
+      code: 'RECOVERY_INVALID',
+    });
+    expect(audit).toBe(0);
+    expect(revokeMany).not.toHaveBeenCalled();
+  });
+
+  it('commits shared failures from verify and complete, including mismatched challenge IDs', async () => {
+    await service.request({ email }, ctx('request-1'));
+    const input = body();
+    const bad = { ...input, code: input.code === '000000' ? '111111' : '000000' };
+    for (let i = 0; i < 5; i++) {
+      await expect(
+        i % 2
+          ? service.complete(bad, ctx('wrong-complete'))
+          : service.verify(
+              { ...bad, challengeId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
+              ctx('wrong-verify'),
+            ),
+      ).rejects.toMatchObject({ code: 'RECOVERY_INVALID' });
+      expect(challenge.attempts).toBe(i + 1);
+      expect(settlements.at(-1)).toBe('committed');
+    }
+    await expect(service.verify(input, ctx('verify-good'))).rejects.toMatchObject({
+      code: 'RECOVERY_INVALID',
+    });
+    await expect(service.complete(input, ctx('complete-good'))).rejects.toMatchObject({
+      code: 'RECOVERY_INVALID',
+    });
+    expect(challenge.attempts).toBe(5);
+  });
+
+  it('shares email and IP quotas with complete, using only digests and existing retry errors', async () => {
+    await service.request({ email }, ctx('request-1'));
+    const input = body();
+    const hit = vi.spyOn(store, 'hit');
+    for (let i = 0; i < 10; i++) await service.verify(input, ctx('same-key'));
+    await expect(service.complete(input, ctx('complete-1'))).rejects.toMatchObject({
+      code: 'RATE_LIMITED',
+      options: { retryAfterSeconds: 900, retryable: true },
+    });
+    expect(
+      hit.mock.calls.every(
+        ([key, seconds]) =>
+          key.startsWith('recovery|complete|') &&
+          !key.includes(email) &&
+          !key.includes('127.0.0.1') &&
+          seconds === 900,
+      ),
+    ).toBe(true);
+    now += 900_001;
+    for (let i = 0; i < 30; i++) {
+      await expect(
+        service.verify({ ...input, email: `missing-${i}@example.com` }, ctx('verify-ip')),
+      ).rejects.toMatchObject({ code: 'RECOVERY_INVALID' });
+    }
+    await expect(service.verify(input, ctx('verify-ip'))).rejects.toMatchObject({
+      code: 'RATE_LIMITED',
+      options: { retryAfterSeconds: 900 },
+    });
+  });
+
+  it('sanitizes verify infrastructure failures and records finite action labels', async () => {
+    const observe = vi.spyOn(metrics, 'observe');
+    const increment = vi.spyOn(metrics, 'increment');
+    await service.request({ email }, ctx('request-1'));
+    const input = body();
+    vi.spyOn(store, 'hit').mockRejectedValue(new Error(`${email} ${input.code}`));
+    await expect(service.verify(input, ctx('verify-1'))).rejects.toMatchObject({
+      code: 'RECOVERY_UNAVAILABLE',
+      httpStatus: 503,
+      message: 'Password recovery is temporarily unavailable',
+    });
+    expect(increment).toHaveBeenCalledWith('password_recovery_failed', { action: 'verify' });
+    expect(observe).toHaveBeenCalledWith('password_recovery_duration_seconds', expect.any(Number), {
+      action: 'verify',
+    });
+  });
+
   it('preserves an existing verification timestamp', async () => {
     const verifiedAt = new Date(now - 86_400_000);
     user.emailVerifiedAt = verifiedAt;

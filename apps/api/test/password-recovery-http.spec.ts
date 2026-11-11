@@ -271,4 +271,44 @@ describe('password recovery HTTP privacy contract', () => {
     expect(success.statusCode).toBe(204);
     expect(success.body).toBe('');
   });
+
+  it('verify validates six digits, rejects a wrong OTP, then returns empty 204 without consuming it', async () => {
+    const { app, request, sink } = await setup();
+    const first = accepted(await request());
+    const payload = { email, challengeId: first.challengeId, code: sink.sent[0]!.code };
+    const verify = (body: unknown) =>
+      app.inject({
+        method: 'POST',
+        url: '/v1/auth/password-recovery/verify',
+        payload: body as any,
+        headers: { 'idempotency-key': 'verify-same-key' },
+      });
+    for (const body of [
+      { ...payload, code: '12345' },
+      { ...payload, challengeId: 'bad-id' },
+      { ...payload, email: 'bad-email' },
+    ]) {
+      const response = await verify(body);
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ code: 'VALIDATION_FAILED' });
+    }
+    envelope(
+      await verify({ ...payload, code: payload.code === '000000' ? '111111' : '000000' }),
+      400,
+      'RECOVERY_INVALID',
+    );
+    for (let i = 0; i < 2; i++) {
+      const response = await verify(payload);
+      expect(response.statusCode).toBe(204);
+      expect(response.body).toBe('');
+    }
+    const completed = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/password-recovery/complete',
+      payload: { ...payload, password: 'NewPass1!' },
+      headers: { 'idempotency-key': 'verify-completion' },
+    });
+    expect(completed.statusCode).toBe(204);
+    envelope(await verify(payload), 400, 'RECOVERY_INVALID');
+  });
 });

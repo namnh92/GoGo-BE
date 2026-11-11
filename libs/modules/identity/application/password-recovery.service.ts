@@ -8,10 +8,17 @@ import {
   type MetricsPort,
 } from '@gogo/observability';
 import { AppError } from '../../shared/app-error';
-import { RecoveryRepository } from '../infrastructure/recovery.repository';
+import {
+  RecoveryRepository,
+  type RecoveryTransaction,
+} from '../infrastructure/recovery.repository';
 import { RecoveryMailSender, type RecoveryMail } from '../infrastructure/recovery-mail';
 import { RATE_LIMIT_STORE, type RateLimitStore } from '../presentation/rate-limit.service';
-import type { RecoveryCompleteDto, RecoveryRequestDto } from '../presentation/dtos';
+import type {
+  RecoveryCompleteDto,
+  RecoveryRequestDto,
+  RecoveryVerifyDto,
+} from '../presentation/dtos';
 import { PasswordService } from './password.service';
 import { SessionRevocationService } from './session-revocation.service';
 
@@ -170,6 +177,41 @@ export class PasswordRecoveryService {
     }
   }
 
+  async verify(input: RecoveryVerifyDto, context: RecoveryContext): Promise<void> {
+    const started = performance.now();
+    try {
+      this.mail.assertConfigured();
+      const email = input.email.trim().toLowerCase();
+      const digest = this.crypto.digest('email', email);
+      await this.limit('complete', digest, context.ip);
+      // Reuse complete's lock order and original identity binding. Never replay
+      // a successful verification: the proof may have expired or been consumed.
+      const valid = await this.repo.transaction(
+        digest,
+        email,
+        'verify',
+        this.crypto.digest('verify-lock', randomUUID()),
+        (tx) => this.checkProof(tx, input, digest, email),
+      );
+      // Failed attempts must commit before returning RECOVERY_INVALID.
+      if (!valid) throw invalid();
+    } catch (error) {
+      this.failed('verify', error);
+      throw error instanceof AppError
+        ? error
+        : AppError.serviceUnavailable(
+            'RECOVERY_UNAVAILABLE',
+            'Password recovery is temporarily unavailable',
+          );
+    } finally {
+      this.metrics.observe(
+        'password_recovery_duration_seconds',
+        (performance.now() - started) / 1000,
+        { action: 'verify' },
+      );
+    }
+  }
+
   async complete(input: RecoveryCompleteDto, context: RecoveryContext): Promise<void> {
     const started = performance.now();
     try {
@@ -191,29 +233,7 @@ export class PasswordRecoveryService {
             this.checkReplay(stored, replay.fingerprint);
             return { valid: true, ids: [], replay: true };
           }
-          const challenge = await tx.getChallenge();
-          const expected = challenge?.codeDigest ?? this.crypto.digest('proof', 'dummy');
-          const match = this.crypto.matches(
-            expected,
-            this.crypto.digest('proof', digest, input.challengeId, input.code),
-          );
-          const user = tx.user;
-          const live =
-            challenge &&
-            challenge.id === input.challengeId &&
-            !challenge.consumedAt &&
-            challenge.expiresAt.getTime() > Date.now() &&
-            challenge.attempts < 5;
-          if (
-            !live ||
-            !match ||
-            !user ||
-            user.id !== challenge.userId ||
-            user.status !== 'active' ||
-            !user.passwordHash ||
-            user.email?.toLowerCase() !== email
-          ) {
-            if (live) await tx.failAttempt();
+          if (!(await this.checkProof(tx, input, digest, email))) {
             return { valid: false, ids: [], replay: false };
           }
           const ids = await tx.reset(hash);
@@ -244,6 +264,41 @@ export class PasswordRecoveryService {
         { action: 'complete' },
       );
     }
+  }
+
+  private async checkProof(
+    tx: RecoveryTransaction,
+    input: RecoveryVerifyDto,
+    digest: string,
+    email: string,
+  ): Promise<boolean> {
+    const challenge = await tx.getChallenge();
+    const expected = challenge?.codeDigest ?? this.crypto.digest('proof', 'dummy');
+    const match = this.crypto.matches(
+      expected,
+      this.crypto.digest('proof', digest, input.challengeId, input.code),
+    );
+    const user = tx.user;
+    const live =
+      challenge &&
+      !challenge.consumedAt &&
+      challenge.expiresAt.getTime() > Date.now() &&
+      challenge.attempts < 5;
+    if (
+      !live ||
+      challenge.id !== input.challengeId ||
+      !match ||
+      !user ||
+      user.id !== challenge.userId ||
+      user.status !== 'active' ||
+      !user.passwordHash ||
+      user.email?.toLowerCase() !== email
+    ) {
+      // A wrong challenge ID also spends an attempt on the current live proof.
+      if (live) await tx.failAttempt();
+      return false;
+    }
+    return true;
   }
 
   private async deliver(digest: string, id: string, message: RecoveryMail | null): Promise<void> {
@@ -305,7 +360,7 @@ export class PasswordRecoveryService {
     if (refused) throw AppError.tooManyRequests('Rate limit exceeded', refused.seconds);
   }
 
-  private failed(action: 'request' | 'complete', error: unknown): void {
+  private failed(action: 'request' | 'verify' | 'complete', error: unknown): void {
     if (error instanceof AppError && error.httpStatus === 429) {
       this.metrics.increment('password_recovery_throttled', { action });
     } else if (error instanceof AppError && error.code === 'RECOVERY_ACCOUNT_NOT_FOUND') {

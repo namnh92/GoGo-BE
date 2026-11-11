@@ -29,9 +29,13 @@ export const recoveryRequestSchema = z.object({
 });
 export type RecoveryRequestDto = z.infer<typeof recoveryRequestSchema>;
 
-export const recoveryCompleteSchema = recoveryRequestSchema.extend({
+export const recoveryVerifySchema = recoveryRequestSchema.extend({
   challengeId: z.string().uuid(),
   code: z.string().regex(/^[0-9]{6}$/),
+});
+export type RecoveryVerifyDto = z.infer<typeof recoveryVerifySchema>;
+
+export const recoveryCompleteSchema = recoveryVerifySchema.extend({
   password: passwordSchema,
 });
 export type RecoveryCompleteDto = z.infer<typeof recoveryCompleteSchema>;

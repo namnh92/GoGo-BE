@@ -32,7 +32,7 @@ export class RecoveryRepository {
   transaction<T>(
     digest: string,
     email: string,
-    mode: 'request' | 'complete',
+    mode: 'request' | 'verify' | 'complete',
     replayKey: string,
     work: (tx: RecoveryTransaction) => Promise<T>,
   ): Promise<T> {
@@ -51,7 +51,7 @@ export class RecoveryRepository {
         .select()
         .from(schema.users)
         .where(
-          mode === 'complete'
+          mode !== 'request'
             ? sql`${schema.users.id} = ${initial?.userId ?? null}::uuid`
             : and(
                 sql`lower(${schema.users.email}) = ${email}`,

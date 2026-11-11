@@ -1,14 +1,16 @@
 import { Body, Controller, HttpCode, Post, Req } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
-import { ManualIdempotency } from '../../shared/idempotency.interceptor';
+import { ManualIdempotency, NoIdempotencyReplay } from '../../shared/idempotency.interceptor';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { PasswordRecoveryService } from '../application/password-recovery.service';
 import { Public } from './decorators';
 import {
   recoveryCompleteSchema,
   recoveryRequestSchema,
+  recoveryVerifySchema,
   type RecoveryCompleteDto,
   type RecoveryRequestDto,
+  type RecoveryVerifyDto,
 } from './dtos';
 
 @Controller('auth/password-recovery')
@@ -24,6 +26,17 @@ export class PasswordRecoveryController {
     @Req() req: FastifyRequest,
   ) {
     return this.recovery.request(body, this.context(req));
+  }
+
+  @Public()
+  @NoIdempotencyReplay()
+  @Post('verify')
+  @HttpCode(204)
+  verify(
+    @Body(new ZodValidationPipe(recoveryVerifySchema)) body: RecoveryVerifyDto,
+    @Req() req: FastifyRequest,
+  ) {
+    return this.recovery.verify(body, this.context(req));
   }
 
   @Public()

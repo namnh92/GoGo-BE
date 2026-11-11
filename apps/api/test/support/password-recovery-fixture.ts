@@ -31,6 +31,7 @@ export const RECOVERY_KEY = 'recovery-integration-shared-key-'.padEnd(48, 'x');
 export const JWT_KEY = 'recovery-integration-jwt-key-'.padEnd(48, 'y');
 export const REQUEST = '/v1/auth/password-recovery/request';
 export const COMPLETE = '/v1/auth/password-recovery/complete';
+export const VERIFY = '/v1/auth/password-recovery/verify';
 export type Grant = { userId: string; accessToken: string; refreshToken: string };
 export type Context = { ip?: string; key?: string; headers?: Record<string, string> };
 export const crypto = new RecoveryCrypto(RECOVERY_KEY);
