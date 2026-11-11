@@ -8,6 +8,13 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 9.5.1-alpha.1 — Đồng bộ rating Google trên thẻ trợ lý (#834)
+
+PATCH: `AssistantPlaceCard.providerRating`, `providerRatingCount` và
+`providerRatingSource` theo cùng quy tắc với `PlaceSummary`: có mặt khi rating
+Google đã lưu là số hữu hạn, không chỉ khi có bản ghi nguồn Google. Chỉ sửa mô
+tả, không đổi schema.
+
 ## 9.5.0-alpha.1 — Personal credit balance and history (#832)
 
 MINOR: thêm `GET /me/credits` trả `balance`, `earned`, `spent`, `reserved`,

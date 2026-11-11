@@ -135,7 +135,7 @@ function fixture() {
 }
 describe('shared inbox public contract', () => {
   it('retains shared inbox operations and statuses in the category MAJOR', () => {
-    expect(spec.info.version).toBe('9.5.0-alpha.1');
+    expect(spec.info.version).toBe('9.5.1-alpha.1');
     const read = spec.paths['/me/notifications/read-all'].post;
     expect(Object.keys(read.responses)).toEqual(
       expect.arrayContaining([
