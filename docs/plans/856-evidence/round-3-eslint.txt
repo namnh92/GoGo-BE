@@ -1,0 +1,3 @@
+$ sh -c xargs pnpm exec eslint < '<tmp>/be860/eslint-files.txt'
+started: 2026-11-11T11:04:38Z
+exit=0

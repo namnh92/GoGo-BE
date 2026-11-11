@@ -1,4 +1,6 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
+import { RETENTION_DAYS } from '../infrastructure/assistant.repository';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto';
 import { sql, type SQL } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
@@ -7,6 +9,8 @@ import { AppError } from '../../shared/app-error';
 import { DB } from '../../shared/tokens';
 import { decodeCursor, encodeCursor, isoUs } from '../domain/cursor';
 import { renderPlaceTexts } from './place-text';
+import { PlaceAnswerReader } from './place-answer-reader';
+import { isPlaceAnswerRow } from '../domain/place-qa/reference-group';
 import type {
   AssistantCardRef,
   AssistantNotice,
@@ -14,6 +18,8 @@ import type {
 } from '../domain/assistant.types';
 
 type QueueRow = {
+  locale: 'vi' | 'en' | null;
+  trace: Record<string, unknown> | null;
   message_id: string;
   conversation_id: string;
   rating: 'up' | 'down';
@@ -44,6 +50,8 @@ export class AssistantFeedbackQueueService {
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(APP_CONFIG) config: { AUTH_JWT_SECRET: string },
+    @Optional() private readonly placeAnswers: PlaceAnswerReader = new PlaceAnswerReader(),
+    @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
   ) {
     this.key = createHmac('sha256', config.AUTH_JWT_SECRET)
       .update('assistant-feedback-ref')
@@ -61,7 +69,9 @@ export class AssistantFeedbackQueueService {
     limit: number;
     cursor?: string | undefined;
   }) {
-    const conditions: SQL[] = [sql`true`];
+    const conditions: SQL[] = [
+      sql`c.last_message_at > now() - ${sql.raw(`interval '${RETENTION_DAYS} days'`)}`,
+    ];
     if (query.rating) conditions.push(sql`f.rating = ${query.rating}`);
     if (query.reason) conditions.push(sql`f.reason = ${query.reason}`);
     if (query.from) conditions.push(sql`f.created_at >= ${query.from}::timestamptz`);
@@ -75,7 +85,7 @@ export class AssistantFeedbackQueueService {
     const res = await this.db.execute(sql`
       select f.message_id, f.conversation_id, f.rating, f.reason,
         ${sql.raw(isoUs('f.created_at'))} as created_at,
-        m.status, m.text, m.cards, m.notice,
+        m.status, m.text, m.cards, m.notice, m.trace, m.locale,
         coalesce(l.haiku_model, l.jev_model) as model,
         (select json_agg(json_build_object('index', s.idx, 'kind', s.kind, 'documentId', s.document_id,
             'versionId', s.version_id, 'slug', s.slug, 'title', s.title, 'description', s.description,
@@ -84,6 +94,7 @@ export class AssistantFeedbackQueueService {
         (select array_agg(distinct p.kind) from assistant_proposals p where p.message_id = f.message_id) as proposal_kinds
       from assistant_feedback f
       join assistant_messages m on m.id = f.message_id
+      join assistant_conversations c on c.id = m.conversation_id
       left join assistant_usage_ledger l on l.message_id = f.message_id
       where ${sql.join(conditions, sql` and `)}
       order by f.created_at desc, f.message_id desc
@@ -92,9 +103,16 @@ export class AssistantFeedbackQueueService {
     const page = rows.slice(0, query.limit);
     const last = page[page.length - 1];
     // Replies name places by token (A-R-04): moderators read today's names.
+    const qa = await this.placeAnswers.page(
+      page.map((r) => ({ ...r, id: r.message_id })),
+      'cms',
+    );
     const texts = await renderPlaceTexts(
       this.db,
-      page.map((r) => r.text),
+      page.map((r) => (isPlaceAnswerRow(r) ? '' : r.text)),
+      'vi',
+      this.metrics,
+      'cms',
     );
     return {
       items: page.map((r, i) => ({
@@ -105,11 +123,13 @@ export class AssistantFeedbackQueueService {
         conversationRef: this.ref(r.conversation_id),
         reply: {
           status: r.status,
-          text: texts[i]!,
-          sources: (r.sources ?? []).map((s) =>
+          text: qa.get(r.message_id)?.text ?? texts[i]!,
+          sources: (qa.get(r.message_id)?.sources ?? r.sources ?? []).map((s) =>
             Object.fromEntries(Object.entries(s).filter(([, v]) => v !== null && v !== undefined)),
           ),
-          cardKinds: [...new Set((r.cards ?? []).map((c) => c.kind))],
+          cardKinds: [
+            ...new Set((qa.get(r.message_id)?.cards ?? r.cards ?? []).map((c) => c.kind)),
+          ],
           proposalKinds: r.proposal_kinds ?? [],
           ...(r.notice ? { notice: r.notice } : {}),
           model: r.model ?? 'deterministic',

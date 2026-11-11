@@ -1,3 +1,4 @@
+import type { MetricsPort } from '@gogo/observability';
 import { randomUUID } from 'node:crypto';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
@@ -28,6 +29,7 @@ import {
 export type PrivacyExportProcessorOptions = {
   workerId: string;
   mediaPublicBaseUrl: string;
+  metrics?: MetricsPort;
   retentionMonths: number;
   leaseTtlMs?: number;
   /** Hard deadline on one upload (default 30 s). */
@@ -238,7 +240,11 @@ export class PrivacyExportProcessor {
           reason: `privacy_export:${claim.id}`,
         },
         // F-03: the budget is charged while rows are read, page by page.
-        { mediaPublicBaseUrl: this.options.mediaPublicBaseUrl, maxBytes: this.maxPlaintextBytes },
+        {
+          mediaPublicBaseUrl: this.options.mediaPublicBaseUrl,
+          maxBytes: this.maxPlaintextBytes,
+          ...(this.options.metrics ? { metrics: this.options.metrics } : {}),
+        },
       );
       const plaintext = serializeBounded(doc, this.maxPlaintextBytes);
       try {

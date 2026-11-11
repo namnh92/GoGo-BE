@@ -74,6 +74,9 @@ const BUCKETS_BY_METRIC: Record<string, number[]> = {
   place_submission_publish_latency_hours: [1, 4, 8, 12, 24, 48, 72, 120, 168, 336],
   /** GoGo-BE#713 — an edge on the 15 s first-text deadline (ADR-0036 §3G). */
   assistant_first_text_seconds: [0.5, 1, 2, 3, 5, 7.5, 10, 15, 20, 30],
+  assistant_place_facts_duration_seconds: [0.025, 0.05, 0.1, 0.25, 0.5, 1, 1.5, 2, 3],
+  assistant_place_answer_token_ready_seconds: [0.1, 0.5, 1, 2, 5, 10, 15, 20],
+  assistant_place_answer_first_visible_text_seconds: [0.1, 0.5, 1, 2, 5, 10, 15, 20],
   assistant_turn_duration_seconds: [0.5, 1, 2, 3, 5, 7.5, 10, 15, 30, 60, 120],
 };
 

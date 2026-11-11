@@ -26,6 +26,7 @@ import { AssistantConversationsService } from '../application/assistant-conversa
 import { AssistantFeedbackQueueService } from '../application/assistant-feedback-queue.service';
 import { AssistantOrchestrator } from '../application/assistant-orchestrator.service';
 import { AssistantProposalsService } from '../application/assistant-proposals.service';
+import { PlaceAnswerReader } from '../application/place-answer-reader';
 import { AssistantStreamService } from '../application/assistant-stream.service';
 import { AssistantTurnRunner } from '../application/assistant-turn-runner.service';
 import { AssistantAreaResolver } from '../application/area-resolver.service';
@@ -75,6 +76,7 @@ type BufferConfig = { NODE_ENV: string; REDIS_URL?: string };
     AssistantGuideCoverageCmsController,
   ],
   providers: [
+    PlaceAnswerReader,
     AssistantRepository,
     AssistantCreditRepository,
     AssistantCreditSpendRepository,

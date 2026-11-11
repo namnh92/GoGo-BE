@@ -1,0 +1,33 @@
+$ turbo run typecheck
+• turbo 2.10.11
+
+   • Packages in scope: @gogo/api, @gogo/cost-observability, @gogo/database, @gogo/modules, @gogo/observability, @gogo/providers, @gogo/scripts, @gogo/worker
+   • Running typecheck in 8 packages
+   • Remote caching disabled, using shared worktree cache
+
+@gogo/observability:typecheck: cache miss, executing 93a169b3c63586a7
+@gogo/providers:typecheck: cache hit, replaying logs 1d098c4b46141617
+@gogo/database:typecheck: cache hit, replaying logs f892d33e599442d8
+@gogo/providers:typecheck: $ tsc --noEmit
+@gogo/database:typecheck: $ tsc --noEmit
+@gogo/observability:typecheck: $ tsc --noEmit
+ WARNING  IO error: Operation not permitted (os error 1)
+@gogo/cost-observability:typecheck: cache miss, executing cba3e156ee895a4c
+@gogo/cost-observability:typecheck: $ tsc --noEmit
+@gogo/modules:typecheck: cache miss, executing e5a50512bfd35c38
+ WARNING  IO error: Operation not permitted (os error 1)
+@gogo/modules:typecheck: $ tsc --noEmit
+@gogo/worker:typecheck: cache miss, executing 3259d70556cc4dbe
+ WARNING  IO error: Operation not permitted (os error 1)
+@gogo/scripts:typecheck: cache miss, executing 1047d9afa1831b15
+@gogo/api:typecheck: cache miss, executing ce9f1869caf9922a
+@gogo/api:typecheck: $ tsc --noEmit
+@gogo/worker:typecheck: $ tsc --noEmit
+@gogo/scripts:typecheck: $ tsc --noEmit
+ WARNING  IO error: Operation not permitted (os error 1)
+ WARNING  IO error: Operation not permitted (os error 1)
+
+ Tasks:    8 successful, 8 total
+Cached:    2 cached, 8 total
+  Time:    26.328s 
+

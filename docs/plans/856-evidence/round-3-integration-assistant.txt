@@ -1,0 +1,7 @@
+$ pnpm -s vitest run --project integration --no-file-parallelism apps/api/test/assistant-place-answer.int.spec.ts apps/api/test/assistant.int.spec.ts apps/api/test/assistant-frame-buffer-redis.int.spec.ts
+started: 2026-11-11T11:04:50Z
+(condensed: lines matching / (✓|×|❯) |Test Files|Tests |Duration|FAIL/ of 21 output lines)
+ Test Files  3 passed (3)
+      Tests  50 passed (50)
+   Duration  35.78s (transform 2.08s, setup 204ms, import 5.21s, tests 29.96s, environment 0ms)
+exit=0

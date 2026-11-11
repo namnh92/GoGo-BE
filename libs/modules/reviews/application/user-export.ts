@@ -1,3 +1,4 @@
+import type { MetricsPort } from '@gogo/observability';
 import { creditBalance } from '../../shared/assistant-credits';
 import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
@@ -65,7 +66,7 @@ export async function collectUserExport(
   db: Db,
   userId: string,
   by: ExportActor,
-  options: { mediaPublicBaseUrl: string; maxBytes?: number },
+  options: { mediaPublicBaseUrl: string; maxBytes?: number; metrics?: MetricsPort },
 ) {
   const budget = new ExportBudget(options.maxBytes ?? Number.POSITIVE_INFINITY);
   const [user] = await db.select().from(schema.users).where(eq(schema.users.id, userId));
@@ -278,7 +279,12 @@ export async function collectUserExport(
     budget,
   );
   // GoGo-BE#713 Q2 — retained GoGo AI conversations (absent before the module).
-  const assistantConversations = await collectAssistantExport(db, userId, (v) => budget.charge(v));
+  const assistantConversations = await collectAssistantExport(
+    db,
+    userId,
+    (v) => budget.charge(v),
+    options.metrics,
+  );
 
   await writeAudit(db, {
     actorType: by.actorType,

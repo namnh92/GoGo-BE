@@ -1,10 +1,11 @@
+import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import {
   lockCreditCutover,
   lockCreditRecipients,
   scrubCreditEventRecipients,
 } from '../../shared/credit-event-protocol';
 import { lockAssistantAccount } from '../../shared/assistant-credits';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { AppError } from '../../shared/app-error';
@@ -215,6 +216,7 @@ export class UserContentService {
      * as gone while its bytes stayed in R2.
      */
     @Inject(PRIVACY_EXPORT_STORAGE) private readonly privateStorage: StoragePort | null,
+    @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
   ) {}
 
   // --- saved (FR-USER-001) --------------------------------------------------
@@ -559,6 +561,7 @@ export class UserContentService {
   async exportForUser(userId: string, by: ExportActor) {
     return collectUserExport(this.db, userId, by, {
       mediaPublicBaseUrl: this.config.MEDIA_PUBLIC_BASE_URL,
+      metrics: this.metrics,
     });
   }
 

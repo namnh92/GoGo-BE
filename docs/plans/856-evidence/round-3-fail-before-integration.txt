@@ -1,0 +1,11 @@
+$ pnpm -s vitest run --project integration --no-file-parallelism apps/api/test/assistant-place-answer.int.spec.ts -t "malformed"   # same reverse-applied patch
+(condensed: result lines and error headlines of 61 output lines)
+     × a malformed mixed prose reaches neither the stored preview, the list, the snippet nor the export 49ms
+     × a malformed zero-query answer reaches neither the stored preview, the list, the snippet nor the export 15ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+AssertionError: expected 'a1:11111111-1111-4111-8111-111111111…' to be 'a1:11111111-1111-4111-8111-111111111…' // Object.is equality
+AssertionError: expected 'Secret Cafe costs 123 VND' to be 'a1:11111111-1111-4111-8111-111111111…' // Object.is equality
+ Test Files  1 failed (1)
+      Tests  2 failed | 9 skipped (11)
+exit=1
+$ git apply <patch>   # fix restored

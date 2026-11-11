@@ -12,7 +12,7 @@ import { schema, type Db } from '@gogo/database';
 import { DB } from '../../shared/tokens';
 import type { Tx } from '../../shared/outbox';
 import { isoUs } from '../domain/cursor';
-import { truncateTokenSafe } from '../domain/place-tokens';
+import { storedPreview } from '../domain/place-tokens';
 import type {
   AssistantTurnCredits,
   AssistantConversationCredits,
@@ -47,6 +47,8 @@ export type ConversationRow = {
   match_field?: 'title' | 'message' | null;
   match_message_id?: string | null;
   match_text?: string | null;
+  /** The matched message's trace: the snippet is validated as a whole message. Never on the wire. */
+  match_trace?: Record<string, unknown> | null;
 };
 
 export type MessageRow = {
@@ -169,20 +171,21 @@ export class AssistantRepository {
         sql`(c.last_message_at, c.id) < (${options.cursor.at}::timestamptz, ${options.cursor.id}::uuid)`,
       );
     }
-    let matchSelect = sql`, null::text as match_field, null::uuid as match_message_id, null::text as match_text`;
+    let matchSelect = sql`, null::text as match_field, null::uuid as match_message_id, null::text as match_text, null::jsonb as match_trace`;
     let matchJoin = sql``;
     if (options.q) {
       const pattern = likePattern(options.q);
       const titleHit = sql`lower(f_unaccent(coalesce(c.title, ''))) like lower(f_unaccent(${pattern}))`;
       matchJoin = sql`left join lateral (
-          select m.id, m.text from assistant_messages m
+          select m.id, m.text, m.trace from assistant_messages m
           where m.conversation_id = c.id and lower(f_unaccent(m.text)) like lower(f_unaccent(${pattern}))
           order by m.created_at desc, m.id desc limit 1
         ) hit on true`;
       conditions.push(sql`(${titleHit} or hit.id is not null)`);
       matchSelect = sql`, case when ${titleHit} then 'title' else 'message' end as match_field,
         case when ${titleHit} then null else hit.id end as match_message_id,
-        case when ${titleHit} then c.title else hit.text end as match_text`;
+        case when ${titleHit} then c.title else hit.text end as match_text,
+        case when ${titleHit} then null else hit.trace end as match_trace`;
     }
     const res = await this.db.execute(sql`
       select ${CONVERSATION_COLUMNS} ${matchSelect}
@@ -485,6 +488,23 @@ export class AssistantRepository {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended('assistant:budget', 0))`);
   }
 
+  /** Persist the immutable buffer classification before its first append.
+   * Lease ownership prevents a losing/deleted producer from publishing frames.
+   */
+  async persistStreamRoute(
+    messageId: string,
+    owner: string,
+    route: 'place_qa' | 'ordinary',
+  ): Promise<boolean> {
+    const res = await this.db.execute(sql`
+      update assistant_messages set
+        trace = coalesce(trace, '{}'::jsonb) || ${JSON.stringify({ streamRoute: route })}::jsonb
+      where id = ${messageId} and status = 'streaming' and lease_owner = ${owner}
+        and (trace->>'streamRoute' is null or trace->>'streamRoute' = ${route})
+      returning id`);
+    return res.rows.length === 1;
+  }
+
   async renewLease(
     messageId: string,
     owner: string,
@@ -555,7 +575,7 @@ export class AssistantRepository {
       await tx.execute(sql`
         update assistant_conversations set
           last_message_at = greatest(last_message_at, now()),
-          preview = coalesce(nullif(${truncateTokenSafe(update.text, 160)}, ''), preview)
+          preview = coalesce(nullif(${storedPreview(update.text, row.trace)}, ''), preview)
         where id = ${row.conversation_id}`);
       return row;
     });

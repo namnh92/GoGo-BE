@@ -29,7 +29,8 @@ export type AssistantNotice =
 export type AssistantFollowUpGroup = {
   field: string;
   label: string;
-  options: { label: string; text: string }[];
+  /** Reserved by 10.1; no production emission until S3/S4. */
+  options: { id?: string; label: string; text: string }[];
 };
 
 /** What history stores for a card: ids only, never facts. */

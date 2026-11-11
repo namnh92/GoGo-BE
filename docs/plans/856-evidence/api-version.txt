@@ -1,0 +1,2 @@
+$ SWC_NODE_PROJECT=./tsconfig.base.json node -r @swc-node/register scripts/check-openapi-version.ts /tmp/be856-base-openapi.yaml openapi/gogo.v1.yaml
+✔ OpenAPI version bumped to 10.1.0-alpha.1

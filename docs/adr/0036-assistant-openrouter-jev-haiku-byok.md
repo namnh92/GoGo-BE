@@ -1,5 +1,9 @@
 # ADR-0036 — GoGo AI Assistant: OpenRouter-direct Jev and Anthropic-BYOK Claude Haiku
 
+Reader amendment (2026-11-11): [ADR-0055](0055-assistant-place-answer-readers.md)
+defines the reference-only place QA read compatibility floor. Production
+classification/emission and enablement remain separate #844 slices.
+
 Pricing successor (2026-11-11): [ADR-0054](0054-assistant-actual-cost-credit-funding.md)
 free-first actual-cost holds supersedes the daily-then-one-credit rule only after
 audited spend-policy cutover. The daily limit is configured, DEV 5; legacy policy
