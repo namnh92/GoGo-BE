@@ -179,6 +179,7 @@ export class PlaceQaService {
       c: Extract<QaClassification, { kind: 'named_place_question' | 'name_only' }>,
       source: string,
       areaOverride?: PlaceNameArea,
+      continuationText?: string,
     ) => {
       const area =
         areaOverride ?? (c.span.statedArea ? await this.area(c.span.statedArea) : undefined);
@@ -189,14 +190,19 @@ export class PlaceQaService {
         alternates: c.span.alternates,
       });
       signal.throwIfAborted();
-      // Name-only is admitted ONLY on whole-message equality, never fuzzy/partial
-      // equality of a stripped grammar span. No frame or pending state exists yet.
+      // Initial name-only admission needs canonical equality. A pending area
+      // refinement is already QA: validate the original source, not the area
+      // reply, and keep its fence even when the refined query has no match.
       if (
         c.kind === 'name_only' &&
-        (!result.candidates.some((x) => x.exact) ||
+        ((continuationText === undefined && !result.candidates.some((x) => x.exact)) ||
           normalizeVietnamese(c.span.text) !==
-            normalizeVietnamese(input.text.trim().replace(/[?!]+$/u, '')))
+            normalizeVietnamese((continuationText ?? input.text).trim().replace(/[?!]+$/u, '')))
       ) {
+        if (continuationText !== undefined) {
+          await notice('restate');
+          return true;
+        }
         if (!(await this.repo.clearPlaceQa(input.userId, input.conversationId, input.messageId)))
           throw new Error('Place QA probe lost its turn');
         delete state.trace.route;
@@ -290,6 +296,7 @@ export class PlaceQaService {
         }
         trace!.topic = p.topic;
         trace!.args = p.args;
+        pendingCreatedAt = Date.parse(p.createdAt);
         if (option.key === 'none') {
           pending('narrow', p.questionMessageId);
           await notice('narrow');
@@ -364,8 +371,7 @@ export class PlaceQaService {
             locale: source.locale ?? input.locale,
           });
           if (original.kind === 'named_place_question' || original.kind === 'name_only') {
-            await resolve(original, source.id, a);
-            return true;
+            return await resolve(original, source.id, a, source.text);
           }
         }
         if (candidates.length) {
@@ -392,13 +398,20 @@ export class PlaceQaService {
           signal.throwIfAborted();
           if (fresh.candidates.some((c) => c.exact) && !fresh.overflow) {
             trace!.class = 'name_only';
-            trace!.topic = 'overview';
-            trace!.args = {};
+            if (p.kind !== 'referent') {
+              trace!.topic = 'overview';
+              trace!.args = {};
+              pendingCreatedAt = undefined;
+            }
             trace!.row = fresh.row;
-            pendingCreatedAt = undefined;
             const ids = fresh.candidates.filter((c) => c.exact).map((c) => c.id);
             if (ids.length === 1) await answer(ids[0]!);
-            else await clarify('choice', ids.slice(0, 3), trace!.questionMessageId);
+            else
+              await clarify(
+                'choice',
+                ids.slice(0, 3),
+                p.kind === 'referent' ? p.questionMessageId : trace!.questionMessageId,
+              );
             return true;
           }
         }

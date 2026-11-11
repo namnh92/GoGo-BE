@@ -28,8 +28,8 @@ import catalogue from '../../../libs/modules/assistant/eval/place-qa-fixtures.js
 /** Layer A, not a resolver/producer simulation. Real API/auth/admission/modules,
  * Testcontainers PostGIS, SQL catalogue/facts, runner, SSE/replay and history.
  * Only paid model adapters and the clock are deterministic test fixtures.
- * Imports only symbols available on base d2d41184: copy this file + two JSON
- * fixtures unchanged to base to measure behavioural FAIL-before.
+ * Imports only symbols available on base d2d41184. The allowlisted baseline
+ * script copies this harness, corpora and test support, never production code.
  */
 let f: AssistantFixture;
 const ids: Record<string, string> = {};
@@ -158,7 +158,7 @@ afterAll(async () => {
       process.env.PLACE_QA_REPORT,
       JSON.stringify(
         {
-          baseSha: 'd2d41184',
+          baseSha: process.env.PLACE_QA_BASE_SHA ?? 'd2d41184',
           headSha: process.env.PLACE_QA_HEAD_SHA ?? 'WORKTREE',
           baseline: process.env.PLACE_QA_BASELINE === '1',
           status: setupCompleted ? 'EXECUTED' : 'BLOCKED_SETUP',
@@ -268,13 +268,22 @@ describe('layer A S3 corpus — public send → SSE → history', () => {
       const extra = c.fixture.contextPlace
         ? { context: { placeId: ids[c.fixture.contextPlace]! } }
         : {};
+      let phase = 'request';
+      const category =
+        'incidentRegression' in c && c.incidentRegression
+          ? 'incident'
+          : c.expected.outcome === 'not_qa'
+            ? 'preservation'
+            : 'capability';
       try {
         const r = await turn(conv, c.text, extra);
+        phase = 'symptom';
         // Baseline incident assertions begin at the observed user-facing symptom,
         // before checking any new trace/ledger capability.
         if (c.expected.outcome === 'not_qa') expect(r.stored?.trace?.route).not.toBe('place_qa');
         else {
           if ('contains' in c.expected) expect(r.text).toContain(c.expected.contains);
+          phase = 'public_contract';
           expect(r.message.text).toBe(r.text);
           if ('candidateKeys' in c) {
             const actual = r.frames
@@ -300,6 +309,7 @@ describe('layer A S3 corpus — public send → SSE → history', () => {
               .flatMap((f) => f.data.groups)
               .some((g: { field: string }) => ['area', 'budget', 'activity'].includes(g.field)),
           ).toBe(false);
+          phase = 'qa_contract';
           expect(r.stored?.trace?.route).toBe('place_qa');
           expect((r.stored?.trace?.placeQa as { outcome: string }).outcome).toBe(
             c.expected.outcome,
@@ -323,6 +333,7 @@ describe('layer A S3 corpus — public send → SSE → history', () => {
         }
         reports.push({
           id: c.id,
+          category,
           partition: c.partition,
           expected: c.expected.outcome,
           result: 'PASS',
@@ -330,6 +341,8 @@ describe('layer A S3 corpus — public send → SSE → history', () => {
       } catch (error) {
         reports.push({
           id: c.id,
+          category,
+          phase,
           partition: c.partition,
           expected: c.expected.outcome,
           result: 'FAIL',
@@ -638,15 +651,71 @@ describe.skipIf(baseline)(
       expect((refined.stored?.trace?.placeQa as { outcome: string }).outcome).toBe('choice');
       expect(capture).toEqual({ jev: [], haiku: [] });
     });
-    for (const c of intents.cases.filter((c) => c.id !== 'vi-065'))
-      it(`preserve-${c.id}`, async () => {
+  },
+);
+
+// Owner "Theo đề xuất", dev/policy/decisions-log.md, 2026-11-11:
+// vi-065 is named-place QA; the remaining 156 cases preserve recommendation admission.
+// These preservation assertions run on BOTH base and head, unlike S3-only state tests.
+async function recordIntentCase(id: string, category: string, check: () => Promise<void>) {
+  try {
+    await check();
+    reports.push({ id, category, result: 'PASS' });
+  } catch (error) {
+    reports.push({
+      id,
+      category,
+      result: 'FAIL',
+      phase: 'admission',
+      assertion: error instanceof Error ? error.message : 'assertion',
+    });
+    throw error;
+  }
+}
+describe('owner-approved intent admission: 156 preserved + vi-065 QA', () => {
+  for (const c of intents.cases.filter((c) => c.id !== 'vi-065'))
+    it(`preserve-${c.id}`, () =>
+      recordIntentCase(`preserve-${c.id}`, 'preservation', async () => {
+        vi.setSystemTime(now);
+        providerFailure = false;
+        relation = 'answer_pending';
         const conv = await conversation();
         await flag(true);
         const r = await turn(conv, c.text);
         expect(r.stored?.trace?.route).not.toBe('place_qa');
-      });
-  },
-);
+      }));
+  const c = intents.cases.find((c) => c.id === 'vi-065')!;
+  it('qa-vi-065-on', () =>
+    recordIntentCase('qa-vi-065-on', 'capability', async () => {
+      vi.setSystemTime(now);
+      providerFailure = false;
+      await flag(true);
+      const conv = await conversation();
+      resetCapture();
+      const r = await turn(conv, c.text);
+      expect(r.text).toContain('chưa tìm thấy');
+      expect(r.stored?.trace?.route).toBe('place_qa');
+      expect(r.stored?.trace?.placeQa).toMatchObject({ topic: 'hours', outcome: 'not_found' });
+      expect(capture).toEqual({ jev: [], haiku: [] });
+      const ledger = await f.db.execute(sql`select u.jev_calls, u.haiku_calls,
+      (select count(*)::int from assistant_usage_calls c where c.usage_ledger_id=u.id) as attempts
+      from assistant_usage_ledger u where message_id=${r.id}`);
+      expect(ledger.rows[0]).toMatchObject({ jev_calls: 0, haiku_calls: 0, attempts: 0 });
+    }));
+  it('preserve-vi-065-off', () =>
+    recordIntentCase('preserve-vi-065-off', 'preservation', async () => {
+      vi.setSystemTime(now);
+      providerFailure = false;
+      relation = 'answer_pending';
+      await flag(false);
+      const conv = await conversation();
+      resetCapture();
+      const r = await turn(conv, c.text);
+      expect(r.stored?.trace?.route).not.toBe('place_qa');
+      expect(capture.jev.length).toBeGreaterThan(0);
+      expect(r.text.length).toBeGreaterThan(0);
+    }));
+});
 
 describe.skipIf(baseline)('ordinary model cost attribution remains unchanged', () => {
   it('keeps fractional known USD and preserves unknown cost for a non-QA call', async () => {

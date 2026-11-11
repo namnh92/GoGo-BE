@@ -800,6 +800,13 @@ delivery and failure. Zero calls have known zero model cost; an orphan's QA
 cost is zero only with a durable QA marker and no provider attempts. Ordinary
 unknown-cost treatment and credit reservations remain unchanged.
 
-Validation, the corpus, the authority conflict in existing case vi-065 and the
-reproducible baseline procedure are recorded in
+The owner decision dated 2026-11-11 ("Theo đề xuất") in
+`dev/policy/decisions-log.md` makes vi-065, “Mấy giờ thì quán Highlands đóng cửa?”,
+a formal named-place hours QA case: flag on means zero model calls/attempts;
+flag off retains the baseline recommendation path. Shape rev3 §7 now preserves
+**the other 156** intent cases. This is the sole named exception, not permission
+to expand QA admission. The repository spec amendment is
+[864-s3-spec-amendment.md](plans/864-s3-spec-amendment.md).
+
+Validation, the corpus and the reproducible baseline procedure are recorded in
 [864-s3-validation.md](plans/864-s3-validation.md). S3 is not #844 acceptance.

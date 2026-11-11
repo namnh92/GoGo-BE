@@ -74,7 +74,7 @@ export function qaFixture() {
         'history',
       )
     ).get(input.messageId)!;
-  const setPending = (kind: 'choice' | 'confirm' | 'narrow' = 'choice') => {
+  const setPending = (kind: 'choice' | 'confirm' | 'narrow' | 'referent' = 'choice') => {
     const p = makeQaPending({
       kind,
       questionMessageId: FIXTURE_A,
@@ -107,6 +107,27 @@ export function qaFixture() {
   };
 }
 describe('S3 producer and control precedence', () => {
+  it.each([true, false])('owner-approved vi-065 respects QA flag %s', async (enabled) => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const f = qaFixture();
+    f.input.text = 'Mấy giờ thì quán Highlands đóng cửa?';
+    f.availability.placeQaEnabled.mockResolvedValue(enabled);
+    f.search.resolvePlaceName.mockResolvedValue(
+      resolvePlaceNameOutcome({ candidates: [], overflow: false, areaMismatch: false }),
+    );
+    expect(await f.run()).toBe(enabled);
+    if (enabled) {
+      expect(f.state.trace).toMatchObject({
+        route: 'place_qa',
+        placeQa: { topic: 'hours', outcome: 'not_found' },
+      });
+      expect(f.state.costs).toMatchObject({ jevCalls: 0, haikuCalls: 0, jevCostUsd: 0 });
+    } else {
+      expect(f.repo.markPlaceQa).not.toHaveBeenCalled();
+      expect(f.search.resolvePlaceName).not.toHaveBeenCalled();
+      expect(f.state.trace.route).not.toBe('place_qa');
+    }
+  });
   it('fences route before resolution, emits S1 references, and records known zero cost', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(now);
     const f = qaFixture();
@@ -187,6 +208,129 @@ describe('S3 producer and control precedence', () => {
       outcome: 'answer',
     });
     expect(f.search.placeFacts).toHaveBeenCalledWith([FIXTURE_A], expect.anything());
+  });
+  it.each(['answer', 'narrow', 'not_found'] as const)(
+    'bare-name narrow + current area keeps QA exclusion and emits %s',
+    async (outcome) => {
+      vi.spyOn(Date, 'now').mockReturnValue(now);
+      const f = qaFixture();
+      const p = f.setPending('narrow');
+      p.topic = 'overview';
+      p.args = {};
+      f.repo.findMessage.mockResolvedValue({
+        id: FIXTURE_A,
+        role: 'user',
+        text: 'Bát Diệp',
+        locale: 'vi',
+      });
+      f.input.text = 'Phường Cầu Giấy, Hà Nội';
+      f.areas.resolve.mockResolvedValue({
+        kind: 'resolved',
+        value: { area: { datasetVersion: 'fixture', provinceCode: '01', communeCode: '00001' } },
+      } as never);
+      f.search.resolvePlaceName.mockResolvedValue(
+        resolvePlaceNameOutcome({
+          candidates: outcome === 'answer' ? [{ id: FIXTURE_A, exact: true, score: 1 }] : [],
+          overflow: outcome === 'narrow',
+          areaMismatch: false,
+        }),
+      );
+      expect(await f.run()).toBe(true);
+      expect(f.repo.clearPlaceQa).not.toHaveBeenCalled();
+      expect(f.state.trace.route).toBe('place_qa');
+      expect(f.state.trace.placeQa).toMatchObject({ outcome });
+      expect(f.search.resolvePlaceName).toHaveBeenCalledWith('Bát Diệp', expect.anything());
+      expect((await f.rendered()).text.length).toBeGreaterThan(0);
+      if (outcome === 'narrow')
+        expect(f.state.trace.placeQa).toMatchObject({
+          pending: { questionMessageId: FIXTURE_A, createdAt: p.createdAt, expiresAt: p.expiresAt },
+        });
+    },
+  );
+  it.each(['price', 'hours', 'amenity'] as const)(
+    'referent name reply preserves %s semantics and original lifetime/source',
+    async (topic) => {
+      vi.spyOn(Date, 'now').mockReturnValue(now + 60_000);
+      const f = qaFixture();
+      const p = f.setPending('referent');
+      f.repo.markPlaceQa.mockResolvedValue(FIXTURE_C);
+      p.topic = topic;
+      p.args =
+        topic === 'hours'
+          ? { day: 'date', date: '2026-11-12', d: 4, tz: 'Asia/Ho_Chi_Minh' }
+          : topic === 'amenity'
+            ? { k: 'wifi' }
+            : {};
+      f.repo.findMessage.mockResolvedValue({
+        id: FIXTURE_A,
+        role: 'user',
+        text: 'Giá bao nhiêu?',
+        locale: 'vi',
+      });
+      f.input.text = 'Quán Sao Lạ';
+      // Two exact branches keep the pending state observable before selection.
+      f.search.resolvePlaceName.mockResolvedValue(
+        resolvePlaceNameOutcome({
+          candidates: [FIXTURE_A, FIXTURE_B].map((id) => ({ id, exact: true, score: 1 })),
+          overflow: false,
+          areaMismatch: false,
+        }),
+      );
+      await f.run();
+      expect(f.state.trace.placeQa).toMatchObject({
+        topic,
+        args: p.args,
+        outcome: 'choice',
+        pending: {
+          topic,
+          args: p.args,
+          questionMessageId: FIXTURE_A,
+          createdAt: p.createdAt,
+          expiresAt: p.expiresAt,
+        },
+      });
+      // A unique result must answer the original question too.
+      f.search.resolvePlaceName.mockResolvedValue(
+        resolvePlaceNameOutcome({
+          candidates: [{ id: FIXTURE_A, exact: true, score: 1 }],
+          overflow: false,
+          areaMismatch: false,
+        }),
+      );
+      await f.run();
+      expect(f.state.trace.placeQa).toMatchObject({ topic, args: p.args });
+      expect(f.state.trace.placeAnswerGroup).toMatchObject({ kind: 'answer' });
+    },
+  );
+  it('structured none near expiry cannot renew the deadline for later area refinement', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 30 * 60_000 - 1);
+    const f = qaFixture();
+    const p = f.setPending();
+    f.input.replyToMessageId = FIXTURE_B;
+    f.input.followUpOptionId = 'none';
+    await f.run();
+    const next = (f.state.trace.placeQa as { pending: typeof p }).pending;
+    expect(next).toMatchObject({ createdAt: p.createdAt, expiresAt: p.expiresAt });
+    clock.mockReturnValue(now + 30 * 60_000 + 1);
+    const later = qaFixture();
+    later.repo.latestAssistant.mockResolvedValue({
+      id: FIXTURE_C,
+      status: 'complete',
+      trace: { route: 'place_qa', placeQa: { pending: next } },
+    });
+    later.input.text = 'Phường Cầu Giấy, Hà Nội';
+    later.search.resolvePlaceName.mockResolvedValue(
+      resolvePlaceNameOutcome({
+        candidates: [],
+        overflow: false,
+        areaMismatch: false,
+      }),
+    );
+    await later.run();
+    expect(later.state.trace.placeQa).toMatchObject({ outcome: 'stale_choice' });
+    // An expired state may probe a genuinely new name, never the old source.
+    expect(later.search.resolvePlaceName).toHaveBeenCalledWith(later.input.text, expect.anything());
+    expect(later.search.placeFacts).not.toHaveBeenCalled();
   });
   it('typed ordinal requires confirmation; ambiguity retries once then clears', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(now);
