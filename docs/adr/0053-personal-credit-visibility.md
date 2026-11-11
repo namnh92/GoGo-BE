@@ -40,7 +40,7 @@ Hai route yêu cầu session hợp lệ và registered actor; guest/admin nhận
 Rate limit riêng 60/phút/actor. Hook chạy trước guards/validation đặt
 `Cache-Control: private, no-store` cho cả thành công và lỗi.
 
-Contract additive MINOR từ `9.3.0-alpha.1` thành `9.4.0-alpha.1`; sinh types bằng
+Contract additive MINOR từ `9.4.0-alpha.1` thành `9.5.0-alpha.1`; sinh types bằng
 `pnpm api:types`, kiểm version bằng tooling repo với bản spec trước sửa lưu
 ngoài worktree (không chạy git). `GET /me` thêm optional capability
 `capabilities.assistantCredits`; vắng hoặc false nghĩa là client không mở CTA.

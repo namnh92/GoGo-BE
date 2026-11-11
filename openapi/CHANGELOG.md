@@ -8,6 +8,23 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 9.5.0-alpha.1 — Personal credit balance and history (#832)
+
+MINOR: thêm `GET /me/credits` trả `balance`, `earned`, `spent`, `reserved`,
+`availableBalance`, `asOf`, `policyKey`; `GET /me/credits/ledger` trả `items`
+và `nextCursor`, 10 bản ghi/trang, cursor gắn với user. Mỗi bản ghi có `id`,
+`createdAt`, `delta`, `direction`, `eventKey`, `source.type`, có thể có `eventId`
+và `messageId` (chưa trả trong slice V). Chỉ đọc sổ cái hiện có, không tạo tài
+khoản hay sửa lệch số dư; chưa có tài khoản trả số dư 0 và lịch sử rỗng.
+`reserved` là 0, `policyKey` là `legacy_allowance_v1`; refund giảm `spent`,
+không tăng `earned`. Không đổi cấp credit hay cách tính phí hiện có (ADR-0053).
+
+Chỉ user đăng ký đang hoạt động; guest/staff nhận `USER_ONLY`. Flag độc lập
+`assistant_credits.display_enabled` mặc định off; tắt trả 404
+`CREDITS_DISPLAY_DISABLED`. `GET /me` thêm capability `assistantCredits`;
+thiếu hoặc false nghĩa là chưa khả dụng. Response và lỗi dùng
+`Cache-Control: private, no-store`; giới hạn 60 request/phút/actor.
+
 ## 9.4.0-alpha.1 — Non-consuming recovery verification (#845)
 
 MINOR: thêm `POST /auth/password-recovery/verify` nhận email/challengeId/code,

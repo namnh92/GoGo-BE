@@ -421,6 +421,8 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // `status`: terminal message status, or `reaped`.
   assistant_turns_total: ['status'],
   assistant_stops_total: [],
+  // GoGo-BE#832 — posted account/ledger mismatch; no labels.
+  assistant_credit_account_mismatch_total: [],
   // `rating`: up | down.
   assistant_feedback_total: ['rating'],
   // `outcome`: confirmed | dismissed | refused.
