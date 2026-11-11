@@ -719,11 +719,15 @@ by owner order O-7 (a), reviewed on the PR. Source of the mechanism: `astra-sugg
 Assistant place cards reuse `SearchService.placeDetail` on every read (including
 history and SSE replay). `facts.providerRating`, `providerRatingCount`, and
 `providerRatingSource: google` project its provider `rating`/`ratingCount` when
-a rating and Google provenance exist. Missing values omit the triplet. The
-existing place read maps `freshnessCheckedAt` to `facts.checkedAt`; it has no
-rating-specific expiry cutoff, so this projection introduces no new TTL.
-Google provenance already reconciles `place_sources`/`place_provider_sources`;
-see ADR-0020 and its amendments. No new provider call or persistent content.
+the rating is a finite number, including editor/seeded/CMS-link places without
+Google source rows. This matches PlaceSummary cards: use the stored provider
+rating and count with the existing number coercion and no additional rounding.
+An absent or non-finite rating omits the triplet. The existing place read maps
+`freshnessCheckedAt` to `facts.checkedAt`; it has no rating-specific expiry cutoff,
+so this projection introduces no new TTL.
+The projection does not require a `place_sources`/`place_provider_sources` row.
+See ADR-0020 and its amendments for historical stored provider facts. No new
+provider call or persistent content.
 
 Core rule 14 requires a visible Google mark and sample size, separately from
 GoGo's thresholded community rating. AI supplies neither rating; only validated

@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
+import { SearchService } from '../../search/application/search.service';
+import { AssistantCardHydrator } from '../application/card-hydrator.service';
 
 /**
  * GoGo-BE#713 — the GoGo AI contract, read from the published document the
@@ -188,6 +190,36 @@ describe('GoGo AI contract (GoGo-BE#713)', () => {
     expect(facts.properties!.providerRatingSource!.enum).toEqual(['google']);
     const plan = schema('AssistantPlanCard');
     expect(plan.required).toEqual(expect.arrayContaining(['planId', 'facts']));
+  });
+
+  it('emits the provider rating contract for a rated place without Google source rows', async () => {
+    const placeId = '1b2c3d4e-0000-4000-8000-000000000001';
+    const search = new SearchService(
+      {
+        placeDetail: async () => ({
+          id: placeId,
+          name: 'The Workshop Coffee',
+          status: 'published',
+          rating: '4.50',
+          rating_count: '2100',
+          gogo_rating_count: 0,
+          gogo_rating_mean: null,
+          sources: [],
+        }),
+      } as never,
+      {} as never,
+    );
+    const hydrator = new AssistantCardHydrator(search, {} as never, {} as never, {} as never);
+    const card = JSON.parse(JSON.stringify(await hydrator.placeCard(placeId)));
+    expect(card.facts).toMatchObject({
+      providerRating: 4.5,
+      providerRatingCount: 2100,
+      providerRatingSource: 'google',
+    });
+    const properties = schema('AssistantPlaceCard').properties!.facts!.properties!;
+    expect(typeof card.facts.providerRating).toBe(properties.providerRating!.type);
+    expect(Number.isInteger(card.facts.providerRatingCount)).toBe(true);
+    expect(properties.providerRatingSource!.enum).toContain(card.facts.providerRatingSource);
   });
 
   it('every proposal value says whether the user stated it or the assistant assumed it', () => {

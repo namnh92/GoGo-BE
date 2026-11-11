@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { PrivacyJobs } from '@gogo/modules';
-import { schema } from '@gogo/database';
 import { AssistantRepository } from '../../../libs/modules/assistant/infrastructure/assistant.repository';
 import { AssistantTurnRunner } from '../../../libs/modules/assistant/application/assistant-turn-runner.service';
 import {
@@ -307,14 +306,20 @@ describe('send, stream, stop', () => {
     expect(done.text).toContain('dữ liệu GoGo');
     // #834: attach provider facts from the current place read, including on
     // replay/history; the model output and stored card refs contain no ratings.
-    for (const placeId of Object.values(f.places)) {
-      await f.db.insert(schema.placeSources).values({
-        placeId,
-        provider: 'google',
-        externalId: `assistant-rating-${placeId}`,
-        attribution: 'Powered by Google',
-      });
-    }
+    // Seeded/editor places have stored ratings without Google source rows.
+    const sourceRows = await f.db.execute(sql`
+      select place_id from place_sources
+      where place_id in (${sql.join(
+        Object.values(f.places).map((id) => sql`${id}::uuid`),
+        sql`, `,
+      )})
+      union all
+      select place_id from place_provider_sources
+      where place_id in (${sql.join(
+        Object.values(f.places).map((id) => sql`${id}::uuid`),
+        sql`, `,
+      )})`);
+    expect(sourceRows.rows).toHaveLength(0);
     const reread = await waitTerminal(bob, conversationId, body.assistantMessage.id);
     for (const c of reread.cards) {
       expect(c.facts).toMatchObject({
