@@ -121,7 +121,7 @@ The old setup-only result is superseded. DEV ran both sides with Docker on 2026-
 
 | Evidence                                      | Base                                                                                                    | Head                                                                    |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| Tested source SHA / dirty snapshot digest     | `d2d41184` + overlay of 9 test files (clean otherwise; script refuses non-test changes)                 | `3fa56ecf` clean (diff sha256 `e3b0c442…` = empty)                      |
+| Tested source SHA / dirty snapshot digest     | `d2d41184` + overlay of 9 test files (clean otherwise; script refuses non-test changes)                 | `e8da1e33` clean (diff sha256 `e3b0c442…` = empty)                      |
 | Harness/overlay hashes                        | spec `9c504fcd`, cases `c8a3d100`, fixtures `789eee8c`, intents `48c1cc33`, support ×5 (`overlay.json`) | identical hashes (verified per file)                                    |
 | Vitest command exit                           | 1 (expected: incident + capability failures)                                                            | 0                                                                       |
 | Four incident IDs, symptom FAIL / PASS counts | 4 / 4 FAIL at symptom (reply asks for an area "Bạn muốn đi ở khu vực nào?" instead of the fact)         | 4 / 4 PASS                                                              |
@@ -129,7 +129,7 @@ The old setup-only result is superseded. DEV ran both sides with Docker on 2026-
 | Capability PASS / FAIL counts                 | 0 / 205                                                                                                 | 205 / 0                                                                 |
 | qa-vi-065-on: calls / attempts                | Capability measurement                                                                                  | 0 / 0 (jev_calls 0, haiku_calls 0, attempts 0)                          |
 | Full Layer A tests passed / failed / skipped  | 187 / 209 / 21 (21 = S3-only state/history/control tests, skipped by baseline mode)                     | 417 / 0 / 0                                                             |
-| JSON and log paths                            | `dev/test-evidence/be-864/r5/base/` (cases.json, vitest.json, test.log, overlay.json)                   | `dev/test-evidence/be-864/r5/head/` (cases.json, vitest.json, test.log) |
+| JSON and log paths                            | `dev/test-evidence/be-864/r6/base/` (cases.json, vitest.json, test.log, overlay.json)                   | `dev/test-evidence/be-864/r6/head/` (cases.json, vitest.json, test.log) |
 
 ## Local fix-round checks
 
@@ -671,3 +671,15 @@ message's `latest.locale` at both identity checks.
 
 Docker integration execution and base-code F-02 execution are **NOT RUN** here;
 DEV will run them. These checks do not establish integration or DEV acceptance.
+
+### DEV run of the Sol r5 round (2026-11-12, `2c3b068dff1691077af7e70254324f841fec9b88`)
+
+| Check                                                          | Result                                                                                                                                       |
+| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fence spec on `df134cf0` production code (spec copied in)      | see `fence-before-df134cf0.log`: 8 cells fail (SQL latch ×4, reaper flip ×2, English confirm ×2)                                             |
+| Fence spec on head                                             | 45 / 45 PASS                                                                                                                                 |
+| Integration, 13 assistant/place/privacy-export files @e8da1e33 | 621 PASS; only the two English-confirm cells failed (test used Vietnamese text with `en`), fixed in this commit and passing in the fence run |
+| Layer A head / base `d2d41184` @e8da1e33                       | 417/417; base incidents 4/4 FAIL at symptom, preservation 187/187 both                                                                       |
+| Build, full unit, api:check                                    | PASS                                                                                                                                         |
+
+Logs: GoGo workspace `dev/test-evidence/be-864/r6/`.
