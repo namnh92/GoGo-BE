@@ -278,13 +278,18 @@ export class SearchService implements PlaceFactsReader {
           identity_collision?: boolean;
         })[]) {
           const projected = projectPlaceFacts(row, now);
-          places.set(row.id, {
-            ...projected,
-            hasIdentityCollision: row.identity_collision === true,
-            ...(projected.available && row.card_detail
-              ? { card: placeCardFromDetail(this.projectPlaceDetail(row.card_detail), now) }
-              : {}),
-          });
+          places.set(
+            row.id,
+            projected.available
+              ? {
+                  ...projected,
+                  hasIdentityCollision: row.identity_collision === true,
+                  ...(row.card_detail
+                    ? { card: placeCardFromDetail(this.projectPlaceDetail(row.card_detail), now) }
+                    : {}),
+                }
+              : projected,
+          );
         }
         return freezeFactContext(places);
       });

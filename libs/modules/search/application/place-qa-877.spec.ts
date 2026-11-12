@@ -105,10 +105,43 @@ describe('GoGo-BE#877 shared PlaceDetail projection', () => {
       expect(facts).not.toHaveProperty(field);
     expect(facts.gogoRatingCount).toBe(4);
   });
-  it('does not hydrate closed/unpublished records even if a detail snapshot is present', async () => {
-    const f = fixture({ status: 'draft' });
-    const p = (await read(f)).places.get(FIXTURE_A)!;
-    expect(p.available).toBe(false);
-    expect(p.card).toBeUndefined();
+  it.each([
+    ['draft', false],
+    ['suspended', false],
+    ['archived', false],
+    ['published', true],
+  ] as const)(
+    'keeps the exact unavailable shape for status=%s, provider_closed=%s',
+    async (status, providerClosed) => {
+      const f = fixture({ status });
+      f.row.provider_closed = providerClosed;
+      for (const collision of [true, false]) {
+        f.row.identity_collision = collision;
+        expect((await read(f)).places.get(FIXTURE_A)).toStrictEqual({
+          id: FIXTURE_A,
+          available: false,
+          name: '',
+          facts: {},
+        });
+      }
+    },
+  );
+  it('keeps the exact unavailable shape for a missing record', async () => {
+    const f = fixture();
+    f.execute.mockResolvedValueOnce({ rows: [] });
+    expect((await read(f)).places.get(FIXTURE_A)).toStrictEqual({
+      id: FIXTURE_A,
+      available: false,
+      name: '',
+      facts: {},
+    });
+  });
+  it.each([true, false])('retains collision=%s for available candidates', async (collision) => {
+    const f = fixture();
+    f.row.identity_collision = collision;
+    expect((await read(f)).places.get(FIXTURE_A)).toMatchObject({
+      available: true,
+      hasIdentityCollision: collision,
+    });
   });
 });
