@@ -46,6 +46,10 @@ export const rooms = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     // Public share code — high entropy, no PII, expiring via expiresAt.
     code: text('code').notNull(),
+    invitationEpoch: bigint('invitation_epoch', { mode: 'bigint' }).notNull().default(0n),
+    automaticInvitesSuppressed: boolean('automatic_invites_suppressed').notNull().default(false),
+    legacyInvitesRevokedAt: timestamp('legacy_invites_revoked_at', { withTimezone: true }),
+    code6BackfillCompletedAt: timestamp('code6_backfill_completed_at', { withTimezone: true }),
     type: roomType('type').notNull(),
     status: roomStatus('status').notNull().default('draft'),
     decisionMode: decisionMode('decision_mode').notNull(),
@@ -67,6 +71,7 @@ export const rooms = pgTable(
     index('rooms_host_idx').on(t.hostUserId),
     index('rooms_status_idx').on(t.status),
     check('rooms_participant_count_min', sql`${t.participantCount} >= 2`),
+    check('rooms_invitation_epoch_nonnegative', sql`${t.invitationEpoch} >= 0`),
   ],
 );
 
@@ -189,6 +194,7 @@ export const roomInvites = pgTable(
       .references(() => rooms.id, { onDelete: 'cascade' }),
     // SHA-256 of the invite code — lookup by hash, plaintext shown once.
     codeHash: text('code_hash').notNull(),
+    invitationEpoch: bigint('invitation_epoch', { mode: 'bigint' }).notNull().default(0n),
     createdByMemberId: uuid('created_by_member_id').notNull(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
@@ -199,6 +205,7 @@ export const roomInvites = pgTable(
   (t) => [
     uniqueIndex('room_invites_code_hash_unique').on(t.codeHash),
     index('room_invites_room_idx').on(t.roomId),
+    check('room_invites_epoch_nonnegative', sql`${t.invitationEpoch} >= 0`),
   ],
 );
 

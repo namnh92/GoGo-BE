@@ -162,7 +162,9 @@ describe('ROOM_INVITE share link — the slug is the invite code', () => {
     expect(row!.targetId).toBe(room.id);
     // Review finding 1: the *entire* row, serialised, cannot recover the
     // credential — no plaintext, no URL that embeds it, no vendor URL column.
-    const wholeRow = JSON.stringify(row);
+    const wholeRow = JSON.stringify(row, (_key, value: unknown) =>
+      typeof value === 'bigint' ? value.toString() : value,
+    );
     expect(wholeRow).not.toContain(slug);
     expect(wholeRow).not.toContain(encodeURIComponent(slug));
     expect(wholeRow).not.toContain('deeplink_url');

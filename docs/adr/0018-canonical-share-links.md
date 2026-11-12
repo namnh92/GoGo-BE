@@ -121,3 +121,33 @@ place/{id}`; treat 404/410 as a "link no longer works" screen, not a crash;
 - Enabling per environment is two values: `SHARE_LINK_BASE_URL` (required to
   mint) and `TENJIN_TRACKING_URL_TEMPLATE` (optional). Staging/prod add rows to
   the GoGo-Infra manifest; no code changes.
+
+### Invite foundation amendment — GoGo-BE#861 I03 / #889 (2026-11-12)
+
+The approved #861 solution shape rev2 supersedes this ADR's invite assumptions:
+CODE6 is a separate six-digit credential, never a replacement for `rooms.code`;
+TOKEN128 stays a distinct 128-bit credential. The narrow owner exception permits
+CODE6 and the token in the canonical invite **path**
+`/l/room/{hostShareId}/{inviteToken}`. It supersedes only the conflicting invite
+entropy/path restrictions in the original ADR and workspace security rule.
+It does not permit credentials in query strings, logs, traces, analytics,
+replay plaintext, or unrelated URLs. No ROOM_INVITE credential, URL or digest
+may be sent to Tenjin. Privacy enforcement and the new parser are separate
+slices; this amendment is not evidence they are deployed.
+
+`hostShareId` is an independent random 128-bit public pseudonym. Its stability
+lets recipients correlate links from the same host. It is neither authorization
+nor extra CODE6 entropy, and no alias-to-profile lookup endpoint is provided.
+New links snapshot the alias and invitation epoch. Existing rows remain LEGACY;
+no plaintext token or URL is reconstructed/backfilled.
+
+Owner decision #882 sets **new invite-link TTL to 24 hours** (PR #886 is pending
+at this slice's baseline). I03 does not change token issuer behavior or depend
+on that PR; it preserves stored expiry exactly and never assumes seven days.
+CODE6's independent maximum remains 48 hours, bounded further by room expiry.
+
+[I03 schema, internal API, key rotation and rollback](0056-invite-code-foundation.md)
+defines the expansion. CODE6/revoke-all and HOST_V1 issuance remain off until the
+later slices supply their gates. Historical hash mappings survive ordinary
+expiry/revoke for future authenticated re-entry, subject to room/privacy
+retention; CODE6 reuse is never a historical re-entry locator.

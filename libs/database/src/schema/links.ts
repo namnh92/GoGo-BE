@@ -1,4 +1,15 @@
-import { index, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import {
+  bigint,
+  check,
+  index,
+  pgEnum,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from 'drizzle-orm/pg-core';
 import { users } from './identity';
 import { roomInvites } from './rooms';
 
@@ -34,6 +45,9 @@ export const shareLinks = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     /** SHA-256 hex of the slug. Never the slug. */
     slugHash: text('slug_hash').notNull(),
+    pathVersion: text('path_version').notNull().default('LEGACY'),
+    hostShareId: text('host_share_id'),
+    invitationEpoch: bigint('invitation_epoch', { mode: 'bigint' }).notNull().default(0n),
     type: shareLinkType('type').notNull(),
     /**
      * What the link points at: `rooms.id` for ROOM_INVITE, `plans.id`,
@@ -69,6 +83,15 @@ export const shareLinks = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    check('share_links_epoch_nonnegative', sql`${t.invitationEpoch} >= 0`),
+    check(
+      'share_links_path_metadata',
+      sql`(
+      (${t.pathVersion} = 'LEGACY' and ${t.hostShareId} is null) or
+      (${t.pathVersion} = 'HOST_V1' and ${t.type} = 'ROOM_INVITE' and ${t.inviteId} is not null
+        and ${t.hostShareId} is not null and ${t.hostShareId} ~ '^[A-Za-z0-9_-]{21}[AQgw]$')
+    )`,
+    ),
     uniqueIndex('share_links_slug_hash_unique').on(t.slugHash),
     index('share_links_target_idx').on(t.type, t.targetId),
     index('share_links_creator_idx').on(t.createdByUserId),
