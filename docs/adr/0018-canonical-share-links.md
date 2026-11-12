@@ -96,7 +96,9 @@ follows the environment's _current_ template, not the one at mint time.
 
 ## Consequences
 
-- A ROOM_INVITE share link is an invite: it follows the invite TTL (7 days),
+- A ROOM_INVITE share link is an invite: it follows the invite TTL (24 hours for new invites, per
+  GoGo-BE#882 / owner decision 2026-11-12; existing invites retain their stored
+  `expiresAt` without a backfill),
   `maxUses`, and the room's joinable states; revoking either revokes both.
 - Changing attribution vendor touches the adapter, the template variable and
   two columns. Slugs, canonical URLs, `DeepLinkRouter` and joins do not move.

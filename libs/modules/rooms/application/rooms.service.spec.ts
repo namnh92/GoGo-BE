@@ -127,6 +127,66 @@ async function codeOf(run: Promise<unknown>): Promise<string> {
   throw new Error('expected a rejection');
 }
 
+describe('RoomsService invite lifetime (GoGo-BE#882, FR-ROOM-009)', () => {
+  it('creates an invite expiring exactly 24 hours after issuance', async () => {
+    const now = new Date('2026-11-12T12:00:00.000Z');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(now);
+    try {
+      const createInvite = vi.fn(async (input: { expiresAt: Date; maxUses?: number }) => ({
+        id: 'invite-24h',
+        ...input,
+      }));
+      const service = new RoomsService(
+        { createInvite } as unknown as RoomsRepository,
+        {
+          requireHost: vi.fn(async () => ({
+            room: { status: 'collecting' },
+            member: { id: 'host-member' },
+          })),
+        } as unknown as RoomPolicy,
+        { hashOpaqueToken: (code: string) => `hash:${code}` } as unknown as TokenService,
+        {} as IdentityRepository,
+        {} as SessionRevocationService,
+        {} as RoomEventBus,
+      );
+      const result = await service.createInvite(
+        { type: 'user', id: 'host-user', sessionId: 'host-session' },
+        ROOM_ID,
+        3,
+      );
+      const expiresAt = new Date('2026-11-13T12:00:00.000Z');
+      expect(createInvite).toHaveBeenCalledWith({
+        roomId: ROOM_ID,
+        codeHash: `hash:${result.code}`,
+        createdByMemberId: 'host-member',
+        expiresAt,
+        maxUses: 3,
+      });
+      expect(result.expiresAt).toBe(expiresAt.toISOString());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('honours a pre-existing seven-day stored expiry after the first 24 hours', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-13T12:00:01.000Z'));
+    try {
+      const { service, repo } = serviceWith({
+        roomStatus: ['collecting'],
+        invite: { expiresAt: new Date('2026-11-19T12:00:00.000Z') },
+      });
+      await expect(service.openInvite('legacy-code')).resolves.toHaveProperty('room.id', ROOM_ID);
+      expect((await repo.findInviteByHash('hash:legacy-code'))?.expiresAt.toISOString()).toBe(
+        '2026-11-19T12:00:00.000Z',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('RoomsService.openInvite + admit (GoGo-BE#592, #605)', () => {
   it('refuses a room that no longer takes members without spending a use', async () => {
     const { service, consumeInvite } = serviceWith({ roomStatus: ['ready'] });
