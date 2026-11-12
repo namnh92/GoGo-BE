@@ -9602,7 +9602,13 @@ paths:
       operationId: cmsMergePlaces
       tags: [cms]
       summary: 'Editor: merge a duplicate into this canonical place'
-      description: References (sources, media, prices, reviews, seeds) move over; the duplicate is archived, never deleted.
+      description: >
+        References (sources, media, prices, reviews, seeds, curated aliases) move over;
+        the duplicate is archived, never deleted. Alias rows retain their provenance;
+        on normalized collisions the canonical alias and its provenance win. A union
+        over 20 normalized aliases rejects the entire merge with 409
+        PLACE_ALIAS_LIMIT_EXCEEDED; editors must reconcile aliases before retrying.
+        A successful merge advances the canonical updatedAt version.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       requestBody:
@@ -9617,6 +9623,7 @@ paths:
       responses:
         '201': { description: Merged; audited }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
 
   /cms/search-analytics:
     get:

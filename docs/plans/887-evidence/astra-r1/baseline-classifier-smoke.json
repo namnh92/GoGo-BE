@@ -1,0 +1,18 @@
+[
+  {
+    "case": "qualifying",
+    "exit": 0
+  },
+  {
+    "case": "setup-blocked",
+    "exit": 1
+  },
+  {
+    "case": "unexpected-pass",
+    "exit": 1
+  },
+  {
+    "case": "missing",
+    "exit": 1
+  }
+]

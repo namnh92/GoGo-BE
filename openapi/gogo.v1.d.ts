@@ -4322,7 +4322,7 @@ export interface paths {
         put?: never;
         /**
          * Editor: merge a duplicate into this canonical place
-         * @description References (sources, media, prices, reviews, seeds) move over; the duplicate is archived, never deleted.
+         * @description References (sources, media, prices, reviews, seeds, curated aliases) move over; the duplicate is archived, never deleted. Alias rows retain their provenance; on normalized collisions the canonical alias and its provenance win. A union over 20 normalized aliases rejects the entire merge with 409 PLACE_ALIAS_LIMIT_EXCEEDED; editors must reconcile aliases before retrying. A successful merge advances the canonical updatedAt version.
          */
         post: operations["cmsMergePlaces"];
         delete?: never;
@@ -20555,6 +20555,7 @@ export interface operations {
                 content?: never;
             };
             400: components["responses"]["BadRequest"];
+            409: components["responses"]["Conflict"];
         };
     };
     cmsSearchAnalytics: {

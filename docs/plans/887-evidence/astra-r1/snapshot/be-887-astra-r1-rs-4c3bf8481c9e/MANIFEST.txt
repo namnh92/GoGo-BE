@@ -1,0 +1,21 @@
+# review_snapshot_manifest v1
+root: /Users/maxnguyen/MyWorks/GoGo/dev/worktrees/be-887
+mode: git
+base: 3d296efd91469c227bd8fcc5bad04a9f723b8563
+branch: feature/GOGO-887-place-aliases
+scope: libs/modules/assistant/application/place-qa.service.ts libs/modules/assistant/application/place-qa-s5.service.spec.ts libs/modules/cms/application/cms-catalog.service.ts libs/modules/cms/application/cms-catalog-merge.service.spec.ts apps/api/test/place-aliases-s5.int.spec.ts openapi/gogo.v1.yaml openapi/gogo.v1.d.ts scripts/eval/place-qa-s5-review-base.sh docs/plans/887-s5-validation.md
+exclude: .git .git/* */.git/* node_modules/* */node_modules/* .env .env.* */.env */.env.* *.p8 *.pem *.key *.tfstate *.tfstate.* *.tfvars *secrets.manifest* *google-services.json *firebase-adminsdk* auth.json *credentials*.json .DS_Store */.DS_Store dev/test-evidence/snapshots/* docs/plans/887-evidence/*
+created: 2026-11-12T15:07:57Z
+label: be-887-astra-r1
+entries: 9
+review_snapshot_id: rs-4c3bf8481c9e
+--
+T	644	1fc14c780b82ac9e730beb8a38944e8b3239047ab363be57a151848d94d6a48b	openapi/gogo.v1.yaml	
+T	644	4b5164de85c81a054dfe2cb9b7222a0bafc81ef7328bb5d8caa5733120fffe97	docs/plans/887-s5-validation.md	
+T	644	53d596a4c1b6000cd85d0e1901c1cf812e6054e16a6fcf87f36642524c622cce	libs/modules/assistant/application/place-qa.service.ts	
+T	644	cd3a7378a4e23088f49a7421fc28e9f7e415bf1ee1c1f3ab651d5606d79fa195	libs/modules/cms/application/cms-catalog.service.ts	
+T	644	ead3309f5bec2ff6c804b765c79ebb5785b8bca56c55cc20a6d7411446be81e6	openapi/gogo.v1.d.ts	
+T	644	f47fad2b023e2eb248cc74063f57583e4586c3f9f2c18b4c0d9acbef62e641e0	apps/api/test/place-aliases-s5.int.spec.ts	
+T	644	fd902fab99a3f3a85599119ec146a2e4429075ef680a7270906c6de33be1e24a	libs/modules/cms/application/cms-catalog-merge.service.spec.ts	
+U	644	458ea67616c47c0046270b2c20a4cb662a08f1d86a547b1ef666ce3dcd2d7bb0	scripts/eval/place-qa-s5-review-base.sh	
+U	644	48469dcf93bdf079cd760ba62030dea1778aa030d0fd5ce5097c08c856920910	libs/modules/assistant/application/place-qa-s5.service.spec.ts	

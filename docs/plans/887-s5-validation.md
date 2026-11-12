@@ -108,3 +108,74 @@ External evidence root: `/Users/maxnguyen/MyWorks/GoGo/dev/test-evidence/be-887/
 - Baseline proof: `base/base.sha` records `50c6691a178917d7ea91fcede8fe07c2c59994d3`; `base/install.exit=0`, `base/test.exit=1`, and `base/proof.exit=0`. `base/alias-proof.json` reports `FAIL_BEFORE_VERIFIED`, with **24/24 FAIL_BEFORE** rows (12 alias IDs × resolver/public). Detailed execution evidence is in `base/test.log` and `base/vitest.json`; copied harness/corpus identity is recorded in `base/overlay.sha256`.
 
 These results supersede the earlier pending-DEV status for baseline proof and the pre-correction candidate run only. The baseline proof binds to its archived overlay; the timestamp assertion edit changes the candidate harness identity. Preserve the original evidence and capture fresh candidate results and overlay hashes when completing verification. No 30/30 PASS-after or DEV acceptance is claimed by this assertion-only correction.
+
+## Astra PR #901 round 1 fixes — 2026-11-12 (Sol)
+
+This section supersedes earlier candidate-state statements **for these two findings only**. Owner explicitly authorized code/test fixes and local gates, with no commit. Detected and unchanged Git HEAD: `3d296efd91469c227bd8fcc5bad04a9f723b8563`. No migration, provider/model call, deployment, feature-flag change, push or commit is part of this correction. Existing S3/S4 oracles and the S5 golden corpus are unchanged.
+
+### Causes and corrections
+
+- **F-01:** the pending identity check reads canonical names, while the subsequent exact resolver also accepts aliases. A bare alias of the pending candidate therefore entered fresh-name handling, reset the topic/arguments/comparison, and answered. Before that reset, intersect the existing resolver's exact results with the available candidates of a live `choice`/`confirm`. Re-ask confirmation (or the shared-alias choice) using the original question and resumed topic, arguments, slots and expiry. The existing resolver read is reused; the referent/name-supply and area-refinement paths retain their existing semantics. Unrelated exact names still start a fresh overview. A bare pending alias does not confirm terminally.
+- **F-02:** `mergePlaces` omitted alias references. Under its existing ordered place locks and transaction, read the two normalized sets, check their union, move non-colliding **whole rows**, and remove the duplicate's colliding rows. Staff attribution, creation time, source reference/type and collection time survive the move. On a normalized collision, the canonical alias spelling **and its original provenance** win. Advance canonical `updatedAt` by at least one millisecond, so a previously loaded alias editor cannot overwrite the union. Extend `place.merged` audit with before/duplicate/after counts and sorted-set SHA-256 digests; no raw alias or source text is added to that audit.
+- **Overflow decision:** at most **20 distinct normalized aliases after merge**. A union of 21 or more rejects the entire transaction with HTTP `409 PLACE_ALIAS_LIMIT_EXCEEDED`; neither place, alias set, version, other reference, merge audit nor outbox changes. The editor must reconcile aliases and retry. No truncation. OpenAPI documents this existing merge operation's additional conflict outcome and regenerated types include 409. API version remains this PR's `10.3.0-alpha.1`; no DTO or request schema changes.
+
+### Regression cells
+
+All venue identities are fictional but use plausible merchant names, translations, former names, abbreviations and local nicknames. Limit cases use actual former-name strings, not numbered filler aliases.
+
+| Cell                    | Realistic flow                                                                          | Required observation                                                                                                                                                                         |
+| ----------------------- | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R1-F01-address          | `Lakeside Coffe ở đâu?` → `Lakeside Coffee` → explicit confirmation                     | Alias re-asks; original address question survives; final answer, same venue; SSE/history agree; zero models                                                                                  |
+| R1-F01-hours            | `Lakeside Coffe mở cửa ngày mai?` → alias → explicit confirmation                       | Re-asks with original day/date/timezone arguments and expiry; final `no_data` because this fixture deliberately has no verified hours                                                        |
+| R1-F01-compare          | Bakery versus misspelled coffee, cheaper-place question → alias → explicit confirmation | Re-asks with both slots, resolved bakery partner, price topic and original expiry; final two-place `no_data` because neither fixture has verified prices                                     |
+| R1-F01-shared (unit)    | Two branches share a canonical name and an alias; ask address then type alias           | Both pending branches and original question remain; never starts an overview                                                                                                                 |
+| R1-F01-unrelated (unit) | Coffee confirmation → unrelated bakery alias                                            | Existing fresh overview behavior remains                                                                                                                                                     |
+| R1-F02-transfer         | Merchant's duplicate has a former name plus a normalized collision                      | Unique alias resolves canonical after merge; all provenance fields preserved; canonical collision wins; duplicate archived; old editor version conflicts; audit contains only counts/digests |
+| R1-F02-bound20          | 19 canonical aliases plus overlapping/unique duplicate aliases                          | 20 distinct aliases retained; merge succeeds                                                                                                                                                 |
+| R1-F02-bound21          | 20 canonical aliases plus overlapping/unique duplicate aliases                          | 409; both sets, versions, publication, media, merge audit and outbox unchanged                                                                                                               |
+
+Unit regression files: new `place-qa-s5.service.spec.ts` (five cells), extended `cms-catalog-merge.service.spec.ts` (three new cells). Integration: six additional cells in `place-aliases-s5.int.spec.ts` (36 total with the original 30). Address/hour/compare cells exercise public send → SSE → history and the final explicit confirmation, using the real resolver SQL and zero-model guard.
+
+### Local evidence and gates
+
+Evidence: `docs/plans/887-evidence/astra-r1/`. `unit-before-head.txt` records the detected SHA. For the final FAIL-before run, both changed production files were temporarily restored from `git show 3d296efd:<path>`, verified equal to that commit with `git diff --exit-code`, then restored in a Python `finally` block. Other production files were unchanged. `unit-before-restored.sha256` records the restored fix bytes. No Git index or HEAD mutation was used. The same final regression tests ran against buggy and fixed code.
+
+- **FAIL-before:** `unit-before-final.exit=1`, six failed / eight passed. F-01's three question cells reached `answer` instead of `confirm`; shared-alias pending lost the question identity. F-02's transfer assertion found no alias UPDATE; the overflow merge resolved instead of rejecting. These are behavioral/transaction-boundary failures, not setup failures.
+- **PASS-after:** `focused-final.exit=0`, **218/218** across six files: QA S3/S4/S5, CMS merge, alias domain and alias contract. The eight new tests also pass. `regression-pairs.json` matches all six baseline failures to the passing final test titles. Original S3/S4 tests were not edited (`frozen-oracles.exit=0`).
+- Initial development gate failures are retained under the non-`final` log names. An early alias lookup near legacy controls disturbed existing control/area/referent behavior; the final fix reuses the already existing lookup and applies only to live name choices/confirmations. The final focused oracle passes unchanged. An integration fixture initially used media API fields instead of the DB `storageKey`; that fixture was corrected before final validation.
+- `candidate-files.sha256` binds the executable source/tests/contract/runner used for final validation. `source-identity-final.exit` must be 0 after the final check. The final review snapshot covers the complete correction, with generated evidence explicitly excluded to avoid self-referential hashes.
+
+| Gate                                                      | Exit  | Result                                                                                                           |
+| --------------------------------------------------------- | ----- | ---------------------------------------------------------------------------------------------------------------- |
+| Focused units, six files                                  | 0     | 218 passed                                                                                                       |
+| Full units (`pnpm test`)                                  | 1     | 5,224 passed, one skipped; one suite BLOCKED by `listen EPERM` in existing `apps/api/src/sentry-request.spec.ts` |
+| `pnpm typecheck`                                          | 0     | All eight packages passed; sandbox cache-write warnings only                                                     |
+| `pnpm lint`                                               | 0     | Full repository lint passed; touched TypeScript files also passed a final focused lint                           |
+| Prettier, touched supported files including this document | 0     | Formatted; shell runner passed `bash -n` (Prettier has no shell parser)                                          |
+| `pnpm check:boundaries`                                   | 0     | No package boundary violations                                                                                   |
+| `pnpm api:types` / `pnpm api:check`                       | 0 / 0 | Generated contract parity                                                                                        |
+| `bash -n scripts/eval/place-qa-s5-review-base.sh`         | 0     | Syntax valid                                                                                                     |
+| Baseline classifier smoke                                 | 0     | Four classifier-only cases: qualifying, setup-blocked, unexpected-pass, missing; not DEV proof                   |
+| Local S5 integration                                      | 1     | **BLOCKED** at Testcontainers startup; 36 skipped, no DEV PASS/FAIL claim                                        |
+
+### DEV execution required
+
+DEV runs integration outside this sandbox, with Docker/Testcontainers or the existing `ASSISTANT_TEST_DATABASE_URL` fixture mechanism. Use a fresh directory. The baseline helper archives **exactly `3d296efd`**, overlays **only the current S5 integration test**, and installs that archived head's locked dependencies. It does not copy candidate production, configuration, schema or migrations; the detected head already owns the S5 alias table. It selects just the six round-1 cells.
+
+```bash
+cd /Users/maxnguyen/MyWorks/GoGo/dev/worktrees/be-887
+r1_evidence=/Users/maxnguyen/MyWorks/GoGo/dev/test-evidence/be-887/astra-r1
+mkdir -p "$r1_evidence"
+bash scripts/eval/place-qa-s5-review-base.sh "$r1_evidence/base" \
+  > "$r1_evidence/base-runner.log" 2>&1
+r1_baseline_exit=$?
+printf '%s\n' "$r1_baseline_exit" > "$r1_evidence/base-runner.exit"
+pnpm exec vitest run --project integration apps/api/test/place-aliases-s5.int.spec.ts \
+  --reporter=default --reporter=json --outputFile="$r1_evidence/candidate.vitest.json" \
+  > "$r1_evidence/candidate.log" 2>&1
+r1_candidate_exit=$?
+printf '%s\n' "$r1_candidate_exit" > "$r1_evidence/candidate.exit"
+shasum -a 256 apps/api/test/place-aliases-s5.int.spec.ts > "$r1_evidence/candidate-overlay.sha256"
+```
+
+Required baseline evidence: `base.sha=3d296efd91469c227bd8fcc5bad04a9f723b8563`, `install.exit=0`, `test.exit=1`, `proof.exit=0`, runner exit **0** (unlike the older S5 baseline helper, this helper returns proof status). `review-proof.json` must report `FAIL_BEFORE_VERIFIED`: three F-01 cells, transfer and bound21 each fail at their single `SYMPTOM` assertion, while bound20 is `PASS_PRESERVED`. Admission/setup/skipped/missing/duplicate/incorrect-assertion failures do not qualify. Required candidate evidence: exit 0, all **36/36** cells pass, including the matching five formerly failing cells and preserved bound20; overlay hash equals the baseline overlay hash. Run the full units on DEV too to cover the sandbox's HTTP-listen limitation. No DEV acceptance is claimed until these commands produce that evidence on the identified correction snapshot.

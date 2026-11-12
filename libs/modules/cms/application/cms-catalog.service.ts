@@ -2745,6 +2745,43 @@ export class CmsCatalogService {
     }
     await this.db.transaction(async (tx) => {
       await this.dedup.lockPlaces(tx, [canonicalId, duplicateId]);
+      // Both place locks also serialize CMS alias replacement. Refuse overflow
+      // before any mutation: editors must reconcile the set before retrying.
+      const aliasRows = (
+        await tx.execute(sql`
+        select place_id, alias_normalized from place_aliases
+        where place_id in (${canonicalId}::uuid, ${duplicateId}::uuid)
+      `)
+      ).rows as { place_id: string; alias_normalized: string }[];
+      const canonicalAliases = aliasRows
+        .filter((a) => a.place_id === canonicalId.toLowerCase())
+        .map((a) => a.alias_normalized);
+      const duplicateAliases = aliasRows
+        .filter((a) => a.place_id === duplicateId.toLowerCase())
+        .map((a) => a.alias_normalized);
+      const mergedAliases = [...new Set([...canonicalAliases, ...duplicateAliases])];
+      if (mergedAliases.length > 20)
+        throw AppError.conflict(
+          'PLACE_ALIAS_LIMIT_EXCEEDED',
+          'Merge would exceed 20 aliases; reconcile aliases before retrying',
+        );
+      const aliasSummary = (keys: string[]) => ({
+        count: keys.length,
+        digest: createHash('sha256')
+          .update(JSON.stringify([...keys].sort()))
+          .digest('hex'),
+      });
+      // Move the entire row so staff/time/source provenance survives. On a
+      // normalized collision the canonical row (including its evidence) wins.
+      await tx.execute(sql`
+        update place_aliases moving set place_id = ${canonicalId}::uuid
+        where moving.place_id = ${duplicateId}::uuid and not exists (
+          select 1 from place_aliases keep where keep.place_id = ${canonicalId}::uuid
+            and keep.alias_normalized = moving.alias_normalized
+        )
+      `);
+      await tx.execute(sql`delete from place_aliases where place_id = ${duplicateId}::uuid`);
+
       const identities = await tx.execute(sql`
         select external_id from place_provider_sources
           where provider = 'google_places' and place_id in (${canonicalId}::uuid, ${duplicateId}::uuid)
@@ -2846,6 +2883,11 @@ export class CmsCatalogService {
             or (canonical_place_id = ${duplicateId}::uuid and legacy_place_id = ${canonicalId}::uuid))
       `);
 
+      // A form loaded before the merge must not overwrite the combined set.
+      await tx.execute(sql`
+        update places set updated_at = greatest(clock_timestamp(), updated_at + interval '1 millisecond')
+        where id = ${canonicalId}::uuid
+      `);
       await tx
         .update(schema.places)
         .set({ status: 'archived', updatedAt: sql`now()` })
@@ -2856,7 +2898,14 @@ export class CmsCatalogService {
         action: 'place.merged',
         resourceType: 'place',
         resourceId: canonicalId,
-        diff: { duplicateId },
+        diff: {
+          duplicateId,
+          aliases: {
+            before: aliasSummary(canonicalAliases),
+            duplicate: aliasSummary(duplicateAliases),
+            after: aliasSummary(mergedAliases),
+          },
+        },
       });
       // Both sides changed: one gained the references, the other left the
       // catalogue. Consumers are idempotent (PI-BE-010).

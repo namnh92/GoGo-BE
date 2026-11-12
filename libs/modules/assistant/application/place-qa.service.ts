@@ -850,6 +850,25 @@ export class PlaceQaService {
             deadlineAt,
           });
           signal.throwIfAborted();
+          // The resolver's exact channel includes curated aliases. An alias
+          // of a pending candidate is still a bare pending name: re-ask before
+          // fresh-name handling can reset the question, arguments or slots.
+          const pendingIds =
+            p.kind === 'choice' || p.kind === 'confirm'
+              ? candidates.filter(
+                  (id) =>
+                    facts?.places.get(id)?.available &&
+                    fresh.candidates.some((c) => c.id === id && c.exact),
+                )
+              : [];
+          if (pendingIds.length) {
+            await clarify(
+              pendingIds.length === 1 ? 'confirm' : 'choice',
+              pendingIds,
+              p.questionMessageId,
+            );
+            return true;
+          }
           if (fresh.candidates.some((c) => c.exact)) {
             trace!.class = 'name_only';
             if (p.kind !== 'referent') {

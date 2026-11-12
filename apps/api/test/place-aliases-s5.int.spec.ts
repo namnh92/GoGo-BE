@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { schema } from '@gogo/database';
 import { ASSISTANT_LLM, type AssistantLlmPort, type DecisionProviderPort } from '@gogo/providers';
@@ -329,4 +329,288 @@ describe('S5 CMS atomic editorial replacement', () => {
       (await f.db.execute(sql`select * from place_aliases where place_id=${id}::uuid`)).rows,
     ).toEqual([]);
   });
+});
+
+// Astra round 1 cells: keep the S4 oracle and the original S5 golden rows intact.
+describe('S5 Astra round 1 regressions', () => {
+  async function turn(token: string, cid: string, text: string, extra: object = {}) {
+    const sent = await f.inject({
+      method: 'POST',
+      url: `/v1/assistant/conversations/${cid}/messages`,
+      token,
+      headers: { 'idempotency-key': randomUUID() },
+      payload: { text, ...extra },
+    });
+    expect(sent.statusCode, 'BLOCKED: conversation admission').toBe(202);
+    const mid = sent.json().assistantMessage.id;
+    const stream = await f.sse(`/v1/assistant/conversations/${cid}/messages/${mid}/stream`, token);
+    expect(stream.status, 'BLOCKED: SSE transport').toBe(200);
+    const frames = parseSse(stream.body);
+    expect(
+      frames.some((x) => x.event === 'error'),
+      'BLOCKED: turn execution',
+    ).toBe(false);
+    const stored = await f.app.get(AssistantRepository).findMessageById(mid);
+    const qa = stored?.trace?.placeQa as {
+      outcome: string;
+      topic: string;
+      args: unknown;
+      pending?: {
+        kind: string;
+        topic: string;
+        args: unknown;
+        questionMessageId: string;
+        createdAt: string;
+        expiresAt: string;
+        slots: unknown[];
+        activeSlot: number;
+      };
+    };
+    const history = await f.inject({
+      method: 'GET',
+      url: `/v1/assistant/conversations/${cid}/messages?limit=50`,
+      token,
+    });
+    expect(history.statusCode).toBe(200);
+    const message = history.json().items.find((m: { id: string }) => m.id === mid);
+    const groups = frames.filter((x) => x.event === 'follow_ups').flatMap((x) => x.data.groups);
+    expect(message.followUps).toEqual(groups);
+    expect(message.text).toBe(
+      frames
+        .filter((x) => x.event === 'text_delta')
+        .map((x) => x.data.delta)
+        .join(''),
+    );
+    return { mid, qa, groups, message };
+  }
+  it.each([
+    ['address', 'Lakeside Coffe ở đâu?'],
+    ['hours', 'Lakeside Coffe mở cửa ngày mai?'],
+    ['compare', 'Tiệm Bánh An Nhiên với Lakeside Coffe quán nào rẻ hơn?'],
+  ])(
+    'F-01 %s: pending alias re-asks before answering the original question',
+    async (_cell, question) => {
+      modelCalls = 0;
+      const token = await f.register(`s5-r1-${randomUUID()}@example.test`);
+      const conversation = await f.inject({
+        method: 'POST',
+        url: '/v1/assistant/conversations',
+        token,
+        payload: { title: 'Pending alias' },
+      });
+      expect(conversation.statusCode, 'BLOCKED: conversation admission').toBe(201);
+      const cid = conversation.json().id;
+      const first = await turn(token, cid, question);
+      expect(first.qa.outcome, 'BLOCKED: typo must establish pending confirmation').toBe('confirm');
+      const reply = await turn(token, cid, 'Lakeside Coffee');
+      expect(reply.qa.outcome, 'SYMPTOM: bare pending alias must re-ask confirmation').toBe(
+        'confirm',
+      );
+      expect(reply.qa.pending).toMatchObject({
+        questionMessageId: first.qa.pending!.questionMessageId,
+        topic: first.qa.pending!.topic,
+        args: first.qa.pending!.args,
+        slots: first.qa.pending!.slots,
+        activeSlot: first.qa.pending!.activeSlot,
+        createdAt: first.qa.pending!.createdAt,
+        expiresAt: first.qa.pending!.expiresAt,
+      });
+      expect(reply.groups.some((g: { field: string }) => g.field === 'place_confirm')).toBe(true);
+      const option = reply.groups.find((g: { field: string }) => g.field === 'place_confirm')
+        .options[0];
+      const done = await turn(token, cid, option.text, {
+        replyToMessageId: reply.mid,
+        followUpOptionId: option.id,
+      });
+      expect(done.qa.topic).toBe(first.qa.topic);
+      expect(done.qa.args).toEqual(first.qa.args);
+      expect(done.qa.outcome).toBe(_cell === 'address' ? 'answer' : 'no_data');
+      expect([undefined, 'topic']).toContain(done.qa.pending?.kind);
+      expect(done.message.cards.map((c: { placeId: string }) => c.placeId)).toEqual(
+        _cell === 'compare' ? [ids['bakery'], ids['coffee']] : [ids['coffee']],
+      );
+      expect(modelCalls).toBe(0);
+    },
+  );
+
+  const merge = (canonicalId: string, duplicateId: string) =>
+    f.inject({
+      method: 'POST',
+      url: `/v1/cms/places/${canonicalId}/merge`,
+      token: editor,
+      payload: { duplicateId },
+    });
+  const aliasRows = async (id: string) =>
+    (await f.db.select().from(schema.placeAliases).where(eq(schema.placeAliases.placeId, id))).sort(
+      (a, b) => a.aliasNormalized.localeCompare(b.aliasNormalized),
+    );
+  const digest = (keys: string[]) =>
+    createHash('sha256')
+      .update(JSON.stringify([...keys].sort()))
+      .digest('hex');
+
+  it('F-02 transfer: merge retains resolution, provenance, canonical collisions, version and private audit', async () => {
+    const canonical = await place('Cà Phê Vườn Ban Mai');
+    const duplicate = await place('Vườn Ban Mai Coffee');
+    expect(
+      (
+        await patch(canonical, {
+          aliases: ['Morning Garden Coffee'],
+          aliasProvenance: evidence,
+          expectedUpdatedAt: await version(canonical),
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await patch(duplicate, {
+          aliases: ['morning garden coffee', 'Cafe Vườn Sớm'],
+          aliasProvenance: {
+            ...evidence,
+            sourceReference: 'Historical menu supplied by the merchant',
+          },
+          expectedUpdatedAt: await version(duplicate),
+        })
+      ).statusCode,
+    ).toBe(200);
+    const kept = await aliasRows(canonical);
+    const moved = (await aliasRows(duplicate)).find((a) => a.aliasNormalized === 'cafe vuon som')!;
+    const before = await version(canonical);
+    expect((await merge(canonical, duplicate)).statusCode).toBe(201);
+    expect(
+      (await detail(canonical)).json().aliases,
+      'SYMPTOM: merged aliases must remain on the canonical place',
+    ).toEqual(['Cafe Vườn Sớm', 'Morning Garden Coffee']);
+    expect(await aliasRows(canonical)).toEqual([{ ...moved, placeId: canonical }, ...kept]);
+    expect(await aliasRows(duplicate)).toEqual([]);
+    expect((await detail(duplicate)).json().status).toBe('archived');
+    expect(Date.parse(await version(canonical))).toBeGreaterThan(Date.parse(before));
+    expect(
+      (
+        await patch(canonical, {
+          aliases: ['Morning Garden Coffee'],
+          aliasProvenance: evidence,
+          expectedUpdatedAt: before,
+        })
+      ).statusCode,
+    ).toBe(409);
+    const resolved = await f.app
+      .get(SearchService)
+      .resolvePlaceName('Cafe Vườn Sớm', readOptions());
+    expect(resolved.kind).toBe('answer');
+    expect(resolved.candidates.filter((c) => c.exact).map((c) => c.id)).toEqual([canonical]);
+    const audits = (
+      await f.db.execute(
+        sql`select diff from audit_logs where action='place.merged' and resource_id=${canonical}::text`,
+      )
+    ).rows;
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.diff).toEqual({
+      duplicateId: duplicate,
+      aliases: {
+        before: { count: 1, digest: digest(['morning garden coffee']) },
+        duplicate: { count: 2, digest: digest(['morning garden coffee', 'cafe vuon som']) },
+        after: { count: 2, digest: digest(['morning garden coffee', 'cafe vuon som']) },
+      },
+    });
+    expect(JSON.stringify(audits)).not.toMatch(/Morning Garden|morning garden|Cafe Vườn|cafe vuon/);
+  });
+
+  // Plausible former names, translations and local nicknames for a long-lived
+  // fictional venue; do not use numbered aliases merely to fill a limit.
+  const historicalNames = [
+    'Cà Phê Bến Sông',
+    'Bến Sông Coffee',
+    'Riverside Coffee',
+    'Riverbank Cafe',
+    'Cafe Bờ Sông',
+    'Cà Phê Ven Sông',
+    'Tiệm Cà Phê Bến Cũ',
+    'Old Wharf Coffee',
+    'Quán Bến Xưa',
+    'Cafe Bến Xưa',
+    'Cà Phê Bến Vắng',
+    'Quiet Wharf Cafe',
+    'Cà Phê Bến Nhỏ',
+    'Little Wharf Coffee',
+    'BS Coffee',
+    'Ben Song Cafe',
+    'Cà Phê Nhà Bến',
+    'Nhà Bên Sông',
+    'The River House',
+    'River House Coffee',
+  ];
+  it.each([20, 21])(
+    'F-02 bound %i: deduplicates the union or rejects the entire merge',
+    async (count) => {
+      const canonical = await place('Cà Phê Bến Sông');
+      const duplicate = await place('Tiệm Cà Phê Bến Cũ');
+      const originalNames = historicalNames.slice(0, count === 20 ? 19 : 20);
+      expect(
+        (
+          await patch(canonical, {
+            aliases: originalNames,
+            aliasProvenance: evidence,
+            expectedUpdatedAt: await version(canonical),
+          })
+        ).statusCode,
+      ).toBe(200);
+      expect(
+        (
+          await patch(duplicate, {
+            aliases: ['riverside coffee', 'Wharfside Coffee'],
+            aliasProvenance: evidence,
+            expectedUpdatedAt: await version(duplicate),
+          })
+        ).statusCode,
+      ).toBe(200);
+      const beforeCanonical = await aliasRows(canonical);
+      const beforeDuplicate = await aliasRows(duplicate);
+      const beforeVersion = await version(canonical);
+      const beforeDuplicateVersion = await version(duplicate);
+      // Exercise rollback of other references too, not only the alias table.
+      await f.db
+        .insert(schema.placeMedia)
+        .values({ placeId: duplicate, storageKey: 'fixtures/wharf.jpg' });
+      const outboxBefore = (
+        await f.db.execute(
+          sql`select * from outbox_events where resource_id in (${canonical}, ${duplicate}) order by id`,
+        )
+      ).rows;
+      const result = await merge(canonical, duplicate);
+      if (count === 20) {
+        expect(result.statusCode).toBe(201);
+        expect(await aliasRows(canonical)).toHaveLength(20);
+        expect(await aliasRows(duplicate)).toEqual([]);
+      } else {
+        expect(result.statusCode, 'SYMPTOM: overflow must reject the entire merge').toBe(409);
+        expect(result.json().code).toBe('PLACE_ALIAS_LIMIT_EXCEEDED');
+        expect(await aliasRows(canonical)).toEqual(beforeCanonical);
+        expect(await aliasRows(duplicate)).toEqual(beforeDuplicate);
+        expect(await version(canonical)).toBe(beforeVersion);
+        expect(await version(duplicate)).toBe(beforeDuplicateVersion);
+        expect((await detail(duplicate)).json().status).toBe('published');
+        expect(
+          await f.db
+            .select()
+            .from(schema.placeMedia)
+            .where(eq(schema.placeMedia.placeId, duplicate)),
+        ).toHaveLength(1);
+        expect(
+          (
+            await f.db.execute(
+              sql`select * from audit_logs where action='place.merged' and resource_id=${canonical}::text`,
+            )
+          ).rows,
+        ).toEqual([]);
+        expect(
+          (
+            await f.db.execute(
+              sql`select * from outbox_events where resource_id in (${canonical}, ${duplicate}) order by id`,
+            )
+          ).rows,
+        ).toEqual(outboxBefore);
+      }
+    },
+  );
 });
