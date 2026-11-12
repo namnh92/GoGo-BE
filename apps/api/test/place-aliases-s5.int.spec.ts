@@ -377,8 +377,8 @@ describe('S5 Astra round 1 regressions', () => {
     expect(message.followUps).toEqual(groups);
     expect(message.text).toBe(
       frames
-        .filter((x) => x.event === 'text_delta')
-        .map((x) => x.data.delta)
+        .filter((x) => x.event === 'delta')
+        .map((x) => x.data.text)
         .join(''),
     );
     return { mid, qa, groups, message };
