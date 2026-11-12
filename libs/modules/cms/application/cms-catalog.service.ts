@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { planAliasWrite, type AliasWriteInput } from '../domain/place-aliases';
 import { SubmissionPhotoService } from '../../ingestion/application/submission-photo.service';
 import { acquireCmsProviderPhoto } from '../../places/application/provider-photo-reservation';
 import { isSubmissionPhotoKey, communityPhotoUrl } from '../../shared/submission-photo-url';
@@ -81,7 +83,7 @@ const PLACE_TRANSITIONS: Record<PlaceStatus, PlaceStatus[]> = {
  * previously never empty a value it had filled, because an empty input arrived
  * as `undefined` and was skipped.
  */
-export type PlaceEditInput = {
+export type PlaceEditInput = AliasWriteInput & {
   /**
    * #440 F-07 — evidence for each explicitly supplied non-null administrative
    * code (`provinceCode`, `communeCode`). On create, the full key set.
@@ -150,7 +152,7 @@ export type PlaceEditInput = {
  */
 export type PlaceCreateInput = Omit<
   PlaceEditInput,
-  'name' | 'lat' | 'lng' | 'expectedUpdatedAt'
+  'name' | 'lat' | 'lng' | 'expectedUpdatedAt' | 'aliases' | 'aliasProvenance'
 > & {
   name: string;
   lat: number;
@@ -598,6 +600,7 @@ function attributableProvincePredicate(datasetVersionId: string): SQL {
  * normalized on the way out rather than assumed.
  */
 type PlaceDetailRow = {
+  aliases: string[];
   id: string;
   name: string;
   description: string | null;
@@ -1355,6 +1358,8 @@ export class CmsCatalogService {
     const [row] = (
       await this.db.execute(sql`
         select p.id, p.name, p.description, p.status, p.address_text, p.area_key,
+               coalesce((select jsonb_agg(a.alias order by a.alias_normalized)
+                 from place_aliases a where a.place_id=p.id), '[]'::jsonb) as aliases,
                p.city, p.district,
                -- ADM-016: the canonical administrative identity, as stored.
                p.province_code, p.commune_code, p.administrative_mapping_status,
@@ -1444,6 +1449,7 @@ export class CmsCatalogService {
 
     return {
       verification,
+      aliases: row.aliases,
       id: row.id,
       name: row.name,
       description: row.description,
@@ -1984,6 +1990,7 @@ export class CmsCatalogService {
   }
 
   async updatePlace(adminId: string, placeId: string, input: PlaceEditInput) {
+    const aliases = planAliasWrite(input);
     const [before] = await this.db
       .select()
       .from(schema.places)
@@ -2120,7 +2127,11 @@ export class CmsCatalogService {
           ...(input.suitability !== undefined ? { suitability: input.suitability } : {}),
           ...(input.isLodging !== undefined ? { isLodging: input.isLodging } : {}),
           ...(input.curatedRank !== undefined ? { curatedRank: input.curatedRank } : {}),
-          updatedAt: sql`now()`,
+          // Date-based CMS versions have millisecond precision. Two saves in one
+          // millisecond must still expose different versions after the row lock.
+          updatedAt: aliases
+            ? sql`greatest(clock_timestamp(), ${schema.places.updatedAt} + interval '1 millisecond')`
+            : sql`now()`,
         })
         .where(eq(schema.places.id, placeId))
         .returning();
@@ -2169,6 +2180,42 @@ export class CmsCatalogService {
       }
 
       await writeContactProvenance(tx, placeId, adminId, contact);
+
+      if (aliases) {
+        const previous = await tx
+          .select({ key: schema.placeAliases.aliasNormalized })
+          .from(schema.placeAliases)
+          .where(eq(schema.placeAliases.placeId, placeId));
+        await tx.delete(schema.placeAliases).where(eq(schema.placeAliases.placeId, placeId));
+        if (aliases.entries.length)
+          await tx.insert(schema.placeAliases).values(
+            aliases.entries.map((entry) => ({
+              ...entry,
+              placeId,
+              createdBy: adminId,
+              sourceType: aliases.evidence.sourceType,
+              sourceReference: aliases.evidence.sourceReference,
+              collectedAt: new Date(aliases.evidence.collectedAt),
+            })),
+          );
+        const digest = (keys: string[]) =>
+          createHash('sha256').update(JSON.stringify(keys.sort())).digest('hex');
+        await writeAudit(tx, {
+          actorType: 'admin',
+          actorId: adminId,
+          action: 'place.aliases_updated',
+          resourceType: 'place',
+          resourceId: placeId,
+          diff: {
+            before: { count: previous.length, digest: digest(previous.map((a) => a.key)) },
+            after: {
+              count: aliases.entries.length,
+              digest: digest(aliases.entries.map((a) => a.aliasNormalized)),
+            },
+            evidence: aliases.evidence,
+          },
+        });
+      }
 
       if (material && dataset) {
         const settled = await this.settleMapping(tx, adminId, current, row!, {
@@ -2698,6 +2745,43 @@ export class CmsCatalogService {
     }
     await this.db.transaction(async (tx) => {
       await this.dedup.lockPlaces(tx, [canonicalId, duplicateId]);
+      // Both place locks also serialize CMS alias replacement. Refuse overflow
+      // before any mutation: editors must reconcile the set before retrying.
+      const aliasRows = (
+        await tx.execute(sql`
+        select place_id, alias_normalized from place_aliases
+        where place_id in (${canonicalId}::uuid, ${duplicateId}::uuid)
+      `)
+      ).rows as { place_id: string; alias_normalized: string }[];
+      const canonicalAliases = aliasRows
+        .filter((a) => a.place_id === canonicalId.toLowerCase())
+        .map((a) => a.alias_normalized);
+      const duplicateAliases = aliasRows
+        .filter((a) => a.place_id === duplicateId.toLowerCase())
+        .map((a) => a.alias_normalized);
+      const mergedAliases = [...new Set([...canonicalAliases, ...duplicateAliases])];
+      if (mergedAliases.length > 20)
+        throw AppError.conflict(
+          'PLACE_ALIAS_LIMIT_EXCEEDED',
+          'Merge would exceed 20 aliases; reconcile aliases before retrying',
+        );
+      const aliasSummary = (keys: string[]) => ({
+        count: keys.length,
+        digest: createHash('sha256')
+          .update(JSON.stringify([...keys].sort()))
+          .digest('hex'),
+      });
+      // Move the entire row so staff/time/source provenance survives. On a
+      // normalized collision the canonical row (including its evidence) wins.
+      await tx.execute(sql`
+        update place_aliases moving set place_id = ${canonicalId}::uuid
+        where moving.place_id = ${duplicateId}::uuid and not exists (
+          select 1 from place_aliases keep where keep.place_id = ${canonicalId}::uuid
+            and keep.alias_normalized = moving.alias_normalized
+        )
+      `);
+      await tx.execute(sql`delete from place_aliases where place_id = ${duplicateId}::uuid`);
+
       const identities = await tx.execute(sql`
         select external_id from place_provider_sources
           where provider = 'google_places' and place_id in (${canonicalId}::uuid, ${duplicateId}::uuid)
@@ -2799,6 +2883,11 @@ export class CmsCatalogService {
             or (canonical_place_id = ${duplicateId}::uuid and legacy_place_id = ${canonicalId}::uuid))
       `);
 
+      // A form loaded before the merge must not overwrite the combined set.
+      await tx.execute(sql`
+        update places set updated_at = greatest(clock_timestamp(), updated_at + interval '1 millisecond')
+        where id = ${canonicalId}::uuid
+      `);
       await tx
         .update(schema.places)
         .set({ status: 'archived', updatedAt: sql`now()` })
@@ -2809,7 +2898,14 @@ export class CmsCatalogService {
         action: 'place.merged',
         resourceType: 'place',
         resourceId: canonicalId,
-        diff: { duplicateId },
+        diff: {
+          duplicateId,
+          aliases: {
+            before: aliasSummary(canonicalAliases),
+            duplicate: aliasSummary(duplicateAliases),
+            after: aliasSummary(mergedAliases),
+          },
+        },
       });
       // Both sides changed: one gained the references, the other left the
       // catalogue. Consumers are idempotent (PI-BE-010).

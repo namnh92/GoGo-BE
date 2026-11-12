@@ -1,0 +1,113 @@
+{
+  "description": "S5 curated synthetic fixtures using realistic venue aliases; no claim about real businesses",
+  "places": [
+    {
+      "key": "coffee",
+      "name": "Cà Phê Nhà Bên Hồ",
+      "aliases": [
+        "NBH",
+        "Cafe Bờ Hồ",
+        "Lakeside Coffee",
+        "Cà phê ven hồ",
+        "Nhà Hồ",
+        "Quán Nhà Bên Hồ",
+        "Nha Ben Ho Coffee",
+        "Nhà Bên Hồ Cafe",
+        "Bên Hồ Coffee"
+      ]
+    },
+    {
+      "key": "bakery",
+      "name": "Tiệm Bánh An Nhiên",
+      "aliases": ["AN Bakery", "Tiệm Bánh Cô An", "Peaceful Bakery"]
+    },
+    { "key": "brand1", "name": "Trà Nhà Mộc Bến Thành", "aliases": ["Mộc Tea"] },
+    { "key": "brand2", "name": "Trà Nhà Mộc Thảo Điền", "aliases": ["Mộc Tea"] }
+  ],
+  "cases": [
+    {
+      "id": "alias-01",
+      "category": "abbreviation",
+      "query": "NBH",
+      "kind": "answer",
+      "keys": ["coffee"]
+    },
+    {
+      "id": "alias-02",
+      "category": "old_name",
+      "query": "Cafe Bờ Hồ",
+      "kind": "answer",
+      "keys": ["coffee"]
+    },
+    {
+      "id": "alias-03",
+      "category": "english",
+      "query": "Lakeside Coffee",
+      "kind": "answer",
+      "keys": ["coffee"]
+    },
+    {
+      "id": "alias-04",
+      "category": "vietnamese",
+      "query": "Cà phê ven hồ",
+      "kind": "answer",
+      "keys": ["coffee"]
+    },
+    {
+      "id": "alias-05",
+      "category": "nickname",
+      "query": "Nhà Hồ",
+      "kind": "answer",
+      "keys": ["coffee"]
+    },
+    {
+      "id": "alias-06",
+      "category": "abbreviation",
+      "query": "AN Bakery",
+      "kind": "answer",
+      "keys": ["bakery"]
+    },
+    {
+      "id": "alias-07",
+      "category": "old_name",
+      "query": "Tiệm Bánh Cô An",
+      "kind": "answer",
+      "keys": ["bakery"]
+    },
+    {
+      "id": "alias-08",
+      "category": "english",
+      "query": "Peaceful Bakery",
+      "kind": "answer",
+      "keys": ["bakery"]
+    },
+    {
+      "id": "alias-09",
+      "category": "normalization",
+      "query": "  LAKESIDE   COFFEE ",
+      "kind": "answer",
+      "keys": ["coffee"]
+    },
+    {
+      "id": "alias-10",
+      "category": "accentless",
+      "query": "ca phe ven ho",
+      "kind": "answer",
+      "keys": ["coffee"]
+    },
+    {
+      "id": "alias-11",
+      "category": "many_aliases_one_place",
+      "query": "Nhà Bên Hồ Cafe",
+      "kind": "answer",
+      "keys": ["coffee"]
+    },
+    {
+      "id": "alias-12",
+      "category": "shared_brand",
+      "query": "Mộc Tea",
+      "kind": "choice",
+      "keys": ["brand1", "brand2"]
+    }
+  ]
+}
