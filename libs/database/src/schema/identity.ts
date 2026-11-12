@@ -42,6 +42,8 @@ export const users = pgTable(
     status: userStatus('status').notNull().default('active'),
     // Pseudonymous identity used in analytics/events instead of the user id.
     analyticsId: uuid('analytics_id').notNull().defaultRandom(),
+    // Independent public pseudonym; allocated lazily, never an authorization factor.
+    hostShareId: text('host_share_id'),
     /**
      * ADR-0022 — the profile's optional fields. `avatarKey` is the processed
      * object in the public bucket, never the original upload; the URL is
@@ -81,6 +83,8 @@ export const users = pgTable(
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
   (t) => [
+    uniqueIndex('users_host_share_id_unique').on(t.hostShareId),
+    check('users_host_share_id_format', sql`${t.hostShareId} ~ '^[A-Za-z0-9_-]{21}[AQgw]$'`),
     check(
       'users_home_administrative_area_object',
       sql`${t.homeAdministrativeArea} is null or (

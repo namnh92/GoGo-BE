@@ -282,6 +282,9 @@ Metric đang phát — danh sách đầy đủ, đối chiếu với `METRIC_LAB
 | `suggestion_run_latency_seconds` | `variant`, `weights_version` | mỗi suggestion run (SG-010) |
 | `suggestion_run_over_budget_total` | `variant` | run vượt ngân sách latency |
 | `suggestion_route_budget_exhausted_total` | `scope` | Routes matrix bị từ chối bởi ngân sách dùng chung; `scope` = `room`/`actor`/`both`. Redis không khả dụng dùng estimate và được ghi ở runtime telemetry, không giả thành hết ngân sách |
+| `room_invite_allocation_total` | `operation`, `result` | #889 internal accepted insert/exhaustion; operation=code6/host_alias, result=allocated/exhausted; not committed issuance. |
+| `room_invite_collision_total` | `operation`, `result` | #889 bounded collision retries; operation=code6/host_alias, result=retry. |
+| `room_invite_foundation_readiness_total` | `operation`, `result` | #889 internal schema/key probe; operation=schema/keys, result=ready/unavailable. No identities, aliases, digests, credentials or key material. See ADR-0056; serving/activation is deferred. |
 | `share_link_created_total` | `type` | share link canonical được tạo (#205) |
 | `share_link_resolved_total` | `type`, `result` | edge resolve slug: `ok` / `not_found` / `gone` (revoke/expired) |
 | `share_link_attribution_total` | `result` | attribution khi tạo link (#206): `attached` / `none` / `fallback` (vendor lỗi, link vẫn tạo) |

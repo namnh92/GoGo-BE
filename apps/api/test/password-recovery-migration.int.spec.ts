@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
-import { schema } from '@gogo/database';
+import { sql } from 'drizzle-orm';
 import { PasswordService } from '../../../libs/modules/identity/application/password.service';
 import {
   COMPLETE,
@@ -18,30 +17,27 @@ import {
 } from './support/password-recovery-fixture';
 
 let f: RecoveryFixture;
-let legacyUser: typeof schema.users.$inferSelect;
-let legacySession: typeof schema.authSessions.$inferSelect;
+let legacyUser: { id: string; email: string; snapshot: Record<string, unknown> };
+let legacySession: { id: string; snapshot: Record<string, unknown> };
 beforeAll(async () => {
   f = await recoveryFixture({
     before0079: async (db) => {
-      const [user] = await db
-        .insert(schema.users)
-        .values({
-          displayName: 'Populated 0078',
-          email: 'legacy-0078@example.test',
-          passwordHash: await new PasswordService().hash(OLD_PASSWORD),
-        })
-        .returning();
-      legacyUser = user!;
-      const [session] = await db
-        .insert(schema.authSessions)
-        .values({
-          userId: user!.id,
-          refreshTokenHash: 'legacy-session-hash',
-          familyId: randomUUID(),
-          expiresAt: new Date(Date.now() + 3600_000),
-        })
-        .returning();
-      legacySession = session!;
+      // This database is at 0078. Current Drizzle inserts/returning expand to
+      // newer columns; use historical column lists and snapshot every old field.
+      const passwordHash = await new PasswordService().hash(OLD_PASSWORD);
+      const users = await db.execute<typeof legacyUser>(sql`
+        insert into users (display_name, email, password_hash)
+        values ('Populated 0078', 'legacy-0078@example.test', ${passwordHash})
+        returning id, email, to_jsonb(users) as snapshot
+      `);
+      legacyUser = users.rows[0]!;
+      const sessions = await db.execute<typeof legacySession>(sql`
+        insert into auth_sessions (user_id, refresh_token_hash, family_id, expires_at)
+        values (${legacyUser.id}, 'legacy-session-hash', ${randomUUID()},
+          ${new Date(Date.now() + 3600_000).toISOString()}::timestamptz)
+        returning id, to_jsonb(auth_sessions) as snapshot
+      `);
+      legacySession = sessions.rows[0]!;
       const result = await db.execute(
         "select to_regclass('public.password_recovery_challenges') as challenges, to_regclass('public.password_recovery_replays') as replays",
       );
@@ -64,13 +60,14 @@ describe('I-4 forward migration, retention and disable rollback', () => {
     );
     expect(journal.rows).toHaveLength(1);
     expect(journal.rows[0].hash).toBe(f.migrationHash);
-    const [user] = await f.db.select().from(schema.users).where(eq(schema.users.id, legacyUser.id));
-    const [session] = await f.db
-      .select()
-      .from(schema.authSessions)
-      .where(eq(schema.authSessions.id, legacySession.id));
-    expect(user).toEqual(legacyUser);
-    expect(session).toEqual(legacySession);
+    const user = await f.db.execute<{ snapshot: Record<string, unknown> }>(sql`
+      select to_jsonb(users) as snapshot from users where id = ${legacyUser.id}
+    `);
+    const session = await f.db.execute<{ snapshot: Record<string, unknown> }>(sql`
+      select to_jsonb(auth_sessions) as snapshot from auth_sessions where id = ${legacySession.id}
+    `);
+    expect(user.rows).toEqual([{ snapshot: { ...legacyUser.snapshot, host_share_id: null } }]);
+    expect(session.rows).toEqual([{ snapshot: legacySession.snapshot }]);
     const constraints = await f.pool.query<{ conname: string; definition: string }>(
       "select conname, pg_get_constraintdef(oid) as definition from pg_constraint where conrelid in ('password_recovery_challenges'::regclass, 'password_recovery_replays'::regclass)",
     );

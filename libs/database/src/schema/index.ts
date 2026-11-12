@@ -1,5 +1,6 @@
 export * from './identity';
 export * from './rooms';
+export * from './invite-codes';
 export * from './places';
 export * from './administrative';
 export * from './plans';
