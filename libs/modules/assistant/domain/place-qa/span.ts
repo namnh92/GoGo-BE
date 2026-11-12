@@ -87,7 +87,7 @@ export function extractComparisonPlaceNameSpans(text: string): PlaceNameSpans {
   const folded = tokens.map((t) => t.grammar).join(' ');
   const explicit = folded.startsWith('so sanh ') || folded.startsWith('compare ');
   const tail =
-    /\s+(?:quan nao (?:re hon|dat hon|tot hon)|re hon|dat hon|ve (?:gia|gio mo cua|dia chi|wifi|cho dau xe|danh gia|thong tin)|(?:about|on) (?:price|opening hours|address|parking|rating)|which is cheaper)\s*$/u.exec(
+    /\s+(?:quan nao (?:re hon|dat hon|tot hon)|re hon|dat hon|ve (?:gia|gio mo cua|dia chi|wifi|cho dau xe|danh gia|thong tin)(?: .+)?|(?:about|on) (?:price|opening hours|address|parking|rating)(?: .+)?|which is cheaper)\s*$/u.exec(
       folded,
     );
   if (!tail && !explicit) return { kind: 'ambiguous' };

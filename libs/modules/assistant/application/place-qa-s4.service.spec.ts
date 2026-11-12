@@ -10,7 +10,7 @@ import {
   fictionalPlace,
 } from '../domain/place-qa/fixtures';
 import { resolvePlaceNameOutcome } from '../domain/place-qa/resolution';
-import { PlaceQaClassifier } from '../domain/place-qa/classifier';
+import { PlaceQaClassifier, qaProbeOf } from '../domain/place-qa/classifier';
 import { readQaPending } from '../domain/place-qa/pending';
 import { parseReferenceGroup } from '../domain/place-qa/reference-group';
 import type { PlaceFacts } from '../domain/place-qa/place-facts';
@@ -625,5 +625,38 @@ describe('S4 review round 2 (confirm round F-04/F-05)', () => {
       topic: 'hours',
       args: { day: 'date', date: '2026-11-11' },
     });
+  });
+});
+describe('S4 Astra review (2026-11-12)', () => {
+  it.each(['Quán thứ 3 có wifi không?', 'unavailable'])(
+    'F-03: %s over a live compare choice keeps the partner and expiry',
+    async (mode) => {
+      const f = fixture();
+      const q = await f.send('Fictional Lantern với Fictional Orchid quán nào rẻ hơn?');
+      if (mode === 'unavailable') f.update(C, { available: false });
+      const r = await f.send(mode === 'unavailable' ? 'Quán thứ 2 có wifi không?' : mode);
+      expect(r.qa.outcome).toBe('clarify_referent');
+      expect(r.view.cards).toEqual([]);
+      expect(r.qa.pending).toMatchObject({
+        kind: 'referent',
+        topic: 'amenity',
+        activeSlot: 1,
+        slots: [{ resolvedPlaceId: A }, {}],
+        expiresAt: q.qa.pending.expiresAt,
+      });
+      expect(r.qa.pending.slots[1].resolvedPlaceId).toBeUndefined();
+    },
+  );
+  it('F-04: a date-qualified compare tail stays out of the second name', async () => {
+    const f = fixture();
+    f.places.delete(C);
+    const r = await f.send('So sánh Fictional Lantern với Fictional Orchid về giờ mở cửa ngày mai');
+    expect(f.search.resolvePlaceName).toHaveBeenCalledWith('Fictional Orchid', expect.anything());
+    expect(r.qa.topic).toBe('hours');
+    expect(r.qa.args).toMatchObject({ day: 'date', date: '2026-11-12' });
+    expect(r.view.cards.map((c) => c.placeId)).toEqual([A, B]);
+  });
+  it.each(['Giờ mở cửa', 'Giá'])('F-01: a typed topic label "%s" probes as a reply', (label) => {
+    expect(qaProbeOf(label, null, 'vi', false)).toBe('reply');
   });
 });

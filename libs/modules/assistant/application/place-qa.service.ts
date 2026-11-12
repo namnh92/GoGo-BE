@@ -960,11 +960,6 @@ export class PlaceQaService {
           const valid = ordinal
             ? Boolean(chosen && available.includes(chosen))
             : available.length > 0;
-          if (!valid) {
-            pending('referent', trace!.questionMessageId);
-            await notice('clarify_referent');
-            return true;
-          }
           const resumable = p !== null && (p.kind === 'choice' || p.kind === 'confirm');
           // Re-check the pending's lineage this turn (question, referent, name
           // sources); sourcesOf also restores a reply-sourced name binding. A
@@ -975,12 +970,19 @@ export class PlaceQaService {
             return true;
           }
           if (resumable) {
-            // Same lineage: keep its own referent source; only the topic changes.
-            resume(p);
+            // Same lineage: keep its own referent source, compare partner and
+            // expiry; only the topic changes (an invalid ordinal included).
+            resume(p!);
             trace!.topic = classified.topic;
             trace!.args = classified.args;
-          } else referentMessageId = latest!.id;
+          }
           const source = resumable ? p!.questionMessageId : trace!.questionMessageId;
+          if (!valid) {
+            pending('referent', source);
+            await notice('clarify_referent');
+            return true;
+          }
+          if (!resumable) referentMessageId = latest!.id;
           if (ordinal) await clarify('confirm', [chosen!], source, latestGroup.legacyArea === true);
           else
             await clarify(

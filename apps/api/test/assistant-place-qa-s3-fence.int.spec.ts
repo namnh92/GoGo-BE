@@ -610,6 +610,28 @@ describe('Round 2 — Sol F-02 / Astra F-01: the send-commit → fence crash win
   );
 });
 
+describe('S4 Astra F-01: a typed topic label after a QA answer, flag off', () => {
+  it('dies before any fence write and stays out of history and model requests', async () => {
+    await qaFlag(true);
+    const c = await conversation();
+    const repo = f.app.get(AssistantRepository);
+    try {
+      const answered = await turn(c, 'Quán Sao Lạ giá bao nhiêu?');
+      expect(answered.stored?.trace?.route).toBe('place_qa');
+      await qaFlag(false);
+      const dead = await sendThenDie(c, 'Giờ mở cửa');
+      expect.soft(dead.stored?.trace).toMatchObject({ route: 'place_qa', orphaned: true });
+      const { next, expected, seen } = await followingRecommendation(c);
+      const history = await repo.history(c.id, next.id, 50);
+      expect(history.map((m) => m.id)).not.toContain(dead.userId);
+      expect(JSON.stringify(seen)).not.toMatch(/Giờ mở cửa/);
+      expect(seen).toEqual(expected);
+    } finally {
+      await qaFlag(true);
+    }
+  });
+});
+
 describe('Round 2 — Sol F-04 / Astra F-04: QA reads stay inside deadline and cancellation', () => {
   it.each([
     ['flag off', 'QA question', 'placeQaEnabled'],

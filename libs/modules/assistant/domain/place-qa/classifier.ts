@@ -4,6 +4,7 @@ import en from './lexicon.en.json';
 import { normalizeVietnamese } from '../../../search/domain/normalize';
 import { extractPlaceNameSpan, extractComparisonPlaceNameSpans, type PlaceNameSpan } from './span';
 import { isTypedConfirm } from './pending';
+import { isTopicLabel } from './topics';
 import type { AnswerQuery, AnswerTopic } from './tokens';
 
 export type QaArgs = {
@@ -138,6 +139,10 @@ export function qaProbeOf(
   // never let its identity words enter a recommendation model request.
   if (isTypedConfirm(text)) return 'control';
   if (isNewNonQaRequest(text)) return null;
+  // A typed topic-chip label ("Giờ mở cửa") is a reply to the QA turn that
+  // offered it: recovery keeps it out of recommendation history whenever the
+  // preceding turn is QA, even with the flag off (#874 Astra F-01).
+  if (isTopicLabel(text)) return 'reply';
   const kind = new PlaceQaClassifier().classify(text, context, { now: new Date(), locale }).kind;
   return kind === 'not_qa' ? 'reply' : kind === 'name_only' ? 'name' : 'question';
 }

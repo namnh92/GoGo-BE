@@ -238,3 +238,19 @@ advisor additionally raised M-05 (a venue literally named "Quán 2" asked with a
 non-S2 clause) and M-06 (a compared venue name containing "về"). Owner decision
 2026-11-12: "Không có trường hợp tên quán là quán 2 đâu. Đừng làm những case vô
 nghĩa nữa" → both **won't-fix**; no code or cells added for implausible names.
+
+## Astra SA review round 1 (on `b9827cb6`) and fixes
+
+Verdict changes-required, four findings; owner decisions 2026-11-12 recorded in
+`dev/policy/decisions-log.md`.
+
+| ID                                                                                         | Disposition                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| F-01 P1 typed topic label after flag-off + interrupted turn entered recommendation history | **fixed**: `qaProbeOf` returns `reply` for a topic-chip label, so S3 recovery keeps it out whenever the preceding turn is QA, even with the flag off. Integration cell in `assistant-place-qa-s3-fence.int.spec.ts` ("S4 Astra F-01", process death → orphan recovery): FAIL on `9a8085af` (chip text in history), PASS after; unit cells on the probe |
+| F-02 P1 rollout with `place_qa` ON in DEV makes S4 live before the S4+S5 gate              | **owner decision**: "Cho S4 hiện trên DEV luôn" — the flag stays ON in DEV when S4 deploys; the S4+S5 gate still applies to STAG/PROD. Mobile already sends chip ids (#653)                                                                                                                                                                            |
+| F-03 P2 invalid ordinal / unavailable card dropped a live compare partner and expiry       | **fixed**: lineage re-check and `resume` now run before the validity check; an invalid reference writes `referent` pending on the same lineage (partner, expiry kept; topic replaced; active slot unresolved); a broken lineage still retains nothing                                                                                                  |
+| F-04 P2 "So sánh A với B về giờ mở cửa ngày mai" kept the date in B's span                 | **fixed**: the compare tail in `span.ts` accepts the topic clause with trailing arguments                                                                                                                                                                                                                                                              |
+
+FAIL-before (product files from `9a8085af`): the five "S4 Astra review" unit
+cells FAIL, the F-01 integration cell FAILs; all PASS after. Evidence
+`dev/test-evidence/be-874/astra-r1/`.
