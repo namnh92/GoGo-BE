@@ -29,7 +29,7 @@ export type AssistantNotice =
 export type AssistantFollowUpGroup = {
   field: string;
   label: string;
-  /** Reserved by 10.1; no production emission until S3/S4. */
+  /** Optional source binding from 10.1; S3 emits branch choices, S4 adds topics. */
   options: { id?: string; label: string; text: string }[];
 };
 

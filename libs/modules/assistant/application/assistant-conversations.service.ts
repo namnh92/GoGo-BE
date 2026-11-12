@@ -34,6 +34,7 @@ import { conversationView, messageView, refsOf, type ContextLabel } from './assi
 import { renderPlaceTexts } from './place-text';
 import { PlaceAnswerReader } from './place-answer-reader';
 import { isPlaceAnswerRow } from '../domain/place-qa/reference-group';
+import { qaProbeOf } from '../domain/place-qa/classifier';
 
 export function requireUser(actor: Actor): string {
   if (actor.type !== 'user') {
@@ -225,11 +226,15 @@ export class AssistantConversationsService {
       context?: AssistantContextInput | undefined;
       attachments?: { uploadKey: string }[] | undefined;
       locale?: 'vi' | 'en' | undefined;
+      replyToMessageId?: string | undefined;
+      followUpOptionId?: string | undefined;
     },
     scope: IdempotencyScope,
   ): Promise<{ replay: boolean; status: number; body: unknown }> {
     const userId = requireUser(actor);
     const conversation = await this.requireConversation(actor, conversationId);
+    if ((input.replyToMessageId === undefined) !== (input.followUpOptionId === undefined))
+      throw AppError.badRequest('VALIDATION_FAILED', 'Send both follow-up fields or neither');
     // Only the server writes place tokens (A-R-04); their delimiters typed by
     // a person are dropped.
     const text = stripTokenDelimiters(input.text).trim();
@@ -257,6 +262,13 @@ export class AssistantConversationsService {
           : null;
       await this.availability.requireReady();
       const locale = input.locale ?? 'vi';
+      // Pure, no read: admission rules, funding and limits are untouched.
+      const qaProbe = qaProbeOf(
+        text,
+        context ? { kind: context.kind, id: context.id } : null,
+        locale,
+        input.replyToMessageId !== undefined,
+      );
       const turn = await this.db.transaction(async (tx) => {
         const control = await this.spend.lockControl(tx);
         await this.repo.lockAccount(tx, userId);
@@ -282,6 +294,7 @@ export class AssistantConversationsService {
             allowanceSource,
             billingPolicy: control.policy_key,
             billingEpoch: control.epoch,
+            qaProbe,
           });
         } catch (err) {
           if (isUniqueViolation(err)) {
@@ -352,9 +365,12 @@ export class AssistantConversationsService {
         conversationId,
         userId,
         ledgerId: turn.ledgerId,
+        replyToMessageId: input.replyToMessageId,
+        followUpOptionId: input.followUpOptionId,
         text,
         locale,
         context: context ? { kind: context.kind, id: context.id } : null,
+        qaProbe,
       });
       return { replay: false, status: 202, body: turn.body };
     } catch (err) {

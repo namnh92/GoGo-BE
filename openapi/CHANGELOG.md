@@ -8,6 +8,18 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 10.2.0-alpha.1 — S3 activation of place QA (#864 / #844)
+
+S3 accepts the already-declared paired follow-up fields and validates the latest
+accessible QA source, option, state version and expiry. Branch options now emit
+`id` while `assistant.place_qa.enabled` stays default-off. Both-or-neither
+validation remains `400 VALIDATION_FAILED`; stale/disabled selections produce a
+neutral QA response, without resuming a recommendation. No field/type/required
+list/bound changes. This backward-compatible activation removes planned metadata
+and changes the published behavior, so it is a MINOR contract release. Declarations
+were regenerated (byte-identical); repository version pins move to `10.2.0-alpha.1`.
+S4 source-bound consumers and S5 aliases remain required before enablement.
+
 ## 10.1.0-alpha.1 — Place-answer reader compatibility floor (#856 / #844 S1)
 
 Additive MINOR: optional `AssistantFollowUpGroup.options[].id` and paired optional

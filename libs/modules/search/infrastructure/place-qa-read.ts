@@ -20,15 +20,16 @@ export function safePlaceQaReadError(error: unknown): PlaceQaReadError {
 
 /**
  * Includes pool acquisition in the total budget. Abort/deadline destroys the
- * checked-out connection: an in-flight read cannot return to the pool with a
+ * checked-out connection: an in-flight transaction cannot return to the pool with a
  * live transaction or altered thresholds. statement_timeout also bounds server
  * work. There is no retry and no error-to-empty conversion.
  */
-export async function placeQaRead<T>(
+export async function placeQaTransaction<T>(
   db: Db,
   budgetMs: number,
   options: PlaceQaReadOptions,
   work: (read: Pick<Db, 'execute'>) => Promise<T>,
+  readOnly = false,
 ): Promise<T> {
   const deadline = Math.min(Date.now() + budgetMs, options.deadlineAt ?? Infinity);
   if (options.signal?.aborted) throw new PlaceQaReadError('cancelled');
@@ -63,7 +64,7 @@ export async function placeQaRead<T>(
     }
     const read = drizzle(client, { schema });
     try {
-      await read.execute(sql`begin read only`);
+      await read.execute(readOnly ? sql`begin read only` : sql`begin`);
       const remaining = Math.max(1, deadline - Date.now());
       await read.execute(sql`select set_config('statement_timeout', ${String(remaining)}, true)`);
       const result = await work(read);
@@ -89,4 +90,14 @@ export async function placeQaRead<T>(
     clearTimeout(timer);
     options.signal?.removeEventListener('abort', onAbort);
   }
+}
+
+/** Read-only facade retained for all S1/S2 callers. */
+export function placeQaRead<T>(
+  db: Db,
+  budgetMs: number,
+  options: PlaceQaReadOptions,
+  work: (read: Pick<Db, 'execute'>) => Promise<T>,
+): Promise<T> {
+  return placeQaTransaction(db, budgetMs, options, work, true);
 }

@@ -59,6 +59,12 @@ export type FlagDefinition = {
  * together, so a key can never sit in the console with nothing behind it.
  */
 export const FEATURE_FLAGS = {
+  'assistant.place_qa.enabled': {
+    valueType: 'boolean',
+    defaultValue: false,
+    platformScoped: false,
+    description: 'Deterministic named-place questions (S3 dark; enable only after S4 + S5 gates).',
+  },
   'assistant_credits.spend_enabled': {
     valueType: 'boolean',
     defaultValue: false,

@@ -38,8 +38,19 @@ export const sendMessageBody = z
       .max(3)
       .optional(),
     locale: z.enum(['vi', 'en']).optional(),
+    replyToMessageId: uuid.optional(),
+    followUpOptionId: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[A-Za-z0-9_-]+$/)
+      .optional(),
   })
-  .strict();
+  .strict()
+  .refine((v) => (v.replyToMessageId === undefined) === (v.followUpOptionId === undefined), {
+    message: 'Send both follow-up fields or neither',
+    path: ['followUpOptionId'],
+  });
 
 export const feedbackBody = z
   .object({

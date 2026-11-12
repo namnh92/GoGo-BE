@@ -34,6 +34,10 @@ export type TurnState = {
   jevInputUnknown: boolean;
   jevOutputUnknown: boolean;
   trace: Record<string, unknown>;
+  /** GoGo-BE#873: PlaceQaService reached its QA / not-QA decision for this turn. */
+  qaDecided?: boolean;
+  qaEnabled?: boolean;
+  qaSettlementUncertain?: boolean;
 };
 
 export function emptyCosts(): LedgerCosts {

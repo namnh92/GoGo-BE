@@ -66,6 +66,7 @@ export type PlaceFactRow = {
   lat: number;
   lng: number;
   area_summary: unknown;
+  province_name?: string | null;
   address_text: string | null;
   phone: string | null;
   provenance: ProvenanceRow[];
@@ -313,6 +314,16 @@ export function projectPlaceFacts(row: PlaceFactRow, now: Date): PlaceFacts {
     id: row.id,
     available: true,
     name: row.name,
+    ...(row.area_summary &&
+    typeof row.area_summary === 'object' &&
+    'label' in row.area_summary &&
+    typeof row.area_summary.label === 'string'
+      ? {
+          areaLabel: [
+            ...new Set([row.area_summary.label, row.province_name].filter((v): v is string => !!v)),
+          ].join(', '),
+        }
+      : {}),
     facts: {
       ...(schedules.length ? { hours: schedules } : {}),
       ...(prices.length ? { price: prices } : {}),

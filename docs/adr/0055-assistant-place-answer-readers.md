@@ -84,3 +84,21 @@ The runner persists its immutable `streamRoute` before buffer publication.
 Ordinary readers classify once and retain periodic lifecycle checks. A live
 attachment timer bounds buffer/metadata waits as well as fact rendering; expiry
 is reader-only and leaves producer settlement unchanged.
+
+## S3 amendment — 2026-11-12, BE #873
+
+The [Astra S3 amendment](../plans/sa-shape-be-844-ai-place-qa.rev3-amend-s3.astra.md)
+raises the compatibility floor beyond S1: all recommendation history/episode
+readers must understand terminal `qaProbe` associations. Pause new sends and
+drain old runners, install that floor everywhere, verify all serving instances,
+then resume sends. Pre-floor readers such as `0dd18c5e` can leak the user partner
+of a probe that a legacy finalizer preserves. They may not coexist with this
+writer or serve rollback traffic, even with the QA flag off. Rollback retains
+the marker-aware floor and disables emission. S4 + S5 and owner enablement
+requirements remain unchanged.
+
+Unknown flag reads default disabled for the turn. Deadline settlement is a
+cancellable transaction with one 1.5-second total cleanup allowance; failure
+retains exclusion uncertainty without a QA route. Text-only confirmation uses
+full name + current area, revalidates catalogue uniqueness and never uses a
+probabilistic code. Structured clients retain source-bound ids.

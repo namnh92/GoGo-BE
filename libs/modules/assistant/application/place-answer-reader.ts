@@ -1,3 +1,4 @@
+import { QA_COPY } from '../domain/place-qa/copy';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { APP_CONFIG } from '../../shared/config';
@@ -10,6 +11,7 @@ import {
   type PlaceFactsReader,
 } from '../domain/place-qa/place-facts';
 import { isPlaceAnswerRow, parseReferenceGroup } from '../domain/place-qa/reference-group';
+import { confirmText } from '../domain/place-qa/pending';
 import {
   answerQueries,
   hasMalformedCapacity,
@@ -87,6 +89,10 @@ export class PlaceAnswerReader {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let context: PlaceFactContext = { places: new Map() };
     let failure: 'read_error' | 'timeout' | undefined;
+    // Set by the allowance timer BEFORE it aborts: aborting rejects the
+    // cancellation branch (and a cancellable adapter) synchronously, so the
+    // race winner and the wall clock cannot decide timeout versus read error.
+    let timedOut = false;
     try {
       if (allowance <= 0) throw new RenderTimeout();
       if (controller.signal.aborted) throw new Error('reader cancelled');
@@ -97,8 +103,9 @@ export class PlaceAnswerReader {
         const deadlineAt = started + allowance;
         const deadline = new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
-            controller.abort();
+            timedOut = true;
             reject(new RenderTimeout());
+            controller.abort();
           }, allowance);
         });
         const aborted = new Promise<never>((_, reject) =>
@@ -124,7 +131,9 @@ export class PlaceAnswerReader {
       }
     } catch (e) {
       failure =
-        e instanceof RenderTimeout || (allowance > 0 && Date.now() - started >= allowance)
+        timedOut ||
+        e instanceof RenderTimeout ||
+        (allowance > 0 && Date.now() - started >= allowance)
           ? 'timeout'
           : 'read_error';
     } finally {
@@ -145,6 +154,7 @@ export class PlaceAnswerReader {
             hasMalformedCapacity(row.text) ? UNSUPPORTED_CAPACITY[locale] : SAFE_LABEL[locale],
             'unknown_token',
           );
+        else if (group.kind === 'notice') rendered = empty(QA_COPY[group.message!][locale], 'ok');
         else if (overflow.has(row.id))
           rendered = {
             ...empty(
@@ -176,7 +186,9 @@ export class PlaceAnswerReader {
             const match = /^\uE000place:([0-9a-f-]+)\uE001$/.exec(token);
             if (match && group.cards.includes(match[1]!)) {
               const p = context.places.get(match[1]!);
-              return p?.available ? safeText(p.name) : SAFE_LABEL[locale];
+              return p?.available
+                ? `${safeText(p.name)}${group.kind === 'clarification' && p.areaLabel ? ` ${locale === 'en' ? 'in' : 'ở'} ${safeText(p.areaLabel)}` : ''}`
+                : SAFE_LABEL[locale];
             }
             unknown = true;
             return SAFE_LABEL[locale];
@@ -199,6 +211,7 @@ export class PlaceAnswerReader {
             if ('none' in o)
               return [
                 {
+                  id: o.id,
                   label: locale === 'en' ? 'None of these' : 'Không phải các quán này',
                   text: locale === 'en' ? 'None of these' : 'Không phải các quán này',
                 },
@@ -208,17 +221,31 @@ export class PlaceAnswerReader {
               if (!p?.available) return [];
               const ordinal = group.cards.indexOf(o.placeId) + 1;
               const label = `${ordinal}. ${safeText(p.name)}`.slice(0, 40);
-              return [{ label, text: String(ordinal) }];
+              // A one-candidate confirmation is answered by text that names the
+              // candidate by name + area; a bare ordinal is not
+              // proof of which chip an old client tapped (shape rev3 §4.5).
+              const text =
+                group.prompt === 'place_confirm' && group.cards.length === 1
+                  ? (confirmText(
+                      locale,
+                      safeText(p.name),
+                      p.areaLabel ? safeText(p.areaLabel) : undefined,
+                    ) ?? String(ordinal))
+                  : String(ordinal);
+              return [{ id: o.id, label, text }];
             }
             const q = parseAnswerToken(o.query)!;
             const p = context.places.get(q.placeId);
             const a = renderPlaceAnswer(q, context);
             if (!p?.available || !a.eligible) return [];
             const label = TOPIC_LABELS[locale][q.topic];
-            return [{ label, text: label }];
+            return [{ id: o.id, label, text: label }];
           });
           rendered = {
-            text,
+            text:
+              group.kind === 'clarification'
+                ? `${group.legacyArea ? (locale === 'en' ? 'GoGo does not search by old districts. ' : 'GoGo không tra theo quận/huyện cũ. ') : ''}${locale === 'en' ? 'Did you mean' : group.prompt === 'place_confirm' ? 'Ý bạn là' : 'Bạn muốn hỏi chi nhánh nào'}: ${text}?`
+                : text,
             cards: group.cards.map((id) => card(context.places.get(id), id, locale)),
             sources,
             followUps: opts.length

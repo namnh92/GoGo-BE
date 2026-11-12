@@ -1,6 +1,6 @@
 import type { Db } from '@gogo/database';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { placeQaRead, safePlaceQaReadError } from './place-qa-read';
+import { placeQaRead, placeQaTransaction, safePlaceQaReadError } from './place-qa-read';
 
 const fake = vi.hoisted(() => ({ execute: vi.fn() }));
 vi.mock('drizzle-orm/node-postgres', () => ({ drizzle: () => ({ execute: fake.execute }) }));
@@ -91,5 +91,47 @@ describe('S2 bounded read lifetime', () => {
     gate.resolve();
     await Promise.resolve();
     expect(f.release).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Astra A5: bounded settlement transaction', () => {
+  afterEach(() => vi.useRealTimers());
+  it('destroys a connection acquired after the settlement pool deadline', async () => {
+    vi.useFakeTimers();
+    fake.execute.mockClear();
+    const release = vi.fn();
+    const queued = deferred<{ release: typeof release }>();
+    const db = { $client: { connect: () => queued.promise } } as unknown as Db;
+    const work = vi.fn(async () => true);
+    const pending = placeQaTransaction(db, 1500, {}, work);
+    const assertion = expect(pending).rejects.toMatchObject({ reason: 'timeout' });
+    await vi.advanceTimersByTimeAsync(1500);
+    await assertion;
+    queued.resolve({ release });
+    await Promise.resolve();
+    expect(release).toHaveBeenCalledExactlyOnceWith(true);
+    expect(work).not.toHaveBeenCalled();
+  });
+  it('cancels a stalled write, never commits it after cancellation', async () => {
+    fake.execute.mockReset().mockResolvedValue({ rows: [] });
+    const release = vi.fn(),
+      entered = deferred<void>(),
+      finish = deferred<void>();
+    const db = { $client: { connect: async () => ({ release }) } } as unknown as Db;
+    const controller = new AbortController();
+    const pending = placeQaTransaction(db, 1500, { signal: controller.signal }, async () => {
+      entered.resolve();
+      await finish.promise;
+      return true;
+    });
+    const assertion = expect(pending).rejects.toMatchObject({ reason: 'cancelled' });
+    await entered.promise;
+    const statements = fake.execute.mock.calls.length;
+    controller.abort();
+    await assertion;
+    finish.resolve();
+    await Promise.resolve();
+    expect(release).toHaveBeenCalledExactlyOnceWith(true);
+    expect(fake.execute.mock.calls.length).toBe(statements);
   });
 });

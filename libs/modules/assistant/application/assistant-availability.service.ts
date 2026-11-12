@@ -1,3 +1,4 @@
+import { placeQaRead, type PlaceQaReadOptions } from '../../search/infrastructure/place-qa-read';
 import { verifiedCreditBound } from '../../shared/assistant-credit-bound';
 import {
   AssistantCreditSpendRepository,
@@ -64,6 +65,14 @@ export class AssistantAvailabilityService {
     return resolveBooleanFlag(exec, 'assistant.enabled', {
       environment: flagEnvironmentOf(this.config.APP_ENV),
     });
+  }
+
+  placeQaEnabled(options: PlaceQaReadOptions = {}): Promise<boolean> {
+    return placeQaRead(this.db, 1500, options, (read) =>
+      resolveBooleanFlag(read, 'assistant.place_qa.enabled', {
+        environment: flagEnvironmentOf(this.config.APP_ENV),
+      }),
+    );
   }
 
   /** The configured limits, or null when any of them is missing. */

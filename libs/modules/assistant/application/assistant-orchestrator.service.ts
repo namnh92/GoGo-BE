@@ -1,3 +1,7 @@
+import { firstTextGuard, FirstTextDeadlineError, type FirstTextGuard } from './first-text-guard';
+export { firstTextGuard, FirstTextDeadlineError, type FirstTextGuard } from './first-text-guard';
+import { PlaceQaService } from './place-qa.service';
+import type { QaProbe } from '../domain/place-qa/classifier';
 import { flagEnvironmentOf } from '../../shared/feature-flags';
 import { AssistantUsageEvidenceRepository } from '../infrastructure/assistant-usage-evidence.repository';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
@@ -110,6 +114,8 @@ const secondsSince = (startedAtMs: number) => (Date.now() - startedAtMs) / 1000;
 
 export type TurnInput = {
   messageId: string;
+  replyToMessageId?: string | undefined;
+  followUpOptionId?: string | undefined;
   /** The turn's ledger row: its reservation, and where a BYOK violation is marked. */
   ledgerId: string;
   conversationId: string;
@@ -117,6 +123,8 @@ export type TurnInput = {
   text: string;
   locale: 'vi' | 'en';
   context: { kind: 'place' | 'plan'; id: string } | null;
+  /** GoGo-BE#873: the provisional marker the send wrote on the assistant row. */
+  qaProbe?: QaProbe | null;
 };
 
 /** Search candidates before ranking; cards shown after it (ADR-0036 §3D). */
@@ -338,6 +346,7 @@ export class AssistantOrchestrator {
     @Inject(ASSISTANT_LLM) private readonly llm: AssistantLlmPort | null,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
     @Optional() private readonly evidence?: AssistantUsageEvidenceRepository,
+    @Optional() private readonly placeQa?: PlaceQaService,
   ) {}
 
   async run(
@@ -357,7 +366,16 @@ export class AssistantOrchestrator {
     try {
       return await this.runStages(input, state, sink, signal, startedAt, deadline, guard);
     } catch (err) {
+      if (state.trace.route === 'place_qa') throw err;
       if (!(err instanceof FirstTextDeadlineError) || state.textStarted) throw err;
+      signal.throwIfAborted();
+      // GoGo-BE#873: a turn whose QA decision is still open is settled from
+      // durable facts first. A QA turn fails through the QA error path; only
+      // an ordinary one gets the ordinary timeout reply.
+      if (await this.placeQa?.settleUndecided(input, state, signal)) {
+        signal.throwIfAborted();
+        throw err;
+      }
       signal.throwIfAborted();
       await sink.emit({ type: 'delta', text: timeoutReply(input.locale) });
       await sink.emit({
@@ -386,6 +404,13 @@ export class AssistantOrchestrator {
     const remaining = () => deadline - Date.now();
 
     // ── context ──────────────────────────────────────────────────────────────
+    // Admission already ran. QA control precedence and lookups share the same
+    // first-text guard, before any episode/recommendation state is touched.
+    if (
+      this.placeQa &&
+      (await guard.run(() => this.placeQa!.handle(input, state, sink, guard.signal, deadline)))
+    )
+      return { status: 'complete' };
     const { history, currentId } = await guard.run(() => this.historyFor(input));
     const taxonomy = await guard.run(() => this.taxonomy.taxonomy());
     const labels = this.taxonomy.labels(taxonomy);
@@ -2259,75 +2284,6 @@ export class AssistantOrchestrator {
       clearTimeout(firstTextTimer);
     }
   }
-}
-
-/** The first-text deadline passed before any stage produced text. */
-export class FirstTextDeadlineError extends Error {
-  constructor() {
-    super('assistant first-text deadline passed');
-    this.name = 'FirstTextDeadlineError';
-  }
-}
-
-export type FirstTextGuard = {
-  /**
-   * Aborts when the deadline passes (until released) or the turn is aborted:
-   * a stage hands it to provider calls so abandoned work cannot start or
-   * continue paid calls (A-R2-06).
-   */
-  readonly signal: AbortSignal;
-  /**
-   * The stage's result, unless the deadline passes or the turn is aborted
-   * first. Lazy, so a stage the deadline already refused never starts.
-   */
-  run<T>(work: () => Promise<T>): Promise<T>;
-  /** Text is about to start (or the compose stage owns the deadline from here). */
-  release(): void;
-  dispose(): void;
-};
-
-export function firstTextGuard(deadline: number, signal: AbortSignal): FirstTextGuard {
-  let released = false;
-  let expire: (() => void) | null = null;
-  const expired = new Promise<never>((_resolve, reject) => {
-    expire = () => reject(new FirstTextDeadlineError());
-  });
-  expired.catch(() => undefined);
-  const deadlineController = new AbortController();
-  const timer = setTimeout(
-    () => {
-      deadlineController.abort(new FirstTextDeadlineError());
-      expire?.();
-    },
-    Math.max(0, deadline - Date.now()),
-  );
-  timer.unref?.();
-  return {
-    signal: AbortSignal.any([signal, deadlineController.signal]),
-    async run<T>(stage: () => Promise<T>): Promise<T> {
-      signal.throwIfAborted();
-      if (released) return stage();
-      if (Date.now() >= deadline) throw new FirstTextDeadlineError();
-      const work = stage();
-      const aborted = new Promise<never>((_resolve, reject) => {
-        const onAbort = () => reject(signal.reason ?? new Error('aborted'));
-        signal.addEventListener('abort', onAbort, { once: true });
-        void work
-          .finally(() => signal.removeEventListener('abort', onAbort))
-          .catch(() => undefined);
-      });
-      aborted.catch(() => undefined);
-      work.catch(() => undefined);
-      return Promise.race([work, expired, aborted]);
-    },
-    release() {
-      released = true;
-      clearTimeout(timer);
-    },
-    dispose() {
-      clearTimeout(timer);
-    },
-  };
 }
 
 /**

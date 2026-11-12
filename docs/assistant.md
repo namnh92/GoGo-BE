@@ -741,3 +741,93 @@ current-record updates, omission, and ref-only storage. Also run
 `apps/api/test/search.int.spec.ts` against Docker/PostGIS. No new telemetry:
 existing place-detail read/error metrics remain the source. Rollback removes
 the optional projection; no database migration is involved.
+
+## Named-place QA — S3, default off (#864 / #844)
+
+`assistant.place_qa.enabled` is a server flag with `defaultValue: false`.
+S3 does not enable it. Enablement requires the combined S4 + S5 behavioural gate,
+source-bound client compatibility and the separate DEV acceptance chain.
+
+Inside the existing first-text deadline, before `resolveEpisode`, the newest
+text is classified deterministically. Source-bound controls are validated first,
+including while disabled. Injection/action/guide and actual recommendation
+clauses retain the existing guarded path. Single-place factual questions use
+S2's canonical name resolver and fact policy; CMS amenity/suitability labels and synonyms use a separate QA-only vocabulary cache, outside the intent taxonomy; S1's semantic tokens and atomic
+reader render the answer, card and sources. QA never asks Jev, relevance or Haiku,
+never offers a proposal/budget question, and never bypasses admission, funding,
+master readiness, rate limits or credit settlement. Missing direct price uses
+“GoGo chưa có giá đã xác minh của địa điểm này” (owner Q-2).
+
+Recommendation history removes QA assistant rows and their server-associated
+user rows **in SQL before LIMIT**, independently of the flag. Episode-reference
+reads apply the same exclusion. The separate QA view reads the true latest
+accessible assistant message, including failed/empty turns. The send transaction
+records the server's question association; the QA producer durably marks
+`route: place_qa` before resolver/area/fact reads. Finalization merges trace,
+and stop/reaper retain this association. No QA text, chip, token or trace enters
+recommendation episode construction or model requests.
+
+An equality-only name probe has a provisional INSERT-time association, not a
+QA route. Exact canonical qualification establishes QA; an interrupted or
+unqualified probe without prior QA context retains ordinary history. Terminal
+uncertain probes are excluded from recommendation history and episode reads. Fuzzy name-only matches do not claim a QA
+answer. Factual unresolved names always remain QA and never borrow the opened
+context place. Explicit context-place referents work; previous-card and ordinal
+card referents remain S4.
+
+`trace.placeQa.pending` v1 stores references, closed semantic keys and arguments,
+config/semantic versions, source/assistant message IDs, candidate IDs, option
+IDs, timestamps and a retry count. It expires after 30 minutes, including across
+retries, or earlier when superseded, inaccessible or incompatible. Send
+`replyToMessageId` and `followUpOptionId` together or omit both (`400` for an
+unpaired field). Only a matching option on the latest accessible QA message
+selects a place. Typed ordinals/names ask for explicit confirmation; a confirmed
+name + current commune/province label or valid source-bound selection rechecks
+current availability/eligibility. The text-only chip is `Xác nhận <name> · <area>`
+without a code. A bare name/ordinal re-asks; identical labels across branches,
+incomplete candidate retrieval, missing area or identity over 200 characters
+never authorize an answer. Identity text is rendered, never persisted.
+Ambiguous replies receive one retry, then a restatement request. Current-area
+refinement reruns the complete original name query. Old districts require
+explicit branch confirmation; successor mapping is not implemented in S3.
+
+S3 emits no `place_topic` chips. Comparisons are recognized and consume a QA
+turn with neutral “chưa hỗ trợ” copy, with zero model calls. Full compare,
+previous-card references, topic chips/client consumers (S4), and curated aliases
+(S5) remain pending. S3 raises the deployment floor to marker-aware history,
+episode readers and recovery. Pause sends and drain old runners; deploy and
+verify that floor on every API/runner/reaper/recommendation instance before
+resuming sends. `0dd18c5e` is below the floor: its history predicate leaks a
+terminal `qaProbe` left by a newer writer. A mixed rollout with those readers is
+prohibited. Rollback disables the flag and retains the marker-aware floor;
+flag off alone does not permit an old binary because admission still writes
+probes. Returning below the floor requires a separate migration and owner order.
+
+Unequivocal new recommendation/action/guide/category requests bypass all QA
+reads, including the flag, in both flag states. Structured controls still take
+precedence. Fresh explicit factual questions skip latest-pending reads; flag
+disabled or a flag read error/1.5-second timeout takes the ordinary path.
+An observed disabled value is retained for terminal recovery. The first-text
+cleanup has one 1.5-second budget including flag, pool wait, UPDATE and commit;
+Stop/ceiling cancels it. Failed settlement keeps an uncertain probe, not a QA
+route. SQL statement timeout and connection destruction prevent abandoned work
+from committing later. See the [Astra S3 amendment](plans/sa-shape-be-844-ai-place-qa.rev3-amend-s3.astra.md).
+
+Telemetry uses closed class/topic/outcome/tier/row labels. Trace retains
+semantic/config versions and references, never names, text or fact snapshots.
+`assistant_place_qa_total`, S2 resolution metrics, S1 reader/fact metrics and
+`assistant_turn_duration_seconds{route="place_qa"}` distinguish production,
+delivery and failure. Zero calls have known zero model cost; an orphan's QA
+cost is zero only with a durable QA marker and no provider attempts. Ordinary
+unknown-cost treatment and credit reservations remain unchanged.
+
+The owner decision dated 2026-11-11 ("Theo đề xuất") in
+`dev/policy/decisions-log.md` makes vi-065, “Mấy giờ thì quán Highlands đóng cửa?”,
+a formal named-place hours QA case: flag on means zero model calls/attempts;
+flag off retains the baseline recommendation path. Shape rev3 §7 now preserves
+**the other 156** intent cases. This is the sole named exception, not permission
+to expand QA admission. The repository spec amendment is
+[864-s3-spec-amendment.md](plans/864-s3-spec-amendment.md).
+
+Validation, the corpus and the reproducible baseline procedure are recorded in
+[864-s3-validation.md](plans/864-s3-validation.md). S3 is not #844 acceptance.

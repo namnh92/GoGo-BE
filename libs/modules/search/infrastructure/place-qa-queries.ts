@@ -73,7 +73,12 @@ export function resolvePlaceNameQuery(
 export function placeFactsQuery(ids: readonly string[]): SQL {
   return sql`select p.id, p.status, not (${notProviderClosed()}) as provider_closed,
     p.name, ST_Y(p.geom) as lat, ST_X(p.geom) as lng,
-    ${publicAreaSummarySql('vi')} as area_summary, p.address_text, p.phone, p.suitability,
+    ${publicAreaSummarySql('vi')} as area_summary,
+    (select u.name from administrative_units u join administrative_dataset_versions d on d.id=u.dataset_version_id
+      where d.status='PUBLISHED' and d.combined_dataset_version=p.administrative_dataset_version
+        and p.administrative_mapping_status='VERIFIED' and u.level='PROVINCE' and u.code=p.province_code
+        and u.status='ACTIVE' and u.effective_from<=current_date and (u.effective_to is null or u.effective_to>=current_date)
+      order by u.effective_from desc limit 1) as province_name, p.address_text, p.phone, p.suitability,
     coalesce((select json_agg(json_build_object('kind',t.kind,'key',t.key,'active',t.is_active))
       from place_taxonomies pt join taxonomies t on t.id=pt.taxonomy_id where pt.place_id=p.id), '[]'::json) as taxonomies,
     coalesce((select json_agg(json_build_object('provider',ps.provider,'rating',ps.rating::text,

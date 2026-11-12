@@ -1,3 +1,7 @@
+import {
+  placeQaTransaction,
+  type PlaceQaReadOptions,
+} from '../../search/infrastructure/place-qa-read';
 import { AssistantUsageEvidenceRepository } from './assistant-usage-evidence.repository';
 import { AppError } from '../../shared/app-error';
 import {
@@ -13,6 +17,8 @@ import { DB } from '../../shared/tokens';
 import type { Tx } from '../../shared/outbox';
 import { isoUs } from '../domain/cursor';
 import { storedPreview } from '../domain/place-tokens';
+import type { QaProbe } from '../domain/place-qa/classifier';
+import { UNPRODUCED_GROUP } from '../domain/place-qa/reference-group';
 import type {
   AssistantTurnCredits,
   AssistantConversationCredits,
@@ -118,6 +124,47 @@ const CONVERSATION_COLUMNS = sql`c.id, c.user_id, c.title, c.context_kind, c.con
   c.message_count, c.preview, ${sql.raw(isoUs('c.created_at'))} as created_at,
   ${sql.raw(isoUs('c.last_message_at'))} as last_message_at, ${conversationCreditsSql(sql`c.id`, sql`c.user_id`)} as credits`;
 
+/**
+ * GoGo-BE#873 — the assistant partner (`qa`) that keeps a user message out of
+ * recommendation history: a QA route, or a terminal row whose provisional
+ * marker was never resolved (legacy finalization or interrupted settlement). A marker on a still-streaming row hides nothing: that turn needs its
+ * own question, and one conversation has one streaming turn.
+ */
+const QA_PARTNER = sql`(qa.trace->>'route'='place_qa' or (qa.status<>'streaming' and qa.trace->>'qaProbe' is not null))`;
+/**
+ * Whether an UNDECIDED provisional marker on row `m` is QA, from durable facts
+ * only: a `question` when the observed (or recovery) flag is on; a `name`/`reply` only as a typed
+ * reply to a QA turn. Never once the producer published ordinary frames or
+ * dispatched a model call — that turn already ran the ordinary path.
+ */
+function qaRecovered(merged: SQL, enabled: boolean): SQL {
+  return sql`(
+    m.trace->>'qaProbe' is not null
+    and coalesce(${merged}->>'route', '') <> 'place_qa'
+    and coalesce(m.trace->>'streamRoute', '') <> 'ordinary'
+    and not exists (
+      select 1 from assistant_usage_ledger u
+      join assistant_usage_calls c on c.usage_ledger_id = u.id
+      where u.message_id = m.id)
+    and (
+      (m.trace->>'qaProbe' = 'question' and
+        case when jsonb_typeof(m.trace->'qaEnabled') = 'boolean'
+          then (m.trace->>'qaEnabled')::boolean else ${enabled} end)
+      or (m.trace->>'qaProbe' in ('name', 'reply') and (
+        select l.trace->>'route' from assistant_messages l
+        where l.conversation_id = m.conversation_id and l.user_id = m.user_id
+          and l.role = 'assistant' and l.created_at < m.created_at
+        order by l.created_at desc, l.id desc limit 1) = 'place_qa')
+    )
+  )`;
+}
+/** The trace after settlement: the marker always goes; a recovered turn gets the route. */
+function qaSettled(recovered: SQL, merged: SQL): SQL {
+  return sql`(case when ${recovered}
+    then ${JSON.stringify({ placeAnswerGroup: UNPRODUCED_GROUP })}::jsonb || ${merged}
+      || '{"route":"place_qa","streamRoute":"place_qa"}'::jsonb
+    else ${merged} end) - 'qaProbe'`;
+}
 const MESSAGE_COLUMNS = sql`m.id, m.conversation_id, m.user_id, m.role, m.status, m.text,
   m.locale, m.context_kind, m.context_id, m.cards, m.follow_ups, m.notice, m.error, m.frames,
   m.trace, m.lease_owner, ${sql.raw(isoUs('m.lease_expires_at'))} as lease_expires_at,
@@ -313,8 +360,47 @@ export class AssistantRepository {
       where m.conversation_id = ${conversationId}
         and m.created_at < (select created_at from assistant_messages where id = ${beforeMessageId})
         and m.status <> 'streaming' and m.text <> ''
+        and coalesce(m.trace->>'route', '') <> 'place_qa'
+        and m.trace->>'qaProbe' is null
+        and not exists (
+          select 1 from assistant_messages qa
+          where qa.conversation_id=m.conversation_id and qa.user_id=m.user_id
+            and qa.role='assistant' and ${QA_PARTNER}
+            and qa.trace->>'questionMessageId'=m.id::text
+        )
       order by m.created_at desc, m.id desc limit ${limit}`);
     return rowsOf<MessageRow>(res).reverse();
+  }
+
+  /** The true latest accessible assistant turn, including failed/empty QA turns. */
+  async latestAssistant(
+    userId: string,
+    conversationId: string,
+    beforeMessageId: string,
+  ): Promise<MessageRow | null> {
+    const result = await this.db.execute(sql`
+      select ${MESSAGE_COLUMNS} from assistant_messages m
+      join assistant_conversations c on c.id=m.conversation_id and c.user_id=m.user_id
+      where m.conversation_id=${conversationId} and m.user_id=${userId}
+        and c.last_message_at > ${LIVE} and m.role='assistant'
+        and m.created_at < (select created_at from assistant_messages where id=${beforeMessageId} and user_id=${userId} and conversation_id=${conversationId})
+      order by m.created_at desc,m.id desc limit 1`);
+    return rowsOf<MessageRow>(result)[0] ?? null;
+  }
+
+  /** Durable route fence BEFORE resolver/fact/area reads; never accepts client pair IDs. */
+  async markPlaceQa(
+    userId: string,
+    conversationId: string,
+    messageId: string,
+  ): Promise<string | null> {
+    const result = await this.db.execute(sql`
+      update assistant_messages m set trace=coalesce(m.trace,'{}'::jsonb) || jsonb_build_object('route','place_qa','streamRoute','place_qa')
+      where m.id=${messageId} and m.user_id=${userId} and m.conversation_id=${conversationId}
+        and m.role='assistant' and m.status='streaming'
+        and m.trace->>'questionMessageId' is not null
+      returning m.trace->>'questionMessageId' as question_id`);
+    return rowsOf<{ question_id: string }>(result)[0]?.question_id ?? null;
   }
 
   /** Bounded episode sources, scoped to the already-authorized conversation. */
@@ -327,6 +413,7 @@ export class AssistantRepository {
       select ${MESSAGE_COLUMNS} from assistant_messages m
       where m.conversation_id = ${conversationId} and m.role = 'user'
         and m.created_at > ${LIVE}
+        and not exists (select 1 from assistant_messages qa where qa.conversation_id=m.conversation_id and qa.user_id=m.user_id and qa.role='assistant' and ${QA_PARTNER} and qa.trace->>'questionMessageId'=m.id::text)
         and m.id in (${sql.join(
           messageIds.map((id) => sql`${id}::uuid`),
           sql`, `,
@@ -424,8 +511,20 @@ export class AssistantRepository {
       billingPolicy?: string;
       billingEpoch?: string;
       acceptedAt?: Date;
+      /** GoGo-BE#873: pure classification of the text, no read (`qaProbeOf`). */
+      qaProbe?: QaProbe | null;
     },
   ): Promise<{ user: MessageRow; assistant: MessageRow; ledgerId: string }> {
+    // The QA association exists from the commit of the send itself, so no
+    // window is left for a crash or another writer before a later fence write.
+    // `control` is QA in every flag state; the others are a provisional marker
+    // that only the terminal write resolves (finalizeMessage).
+    const qaTrace =
+      input.qaProbe === 'control'
+        ? { route: 'place_qa', streamRoute: 'place_qa' }
+        : input.qaProbe
+          ? { qaProbe: input.qaProbe }
+          : {};
     const ctxKind = input.context?.kind ?? null;
     const ctxId = input.context?.id ?? null;
     // clock_timestamp(): two rows in one transaction would share now(), and the
@@ -439,10 +538,12 @@ export class AssistantRepository {
     const assistantRes = await tx.execute(sql`
       insert into assistant_messages as m
         (conversation_id, user_id, role, status, text, locale, context_kind, context_id,
-         lease_owner, lease_expires_at, created_at)
+         lease_owner, lease_expires_at, created_at, trace)
       values (${input.conversationId}, ${input.userId}, 'assistant', 'streaming', '', ${input.locale},
         ${ctxKind}, ${ctxId}, ${input.leaseOwner},
-        clock_timestamp() + (${input.leaseMs} * interval '1 millisecond'), clock_timestamp())
+        clock_timestamp() + (${input.leaseMs} * interval '1 millisecond'), clock_timestamp(),
+        jsonb_build_object('questionMessageId', ${rowsOf<MessageRow>(userRes)[0]!.id}::text)
+          || ${JSON.stringify(qaTrace)}::jsonb)
       returning ${MESSAGE_COLUMNS}`);
     const user = rowsOf<MessageRow>(userRes)[0]!;
     const assistant = rowsOf<MessageRow>(assistantRes)[0]!;
@@ -520,6 +621,51 @@ export class AssistantRepository {
     return res.rows.length === 1;
   }
 
+  /** Immutable producer observation, committed before any QA/ordinary dispatch.
+   * Pool acquisition, row lock, UPDATE and commit share the turn's deadline and cancellation.
+   */
+  async persistQaEnabled(
+    userId: string,
+    conversationId: string,
+    messageId: string,
+    enabled: boolean,
+    options: PlaceQaReadOptions,
+  ): Promise<boolean> {
+    const res = await placeQaTransaction(this.db, 1500, options, (tx) =>
+      tx.execute(sql`
+        update assistant_messages set
+          trace = coalesce(trace, '{}'::jsonb) || jsonb_build_object('qaEnabled', ${enabled}::boolean)
+        where id=${messageId} and conversation_id=${conversationId} and user_id=${userId}
+          and role='assistant' and status='streaming'
+          and (trace->'qaEnabled' is null or trace->'qaEnabled' = to_jsonb(${enabled}::boolean))
+        returning id`),
+    );
+    return res.rows.length === 1;
+  }
+
+  /**
+   * GoGo-BE#873 round 2 — settles a provisional marker of a turn that is still
+   * streaming and whose producer never decided, from the same durable facts
+   * the terminal write uses, BEFORE any ordinary frame is published (the
+   * first-text deadline fallback). True: the turn is QA now. A row another
+   * writer already ended matches nothing.
+   */
+  async settleQaProbe(
+    messageId: string,
+    enabled: boolean,
+    options: PlaceQaReadOptions = {},
+  ): Promise<boolean> {
+    const current = sql`coalesce(m.trace, '{}'::jsonb)`;
+    const res = await placeQaTransaction(this.db, 1500, options, (tx) =>
+      tx.execute(sql`
+      update assistant_messages m set trace = ${qaSettled(qaRecovered(current, enabled), current)}
+      where m.id = ${messageId} and m.status = 'streaming'
+        and m.trace->>'qaProbe' is not null
+      returning m.trace->>'route' as route`),
+    );
+    return rowsOf<{ route: string | null }>(res)[0]?.route === 'place_qa';
+  }
+
   /**
    * The one terminal write. Conditional on `streaming`, so of a turn, a stop
    * and the reaper, exactly one finalizes and the others see `null`. The
@@ -539,11 +685,26 @@ export class AssistantRepository {
       trace: Record<string, unknown> | null;
       sources: AssistantSourceData[];
     },
-    options: { onlyIfLeaseExpired?: boolean } = {},
+    options: {
+      onlyIfLeaseExpired?: boolean;
+      /**
+       * GoGo-BE#873 round 2 — how a provisional `qaProbe` marker ends.
+       * `decided`: this writer's producer already chose (its trace carries the
+       * route or not). Otherwise the turn ended before that choice and this
+       * statement makes it, from durable facts only; `enabled` is the QA flag
+       * as read by the caller, used for a `question` marker alone.
+       */
+      qa?: { decided: true } | { decided: false; enabled: boolean } | { uncertain: true };
+    } = {},
   ): Promise<MessageRow | null> {
     const leaseLapsed = options.onlyIfLeaseExpired
       ? sql`and (m.lease_expires_at is null or m.lease_expires_at < now())`
       : sql``;
+    const merged = sql`(coalesce(m.trace, '{}'::jsonb) || ${JSON.stringify(update.trace ?? {})}::jsonb)`;
+    const qa = options.qa ?? { decided: true };
+    const recovered =
+      'uncertain' in qa || qa.decided ? sql`false` : qaRecovered(merged, qa.enabled);
+    const settled = 'uncertain' in qa ? merged : qaSettled(recovered, merged);
     return this.db.transaction(async (tx) => {
       const res = await tx.execute(sql`
         update assistant_messages m set
@@ -553,7 +714,7 @@ export class AssistantRepository {
           notice = ${update.notice ? JSON.stringify(update.notice) : null}::jsonb,
           error = ${update.error ? JSON.stringify(update.error) : null}::jsonb,
           frames = ${update.frames ? JSON.stringify(update.frames) : null}::jsonb,
-          trace = ${update.trace ? JSON.stringify(update.trace) : null}::jsonb,
+          trace = ${settled},
           completed_at = now(), lease_owner = null, lease_expires_at = null
         where m.id = ${messageId} and m.status = 'streaming' ${leaseLapsed}
         returning ${MESSAGE_COLUMNS}`);
@@ -665,15 +826,21 @@ export class AssistantRepository {
   async completeLedger(ledgerId: string, status: string, costs: LedgerCosts): Promise<void> {
     await new AssistantUsageEvidenceRepository(this.db).closeDispatch(ledgerId);
     await this.db.execute(sql`
+      with qa_zero as (
+        select u.id from assistant_usage_ledger u join assistant_messages m on m.id=u.message_id
+        where u.id=${ledgerId} and m.status<>'streaming' and m.trace->>'route'='place_qa'
+          and u.jev_calls=0 and u.haiku_calls=0 and ${costs.jevCalls}=0 and ${costs.haikuCalls}=0
+          and not exists(select 1 from assistant_usage_calls c where c.usage_ledger_id=u.id)
+      )
       update assistant_usage_ledger set
         status = ${status}, completed_at = now(),
         jev_calls = ${costs.jevCalls}, jev_model = ${costs.jevModel},
         jev_input_tokens = ${costs.jevInputTokens}, jev_output_tokens = ${costs.jevOutputTokens},
-        jev_cost_usd = ${costs.jevCostUsd},
+        jev_cost_usd = case when id in (select id from qa_zero) then 0::numeric else ${costs.jevCostUsd}::numeric end,
         haiku_calls = ${costs.haikuCalls}, haiku_model = ${costs.haikuModel},
         haiku_input_tokens = ${costs.haikuInputTokens}, haiku_output_tokens = ${costs.haikuOutputTokens},
-        haiku_upstream_cost_usd = ${costs.haikuUpstreamCostUsd},
-        haiku_openrouter_cost_usd = ${costs.haikuOpenrouterCostUsd},
+        haiku_upstream_cost_usd = case when id in (select id from qa_zero) then 0::numeric else ${costs.haikuUpstreamCostUsd}::numeric end,
+        haiku_openrouter_cost_usd = case when id in (select id from qa_zero) then 0::numeric else ${costs.haikuOpenrouterCostUsd}::numeric end,
         haiku_is_byok = ${costs.haikuIsByok}
       where id = ${ledgerId}`);
   }
@@ -685,6 +852,14 @@ export class AssistantRepository {
    * (A-R-02). A runner still alive overwrites it with what it reported.
    */
   async closeLedgerForMessage(messageId: string): Promise<void> {
+    // A durable QA route proves no model dispatch is permitted. Still require
+    // zero attempts, so a corrupt/mixed trace can never launder unknown cost.
+    await this.db.execute(sql`update assistant_usage_ledger u set status=m.status,
+      completed_at=now(),jev_cost_usd=0,haiku_upstream_cost_usd=0,haiku_openrouter_cost_usd=0
+      from assistant_messages m where u.message_id=${messageId} and m.id=u.message_id
+      and u.status='accepted' and m.status<>'streaming' and m.trace->>'route'='place_qa'
+      and u.jev_calls=0 and u.haiku_calls=0
+      and not exists(select 1 from assistant_usage_calls c where c.usage_ledger_id=u.id)`);
     await this.db.execute(sql`
       update assistant_usage_ledger set status = 'unsettled', completed_at = now()
       where message_id = ${messageId} and status = 'accepted'`);

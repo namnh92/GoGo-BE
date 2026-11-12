@@ -1,3 +1,4 @@
+import { firstTextGuard } from './first-text-guard';
 import { isPlaceAnswerRow } from '../domain/place-qa/reference-group';
 import {
   Inject,
@@ -47,6 +48,8 @@ const KILL_SWITCH_POLL_MS = 3_000;
 const REAPER_MS = 60_000;
 /** How long ending a turn waits for the live buffer to take its frames. */
 const BUFFER_DRAIN_MS = 2_000;
+/** Bound on the one flag read a terminal write may need for an undecided QA question. */
+const QA_FLAG_RECOVERY_MS = 1_500;
 
 export type RunnableTurn = TurnInput;
 
@@ -207,6 +210,11 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
           // Producer progress only for QA references; visible delivery is measured
           // by the reader within the remaining accepted-turn allowance.
           state.textStarted = true;
+          if (referenceOnly && frame.text === '') {
+            flushDelta();
+            push(frame);
+            return;
+          }
           deltaBuffer += frame.text;
           if (deltaBuffer.length >= DELTA_FLUSH_CHARS) flushDelta();
           else deltaTimer ??= setTimeout(flushDelta, DELTA_FLUSH_MS);
@@ -323,17 +331,28 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
         ) as AssistantFrame;
         frames.push(terminal);
       }
-      const row = await this.repo.finalizeMessage(turn.messageId, {
-        status,
-        text: state.text,
-        cards: state.cards,
-        followUps: status === 'truncated' ? [] : state.followUps,
-        notice: state.notice,
-        error,
-        frames,
-        trace: state.trace,
-        sources: state.sources,
-      });
+      const row = await this.repo.finalizeMessage(
+        turn.messageId,
+        {
+          status,
+          text: state.text,
+          cards: state.cards,
+          followUps: status === 'truncated' ? [] : state.followUps,
+          notice: state.notice,
+          error,
+          frames,
+          trace: state.trace,
+          sources: state.sources,
+        },
+        // GoGo-BE#873: a turn that ended before PlaceQaService chose leaves
+        // its admission marker to the terminal write. No QA read precedes
+        // funding or escapes the first-text guard any more.
+        {
+          qa: state.qaSettlementUncertain
+            ? { uncertain: true }
+            : await this.qaResolution(state.qaDecided === true, turn.qaProbe, state.qaEnabled),
+        },
+      );
       // A-R-11 / A-R2-09: only the writer that finalized publishes — the
       // frames it held back after an abort, then its terminal. A runner that
       // lost to a stop or the reaper adds nothing after their terminal.
@@ -401,6 +420,34 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
     await this.repo.completeBufferPurges(dropped);
   }
 
+  /**
+   * How the terminal write settles a provisional QA marker (GoGo-BE#873). The
+   * flag is read only for an undecided QA-shaped question, bounded, and it can
+   * never enable QA on failure. A producer observation wins over recovery;
+   * otherwise unknown defaults disabled for this turn.
+   */
+  private async qaResolution(
+    decided: boolean,
+    probe: unknown,
+    observed?: boolean,
+  ): Promise<{ decided: true } | { decided: false; enabled: boolean }> {
+    if (decided) return { decided: true };
+    if (probe !== 'question') return { decided: false, enabled: false };
+    if (observed !== undefined) return { decided: false, enabled: observed };
+    const deadlineAt = Date.now() + QA_FLAG_RECOVERY_MS;
+    const guard = firstTextGuard(deadlineAt, new AbortController().signal);
+    try {
+      const enabled = await guard.run(() =>
+        this.availability.placeQaEnabled({ signal: guard.signal, deadlineAt }),
+      );
+      return { decided: false, enabled };
+    } catch {
+      return { decided: false, enabled: false };
+    } finally {
+      guard.dispose();
+    }
+  }
+
   /** Ends a streaming turn no process here is running (stop fallback, reaper). */
   async finalizeOrphan(
     row: MessageRow,
@@ -427,10 +474,17 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
         notice: state.notice,
         error,
         frames: all,
-        trace: { orphaned: true },
+        trace: { ...row.trace, orphaned: true },
         sources: state.sources,
       },
-      options,
+      {
+        ...options,
+        qa: await this.qaResolution(
+          false,
+          row.trace?.qaProbe,
+          typeof row.trace?.qaEnabled === 'boolean' ? row.trace.qaEnabled : undefined,
+        ),
+      },
     );
     if (finalized) {
       await this.buffer

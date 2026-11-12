@@ -357,6 +357,7 @@ Metric đang phát — danh sách đầy đủ, đối chiếu với `METRIC_LAB
 | `assistant_place_facts_duration_seconds` | `surface` | Batched QA fact read including snapshot preparation; surface live/replay/history/cms; explicit 2 s bucket |
 | `assistant_place_answer_token_ready_seconds` | — | Producer reference-ready time, not client-visible text success; no emission from replay |
 | `assistant_place_answer_first_visible_text_seconds` | `mode` | First nonempty text actually delivered to attached live SSE, including fixed errors; mode live. Use render result to distinguish successful fact delivery |
+| `assistant_place_qa_total` | `class`, `topic`, `outcome`, `tier` | #864/S3: closed classifier/control classes, answer topics, producer outcomes and S2 eligibility tiers; no text, names or IDs. Default-off route, zero model attempts. |
 | `assistant_place_resolution_total` | `row` | #857/S2: rev3 resolver truth-table row 1–6; no query/name/id labels. |
 
 Alert đề xuất (ngưỡng chỉnh sau khi có baseline thật):

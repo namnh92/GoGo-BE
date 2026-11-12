@@ -37,6 +37,9 @@ function harness(
     /** Holds finalizeMessage's answer until it resolves. */
     finalizeGate?: Promise<void>;
     metrics?: NoopMetrics;
+    /** GoGo-BE#873: funding gate, and the QA flag a terminal write may read. */
+    funding?: () => Promise<boolean>;
+    qaEnabled?: () => Promise<boolean>;
     persistRoute?: (
       messageId: string,
       owner: string,
@@ -64,7 +67,7 @@ function harness(
       purged.push([...ids]);
     },
     setTitleIfEmpty: async () => undefined,
-    runnableFunding: async () => true,
+    runnableFunding: async () => (opts.funding ? opts.funding() : true),
     releaseUndispatchedTurn: async () => undefined,
     completeLedger: async (_id: string, status: string) => {
       ledger.push({ status });
@@ -81,6 +84,7 @@ function harness(
   } as unknown as AssistantOrchestrator;
   const availability = {
     killSwitchOn: async () => (opts.killSwitch ? opts.killSwitch() : true),
+    placeQaEnabled: () => (opts.qaEnabled ? opts.qaEnabled() : Promise.resolve(true)),
   } as unknown as AssistantAvailabilityService;
   const config = { ASSISTANT_REPLY_MAX_MS: opts.replyMaxMs ?? 60_000 } as AssistantConfig;
   const runner = new AssistantTurnRunner(
@@ -266,7 +270,12 @@ describe('AssistantTurnRunner — Astra round 1 (GoGo-BE#717)', () => {
     await h.runner.finalizeOrphan({ id: 'm9', text: '' } as MessageRow, 'failed', null, {
       onlyIfLeaseExpired: true,
     });
-    expect(h.finalizeOptions[0]).toEqual({ onlyIfLeaseExpired: true });
+    // GoGo-BE#873 round 2: the terminal write also settles a provisional QA
+    // marker; this row has none, so nothing is read and nothing is promoted.
+    expect(h.finalizeOptions[0]).toEqual({
+      onlyIfLeaseExpired: true,
+      qa: { decided: false, enabled: false },
+    });
   });
 
   it('A-R-08: the reaper drops live buffers an erasure listed', async () => {
@@ -513,3 +522,155 @@ it.each(['failed write', 'lost lease'] as const)(
     expect(persistRoute).toHaveBeenCalledOnce();
   },
 );
+
+describe('GoGo-BE#873 round 2: no QA await before funding; the terminal write settles the marker', () => {
+  const gated = () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { gate, release };
+  };
+  it('a Stop while funding is unresolved hands an undecided QA question to the terminal write', async () => {
+    const order: string[] = [];
+    const { gate, release } = gated();
+    const h = harness(async () => ({ status: 'complete' }), {
+      funding: async () => {
+        order.push('funding');
+        await gate;
+        return true;
+      },
+      qaEnabled: async () => {
+        order.push('flag');
+        return true;
+      },
+    });
+    h.runner.start({ ...h.turn, qaProbe: 'question' });
+    await until(() => order.includes('funding'));
+    // Nothing QA-related ran or was awaited before funding.
+    expect(order).toEqual(['funding']);
+    const stopping = h.runner.stopLocal(h.turn.messageId);
+    release();
+    await stopping;
+    expect(order).toEqual(['funding', 'flag']);
+    expect(h.finalized[0]).toMatchObject({ status: 'stopped' });
+    expect(h.finalizeOptions[0]).toEqual({ qa: { decided: false, enabled: true } });
+  });
+  it('a flag read that never returns cannot hold the terminal write and defaults disabled', async () => {
+    const { gate, release } = gated();
+    const h = harness(async () => ({ status: 'complete' }), {
+      funding: async () => {
+        await gate;
+        return true;
+      },
+      qaEnabled: () => new Promise<boolean>(() => {}),
+    });
+    h.runner.start({ ...h.turn, qaProbe: 'question' });
+    const stopping = h.runner.stopLocal(h.turn.messageId);
+    release();
+    const startedAt = Date.now();
+    await stopping;
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+    expect(h.finalized[0]).toMatchObject({ status: 'stopped' });
+    expect(h.finalizeOptions[0]).toEqual({ qa: { decided: false, enabled: false } });
+  });
+  it.each([
+    ['name', undefined],
+    ['reply', undefined],
+    [null, undefined],
+    ['question', true],
+  ] as const)('probe %s (producer decided: %s) never reads the flag', async (probe, decided) => {
+    let flagReads = 0;
+    const h = harness(
+      async (state) => {
+        if (decided) state.qaDecided = true;
+        return { status: 'complete' };
+      },
+      {
+        qaEnabled: async () => {
+          flagReads += 1;
+          return true;
+        },
+      },
+    );
+    h.runner.start({ ...h.turn, qaProbe: probe });
+    await until(() => h.finalized.length === 1);
+    expect(flagReads).toBe(0);
+    expect(h.finalizeOptions[0]).toEqual({
+      qa: decided ? { decided: true } : { decided: false, enabled: false },
+    });
+  });
+  it('the reaper settles an orphan from the marker on its row', async () => {
+    const h = harness(async () => ({ status: 'complete' }), { qaEnabled: async () => false });
+    await h.runner.finalizeOrphan(
+      { id: 'm9', text: '', trace: { questionMessageId: 'q9', qaProbe: 'question' } } as never,
+      'failed',
+      null,
+      { onlyIfLeaseExpired: true },
+    );
+    expect(h.finalizeOptions[0]).toEqual({
+      onlyIfLeaseExpired: true,
+      qa: { decided: false, enabled: false },
+    });
+  });
+});
+
+describe('Astra A5/A6 terminal decisions', () => {
+  it.each([true, false])('r5 orphan keeps durable flag %s without resampling', async (observed) => {
+    const flag = vi.fn(async () => !observed);
+    const h = harness(async () => ({ status: 'complete' }), { qaEnabled: flag });
+    await h.runner.finalizeOrphan(
+      {
+        id: 'm9',
+        text: '',
+        trace: { questionMessageId: 'q9', qaProbe: 'question', qaEnabled: observed },
+      } as never,
+      'failed',
+      null,
+    );
+    expect(flag).not.toHaveBeenCalled();
+    expect(h.finalizeOptions[0]).toEqual({ qa: { decided: false, enabled: observed } });
+  });
+  it('keeps an observed disabled value through a producer failure', async () => {
+    const flag = vi.fn(async () => true);
+    const h = harness(
+      async (state) => {
+        state.qaEnabled = false;
+        throw new Error('ordinary producer failure');
+      },
+      { qaEnabled: flag },
+    );
+    h.runner.start({ ...h.turn, qaProbe: 'question' });
+    await until(() => h.finalized.length === 1);
+    expect(flag).not.toHaveBeenCalled();
+    expect(h.finalizeOptions[0]).toEqual({ qa: { decided: false, enabled: false } });
+  });
+  it('retains exclusion uncertainty after settlement failure without enabling QA', async () => {
+    const flag = vi.fn(async () => true);
+    const h = harness(
+      async (state) => {
+        state.qaSettlementUncertain = true;
+        throw new Error('settlement timeout');
+      },
+      { qaEnabled: flag },
+    );
+    h.runner.start({ ...h.turn, qaProbe: 'question' });
+    await until(() => h.finalized.length === 1);
+    expect(flag).not.toHaveBeenCalled();
+    expect(h.finalizeOptions[0]).toEqual({ qa: { uncertain: true } });
+    expect(h.finalized[0]?.trace?.route).toBeUndefined();
+  });
+  it('orphan flag rejection defaults disabled', async () => {
+    const h = harness(async () => ({ status: 'complete' }), {
+      qaEnabled: async () => {
+        throw new Error('flag unavailable');
+      },
+    });
+    await h.runner.finalizeOrphan(
+      { id: 'm9', text: '', trace: { questionMessageId: 'q9', qaProbe: 'question' } } as never,
+      'failed',
+      null,
+    );
+    expect(h.finalizeOptions[0]).toEqual({ qa: { decided: false, enabled: false } });
+  });
+});

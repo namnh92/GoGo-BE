@@ -1,4 +1,5 @@
-import { answerMessageValidity } from './place-qa/reference-group';
+import { QA_COPY } from './place-qa/copy';
+import { answerMessageValidity, parseReferenceGroup } from './place-qa/reference-group';
 import { answerQueries, mapPrivateTokens, parseAnswerToken, queryLabel } from './place-qa/tokens';
 
 /** A stored message's `trace` (null included); omit for text read without its row. */
@@ -60,7 +61,10 @@ export function renderPlaceTokens(
   fallback: string,
   onUnknown: () => void = () => {},
   trace?: StoredTrace,
+  locale: 'vi' | 'en' = 'vi',
 ): string {
+  const group = parseReferenceGroup(trace?.placeAnswerGroup, text);
+  if (group?.kind === 'notice') return QA_COPY[group.message!][locale];
   if (answerMessageValidity(text, trace) === 'invalid') {
     onUnknown();
     return fallback;
@@ -81,6 +85,8 @@ export function placeTokensAsIds(
   onUnknown: () => void = () => {},
   trace?: StoredTrace,
 ): string {
+  const group = parseReferenceGroup(trace?.placeAnswerGroup, text);
+  if (group?.kind === 'notice') return QA_COPY[group.message!][locale];
   if (answerMessageValidity(text, trace) === 'invalid') {
     onUnknown();
     return UNKNOWN_PLACE_LABEL[locale];

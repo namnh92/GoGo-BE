@@ -1,3 +1,4 @@
+import type { QaVocabularyEntry } from '../domain/place-qa/classifier';
 import { Inject, Injectable } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import type { Db } from '@gogo/database';
@@ -13,6 +14,7 @@ const CACHE_MS = 10 * 60 * 1000;
  */
 @Injectable()
 export class AssistantTaxonomyService {
+  private qaCached: { at: number; value: readonly QaVocabularyEntry[] } | null = null;
   private cached: { at: number; value: IntentTaxonomy } | null = null;
 
   constructor(@Inject(DB) private readonly db: Db) {}
@@ -52,6 +54,23 @@ export class AssistantTaxonomyService {
     }
     this.cached = { at: Date.now(), value };
     return value;
+  }
+
+  /** §5: a separate QA-only read/cache. Never extend IntentTaxonomy, which
+   * goes verbatim to Jev. Assignment eligibility remains entirely in S2. */
+  async qaVocabulary(): Promise<readonly QaVocabularyEntry[]> {
+    if (this.qaCached && Date.now() - this.qaCached.at < CACHE_MS) return this.qaCached.value;
+    const rows = await this.db.execute(sql`select t.kind::text as kind,t.key,
+      array(select l.label from taxonomy_labels l where l.taxonomy_id=t.id and l.locale in ('vi','en')) ||
+      array(select s.term from taxonomy_synonyms s where s.taxonomy_id=t.id and s.locale in ('vi','en')) as terms
+      from taxonomies t where t.is_active and t.kind in ('amenity','suitability') order by t.kind,t.key`);
+    const value = (rows.rows as { kind: 'amenity' | 'suitability'; key: string; terms: string[] }[])
+      .filter((row) => /^[a-z][a-z0-9_-]{0,63}$/.test(row.key))
+      .map((row) =>
+        Object.freeze({ ...row, terms: Object.freeze([...new Set([row.key, ...row.terms])]) }),
+      );
+    this.qaCached = { at: Date.now(), value: Object.freeze(value) };
+    return this.qaCached.value;
   }
 
   /** key → vi label, for model-bound descriptions. */
