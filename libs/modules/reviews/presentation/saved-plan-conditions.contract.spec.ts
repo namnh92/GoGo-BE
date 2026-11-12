@@ -36,6 +36,6 @@ describe('GoGo-BE#759 saved plan condition facts', () => {
   });
 
   it('bumps the alpha contract once', () => {
-    expect(doc.info.version).toBe('10.3.0-alpha.1');
+    expect(doc.info.version).toBe('11.0.0-alpha.1');
   });
 });

@@ -8,6 +8,53 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 11.0.0-alpha.1 — Account member seed contributions (#878)
+
+MAJOR behavioral change: both seed routes now enforce draft/collecting and room
+expiry, including host DELETE and keyed replay. POST runtime status changes from
+201 to the documented 200. New additions require published catalog places within
+both room area filters and the total quota of 10 distinct seeds across all
+contributors. Legacy over-quota rooms retain all data and can delete/no-op.
+
+Active account members may add and remove only their membership's contributions;
+host removes any. Guests always receive 403, including guest rows with member
+role. Paths/operation IDs and old request bodies remain valid. Both mutation
+responses are RoomSeedPlacesResponse with constraintVersion and required
+membership-only addedByMemberId, preserving position. RoomSummary uses the same
+seed DTO. Typed errors document permissions, state, area/quota and replay.
+
+Optional seed Idempotency-Key binds normalized body and concrete resources for
+24h; changed body/resource is 422, unsafe legacy records are 409
+IDEMPOTENCY_CONTEXT_CHANGED (reload/use new key). Replay rechecks authority/state;
+DELETE replay never removes a later re-add. Missing keys have current-state
+no-op semantics only. Changed sets advance the version and stale dependent data.
+`11.0.0-alpha.1` remains a MAJOR bump from the rebased `10.3.0-alpha.1`.
+The new `room.seed_places_changed` value expands the closed SSE response enum at
+`GET /rooms/{id}/events` (`RoomEvent.event_type`), breaking strict/exhaustive
+readers. Before rollout, consumers must regenerate their types and add a tolerant
+unknown-event branch. Old clients must ignore unknown event payloads, invalidate
+cached room/seed state and refetch the room and seed list while continuing the
+stream; unknown values must not fail the stream decoder or disconnect it. Never
+infer ownership or apply deltas from an unknown payload. ADR-0057 records the
+BE-BFF-012 decision; `CODEOWNERS` maps the contract and exact-byte exception to
+`@namnh92`, whose exact-revision sign-off is a separate gate.
+
+New room.seed_places_changed SSE enum signals refetch after commit; delivery is
+best-effort, requiring focus/reconnect/resync refetch and polling fallback. No new
+push/inbox. Generate consumer types/artifacts from this spec; do not infer member
+ownership when attribution is absent on an older server. See ADR-0057 for rollout
+and compatible rollback; this version alone does not prove mobile compatibility.
+
+## 10.3.0-alpha.1 — Curated place aliases (#887 / #901)
+
+Additive MINOR: CMS place details expose curated `aliases`; PATCH can replace or
+clear the set with `expectedUpdatedAt` and editorial `aliasProvenance`. Omission
+preserves aliases. Merge retains alias provenance, keeps the canonical entry on
+normalized collisions and rejects a union over 20 with
+`409 PLACE_ALIAS_LIMIT_EXCEEDED`. Consumers must regenerate types and handle this
+conflict before offering alias editing or merge. Exact alias resolution remains
+subject to the existing place-QA activation gates.
+
 ## 10.2.0-alpha.1 — S3 activation of place QA (#864 / #844)
 
 S3 accepts the already-declared paired follow-up fields and validates the latest

@@ -325,3 +325,39 @@ describe('room event stream reconnect over Redis (GoGo-BE#638, ADR-0027)', () =>
     reopened.close();
   });
 });
+
+describe('#878 seed event SSE reconnect', () => {
+  it('replays the seed refresh signal after an opaque cursor so clients can refetch ownership', async () => {
+    const roomId = randomUUID();
+    const stream = await open(roomId);
+    const before = await publisher.publish({ roomId, type: 'participant.joined' });
+    expect(
+      await stream.until((f) => f.some((e) => eventIdOf(e) === before.event.event_id), 5000),
+    ).toBe(true);
+    const cursor = stream.frames.find((e) => eventIdOf(e) === before.event.event_id)!.id!;
+    stream.close();
+    const event = await publisher.publish({
+      roomId,
+      type: 'room.seed_places_changed',
+      actorId: randomUUID(),
+      payload: {
+        operation: 'remove',
+        addedPlaceIds: [],
+        removedPlaceIds: [randomUUID()],
+        constraintVersion: 3,
+      },
+    });
+    const resumed = await open(roomId, cursor);
+    try {
+      expect(
+        await resumed.until((f) => f.some((e) => eventIdOf(e) === event.event.event_id), 5000),
+      ).toBe(true);
+      const frame = resumed.frames.find((e) => eventIdOf(e) === event.event.event_id)!;
+      expect(frame.type).toBe('room.seed_places_changed');
+      expect(frame.data?.payload).toEqual(event.event.payload);
+      expect(frame.id).toBeTruthy();
+    } finally {
+      resumed.close();
+    }
+  });
+});

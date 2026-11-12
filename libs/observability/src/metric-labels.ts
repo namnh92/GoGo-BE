@@ -31,6 +31,9 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   room_invite_allocation_total: ['operation', 'result'],
   room_invite_collision_total: ['operation', 'result'],
   room_invite_foundation_readiness_total: ['operation', 'result'],
+  room_seed_mutation_total: ['operation', 'actor_kind', 'role', 'outcome'],
+  room_seed_mutation_duration_seconds: ['operation', 'actor_kind', 'role', 'outcome'],
+  room_seed_sse_publish_failed_total: [],
   // #788: owned-history query duration, including failures, without identity labels.
   my_place_submissions_query_duration_ms: [],
   my_place_submission_display_total: ['outcome'],

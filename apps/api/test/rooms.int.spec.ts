@@ -47,6 +47,8 @@ const baseConstraint = {
   budgetAmount: 300_000,
   currency: 'VND',
   radiusM: 5000,
+  originLat: 10.776,
+  originLng: 106.7,
   areaKey: 'hcm_q1',
 };
 
@@ -329,13 +331,6 @@ describe('permission matrix (SRS §15.7 — hand-crafted requests)', () => {
         remoteAddress: ip(),
         headers: auth(memberToken),
         payload: {},
-      }),
-      api().inject({
-        method: 'POST',
-        url: `/v1/rooms/${room.id}/seed-places`,
-        remoteAddress: ip(),
-        headers: auth(memberToken),
-        payload: { placeIds: [placeIds[0]] },
       }),
     ]) {
       const res = await attempt;
@@ -2009,8 +2004,17 @@ describe('BE-BFF-017 partial preference matching', () => {
     expect(started.json()).toMatchObject({
       status: 'matching',
       participantCount: 3,
-      constraints: baseConstraint,
+      // RoomSummary omits private input coordinates on both base and #878.
+      constraints: {
+        budgetMode: baseConstraint.budgetMode,
+        budgetAmount: baseConstraint.budgetAmount,
+        currency: baseConstraint.currency,
+        radiusM: baseConstraint.radiusM,
+        areaKey: baseConstraint.areaKey,
+      },
     });
+    expect(started.json().constraints).not.toHaveProperty('originLat');
+    expect(started.json().constraints).not.toHaveProperty('originLng');
     expect(started.json().members).toHaveLength(3);
     const generation = await api().inject({
       method: 'POST',
@@ -2026,11 +2030,16 @@ describe('BE-BFF-017 partial preference matching', () => {
       .from(schema.suggestionRuns)
       .where(eq(schema.suggestionRuns.id, runId));
     const snapshot = run!.inputSnapshot as {
+      origin: { lat: number; lng: number } | null;
       participantCount: number;
       completedMemberCount: number;
       memberPreferences: { selections: Record<string, string[]> }[];
     };
     expect(snapshot.participantCount).toBe(3);
+    expect(snapshot.origin).toEqual({
+      lat: baseConstraint.originLat,
+      lng: baseConstraint.originLng,
+    });
     expect(snapshot.completedMemberCount).toBe(2);
     expect(snapshot.memberPreferences).toHaveLength(3);
     expect(

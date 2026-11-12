@@ -1,3 +1,7 @@
+import { normalizeSeedIds, ROOM_SEED_LIMIT } from '../domain/seed-contribution';
+import { listSeedPlaces, mutateSeedPlaces, type SeedMutationInput } from './seed-mutation';
+import { validateSeedPlaces } from './seed-validation';
+import { invalidateRoomInputs } from './room-input-invalidation';
 import {
   lockCreditCutover,
   lockCreditRecipients,
@@ -240,9 +244,27 @@ export class RoomsRepository {
         ...(administrativeArea ? { areaKey: null } : {}),
         createdByMemberId: member!.id,
       });
-      if (input.seedPlaceIds.length > 0) {
+      const seedIds = normalizeSeedIds(input.seedPlaceIds);
+      if (seedIds.length > ROOM_SEED_LIMIT)
+        throw AppError.conflict(
+          'SEED_PLACE_LIMIT_REACHED',
+          'Rooms allow at most 10 distinct seed places',
+        );
+      await validateSeedPlaces(
+        tx,
+        seedIds,
+        {
+          administrativeArea,
+          areaKey: constraint.areaKey ?? null,
+          originLat: constraint.originLat ?? null,
+          originLng: constraint.originLng ?? null,
+          radiusM: constraint.radiusM ?? null,
+        },
+        'seedPlaceIds',
+      );
+      if (seedIds.length > 0) {
         await tx.insert(schema.roomSeedPlaces).values(
-          input.seedPlaceIds.map((placeId, i) => ({
+          seedIds.map((placeId, i) => ({
             roomId: room!.id,
             placeId,
             position: i,
@@ -390,15 +412,7 @@ export class RoomsRepository {
         ...(administrativeArea ? { areaKey: null } : {}),
         createdByMemberId: input.memberId,
       });
-      await tx
-        .update(schema.candidateScores)
-        .set({ isStale: true })
-        .where(eq(schema.candidateScores.roomId, input.roomId));
-      await tx
-        .update(schema.plans)
-        .set({ isStale: true, updatedAt: sql`now()` })
-        .where(eq(schema.plans.roomId, input.roomId));
-      await syncReminderSchedule(tx, input.roomId);
+      await invalidateRoomInputs(tx, input.roomId);
       await writeOutbox(tx, input.event);
       return version;
     });
@@ -770,42 +784,10 @@ export class RoomsRepository {
   }
 
   listSeedPlaces(roomId: string) {
-    return this.db
-      .select({
-        placeId: schema.roomSeedPlaces.placeId,
-        position: schema.roomSeedPlaces.position,
-        name: schema.places.name,
-      })
-      .from(schema.roomSeedPlaces)
-      .innerJoin(schema.places, eq(schema.places.id, schema.roomSeedPlaces.placeId))
-      .where(eq(schema.roomSeedPlaces.roomId, roomId))
-      .orderBy(asc(schema.roomSeedPlaces.position));
+    return listSeedPlaces(this.db, roomId);
   }
 
-  async addSeedPlaces(roomId: string, placeIds: string[], memberId: string): Promise<void> {
-    const existing = await this.db
-      .select({ n: sql<number>`coalesce(max(${schema.roomSeedPlaces.position}), -1)` })
-      .from(schema.roomSeedPlaces)
-      .where(eq(schema.roomSeedPlaces.roomId, roomId));
-    const base = (existing[0]?.n ?? -1) + 1;
-    await this.db
-      .insert(schema.roomSeedPlaces)
-      .values(
-        placeIds.map((placeId, i) => ({
-          roomId,
-          placeId,
-          position: base + i,
-          createdByMemberId: memberId,
-        })),
-      )
-      .onConflictDoNothing();
-  }
-
-  async removeSeedPlace(roomId: string, placeId: string): Promise<void> {
-    await this.db
-      .delete(schema.roomSeedPlaces)
-      .where(
-        and(eq(schema.roomSeedPlaces.roomId, roomId), eq(schema.roomSeedPlaces.placeId, placeId)),
-      );
+  mutateSeedPlaces(input: SeedMutationInput) {
+    return mutateSeedPlaces(this.db, input);
   }
 }

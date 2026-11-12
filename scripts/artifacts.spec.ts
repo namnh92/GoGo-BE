@@ -76,6 +76,7 @@ describe('contract artifacts', () => {
       readFileSync(path.join(artifacts, 'events/room-event.schema.json'), 'utf8'),
     ) as { properties: { event_type: { enum: string[] } } };
     expect(schema.properties.event_type.enum).toContain('participant.selection_changed');
+    expect(schema.properties.event_type.enum).toContain('room.seed_places_changed');
     // ADR-0027: stream-level frames never carry the domain envelope.
     expect(schema.properties.event_type.enum).not.toContain('resync');
     expect(schema.properties.event_type.enum).not.toContain('heartbeat');

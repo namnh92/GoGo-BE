@@ -172,3 +172,21 @@ it('drains later reminder recipients after a ledger-owned provider failure (F-02
   );
   expect(statements.at(-1)!.sql).toContain("status in ('pending', 'attempting')");
 });
+
+describe('#878 seed events do not notify', () => {
+  it('repeated fanout creates no inbox, delivery ledger or provider request', async () => {
+    const f = fixture();
+    const worker = new OutboxDispatcher(
+      {
+        execute: vi.fn(() => {
+          throw new Error('Unexpected DB notification write');
+        }),
+      } as never,
+      f.push,
+    );
+    const fanout = worker as unknown as { fanOut(e: typeof event): Promise<void> };
+    await fanout.fanOut({ ...event, eventType: 'room.seed_places_changed' });
+    await fanout.fanOut({ ...event, eventType: 'room.seed_places_changed' });
+    expect(f.push.sent).toHaveLength(0);
+  });
+});

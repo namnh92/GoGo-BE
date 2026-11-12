@@ -219,6 +219,19 @@
       "diagnostic": "error [response-property-became-not-enum] at openapi/gogo.v1.yaml in API GET /cms/users/{id}/assistant-credits removed the enum constraint from the `items/items/reason` response property for the response status `200`",
       "reason": "ADR-0054 (docs/adr/0054-assistant-actual-cost-credit-funding.md) authorizes MAJOR 10.0.0-alpha.1 for free-first actual-cost funding, including open CMS reasons for variable debits and signed adjustments. The consumer migration note is openapi/CHANGELOG.md section 10.0.0-alpha.1: CMS must regenerate its contract/client and deploy tolerant reason readers before activation.",
       "note": "Both SHA-256 values use raw YAML bytes as scripts/check-contract-compat.ts does. The base bytes were fetched by immutable commit through the GitHub connector, with their blob SHA verified locally; no git commands were used. The revision YAML is unchanged from the reviewed head. The diagnostic comes from CI run 42958267031 job 130318448927, retained in scripts/fixtures/be-851-oasdiff-ci.txt. Replay with --expect=BE-851-credit-reason-open must admit it exactly once. Changed contract bytes or any unrecorded diagnostic still fail. This records the authorized transition only; CODEOWNER sign-off remains separate and pending."
+    },
+    {
+      "id": "BE-878-room-seed-places-changed",
+      "issue": "https://github.com/namnh92/GoGo-BE/issues/878",
+      "decidedAt": "2026-11-12",
+      "decidedBy": "owner in-session PR #902 CI-fix brief: retain room.seed_places_changed, declare MAJOR 11.0.0-alpha.1 under BE-BFF-012 and record the exact-byte exception; exact-revision Astra/CODEOWNER sign-off remains separate and pending",
+      "baseCommit": "c73211004ec73328cfae8b84733bee2787e4eaa0",
+      "baseSha256": "1fc14c780b82ac9e730beb8a38944e8b3239047ab363be57a151848d94d6a48b",
+      "revisionBasis": "Resolved mid-rebase worktree for the squashed #878 commit onto origin/re-design c73211004ec73328cfae8b84733bee2787e4eaa0, retaining info.version 11.0.0-alpha.1; revisionSha256 identifies the final contract bytes without claiming a completed rebase commit",
+      "revisionSha256": "397b162fffd93cf0546da6e218624bbd3b0d3a03f87a32904593e0bb257eaa82",
+      "diagnostic": "error [response-property-enum-value-added] at openapi/gogo.v1.yaml in API GET /rooms/{id}/events added the new `room.seed_places_changed` enum value to the `oneOf[#/components/schemas/RoomEvent]/event_type` response property for the response status `200`",
+      "reason": "ADR-0057 (docs/adr/0057-room-seed-contributions.md), BE-BFF-012: member seed mutations emit room.seed_places_changed after commit. Expanding RoomEvent.event_type at GET /rooms/{id}/events is breaking for closed-enum readers, so the contract remains MAJOR 11.0.0-alpha.1 from base 10.3.0-alpha.1. openapi/CHANGELOG.md requires tolerant unknown-event handling: ignore unknown payloads, invalidate and refetch room/seed state, and keep consuming the stream. CODEOWNERS maps the contract and exception to @namnh92.",
+      "note": "Raw YAML SHA-256 values were recomputed after resolving the source conflicts and are checked by scripts/check-contract-compat.ts. The base was extracted directly from the verified local origin/re-design commit object c73211004ec73328cfae8b84733bee2787e4eaa0 without executing git. The diagnostic is captured from CI run 43246232307 job 131279510061 (scripts/fixtures/be-878-oasdiff-ci.txt). Local --expect=BE-878-room-seed-places-changed replays that historical report only; fresh oasdiff against the rebased contracts is still required. Changed bytes or additional findings fail. This entry records the authorized transition, not exact-revision CODEOWNER approval."
     }
   ]
 }

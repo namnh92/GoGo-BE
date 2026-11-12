@@ -10,6 +10,7 @@
  */
 export const ROOM_EVENT_TYPES = [
   'room.status_changed',
+  'room.seed_places_changed',
   'participant.joined',
   'participant.left',
   'participant.selection_changed',

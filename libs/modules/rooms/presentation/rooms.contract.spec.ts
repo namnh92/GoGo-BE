@@ -134,3 +134,14 @@ describe('rooms contract', () => {
     }
   });
 });
+
+describe('#878 guest prohibition and seed ownership contract', () => {
+  it('documents account permissions, state precedence, room-wide quota and best-effort realtime', () => {
+    const text = readFileSync(SPEC, 'utf8');
+    expect(text).toContain('Guests always receive 403');
+    expect(text).toContain('State is checked before ownership');
+    expect(text).toContain('At most 10 distinct seeds per room across all contributors');
+    expect(text).toContain('post-commit SSE is best-effort');
+    expect(text).toContain('room.seed_places_changed');
+  });
+});
