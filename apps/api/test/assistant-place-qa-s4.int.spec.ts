@@ -20,7 +20,7 @@ const corpus = {
   cases: [...s3.cases.filter((c) => s4.coreS3Ids.includes(c.id)), ...s4.cases],
 };
 import catalogue from '../../../libs/modules/assistant/eval/place-qa-fixtures.json';
-import { stripVolatile } from './support/strip-volatile';
+import { stripVolatile } from '../../../libs/modules/shared/test-support/strip-volatile';
 
 /** Layer A, not a resolver/producer simulation. Real API/auth/admission/modules,
  * Testcontainers PostGIS, SQL catalogue/facts, runner, SSE/replay and history.
