@@ -117,11 +117,11 @@ the four symptom failures plus every preservation pass.
 
 Earlier supplied head evidence was 415/415 before this round. It does not cover
 these fixes or the two new vi-065 Layer A cells; it is not relabeled as current.
-The old setup-only result is superseded. DEV ran both sides with Docker on 2026-11-11 and re-ran them on the Fable fix-round commit `5b14af7e` on 2026-11-12 (same counts); logs live in the GoGo workspace (not this repo) under `dev/test-evidence/be-864/`.
+The old setup-only result is superseded. DEV ran both sides with Docker on 2026-11-11 and re-ran them on the Fable fix-round commits `5b14af7e` and `68988c24` on 2026-11-12 (same counts each time); logs live in the GoGo workspace (not this repo) under `dev/test-evidence/be-864/`.
 
 | Evidence                                      | Base                                                                                                    | Head                                                                    |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| Tested source SHA / dirty snapshot digest     | `d2d41184` + overlay of 9 test files (clean otherwise; script refuses non-test changes)                 | `5b14af7e` clean (diff sha256 `e3b0c442…` = empty)                      |
+| Tested source SHA / dirty snapshot digest     | `d2d41184` + overlay of 9 test files (clean otherwise; script refuses non-test changes)                 | `68988c24` clean (diff sha256 `e3b0c442…` = empty)                      |
 | Harness/overlay hashes                        | spec `9c504fcd`, cases `c8a3d100`, fixtures `789eee8c`, intents `48c1cc33`, support ×5 (`overlay.json`) | identical hashes (verified per file)                                    |
 | Vitest command exit                           | 1 (expected: incident + capability failures)                                                            | 0                                                                       |
 | Four incident IDs, symptom FAIL / PASS counts | 4 / 4 FAIL at symptom (reply asks for an area "Bạn muốn đi ở khu vực nào?" instead of the fact)         | 4 / 4 PASS                                                              |
@@ -129,7 +129,7 @@ The old setup-only result is superseded. DEV ran both sides with Docker on 2026-
 | Capability PASS / FAIL counts                 | 0 / 205                                                                                                 | 205 / 0                                                                 |
 | qa-vi-065-on: calls / attempts                | Capability measurement                                                                                  | 0 / 0 (jev_calls 0, haiku_calls 0, attempts 0)                          |
 | Full Layer A tests passed / failed / skipped  | 187 / 209 / 21 (21 = S3-only state/history/control tests, skipped by baseline mode)                     | 417 / 0 / 0                                                             |
-| JSON and log paths                            | `dev/test-evidence/be-864/r3/base/` (cases.json, vitest.json, test.log, overlay.json)                   | `dev/test-evidence/be-864/r3/head/` (cases.json, vitest.json, test.log) |
+| JSON and log paths                            | `dev/test-evidence/be-864/r4/base/` (cases.json, vitest.json, test.log, overlay.json)                   | `dev/test-evidence/be-864/r4/head/` (cases.json, vitest.json, test.log) |
 
 ## Local fix-round checks
 
