@@ -966,6 +966,14 @@ export class PlaceQaService {
             return true;
           }
           const resumable = p !== null && (p.kind === 'choice' || p.kind === 'confirm');
+          // Re-check the pending's lineage this turn (question, referent, name
+          // sources); sourcesOf also restores a reply-sourced name binding. A
+          // broken lineage recovers neither candidates nor partner (Astra table).
+          if (resumable && !(await sourcesOf(p!))) {
+            pending('referent', trace!.questionMessageId);
+            await notice('clarify_referent');
+            return true;
+          }
           if (resumable) {
             // Same lineage: keep its own referent source; only the topic changes.
             resume(p);

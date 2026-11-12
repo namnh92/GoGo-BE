@@ -517,3 +517,113 @@ describe('S4 review round 1 (Opus + Fable advisor, Astra decisions 2026-11-12)',
     expect(r.qa.pending.slots[1].resolvedPlaceId).toBeUndefined();
   });
 });
+describe('S4 review round 2 (confirm round F-04/F-05)', () => {
+  const currentArea = {
+    kind: 'resolved',
+    value: { area: { datasetVersion: 'fixture', provinceCode: '01', communeCode: '00001' } },
+  };
+  it.each(['Quán này giá bao nhiêu?', 'giá bao nhiêu?'])(
+    'F-02 main row: a valid singleton confirm then "%s" confirms again, never answers',
+    async (text) => {
+      const f = fixture();
+      await f.send('Fictional Orchid có wifi không?');
+      const confirm = await f.send('1');
+      expect(confirm.qa.outcome).toBe('confirm');
+      expect(confirm.view.cards.map((c) => c.placeId)).toEqual([B]);
+      const r = await f.send(text);
+      expect(r.qa.outcome).toBe('confirm');
+      expect(r.view.cards.map((c) => c.placeId)).toEqual([B]);
+      expect(r.qa.pending).toMatchObject({ kind: 'confirm', topic: 'price' });
+    },
+  );
+  it('F-02 legacy row: a legacy-district singleton confirm keeps the legacy gate', async () => {
+    const f = fixture();
+    const q = await f.send('Fictional Lantern ở Quận 1 có wifi không?');
+    expect(q.qa.outcome).toBe('confirm');
+    expect(q.state.trace.placeAnswerGroup).toMatchObject({ legacyArea: true });
+    const r = await f.send('giá bao nhiêu?');
+    expect(r.qa.outcome).toBe('confirm');
+    expect(r.view.cards.map((c) => c.placeId)).toEqual([A]);
+    expect(r.state.trace.placeAnswerGroup).toMatchObject({ legacyArea: true });
+  });
+  it('an unavailable referenced clarification card re-asks without cards', async () => {
+    const f = fixture();
+    await f.send('Fictional Orchid giá bao nhiêu?');
+    f.update(C, { available: false });
+    const r = await f.send('Quán thứ 2 có wifi không?');
+    expect(r.qa.outcome).toBe('clarify_referent');
+    expect(r.view.cards).toEqual([]);
+  });
+  it('F-04: a broken pending lineage recovers no candidates', async () => {
+    const f = fixture();
+    const q = await f.send('Fictional Orchid giá bao nhiêu?');
+    f.users.delete(q.userId);
+    const r = await f.send('Quán thứ 2 có wifi không?');
+    expect(r.qa.outcome).toBe('clarify_referent');
+    expect(r.view.cards).toEqual([]);
+  });
+  it('F-04: a reply-sourced single-slot name stays bound through the ordinal confirm', async () => {
+    const f = fixture();
+    const asked = await f.send('giá bao nhiêu?');
+    expect(asked.qa.outcome).toBe('clarify_referent');
+    const named = await f.send('Fictional Orchid');
+    expect(named.view.cards.map((c) => c.placeId)).toEqual([B, C]);
+    expect(named.qa.pending).toMatchObject({
+      questionMessageId: asked.userId,
+      slots: [{ sourceMessageId: named.userId }],
+    });
+    const r = await f.send('Quán thứ 2 có wifi không?');
+    expect(r.qa.pending.slots[0].sourceMessageId).toBe(named.userId);
+    f.areas.resolve.mockResolvedValue(currentArea as never);
+    f.search.resolvePlaceName.mockClear();
+    await f.send('Phường Một, Hà Nội');
+    expect(f.search.resolvePlaceName).toHaveBeenCalledWith('Fictional Orchid', expect.anything());
+  });
+  it('M-01: an exact family named like an ordinal gives a choice, never card 2', async () => {
+    const f = fixture();
+    f.update(B, { name: 'Quán 2' });
+    f.update(C, { name: 'Quán 2' });
+    f.places.delete(A);
+    const r = await f.send('Quán 2 giá bao nhiêu?');
+    expect(r.qa.outcome).toBe('choice');
+    expect(r.view.cards.map((c) => c.placeId)).toEqual([B, C]);
+  });
+  it('M-01: an exact name with a legacy area confirms instead of answering', async () => {
+    const f = fixture();
+    f.update(A, { name: 'Quán thứ 2' });
+    const r = await f.send('Quán thứ 2 ở Quận 1 giá bao nhiêu?');
+    expect(r.qa.outcome).toBe('confirm');
+    expect(r.view.cards.map((c) => c.placeId)).toEqual([A]);
+  });
+  it.each([
+    ['Quán thứ 2 vào thứ 3 mở cửa mấy giờ?', B, { day: 'weekday', d: 2 }],
+    ['Quán thứ 2 mở cửa mấy giờ?', B, { day: 'date', date: '2026-11-11' }],
+  ] as const)('M-02: "%s" over ordinary cards', async (text, id, args) => {
+    const f = fixture();
+    f.places.delete(C);
+    await f.send('So sánh Fictional Lantern với Fictional Orchid');
+    const r = await f.send(text);
+    // A direct answer for card N (no_data when the fixture lacks that day).
+    expect(['answer', 'no_data']).toContain(r.qa.outcome);
+    expect(r.view.cards.map((c) => c.placeId)).toEqual([id]);
+    expect(r.qa.args).toMatchObject(args);
+  });
+  it('M-02: "Quán này thứ 2" over a sole card asks Monday', async () => {
+    const f = fixture();
+    await f.send('Fictional Lantern giá bao nhiêu?');
+    const r = await f.send('Quán này thứ 2 mở cửa mấy giờ?');
+    expect(r.view.cards.map((c) => c.placeId)).toEqual([A]);
+    expect(r.qa.args).toMatchObject({ day: 'weekday', d: 1 });
+  });
+  it('M-02: "Quán thứ 2 mở cửa" over clarification cards confirms card 2 for today', async () => {
+    const f = fixture();
+    await f.send('Fictional Orchid giá bao nhiêu?');
+    const r = await f.send('Quán thứ 2 mở cửa mấy giờ?');
+    expect(r.qa.outcome).toBe('confirm');
+    expect(r.view.cards.map((c) => c.placeId)).toEqual([C]);
+    expect(r.qa.pending).toMatchObject({
+      topic: 'hours',
+      args: { day: 'date', date: '2026-11-11' },
+    });
+  });
+});
