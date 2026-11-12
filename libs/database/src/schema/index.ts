@@ -14,3 +14,4 @@ export * from './profile';
 export * from './privacy';
 export * from './assistant';
 export * from './system-announcements';
+export * from './place-aliases';

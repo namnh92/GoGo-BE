@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { planAliasWrite, type AliasWriteInput } from '../domain/place-aliases';
 import { SubmissionPhotoService } from '../../ingestion/application/submission-photo.service';
 import { acquireCmsProviderPhoto } from '../../places/application/provider-photo-reservation';
 import { isSubmissionPhotoKey, communityPhotoUrl } from '../../shared/submission-photo-url';
@@ -81,7 +83,7 @@ const PLACE_TRANSITIONS: Record<PlaceStatus, PlaceStatus[]> = {
  * previously never empty a value it had filled, because an empty input arrived
  * as `undefined` and was skipped.
  */
-export type PlaceEditInput = {
+export type PlaceEditInput = AliasWriteInput & {
   /**
    * #440 F-07 — evidence for each explicitly supplied non-null administrative
    * code (`provinceCode`, `communeCode`). On create, the full key set.
@@ -150,7 +152,7 @@ export type PlaceEditInput = {
  */
 export type PlaceCreateInput = Omit<
   PlaceEditInput,
-  'name' | 'lat' | 'lng' | 'expectedUpdatedAt'
+  'name' | 'lat' | 'lng' | 'expectedUpdatedAt' | 'aliases' | 'aliasProvenance'
 > & {
   name: string;
   lat: number;
@@ -598,6 +600,7 @@ function attributableProvincePredicate(datasetVersionId: string): SQL {
  * normalized on the way out rather than assumed.
  */
 type PlaceDetailRow = {
+  aliases: string[];
   id: string;
   name: string;
   description: string | null;
@@ -1355,6 +1358,8 @@ export class CmsCatalogService {
     const [row] = (
       await this.db.execute(sql`
         select p.id, p.name, p.description, p.status, p.address_text, p.area_key,
+               coalesce((select jsonb_agg(a.alias order by a.alias_normalized)
+                 from place_aliases a where a.place_id=p.id), '[]'::jsonb) as aliases,
                p.city, p.district,
                -- ADM-016: the canonical administrative identity, as stored.
                p.province_code, p.commune_code, p.administrative_mapping_status,
@@ -1444,6 +1449,7 @@ export class CmsCatalogService {
 
     return {
       verification,
+      aliases: row.aliases,
       id: row.id,
       name: row.name,
       description: row.description,
@@ -1984,6 +1990,7 @@ export class CmsCatalogService {
   }
 
   async updatePlace(adminId: string, placeId: string, input: PlaceEditInput) {
+    const aliases = planAliasWrite(input);
     const [before] = await this.db
       .select()
       .from(schema.places)
@@ -2120,7 +2127,11 @@ export class CmsCatalogService {
           ...(input.suitability !== undefined ? { suitability: input.suitability } : {}),
           ...(input.isLodging !== undefined ? { isLodging: input.isLodging } : {}),
           ...(input.curatedRank !== undefined ? { curatedRank: input.curatedRank } : {}),
-          updatedAt: sql`now()`,
+          // Date-based CMS versions have millisecond precision. Two saves in one
+          // millisecond must still expose different versions after the row lock.
+          updatedAt: aliases
+            ? sql`greatest(clock_timestamp(), ${schema.places.updatedAt} + interval '1 millisecond')`
+            : sql`now()`,
         })
         .where(eq(schema.places.id, placeId))
         .returning();
@@ -2169,6 +2180,42 @@ export class CmsCatalogService {
       }
 
       await writeContactProvenance(tx, placeId, adminId, contact);
+
+      if (aliases) {
+        const previous = await tx
+          .select({ key: schema.placeAliases.aliasNormalized })
+          .from(schema.placeAliases)
+          .where(eq(schema.placeAliases.placeId, placeId));
+        await tx.delete(schema.placeAliases).where(eq(schema.placeAliases.placeId, placeId));
+        if (aliases.entries.length)
+          await tx.insert(schema.placeAliases).values(
+            aliases.entries.map((entry) => ({
+              ...entry,
+              placeId,
+              createdBy: adminId,
+              sourceType: aliases.evidence.sourceType,
+              sourceReference: aliases.evidence.sourceReference,
+              collectedAt: new Date(aliases.evidence.collectedAt),
+            })),
+          );
+        const digest = (keys: string[]) =>
+          createHash('sha256').update(JSON.stringify(keys.sort())).digest('hex');
+        await writeAudit(tx, {
+          actorType: 'admin',
+          actorId: adminId,
+          action: 'place.aliases_updated',
+          resourceType: 'place',
+          resourceId: placeId,
+          diff: {
+            before: { count: previous.length, digest: digest(previous.map((a) => a.key)) },
+            after: {
+              count: aliases.entries.length,
+              digest: digest(aliases.entries.map((a) => a.aliasNormalized)),
+            },
+            evidence: aliases.evidence,
+          },
+        });
+      }
 
       if (material && dataset) {
         const settled = await this.settleMapping(tx, adminId, current, row!, {

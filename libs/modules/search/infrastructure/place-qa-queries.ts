@@ -20,7 +20,7 @@ const textArray = (values: readonly string[]) =>
 export const placeNameKeySql = schema.placeNameKey;
 
 /**
- * EXPLAIN this function, not a separately maintained SQL copy. Aliases join in S5.
+ * EXPLAIN this function, not a separately maintained SQL copy. Alias channels deduplicate by place id before cutoff.
  * `readings` are the longer whole-name readings of the same message
  * (`PlaceNameAlternate`): exact-equality probes only, never fuzzy. `scoped`
  * ones share the stated area; `unscoped` ones swallowed the area text itself.
@@ -47,18 +47,31 @@ export function resolvePlaceNameQuery(
     order by score desc, p.id limit ${limit + 1}
   )`,
   );
-  return sql`with exact_matches as (
+  // Separate indexed scans keep alias support from turning name equality into
+  // a correlated OR over the whole catalog. Both exact channels are complete.
+  const exactChannel = (names: readonly string[], policy: SQL) => sql`
     select p.id, true as exact, 1::float8 as score from places p
-    where ${eligible} and ${key} = any(${textArray([...new Set([...variants, ...readings.scoped])])})
-    ${
-      readings.unscoped.length
-        ? sql`union all select p.id, true as exact, 1::float8 as score from places p
-    where ${published} and ${key} = any(${textArray([...new Set(readings.unscoped)])})`
-        : sql``
-    }
+    where ${policy} and ${key} = any(${textArray(names)})
+    union all
+    select p.id, true as exact, 1::float8 as score
+    from place_aliases a join places p on p.id=a.place_id
+    where ${policy} and a.alias_normalized = any(${textArray(names)})
+    group by p.id`;
+  const aliasFuzzy = variants.map(
+    (span) => sql`(
+    select p.id, false as exact,
+      max(greatest(word_similarity(${span}, a.alias_normalized), similarity(a.alias_normalized, ${span})))::float8 as score
+    from place_aliases a join places p on p.id=a.place_id
+    where ${eligible} and (${span} <% a.alias_normalized or a.alias_normalized % ${span})
+    group by p.id order by score desc, p.id limit ${limit + 1}
+  )`,
+  );
+  return sql`with exact_matches as (
+    ${exactChannel([...new Set([...variants, ...readings.scoped])], eligible)}
+    ${readings.unscoped.length ? sql`union all ${exactChannel([...new Set(readings.unscoped)], published)}` : sql``}
   ), merged as (
     select id, bool_or(exact) as exact, max(score) as score from (
-      select * from exact_matches union all ${sql.join(fuzzy, sql` union all `)}
+      select * from exact_matches union all ${sql.join([...fuzzy, ...aliasFuzzy], sql` union all `)}
     ) channels group by id
   ) select id, exact, score, count(*) over()::int as distinct_count
     from merged order by exact desc, score desc, id limit ${Math.max(limit + 1, 4)}`;

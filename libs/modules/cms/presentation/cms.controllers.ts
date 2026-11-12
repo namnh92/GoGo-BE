@@ -1,3 +1,4 @@
+import { placeAliasesSchema, aliasProvenanceSchema } from '../domain/place-aliases';
 import { setStrongEtagHeaders } from '../../shared/strong-etag-headers';
 import { schema } from '@gogo/database';
 import { verificationSchema } from '../../shared/venue-verification';
@@ -753,6 +754,8 @@ const ADMINISTRATIVE_CODE = z
   .regex(/^[0-9]{2,5}$/, 'an administrative code is 2 to 5 digits');
 
 const placeEditSchema = z.object({
+  aliases: placeAliasesSchema.optional(),
+  aliasProvenance: aliasProvenanceSchema.optional(),
   name: z.string().trim().min(1).max(200).optional(),
   description: z.string().max(4000).nullable().optional(),
   addressText: z.string().max(400).nullable().optional(),
@@ -802,26 +805,28 @@ const placeEditSchema = z.object({
  * one is answered `GOOGLE_CONTENT_NOT_PERSISTABLE` rather than silently
  * stripped.
  */
-const placeCreateSchema = placeEditSchema.omit({ expectedUpdatedAt: true }).extend({
-  name: z.string().trim().min(1).max(200),
-  lat: z.number().finite().min(-90).max(90),
-  lng: z.number().finite().min(-180).max(180),
-  allowDuplicate: z.boolean().optional(),
-  /** #465 — same shape Google's own share links carry. Identity only. */
-  googlePlaceId: z
-    .string()
-    .trim()
-    .regex(/^[\w-]{6,255}$/, 'not a Google Place ID')
-    .optional(),
-  googleDerivedFields: z.array(z.enum(GOOGLE_DERIVABLE_FIELDS)).max(8).optional(),
-  /**
-   * #440 F-02 — only "an object of strings" here. Which keys are allowed,
-   * which are required and how long each may be are answered by the service
-   * as `SOURCE_REFERENCE_INVALID`, one entry per key, so a client gets the one
-   * documented code whatever it got wrong. Absent means `{}`.
-   */
-  sourceReferences: z.record(z.string(), z.string()).optional(),
-});
+const placeCreateSchema = placeEditSchema
+  .omit({ expectedUpdatedAt: true, aliases: true, aliasProvenance: true })
+  .extend({
+    name: z.string().trim().min(1).max(200),
+    lat: z.number().finite().min(-90).max(90),
+    lng: z.number().finite().min(-180).max(180),
+    allowDuplicate: z.boolean().optional(),
+    /** #465 — same shape Google's own share links carry. Identity only. */
+    googlePlaceId: z
+      .string()
+      .trim()
+      .regex(/^[\w-]{6,255}$/, 'not a Google Place ID')
+      .optional(),
+    googleDerivedFields: z.array(z.enum(GOOGLE_DERIVABLE_FIELDS)).max(8).optional(),
+    /**
+     * #440 F-02 — only "an object of strings" here. Which keys are allowed,
+     * which are required and how long each may be are answered by the service
+     * as `SOURCE_REFERENCE_INVALID`, one entry per key, so a client gets the one
+     * documented code whatever it got wrong. Absent means `{}`.
+     */
+    sourceReferences: z.record(z.string(), z.string()).optional(),
+  });
 
 /**
  * PI-BE-020 (#465) — the editor's half of add-by-link.

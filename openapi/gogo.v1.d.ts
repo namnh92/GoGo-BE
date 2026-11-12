@@ -10241,7 +10241,22 @@ export interface components {
                 message: string;
             } | null;
         };
+        /** @description GoGo-owned curated names only; never model, provider or user-chat output. Whole normalized equality is exact. Shared aliases require branch choice. CMS PATCH replaces the complete set; omitted leaves it unchanged; [] clears. Every replacement (including clear) requires expectedUpdatedAt and aliasProvenance. Normalized duplicates collapse. Editor writes (and the existing super_admin override) only; immutable audit stores counts/digests and evidence, never raw aliases. Invalid input is 400 VALIDATION_FAILED; stale version is 409 PLACE_MODIFIED. The version is rechecked under lock. */
+        CmsPlaceAliases: string[];
+        /** @description Independent evidence supporting the entire replacement set (or its removal). No Google reference, provider response, model output or user-chat text; copying/transcription does not change ownership. Not fetched by the server. Stored atomically with aliases and audit. Required when aliases is supplied; rejected without aliases. */
+        CmsAliasProvenance: {
+            /** @enum {string} */
+            sourceType: "editorial";
+            /** @description Independent source, e.g. merchant statement, official website or field visit; Google and transport-only job/sheet references rejected. */
+            sourceReference: string;
+            /**
+             * Format: date-time
+             * @description Zoned collection timestamp, normalized to UTC; maximum five-minute future clock skew.
+             */
+            collectedAt: string;
+        };
         CmsPlaceDetail: {
+            aliases: components["schemas"]["CmsPlaceAliases"];
             verification?: components["schemas"]["CmsVenueVerification"];
             /** Format: uuid */
             id: string;
@@ -20093,6 +20108,8 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    aliases?: components["schemas"]["CmsPlaceAliases"];
+                    aliasProvenance?: components["schemas"]["CmsAliasProvenance"];
                     /** @description Enforced: trimmed, 1..200 characters. Required to be non-empty. */
                     name?: string;
                     /** @description Enforced: at most 4000 characters. */

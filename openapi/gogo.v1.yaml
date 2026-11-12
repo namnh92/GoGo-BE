@@ -2,7 +2,7 @@ openapi: 3.1.0
 x-gogo-notification-preference-semantics: master-and-five-categories-v1
 info:
   title: GoGo API
-  version: 10.2.0-alpha.1
+  version: 10.3.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -9061,6 +9061,10 @@ paths:
                 console meanwhile mirrors them in `cmsPlaceContract.ts` with a
                 test that fails when the two disagree.
               properties:
+                aliases:
+                  $ref: '#/components/schemas/CmsPlaceAliases'
+                aliasProvenance:
+                  $ref: '#/components/schemas/CmsAliasProvenance'
                 name:
                   type: string
                   description: 'Enforced: trimmed, 1..200 characters. Required to be non-empty.'
@@ -19891,12 +19895,52 @@ components:
                 ]
             message: { type: string }
 
+    CmsPlaceAliases:
+      type: array
+      maxItems: 20
+      description: >
+        GoGo-owned curated names only; never model, provider or user-chat output.
+        Whole normalized equality is exact. Shared aliases require branch choice.
+        CMS PATCH replaces the complete set; omitted leaves it unchanged; [] clears.
+        Every replacement (including clear) requires expectedUpdatedAt and
+        aliasProvenance. Normalized duplicates collapse. Editor writes (and the
+        existing super_admin override) only; immutable audit stores counts/digests
+        and evidence, never raw aliases. Invalid input is 400 VALIDATION_FAILED;
+        stale version is 409 PLACE_MODIFIED. The version is rechecked under lock.
+      items:
+        type: string
+        minLength: 1
+        maxLength: 120
+        description: Trimmed non-empty text; controls, format characters and line/paragraph separators rejected before trimming.
+    CmsAliasProvenance:
+      type: object
+      additionalProperties: false
+      required: [sourceType, sourceReference, collectedAt]
+      description: >
+        Independent evidence supporting the entire replacement set (or its removal).
+        No Google reference, provider response, model output or user-chat text;
+        copying/transcription does not change ownership. Not fetched by the server.
+        Stored atomically with aliases and audit. Required when aliases is supplied;
+        rejected without aliases.
+      properties:
+        sourceType: { type: string, enum: [editorial] }
+        sourceReference:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: Independent source, e.g. merchant statement, official website or field visit; Google and transport-only job/sheet references rejected.
+        collectedAt:
+          type: string
+          format: date-time
+          description: Zoned collection timestamp, normalized to UTC; maximum five-minute future clock skew.
+
     CmsPlaceDetail:
       type: object
       required:
         [
           id,
           name,
+          aliases,
           status,
           ratings,
           taxonomyIds,
@@ -19908,6 +19952,7 @@ components:
           updatedAt,
         ]
       properties:
+        aliases: { $ref: '#/components/schemas/CmsPlaceAliases' }
         verification: { $ref: '#/components/schemas/CmsVenueVerification' }
         id: { type: string, format: uuid }
         name: { type: string }
