@@ -462,7 +462,7 @@ describe('Sol fix round (r5): durable producer observation before dispatch', () 
       expect(answered.qa).toMatchObject({ outcome: 'answer', topic: 'price' });
       expect(answered.qa!.candidateIds).toEqual([ids['lantern']]);
       expect(answered.stored?.locale).toBe('vi');
-      expect(answered.text).toContain('12000–24000 VND/người');
+      expect(answered.text).toContain('12.000–24.000 VND/người');
       expect(capture).toEqual({ jev: [], haiku: [] });
     },
   );
@@ -811,13 +811,14 @@ describe('Round 2 — terminal recovery is bounded and never promotes an ordinar
 });
 
 describe('Sol F-02: an old client types the emitted option text', () => {
-  it('choice → emitted ordinal → singleton confirm → emitted text → answer, with no model', async () => {
+  it('choice → legacy ordinal → singleton confirm → emitted text → answer, with no model', async () => {
     const c = await conversation();
     resetCapture();
     const choice = await turn(c, 'Song Ngọc giá bao nhiêu?');
     expect(choice.qa).toMatchObject({ outcome: 'choice', topic: 'price' });
     const picked = choice.message.followUps[0].options[0];
-    const confirm = await turn(c, picked.text);
+    expect(picked.text).toContain('Song Ngọc');
+    const confirm = await turn(c, '1');
     expect(confirm.message.followUps[0].field).toBe('place_confirm');
     expect(confirm.qa).toMatchObject({ outcome: 'confirm', topic: 'price' });
     expect(confirm.qa!.candidateIds).toHaveLength(1);
@@ -843,13 +844,16 @@ describe('Sol F-02: an old client types the emitted option text', () => {
     resetCapture();
     const choice = await turn(c, 'Song Ngọc giá bao nhiêu?');
     const options = choice.message.followUps[0].options;
-    expect(options.map((o: { text: string }) => o.text).slice(0, 2)).toEqual(['1', '2']);
-    const confirmB = await turn(c, options[1].text);
+    expect(options.map((o: { text: string }) => o.text).slice(0, 2)).toEqual([
+      'Song Ngọc · Cầu Giấy, Hà Nội',
+      'Song Ngọc · Cầu Giấy, Hà Nội',
+    ]);
+    const confirmB = await turn(c, '2');
     expect(confirmB.qa).toMatchObject({ outcome: 'confirm' });
     const [b] = confirmB.qa!.candidateIds;
     expect(b).toBe(choice.qa!.candidateIds[1]);
     // The old client taps branch A's chip of the EARLIER message: text "1".
-    const stale = await turn(c, options[0].text);
+    const stale = await turn(c, '1');
     expect(stale.qa?.outcome).not.toBe('answer');
     expect(stale.text).not.toContain('VND');
     expect(stale.qa).toMatchObject({ outcome: 'confirm', candidateIds: [b] });
@@ -871,7 +875,7 @@ describe('Sol F-02: an old client types the emitted option text', () => {
     const answered = await turn(c, confirm.message.followUps[0].options[0].text);
     expect(answered.qa).toMatchObject({ outcome: 'answer', topic: 'price' });
     expect(answered.qa!.candidateIds).toEqual([ids['lantern']]);
-    expect(answered.text).toContain('12000–24000 VND/người');
+    expect(answered.text).toContain('12.000–24.000 VND/người');
     expect(capture).toEqual({ jev: [], haiku: [] });
   });
 });

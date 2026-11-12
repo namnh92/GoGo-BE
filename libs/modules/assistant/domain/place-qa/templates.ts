@@ -91,8 +91,8 @@ export function renderPlaceAnswer(query: AnswerQuery, context: PlaceFactContext)
       body +
       (fact.tier === 'verified_reference'
         ? en
-          ? ` Reference information verified on ${fact.verifiedAt.slice(0, 10)}; it may have changed. Confirm with the place.`
-          : ` Thông tin tham khảo, xác minh ngày ${fact.verifiedAt.slice(0, 10)}; có thể đã thay đổi; cần xác nhận với địa điểm.`
+          ? `${/[.!?]$/.test(body) ? '' : '.'} Reference information verified on ${fact.verifiedAt.slice(0, 10)}; it may have changed. Confirm with the place.`
+          : `${/[.!?]$/.test(body) ? '' : '.'} Thông tin tham khảo, xác minh ngày ${fact.verifiedAt.slice(0, 10)}; có thể đã thay đổi; cần xác nhận với địa điểm.`
         : en
           ? ` (GoGo data dated ${fact.verifiedAt.slice(0, 10)})`
           : ` (Dữ liệu GoGo ngày ${fact.verifiedAt.slice(0, 10)})`)
@@ -158,7 +158,7 @@ export function renderPlaceAnswer(query: AnswerQuery, context: PlaceFactContext)
             ? en
               ? 'Free'
               : 'Miễn phí'
-            : `${r.min === r.max ? amount(r.min, r.currency, locale) : `${amount(r.min, r.currency, locale)}–${amount(r.max, r.currency, locale)}`} ${r.currency}/${units[locale][r.unit]}`,
+            : `${r.min === r.max ? amount(r.min, r.currency, locale) : `${amount(r.min, r.currency, locale)}–${amount(r.max, r.currency, locale)}`} ${r.currency}${en ? ' per ' : '/'}${units[locale][r.unit]}`,
           evidence,
         ),
       )
@@ -231,7 +231,7 @@ export function renderPlaceAnswer(query: AnswerQuery, context: PlaceFactContext)
           ? ` (requested date ${query.date}). Special-day/holiday exceptions are unavailable.`
           : ` (ngày được hỏi ${query.date}). GoGo chưa có ngoại lệ cho ngày đặc biệt/ngày lễ.`
         : '';
-    return result(`${heading}: ${body}.${dateNote}`, sorted, true);
+    return result(`${heading}: ${body}${body.endsWith('.') ? '' : '.'}${dateNote}`, sorted, true);
   }
   if (topic === 'address' || topic === 'directions' || topic === 'contact') {
     const fact = topic === 'contact' ? p.facts.contact : p.facts.address;
@@ -278,7 +278,7 @@ export function renderPlaceAnswer(query: AnswerQuery, context: PlaceFactContext)
     .filter((v) => v.label);
   if (!entries.length) return missing();
   return result(
-    `${en ? 'GoGo records' : 'GoGo ghi nhận'}: ${entries.map((e) => decorate(e.label, e.fact)).join('; ')}.`,
+    `${en ? 'GoGo records' : 'GoGo ghi nhận'}: ${entries.map((e) => decorate(e.label, e.fact)).join('; ')}`,
     entries.map((e) => e.fact),
     true,
   );
@@ -290,5 +290,8 @@ function amount(minor: number, currency: string, locale: 'vi' | 'en'): string {
       .maximumFractionDigits ?? 2;
   const scale = 10n ** BigInt(exponent),
     value = BigInt(minor);
-  return `${value / scale}${exponent ? `${locale === 'vi' ? ',' : '.'}${(value % scale).toString().padStart(exponent, '0')}` : ''}`;
+  const whole = (value / scale)
+    .toString()
+    .replace(/\B(?=(\d{3})+(?!\d))/g, locale === 'vi' ? '.' : ',');
+  return `${whole}${exponent ? `${locale === 'vi' ? ',' : '.'}${(value % scale).toString().padStart(exponent, '0')}` : ''}`;
 }

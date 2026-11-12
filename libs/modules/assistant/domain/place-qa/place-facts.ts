@@ -1,3 +1,4 @@
+import type { PlaceCard } from '../../application/card-hydrator.service';
 import type { AnswerTopic } from './tokens';
 
 export type VerifiedFact<T> = Readonly<{
@@ -34,6 +35,10 @@ export type PlaceFacts = Readonly<{
   name: string;
   /** Published dataset identity, used only to distinguish branch confirmations. */
   areaLabel?: string;
+  /** Ephemeral PlaceDetail/hydrator projection, independent of prose tier policy. */
+  card?: PlaceCard;
+  /** Published catalogue has another whole-name/current-area identity. */
+  hasIdentityCollision?: boolean;
   facts: Readonly<{
     /** Exactly one complete schedule per weekday, with per-interval evidence. */
     hours?: readonly ScheduleFact[];

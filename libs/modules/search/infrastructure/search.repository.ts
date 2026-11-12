@@ -477,7 +477,7 @@ export class SearchRepository {
    * The one Place Detail statement, exposed so a test can EXPLAIN exactly what
    * `placeDetail` sends (GoGo-BE#217 F-01) instead of a copy that can drift.
    */
-  placeDetailQuery(placeId: string): SQL {
+  placeDetailQuery(placeId: string | readonly string[]): SQL {
     return sql`
       select
         p.id, p.name, p.description, p.status, p.address_text, p.area_key,
@@ -559,8 +559,9 @@ export class SearchRepository {
         from reviews r
         where r.place_id = p.id and r.status = ${PUBLIC_REVIEW_STATUS}
       ) gr
-      where p.id = ${placeId} and p.status in ('published', 'community_submitted')
-      limit 1
+      where ${typeof placeId === 'string' ? sql`p.id = ${placeId}` : sql`p.id = any((${pgArray([...placeId])})::uuid[])`}
+        and p.status in ('published', 'community_submitted')
+      ${typeof placeId === 'string' ? sql`limit 1` : sql``}
     `;
   }
 

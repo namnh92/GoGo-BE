@@ -781,12 +781,32 @@ IDs, timestamps and a retry count. It expires after 30 minutes, including across
 retries, or earlier when superseded, inaccessible or incompatible. Send
 `replyToMessageId` and `followUpOptionId` together or omit both (`400` for an
 unpaired field). Only a matching option on the latest accessible QA message
-selects a place. Typed ordinals/names ask for explicit confirmation; a confirmed
-name + current commune/province label or valid source-bound selection rechecks
-current availability/eligibility. The text-only chip is `Xác nhận <name> · <area>`
-without a code. A bare name/ordinal re-asks; identical labels across branches,
-incomplete candidate retrieval, missing area or identity over 200 characters
-never authorize an answer. Identity text is rendered, never persisted.
+selects a place. Choice labels are `<n>. <name>` for distinct names, or
+`<n>. <name> · <short address>` when a discriminator is needed. Use the first
+address component that distinguishes the branches (normally house number +
+street); combine parts only when necessary. Labels stay within 40 Unicode code
+points: shorten the name with a trailing `…` first, then the address, retaining
+the number and a nonempty discriminator. Unique option numbers keep labels
+distinct even when shortened portions coincide. Choice `text` retains the full
+name + discriminator within its 200-character bound, independently of label
+shortening; the prompt retains full identity wording. Same names in different
+areas also receive a choice discriminator. If no address exists, use an existing
+public area key/current area, otherwise leave the ambiguity visible.
+No synthetic identifier is invented. Address discrimination applies only to
+place choices. Singleton confirmation text is exactly
+`Xác nhận <complete name> · <complete current commune/province label>` (English
+`Confirm …`), with no address suffix, including duplicate name/area families.
+Typed ordinals/names ask for explicit confirmation;
+a typed duplicate name re-asks with all matching branches and preserves the
+original topic. Address-bearing text is matched against the same current identity
+builder before legacy controls and area parsing. If a current emitted identity
+also means another option's ordinal, the none control, or a confirmation control,
+re-ask with the current candidates; never select either interpretation.
+A confirmation rechecks the full canonical-name
+family, not just the singleton, and never answers an ambiguous identity. Missing
+area, incomplete retrieval or identity over 200 characters cannot authorize a
+text-only answer. The id pair remains authoritative over display text.
+Identity text is rendered, never persisted.
 Ambiguous replies receive one retry, then a restatement request. Current-area
 refinement reruns the complete original name query. Old districts require
 explicit branch confirmation; successor mapping is not implemented in S3.
@@ -842,3 +862,27 @@ stated areas still narrow; legacy areas still require confirmation, and an
 area mismatch never silently answers elsewhere. S3 has no curated aliases yet.
 See [875-validation.md](plans/875-validation.md) for regression evidence and
 execution limits.
+
+## Place QA presentation (#877)
+
+QA cards use the same PlaceDetail SQL/public projection and the single
+`placeCardFromDetail` mapper as `AssistantCardHydrator`. The detail row and
+field-specific prose evidence share one cancellable, bounded SQL snapshot;
+there are no extra provider calls or persistent fact copies. Card address,
+price (explicitly per person), Google rating/count/attribution, community
+threshold, hours, photo and checked date follow the existing hydrator rules.
+A published stored Google rating does not require a provider source row or a
+new QA-specific TTL. Unknown fields stay omitted (unknown `openNow` retains
+the contract's `null`). Card visibility never promotes a topic's absent or
+reference evidence to current evidence. Existing metrics/deadlines are retained.
+
+Prose amounts group thousands with `.` (vi) or `,` (en), using integer minor
+units throughout (BigInt quotient/remainder, no floating-point division).
+Vietnamese retains `VND/người`; English uses `VND per person`. Reference
+information starts a separate sentence. Verification and asked dates retain ISO
+`yyyy-MM-dd` in both locales, matching `origin/re-design`; timestamps stay ISO.
+Hours retain `HH:mm`. OpenAPI stays at 10.2.0-alpha.1 with option label
+`maxLength: 40` and text `maxLength: 200`; no client contract/vendor bump.
+The shared reader also bounds singleton confirmation labels using numbered
+labels, while preserving full confirmation text for typed continuation.
+See [877-validation.md](plans/877-validation.md) for regression cells and runs.

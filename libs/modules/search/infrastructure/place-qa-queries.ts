@@ -70,8 +70,14 @@ export function resolvePlaceNameQuery(
  * returns the oldest AND newest evidence instants: the projection rejects the
  * rating when any published review lacks moderation evidence or is future-dated.
  */
-export function placeFactsQuery(ids: readonly string[]): SQL {
+export function placeFactsQuery(ids: readonly string[], detailQuery?: SQL): SQL {
   return sql`select p.id, p.status, not (${notProviderClosed()}) as provider_closed,
+    ${detailQuery ? sql`(select row_to_json(detail) from (${detailQuery}) detail where detail.id=p.id)` : sql`null`} as card_detail,
+    exists(select 1 from places peer where peer.id <> p.id and peer.status='published'
+      and ${placeNameKeySql(sql`peer.name_normalized`)} = ${placeNameKeySql(sql`p.name_normalized`)}
+      and peer.administrative_dataset_version is not distinct from p.administrative_dataset_version
+      and peer.province_code is not distinct from p.province_code
+      and peer.commune_code is not distinct from p.commune_code) as identity_collision,
     p.name, ST_Y(p.geom) as lat, ST_X(p.geom) as lng,
     ${publicAreaSummarySql('vi')} as area_summary,
     (select u.name from administrative_units u join administrative_dataset_versions d on d.id=u.dataset_version_id

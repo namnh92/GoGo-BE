@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NoopMetrics } from '@gogo/observability';
 import { PlaceAnswerReader } from './place-answer-reader';
+import type { PlaceCard } from './card-hydrator.service';
 import {
-  fictionalPlace,
+  fictionalPlace as basePlace,
   fixtureRow,
   FIXTURE_A,
   FIXTURE_B,
@@ -15,6 +16,27 @@ import { AssistantStreamService, type SseMessage } from './assistant-stream.serv
 import { InMemoryFrameBuffer } from '../infrastructure/frame-buffer';
 import type { MessageRow } from '../infrastructure/assistant.repository';
 import type { AssistantFrame } from '../domain/assistant.types';
+// The port now supplies its ephemeral PlaceDetail card alongside tiered prose facts.
+const fictionalPlace = (
+  ...args: Parameters<typeof basePlace>
+): ReturnType<typeof basePlace> & { card: PlaceCard } => {
+  const p = basePlace(...args);
+  return {
+    ...p,
+    card: {
+      kind: 'place' as const,
+      placeId: p.id,
+      available: true,
+      facts: {
+        name: p.name,
+        priceMin: 12000,
+        priceMax: 24000,
+        currency: 'VND',
+        addressText: '12 Fictional Street',
+      },
+    },
+  };
+};
 const context = (): PlaceFactContext => ({
   places: new Map([
     [FIXTURE_A, fictionalPlace()],
@@ -27,12 +49,12 @@ describe('Sol confirm F-04: price comparison with one side missing', () => {
     [
       'vi',
       'GoGo chưa có giá đã xác minh của địa điểm này. Bạn xem thông tin trong thẻ địa điểm nhé.',
-      '/người',
+      '12.000–24.000 VND/người',
     ],
     [
       'en',
       'GoGo has no verified price for this place. Please see the place card for details.',
-      '/person',
+      '12,000–24,000 VND per person',
     ],
   ] as const)(
     'the missing side carries the wording and card pointer; the other side keeps its price (%s)',
@@ -54,14 +76,21 @@ describe('Sol confirm F-04: price comparison with one side missing', () => {
       const { price: _price, ...withoutPrice } = harbor.facts;
       const places = new Map([
         [FIXTURE_A, fictionalPlace()],
-        [FIXTURE_B, { ...harbor, facts: withoutPrice }],
+        [
+          FIXTURE_B,
+          {
+            ...harbor,
+            card: { ...harbor.card, facts: { name: harbor.name } },
+            facts: withoutPrice,
+          },
+        ],
       ]);
       const result = (
         await new PlaceAnswerReader({ placeFacts: async () => ({ places }) }).page([row], 'history')
       ).get('m')!;
       expect(result.result).toBe('ok');
       expect(result.text.split('\n')).toEqual([
-        expect.stringContaining(`Fictional Lantern: 12000–24000 VND${unit}`),
+        expect.stringContaining(`Fictional Lantern: ${unit}`),
         `Fictional Harbor: ${wording}`,
       ]);
       // Unknown price stays hidden on the card; only the known side is a source.
@@ -78,8 +107,8 @@ describe('atomic response reader boundary', () => {
     const result = (await reader.page([row], 'history')).get('m')!;
     expect(port.placeFacts).toHaveBeenCalledOnce();
     expect(port.placeFacts.mock.calls[0]?.[0]).toEqual([FIXTURE_A, FIXTURE_B]);
-    expect(result.text).toContain('Lantern: 12000–24000 VND/person');
-    expect(result.text).toContain('Harbor: 12000–24000 VND/person');
+    expect(result.text).toContain('Lantern: 12,000–24,000 VND per person');
+    expect(result.text).toContain('Harbor: 12,000–24,000 VND per person');
     expect(result.cards[0]?.facts.priceMin).toBe(12000);
     expect(result.sources).toHaveLength(2);
     expect(result.sources[0]?.checkedAt).toBeUndefined();
@@ -97,6 +126,12 @@ describe('atomic response reader boundary', () => {
           FIXTURE_A,
           {
             ...fictionalPlace(),
+            card: {
+              kind: 'place',
+              placeId: FIXTURE_A,
+              available: true,
+              facts: { name: 'Fictional Lantern' },
+            },
             facts: {
               price: [
                 verified(
@@ -112,7 +147,7 @@ describe('atomic response reader boundary', () => {
     const next = (await reader.page([row], 'history')).get(row.id)!;
     expect(first.cards[0]?.facts.priceMin).toBe(12000);
     expect(next.cards[0]?.facts.priceMin).toBeUndefined();
-    expect(next.text).toContain('9.00 USD/hour');
+    expect(next.text).toContain('9.00 USD per hour');
     expect(next.text).toContain('Reference information');
     expect(next.followUps).toEqual([]);
     snapshot = { places: new Map([[FIXTURE_A, { ...fictionalPlace(), available: false }]]) };
@@ -303,7 +338,7 @@ describe('atomic response reader boundary', () => {
     expect(result.followUps[0]?.options[0]).toEqual({
       id: 'c0',
       label: '1. Fictional 1',
-      text: '1',
+      text: 'Fictional 1',
     });
     expect(port.placeFacts).toHaveBeenCalledOnce();
     expect(result.text).toContain('Fictional 3');
@@ -458,6 +493,17 @@ describe('additional S1 integrity cells', () => {
     const row = fixtureRow();
     const p = {
       ...fictionalPlace(),
+      card: {
+        kind: 'place' as const,
+        placeId: FIXTURE_A,
+        available: true,
+        facts: {
+          name: 'Fictional Lantern',
+          providerRating: 4.5,
+          providerRatingCount: 30,
+          providerRatingSource: 'google' as const,
+        },
+      },
       facts: {
         providerRating: {
           current: true,

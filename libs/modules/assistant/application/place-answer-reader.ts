@@ -11,7 +11,12 @@ import {
   type PlaceFactsReader,
 } from '../domain/place-qa/place-facts';
 import { isPlaceAnswerRow, parseReferenceGroup } from '../domain/place-qa/reference-group';
-import { confirmText } from '../domain/place-qa/pending';
+import {
+  confirmText,
+  choiceText,
+  choiceDiscriminator,
+  choiceLabel,
+} from '../domain/place-qa/pending';
 import {
   answerQueries,
   hasMalformedCapacity,
@@ -20,14 +25,12 @@ import {
   type AnswerQuery,
 } from '../domain/place-qa/tokens';
 import {
-  eligible,
   LOAD_ERROR,
   UNSUPPORTED_CAPACITY,
   POINTER,
   renderPlaceAnswer,
   SAFE_LABEL,
   safeText,
-  validPrices,
 } from '../domain/place-qa/templates';
 
 export type ReadSurface = 'live' | 'replay' | 'history' | 'cms';
@@ -174,6 +177,11 @@ export class PlaceAnswerReader {
           };
         else if (failure) rendered = empty(LOAD_ERROR[locale], failure);
         else {
+          const candidates = group.cards.flatMap((id) => {
+            const p = context.places.get(id);
+            return p?.available ? [p] : [];
+          });
+          const isChoice = group.prompt === 'place_choice' || group.cards.length > 1;
           let unknown = false,
             unavailable = false;
           const text = mapPrivateTokens(row.text, (token) => {
@@ -186,8 +194,12 @@ export class PlaceAnswerReader {
             const match = /^\uE000place:([0-9a-f-]+)\uE001$/.exec(token);
             if (match && group.cards.includes(match[1]!)) {
               const p = context.places.get(match[1]!);
+              const discriminator =
+                p?.available && group.kind === 'clarification' && isChoice
+                  ? choiceDiscriminator(p, candidates)
+                  : undefined;
               return p?.available
-                ? `${safeText(p.name)}${group.kind === 'clarification' && p.areaLabel ? ` ${locale === 'en' ? 'in' : 'ở'} ${safeText(p.areaLabel)}` : ''}`
+                ? `${safeText(p.name)}${group.kind === 'clarification' && p.areaLabel ? ` ${locale === 'en' ? 'in' : 'ở'} ${safeText(p.areaLabel)}` : ''}${discriminator ? ` · ${safeText(discriminator)}` : ''}`
                 : SAFE_LABEL[locale];
             }
             unknown = true;
@@ -207,7 +219,7 @@ export class PlaceAnswerReader {
                 description: `${source.topic} · ${source.verifiedAt.slice(0, 10)}`,
               });
           }
-          const opts = group.options.flatMap((o) => {
+          const opts = group.options.flatMap((o, i) => {
             if ('none' in o)
               return [
                 {
@@ -219,19 +231,20 @@ export class PlaceAnswerReader {
             if ('placeId' in o) {
               const p = context.places.get(o.placeId);
               if (!p?.available) return [];
-              const ordinal = group.cards.indexOf(o.placeId) + 1;
-              const label = `${ordinal}. ${safeText(p.name)}`.slice(0, 40);
-              // A one-candidate confirmation is answered by text that names the
-              // candidate by name + area; a bare ordinal is not
-              // proof of which chip an old client tapped (shape rev3 §4.5).
+              const discriminator = isChoice ? choiceDiscriminator(p, candidates) : undefined;
+              const label = choiceLabel(
+                i + 1,
+                safeText(p.name),
+                discriminator ? safeText(discriminator) : undefined,
+              );
               const text =
                 group.prompt === 'place_confirm' && group.cards.length === 1
                   ? (confirmText(
                       locale,
                       safeText(p.name),
                       p.areaLabel ? safeText(p.areaLabel) : undefined,
-                    ) ?? String(ordinal))
-                  : String(ordinal);
+                    ) ?? String(i + 1))
+                  : safeText(choiceText(p, candidates));
               return [{ id: o.id, label, text }];
             }
             const q = parseAnswerToken(o.query)!;
@@ -300,59 +313,17 @@ function sameQuery(a: AnswerQuery, b: AnswerQuery): boolean {
 function card(p: PlaceFacts | undefined, id: string, locale: 'vi' | 'en'): PlaceCard {
   if (!p?.available)
     return { kind: 'place', placeId: id, available: false, facts: { name: SAFE_LABEL[locale] } };
-  const price = validPrices(p).find(
-    (v) => v.evidence.tier === 'verified_current' && v.value.unit === 'per_person',
-  )?.value;
-  const address =
-    eligible(p.facts.address, ['gogo']) && p.facts.address.tier === 'verified_current'
-      ? p.facts.address.value
-      : undefined;
-  const open =
-    eligible(p.facts.openNow, ['gogo']) && p.facts.openNow.tier === 'verified_current'
-      ? p.facts.openNow.value
-      : undefined;
-  const provider = p.facts.providerRating;
-  const providerEligible =
-    provider?.current === true &&
-    provider.source.kind === 'google' &&
-    Number.isFinite(Date.parse(provider.source.collectedAt)) &&
-    Number.isFinite(provider.score) &&
-    provider.score >= 0 &&
-    provider.score <= 5 &&
-    Number.isSafeInteger(provider.count) &&
-    provider.count > 0;
-  const community = p.facts.rating;
-  const communityEligible =
-    eligible(community, ['community']) &&
-    community.tier === 'verified_current' &&
-    community.value.source === 'community' &&
-    Number.isSafeInteger(community.value.count) &&
-    community.value.count >= 5 &&
-    typeof community.value.score === 'number' &&
-    Number.isFinite(community.value.score) &&
-    community.value.score >= 0 &&
-    community.value.score <= 5;
-  return {
-    kind: 'place',
-    placeId: id,
-    available: true,
-    facts: {
-      name: safeText(p.name),
-      ...(providerEligible
-        ? {
-            providerRating: provider.score,
-            providerRatingCount: provider.count,
-            providerRatingSource: 'google' as const,
-          }
-        : {}),
-      ...(communityEligible
-        ? { gogoRating: community.value.score!, gogoRatingCount: community.value.count }
-        : {}),
-      ...(address ? { addressText: safeText(address) } : {}),
-      ...(price ? { priceMin: price.min, priceMax: price.max, currency: price.currency } : {}),
-      ...(typeof open === 'boolean' ? { openNow: open } : {}),
-    },
-  };
+  return p.card
+    ? {
+        ...p.card,
+        placeId: id,
+        facts: {
+          ...p.card.facts,
+          name: safeText(p.name),
+          ...(p.card.facts.addressText ? { addressText: safeText(p.card.facts.addressText) } : {}),
+        },
+      }
+    : { kind: 'place', placeId: id, available: true, facts: { name: safeText(p.name) } };
 }
 
 const TOPIC_LABELS = {

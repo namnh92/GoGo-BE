@@ -299,8 +299,8 @@ describe('round-1 canonical projection regressions', () => {
     expect(answer.sources.map((source) => source.verifiedAt)).toEqual(
       schedule.intervals.map((interval) => interval.verifiedAt),
     );
-    expect(answer.text).toContain('08:00–11:00 Thông tin tham khảo, xác minh ngày 2025-02-04');
-    expect(answer.text).toContain('17:00–23:00 Thông tin tham khảo, xác minh ngày 2025-02-03');
+    expect(answer.text).toContain('08:00–11:00. Thông tin tham khảo, xác minh ngày 2025-02-04');
+    expect(answer.text).toContain('17:00–23:00. Thông tin tham khảo, xác minh ngày 2025-02-03');
     // Either interval failing S1 evidence gates suppresses the whole weekday.
     for (const index of [0, 1]) {
       const interval = schedule.intervals[index]!;

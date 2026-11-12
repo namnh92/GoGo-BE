@@ -1,5 +1,6 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { createHash } from 'node:crypto';
+import { placeCardFromDetail } from '../../assistant/application/place-card';
 import { sql } from 'drizzle-orm';
 import { type Db } from '@gogo/database';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
@@ -266,14 +267,30 @@ export class SearchService implements PlaceFactsReader {
     try {
       return await placeQaRead(this.db, 2000, options, async (read) => {
         const result = distinct.length
-          ? await read.execute(placeFactsQuery(distinct))
+          ? await read.execute(placeFactsQuery(distinct, this.repo.placeDetailQuery(distinct)))
           : { rows: [] };
         const now = new Date();
         const places = new Map<string, ReturnType<typeof projectPlaceFacts>>(
           distinct.map((id) => [id, { id, available: false, name: '', facts: {} }]),
         );
-        for (const row of result.rows as PlaceFactRow[])
-          places.set(row.id, projectPlaceFacts(row, now));
+        for (const row of result.rows as (PlaceFactRow & {
+          card_detail?: Record<string, unknown> | null;
+          identity_collision?: boolean;
+        })[]) {
+          const projected = projectPlaceFacts(row, now);
+          places.set(
+            row.id,
+            projected.available
+              ? {
+                  ...projected,
+                  hasIdentityCollision: row.identity_collision === true,
+                  ...(row.card_detail
+                    ? { card: placeCardFromDetail(this.projectPlaceDetail(row.card_detail), now) }
+                    : {}),
+                }
+              : projected,
+          );
+        }
         return freezeFactContext(places);
       });
     } catch (error) {
@@ -538,6 +555,12 @@ export class SearchService implements PlaceFactsReader {
     }
     if (!row) throw AppError.notFound('PLACE_NOT_FOUND', 'Place not found');
 
+    return this.projectPlaceDetail(row);
+  }
+
+  /** Shared public projection for PlaceDetail and the QA snapshot. */
+  private projectPlaceDetail(row: Record<string, unknown>) {
+    const placeId = row['id'] as string;
     let gogoRating: ReturnType<typeof toGogoRating>;
     try {
       gogoRating = toGogoRating(
