@@ -4609,7 +4609,7 @@
     {
       "id": "compare-s3-neutral",
       "bucket": "compare",
-      "slice": "S3",
+      "slice": "S4",
       "partition": "calibration",
       "fixture": {
         "catalogue": "s3-fictional-v1",
@@ -4619,11 +4619,11 @@
       },
       "text": "Quán Sao Lạ với Quán Không Giá quán nào rẻ hơn?",
       "expected": {
-        "outcome": "unavailable",
-        "places": [],
-        "topic": "price"
-      },
-      "pendingSlice": "S4"
+        "outcome": "answer",
+        "places": ["lantern", "no_price"],
+        "topic": "price",
+        "contains": "GoGo chưa có giá đã xác minh"
+      }
     },
     {
       "id": "owner-quan-x",

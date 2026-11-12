@@ -21,3 +21,7 @@ Authority: owner 2026-11-12 “Astra bổ sung shape rồi sửa”, including n
 | A6 / sa F-03            | Rejected/stalled flag defaults disabled in producer, deadline recovery and orphan recovery; observed false is not resampled as true; ordinary question stays ordinary through failure/Stop/reaper; stored QA controls remain excluded.                                 |
 
 New regression specs run on `00f691f1` before production edits when feasible. Architectural floor and real SQL/lifecycle cells require DEV integration execution and explicit release evidence; unit passes are not a substitute. Keep the hash-bound Layer A spec/corpus/fixtures untouched. Record all exit codes, NOT RUN and evidence in `864-s3-validation.md` under “Astra fix round”.
+
+## S4 Layer A transition (Astra decision 2026-11-12, GoGo-BE#874)
+
+The S3 oracle freeze protects recorded evidence; S4 may revise only `compare-s3-neutral` to the authorized comparison contract, preserving every other row and harness byte and publishing newly hash-bound evidence. Historical S3 reproduction uses the archived Git version of the corpus (`dev/test-evidence/be-864`), not the revised one. Formatting changes that keep S3 rows passing (e.g. #880) do not justify rewriting expectations.
