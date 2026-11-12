@@ -41,12 +41,34 @@ export type QaClassification =
       args: QaArgs;
       span: Extract<PlaceNameSpan, { kind: 'span' }>;
     }
-  | { kind: 'referent_question' | 'clarify_referent'; topic: AnswerTopic; args: QaArgs };
+  | { kind: 'referent_question'; topic: AnswerTopic; args: QaArgs; ordinal?: 1 | 2 | 3 }
+  | { kind: 'clarify_referent'; topic: AnswerTopic; args: QaArgs };
 const test = (pattern: string, text: string) => new RegExp(`(?:${pattern})`, 'u').test(text);
 const folded = (text: string) =>
   normalizeVietnamese(text)
     .replace(/[?!.,;]+$/u, '')
     .trim();
+/**
+ * A previous-card ordinal is the WHOLE referent between the topic prefix and the
+ * question clause ("quán thứ 2 giá bao nhiêu"). A venue name that merely starts
+ * with one ("Quán 3 Miền", "Place 2 Be") is a name, never an ordinal.
+ */
+export function cardOrdinal(
+  t: string,
+  prefixLength: number,
+  suffixIndex: number | undefined,
+): { n: 1 | 2 | 3; consumed?: string } | undefined {
+  const head = t.slice(prefixLength, suffixIndex ?? t.length).trim();
+  const whole = /^(?:quan|dia diem|place)(?: thu| so| number)? ([1-3])(?: vao| ngay)?$/u.exec(head);
+  if (whole) return { n: Number(whole[1]) as 1 | 2 | 3 };
+  // "quán thứ 2 mở cửa…": the question clause starts at "thứ 2". The ordinal
+  // owns those words, so they never also supply a weekday (Astra, #874 M-02).
+  if (suffixIndex !== undefined && /^(?:quan|dia diem|place)$/u.test(head)) {
+    const day = /^thu ([1-3])(?: |$)/u.exec(t.slice(suffixIndex).trimStart());
+    if (day) return { n: Number(day[1]) as 1 | 2 | 3, consumed: day[0] };
+  }
+  return undefined;
+}
 /** Bare “bao nhiêu” is a name token unless a ticket-price head supplies the question. */
 function lexiconFor(text: string, locale: 'vi' | 'en') {
   if (locale === 'en') return en;
@@ -142,8 +164,16 @@ export class PlaceQaClassifier {
     const compareTopic = test(lex.compare, t)
       ? /(?: ve | about | on )(.+)$/u.exec(t)?.[1]
       : undefined;
+    // A compared venue's own words ("Cafe Đánh Giá") never pick the topic: read
+    // it from the text outside both spans when no "về …" tail names it.
+    const compareRest =
+      test(lex.compare, t) && compareTopic === undefined
+        ? (compareSpans(text) ?? []).reduce((rest, span) => rest.replace(folded(span.text), ' '), t)
+        : undefined;
     const topicText =
-      compareTopic ?? (suffix ? t.slice(suffix.index).trim() : (prefix?.[0].trim() ?? t));
+      compareTopic ??
+      compareRest ??
+      (suffix ? t.slice(suffix.index).trim() : (prefix?.[0].trim() ?? t));
     let topic = (Object.entries(lex.topics).find(([, p]) =>
       test(`(?:^| )(${p})(?: |$)`, topicText),
     )?.[0] ?? null) as AnswerTopic | null;
@@ -168,11 +198,20 @@ export class PlaceQaClassifier {
     if (comparing && !topic)
       topic =
         (Object.entries(lex.topics).find(([, pattern]) =>
-          test(`(?:^| )(${pattern})(?: |$)`, t),
+          test(`(?:^| )(${pattern})(?: |$)`, compareRest ?? t),
         )?.[0] as AnswerTopic | undefined) ?? 'overview';
+    const ordinal =
+      topic && !comparing
+        ? cardOrdinal(t, prefix ? prefix[0].length : 0, suffix?.index)
+        : undefined;
     const args: QaArgs = {};
     if (topic === 'hours') {
-      const day = dayArgs(topicText, qaView.now);
+      const day = dayArgs(
+        ordinal?.consumed && topicText.startsWith(ordinal.consumed)
+          ? topicText.slice(ordinal.consumed.length)
+          : topicText,
+        qaView.now,
+      );
       if (!day) return { kind: 'clarify_referent', topic, args };
       Object.assign(args, day);
     }
@@ -198,13 +237,7 @@ export class PlaceQaClassifier {
         ? { kind: 'compare', topic: topic ?? 'overview', args, spans }
         : { kind: 'clarify_referent', topic: topic ?? 'overview', args };
     }
-    if (
-      topic &&
-      /^(?:quan|dia diem|place)(?: thu| so| number)? [1-3](?: |$)/u.test(
-        prefix ? t.slice(prefix[0].length) : t,
-      )
-    )
-      return { kind: 'referent_question', topic, args };
+    if (topic && ordinal) return { kind: 'referent_question', topic, args, ordinal: ordinal.n };
     if (!topic) {
       // Pure categories and fragments never become fuzzy QA. A name-only probe
       // must match the WHOLE canonical name; failures return to the old path.

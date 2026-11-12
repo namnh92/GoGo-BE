@@ -380,3 +380,140 @@ describe('S4 comparison grammar', () => {
     });
   });
 });
+describe('S4 review round 1 (Opus + Fable advisor, Astra decisions 2026-11-12)', () => {
+  const currentArea = {
+    kind: 'resolved',
+    value: { area: { datasetVersion: 'fixture', provinceCode: '01', communeCode: '00001' } },
+  };
+  const exactOutcome = (...ids: string[]) =>
+    resolvePlaceNameOutcome({
+      candidates: ids.map((id) => ({ id, exact: true, score: 1 })),
+      overflow: false,
+      areaMismatch: false,
+    });
+  const age = (r: { state: { trace: any } }) => {
+    const p = r.state.trace.placeQa.pending;
+    const ttl = Date.parse(p.expiresAt) - Date.parse(p.createdAt);
+    p.createdAt = new Date(now - ttl).toISOString();
+    p.expiresAt = new Date(now).toISOString();
+  };
+  it('F-01: area refinement of a reply-sourced compare slot keeps the partner', async () => {
+    const f = fixture();
+    const q = await f.send('Fictional Lantern với Zzz Không Có quán nào rẻ hơn?');
+    expect(q.qa.pending).toMatchObject({ slots: [{ resolvedPlaceId: A }, {}] });
+    const named = await f.send('Fictional Orchid');
+    expect(named.view.cards.map((c) => c.placeId)).toEqual([B, C]);
+    f.areas.resolve.mockResolvedValue(currentArea as never);
+    f.search.resolvePlaceName.mockResolvedValueOnce(exactOutcome(C) as never);
+    const refined = await f.send('Phường Một, Hà Nội');
+    expect(refined.qa.topic).toBe('price');
+    expect(refined.view.cards.map((c) => c.placeId)).toEqual([A, C]);
+  });
+  it('F-02: ordinal over a valid choice confirms that card with the new topic', async () => {
+    const f = fixture();
+    const choice = await f.send('Fictional Orchid giá bao nhiêu?');
+    expect(choice.qa.outcome).toBe('choice');
+    const r = await f.send('Quán thứ 2 có wifi không?');
+    expect(r.qa.outcome).toBe('confirm');
+    expect(r.view.cards.map((c) => c.placeId)).toEqual([C]);
+    expect(r.qa.pending).toMatchObject({
+      kind: 'confirm',
+      topic: 'amenity',
+      slots: [{ candidateIds: [C] }],
+      expiresAt: choice.qa.pending.expiresAt,
+    });
+  });
+  it('F-02: a non-ordinal referent over a valid choice re-asks the same candidates', async () => {
+    const f = fixture();
+    await f.send('Fictional Orchid giá bao nhiêu?');
+    const r = await f.send('Có wifi không?');
+    expect(r.qa.outcome).toBe('choice');
+    expect(r.view.cards.map((c) => c.placeId)).toEqual([B, C]);
+    expect(r.qa.pending).toMatchObject({ kind: 'choice', topic: 'amenity' });
+  });
+  it('F-02: compare partner survives an ordinal over the slot-2 choice; confirmation answers both', async () => {
+    const f = fixture();
+    const q = await f.send('Fictional Lantern với Fictional Orchid quán nào rẻ hơn?');
+    const r = await f.send('Quán thứ 2 có wifi không?');
+    expect(r.qa.pending).toMatchObject({
+      kind: 'confirm',
+      topic: 'amenity',
+      activeSlot: 1,
+      slots: [{ resolvedPlaceId: A }, { candidateIds: [C] }],
+      expiresAt: q.qa.pending.expiresAt,
+    });
+    const done = await f.send('1', {
+      replyToMessageId: r.id,
+      followUpOptionId: r.view.followUps[0]!.options[0]!.id,
+    });
+    expect(done.qa.topic).toBe('amenity');
+    expect(done.view.cards.map((c) => c.placeId)).toEqual([A, C]);
+  });
+  it('F-02: an expired clarification seeds a fresh confirm without the partner', async () => {
+    const f = fixture();
+    const q = await f.send('Fictional Lantern với Fictional Orchid quán nào rẻ hơn?');
+    age(q);
+    const r = await f.send('Quán thứ 2 có wifi không?');
+    expect(r.qa.outcome).toBe('confirm');
+    expect(r.view.cards.map((c) => c.placeId)).toEqual([C]);
+    expect(r.qa.pending.slots).toHaveLength(1);
+    expect(r.qa.pending.expiresAt).not.toBe(q.qa.pending.expiresAt);
+  });
+  it('F-02: an out-of-range ordinal over clarification cards re-asks without cards', async () => {
+    const f = fixture();
+    await f.send('Fictional Orchid giá bao nhiêu?');
+    const r = await f.send('Quán thứ 3 có wifi không?');
+    expect(r.qa.outcome).toBe('clarify_referent');
+    expect(r.view.cards).toEqual([]);
+  });
+  it.each(['Quán 2', 'Quán 3 Miền'])(
+    'M-01: an exact venue named %s wins over the ordinal reading',
+    async (name) => {
+      const f = fixture();
+      f.update(A, { name });
+      await f.send('Fictional Orchid giá bao nhiêu?');
+      const r = await f.send(`${name} giá bao nhiêu?`);
+      expect(r.qa.outcome).toBe('answer');
+      expect(r.view.cards.map((c) => c.placeId)).toEqual([A]);
+    },
+  );
+  it('M-02: "Quán thứ 2" picks card 2 and today, never a Monday', async () => {
+    const f = fixture();
+    f.places.delete(C);
+    const cards = await f.send('So sánh Fictional Lantern với Fictional Orchid');
+    expect(cards.view.cards.map((c) => c.placeId)).toEqual([A, B]);
+    const r = await f.send('Quán thứ 2 mở cửa mấy giờ?');
+    expect(r.view.cards.map((c) => c.placeId)).toEqual([B]);
+    expect(r.qa.args).toMatchObject({ day: 'date', date: '2026-11-11' });
+  });
+  it('F-03: an hours chip selected after local midnight answers for the new day', async () => {
+    const f = fixture();
+    const before = Date.parse('2026-11-11T16:50:00Z'); // 23:50 Asia/Ho_Chi_Minh
+    vi.spyOn(Date, 'now').mockReturnValue(before);
+    const r = await f.send('Fictional Lantern giá bao nhiêu?');
+    const hours = r.view.followUps.flatMap((g) => g.options).find((o) => /giờ/iu.test(o.label));
+    expect(hours).toBeDefined();
+    vi.spyOn(Date, 'now').mockReturnValue(before + 15 * 60_000); // 00:05 next day
+    const chosen = await f.send(hours!.text, {
+      replyToMessageId: r.id,
+      followUpOptionId: hours!.id,
+    });
+    expect(chosen.qa.topic).toBe('hours');
+    expect(chosen.qa.args).toMatchObject({ day: 'date', date: '2026-11-12' });
+  });
+  it('M-04: a compared venue named with a topic word does not pick the compare topic', async () => {
+    const f = fixture();
+    f.places.delete(C);
+    f.update(B, { name: 'Cafe Đánh Giá' });
+    const r = await f.send('So sánh Cafe Đánh Giá với Fictional Lantern');
+    expect(r.qa.topic).toBe('overview');
+    expect(r.view.cards.map((c) => c.placeId)).toEqual([B, A]);
+  });
+  it('M-03: a duplicate compare unresolves the active slot for a later refinement', async () => {
+    const f = fixture();
+    const r = await f.send('Fictional Lantern với Fictional Lantern quán nào rẻ hơn?');
+    expect(r.qa.outcome).toBe('clarify_referent');
+    expect(r.qa.pending.slots[0].resolvedPlaceId).toBe(A);
+    expect(r.qa.pending.slots[1].resolvedPlaceId).toBeUndefined();
+  });
+});

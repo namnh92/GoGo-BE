@@ -3,6 +3,7 @@ import { Injectable, Inject, Optional } from '@nestjs/common';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { SearchService } from '../../search/application/search.service';
 import { normalizeVietnamese } from '../../search/domain/normalize';
+import { extractPlaceNameSpan } from '../domain/place-qa/span';
 import { AssistantRepository, type MessageRow } from '../infrastructure/assistant.repository';
 import {
   PlaceQaClassifier,
@@ -265,6 +266,9 @@ export class PlaceQaService {
     const answer = async (placeId: string | readonly string[], topicSelection = false) => {
       const ids = typeof placeId === 'string' ? [placeId] : [...placeId];
       if (ids.length === 2 && ids[0] === ids[1]) {
+        // Unresolve the slot that produced the duplicate, so a later refinement
+        // re-runs it instead of skipping both resolved slots forever.
+        if (retainedSlots?.[activeSlot]) delete retainedSlots[activeSlot]!.resolvedPlaceId;
         pending('referent', originalQuestionId ?? trace!.questionMessageId);
         await notice('clarify_referent');
         return;
@@ -469,6 +473,13 @@ export class PlaceQaService {
       const query = parseAnswerToken(queryToken)!;
       trace!.topic = query.topic;
       const { placeId: _id, locale: _locale, topic: _topic, ...args } = query;
+      // An hours chip means "today": recompute the local date at selection, so
+      // a chip produced before midnight never answers for yesterday (#874 F-03).
+      if (query.topic === 'hours' && args.day === 'date') {
+        const local = new Date(started + 7 * 60 * 60 * 1000);
+        args.date = local.toISOString().slice(0, 10);
+        args.d = local.getUTCDay();
+      }
       trace!.args = args;
       await answer(
         p.slots.map((s) => s.resolvedPlaceId!),
@@ -808,6 +819,19 @@ export class PlaceQaService {
         if (a.kind === 'current') {
           // The whole name query is rerun from the name-bearing message; the
           // topic, arguments and lifetime stay those of the original question.
+          // A compare keeps both slots: once a slot's name came from a separate
+          // reply, the name source is that reply, but the comparison itself is
+          // still the original question (resolveCompare re-reads reply slots).
+          const comparing = retainedSlots
+            ? this.classifier.classify(sources.question.text, null, {
+                now: new Date(p.createdAt),
+                locale: sources.question.locale ?? input.locale,
+              })
+            : undefined;
+          if (comparing?.kind === 'compare') {
+            await resolveCompare(comparing, a);
+            return true;
+          }
           const original = this.classifier.classify(sources.name.text, null, {
             now: new Date(p.createdAt),
             locale: sources.name.locale ?? input.locale,
@@ -878,41 +902,99 @@ export class PlaceQaService {
         return true;
       }
       if (classified.kind === 'referent_question') {
+        // A whole exact venue name precedes an ordinal reading ("Quán 2 giá bao
+        // nhiêu?" about a venue named "Quán 2"), even over a context id.
+        if (classified.ordinal) {
+          const span = extractPlaceNameSpan(input.text);
+          if (span.kind === 'span') {
+            const named = await this.search.resolvePlaceName(span.text, {
+              signal,
+              deadlineAt,
+              alternates: span.alternates,
+            });
+            signal.throwIfAborted();
+            if (named.candidates.some((c) => c.exact)) {
+              await sink.emit({ type: 'step', step: 'searching_places' });
+              return await resolve(
+                {
+                  kind: 'named_place_question',
+                  topic: classified.topic,
+                  args: classified.args,
+                  span,
+                },
+                () => trace!.questionMessageId,
+              );
+            }
+          }
+        }
         if (input.context?.kind === 'place') {
           trace!.row = 3;
           await answer(input.context.id);
-        } else {
-          const ids =
-            latest?.status === 'complete'
-              ? [
-                  ...new Set(
-                    (latest.cards ?? []).flatMap((c) => (c.kind === 'place' ? [c.placeId] : [])),
-                  ),
-                ]
-              : [];
-          const facts = ids.length
-            ? await this.search.placeFacts(ids, { signal, deadlineAt })
-            : null;
-          const available = ids.filter((id) => facts?.places.get(id)?.available);
-          const ordinal = /(?:quan|dia diem|place)(?: thu| so| number)? ([1-3])(?: |$)/u.exec(
-            normalizeVietnamese(input.text),
-          );
-          const chosen = ordinal
-            ? ids[Number(ordinal[1]) - 1]
-            : available.length === 1
-              ? available[0]
-              : undefined;
-          if (chosen && available.includes(chosen)) {
-            referentMessageId = latest!.id;
-            trace!.row = 3;
-            await answer(chosen);
-          } else if (!ordinal && available.length > 1) {
-            referentMessageId = latest!.id;
-            await clarify('choice', available.slice(0, 3), trace!.questionMessageId);
-          } else {
+          return true;
+        }
+        const ids =
+          latest?.status === 'complete'
+            ? [
+                ...new Set(
+                  (latest.cards ?? []).flatMap((c) => (c.kind === 'place' ? [c.placeId] : [])),
+                ),
+              ]
+            : [];
+        const facts = ids.length ? await this.search.placeFacts(ids, { signal, deadlineAt }) : null;
+        const available = ids.filter((id) => facts?.places.get(id)?.available);
+        const ordinal = classified.ordinal;
+        const chosen = ordinal
+          ? ids[ordinal - 1]
+          : available.length === 1
+            ? available[0]
+            : undefined;
+        const latestGroup = isQa
+          ? (latest?.trace?.placeAnswerGroup as
+              { kind?: string; prompt?: string; legacyArea?: boolean } | undefined)
+          : undefined;
+        if (latestGroup?.kind === 'clarification') {
+          // Clarification cards are candidates, never answers: a referent over
+          // them clarifies (Astra, #874 F-02). A valid pending keeps its compare
+          // slots and expiry with the new topic; an expired one seeds a fresh
+          // clarification bound to this question, with no retained partner.
+          const valid = ordinal
+            ? Boolean(chosen && available.includes(chosen))
+            : available.length > 0;
+          if (!valid) {
             pending('referent', trace!.questionMessageId);
             await notice('clarify_referent');
+            return true;
           }
+          const resumable = p !== null && (p.kind === 'choice' || p.kind === 'confirm');
+          if (resumable) {
+            // Same lineage: keep its own referent source; only the topic changes.
+            resume(p);
+            trace!.topic = classified.topic;
+            trace!.args = classified.args;
+          } else referentMessageId = latest!.id;
+          const source = resumable ? p!.questionMessageId : trace!.questionMessageId;
+          if (ordinal) await clarify('confirm', [chosen!], source, latestGroup.legacyArea === true);
+          else
+            await clarify(
+              latestGroup.prompt === 'place_confirm' && available.length === 1
+                ? 'confirm'
+                : 'choice',
+              available.slice(0, 3),
+              source,
+              latestGroup.legacyArea === true,
+            );
+          return true;
+        }
+        if (chosen && available.includes(chosen)) {
+          referentMessageId = latest!.id;
+          trace!.row = 3;
+          await answer(chosen);
+        } else if (!ordinal && available.length > 1) {
+          referentMessageId = latest!.id;
+          await clarify('choice', available.slice(0, 3), trace!.questionMessageId);
+        } else {
+          pending('referent', trace!.questionMessageId);
+          await notice('clarify_referent');
         }
         return true;
       }

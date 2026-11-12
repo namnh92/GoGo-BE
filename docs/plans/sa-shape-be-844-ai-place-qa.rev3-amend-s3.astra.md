@@ -25,3 +25,13 @@ New regression specs run on `00f691f1` before production edits when feasible. Ar
 ## S4 Layer A transition (Astra decision 2026-11-12, GoGo-BE#874)
 
 The S3 oracle freeze protects recorded evidence; S4 may revise only `compare-s3-neutral` to the authorized comparison contract, preserving every other row and harness byte and publishing newly hash-bound evidence. Historical S3 reproduction uses the archived Git version of the corpus (`dev/test-evidence/be-864`), not the revised one. Formatting changes that keep S3 rows passing (e.g. #880) do not justify rewriting expectations.
+
+## S4 referents, ordinals and names (Astra decision 2026-11-12, GoGo-BE#874 review F-02/M-01/M-02)
+
+- S4: Whole exact canonical names/curated aliases precede ordinal interpretation; branch ambiguity and stated-area gates remain binding.
+- A bare pending name/ordinal never terminally confirms; a new explicit named factual question follows §4.3–4.4.
+- Referent questions sourced from QA clarification cards must clarify: ordinal → singleton confirm; otherwise re-ask the same candidates.
+- Replace topic/arguments with the new question; valid pending retains compare slots and original expiry, with confirmation answering the retained comparison.
+- Expired pending retains no partner or authority; accessible latest candidates may seed a revalidated fresh clarification bound to the new question.
+- Consume name/ordinal spans before parsing dates; “Quán thứ N” supplies no weekday, while an external weekday clause does.
+- Missing/inaccessible referents, invalid ordinals or unresolved segmentation re-ask without guessing; structured validation and fact eligibility remain unchanged.
