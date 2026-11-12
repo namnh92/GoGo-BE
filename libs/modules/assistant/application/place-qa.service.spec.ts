@@ -1,3 +1,5 @@
+import { minorUnitAmounts } from '../../shared/test-support/minor-unit-amounts';
+import { stripVolatile } from '../../shared/test-support/strip-volatile';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NoopMetrics } from '@gogo/observability';
 import { PlaceQaService } from './place-qa.service';
@@ -146,7 +148,10 @@ describe('S3 producer and control precedence', () => {
     expect(await f.run()).toBe(true);
     expect((await f.rendered()).text).toContain('12.000–24.000 VND/người');
     expect(JSON.stringify([f.state.text, f.state.trace, f.frames])).not.toMatch(
-      /Fictional Lantern|12000|Fictional Street/,
+      /Fictional Lantern|Fictional Street/,
+    );
+    expect(stripVolatile(JSON.stringify([f.state.text, f.state.trace, f.frames]))).not.toMatch(
+      minorUnitAmounts(12000, 24000),
     );
     expect(f.state.costs).toMatchObject({
       jevCalls: 0,
@@ -642,7 +647,7 @@ describe('Fable fix round — Sol F-02: old client types the emitted confirm opt
       ),
     );
     expect(named.qa).toMatchObject({ outcome: 'confirm', topic: 'price' });
-    expect(named.view.text).not.toContain('12.000–24.000 VND/người');
+    expect(stripVolatile(named.view.text)).not.toMatch(minorUnitAmounts(12000, 24000));
   });
   it('legacy-district confirm (§4.4) is answered after the emitted option text, with the original topic', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(now);
@@ -680,7 +685,8 @@ describe('Fable fix round — Sol F-02: old client types the emitted confirm opt
     c.places.set(FIXTURE_A, { ...fictionalPlace(FIXTURE_A, 'Song Ngọc'), available: false });
     const closed = await c.send(emitted);
     expect(closed.qa).toMatchObject({ outcome: 'retry' });
-    expect(closed.view.text).not.toMatch(/12000|VND/);
+    expect(closed.view.text).not.toMatch(/VND/);
+    expect(stripVolatile(closed.view.text)).not.toMatch(minorUnitAmounts(12000, 24000));
   });
   it('round 2: a stale ordinal of the earlier choice never confirms the other branch', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(now);

@@ -1,3 +1,5 @@
+import { minorUnitAmounts } from '../../shared/test-support/minor-unit-amounts';
+import { stripVolatile } from '../../shared/test-support/strip-volatile';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NoopMetrics } from '@gogo/observability';
 import { PlaceAnswerReader } from './place-answer-reader';
@@ -113,7 +115,8 @@ describe('atomic response reader boundary', () => {
     expect(result.sources).toHaveLength(2);
     expect(result.sources[0]?.checkedAt).toBeUndefined();
     expect(result.followUps[0]?.options).toEqual([{ id: 'hours', label: 'Hours', text: 'Hours' }]);
-    expect(JSON.stringify(row)).not.toMatch(/Lantern|12000|Fictional Street/);
+    expect(JSON.stringify(row)).not.toMatch(/Lantern|Fictional Street/);
+    expect(stripVolatile(JSON.stringify(row))).not.toMatch(minorUnitAmounts(12000, 24000));
   });
   it('rechecks fact, source and option eligibility on every connection and suppresses stale card values', async () => {
     let snapshot = context();

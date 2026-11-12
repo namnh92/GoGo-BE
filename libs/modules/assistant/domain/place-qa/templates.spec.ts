@@ -1,3 +1,5 @@
+import { minorUnitAmounts } from '../../../shared/test-support/minor-unit-amounts';
+import { stripVolatile } from '../../../shared/test-support/strip-volatile';
 import { describe, expect, it } from 'vitest';
 import { renderPlaceAnswer } from './templates';
 import { fictionalPlace, FIXTURE_A, verified } from './fixtures';
@@ -52,7 +54,7 @@ describe('read-time templates over eligible facts', () => {
         ...p,
         facts: { price: [fact as VerifiedFact<readonly PriceFact[]>] },
       });
-      expect(a.text).not.toContain('12000');
+      expect(stripVolatile(a.text)).not.toMatch(minorUnitAmounts(12000, 24000));
       expect(a.sources).toEqual([]);
     }
     expect(render('overview', { ...p, facts: {} }).text).not.toContain('giá');
@@ -89,7 +91,8 @@ describe('read-time templates over eligible facts', () => {
           { locale },
         );
         expect(a.text).toBe(`Fictional Lantern: ${wording}`);
-        expect(a.text).not.toMatch(/12000|24000|\d{4}-\d{2}-\d{2}/);
+        expect(a.text).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+        expect(stripVolatile(a.text)).not.toMatch(minorUnitAmounts(12000, 24000));
         expect(a.sources).toEqual([]);
         expect(a.eligible).toBe(false);
       }
@@ -191,7 +194,7 @@ describe('read-time templates over eligible facts', () => {
   it('gone/closed/unpublished projection produces only an unavailable response', () => {
     const a = render('price', { ...fictionalPlace(), available: false });
     expect(a.unavailable).toBe(true);
-    expect(a.text).not.toContain('12000');
+    expect(stripVolatile(a.text)).not.toMatch(minorUnitAmounts(12000, 24000));
     expect(a.text).not.toContain('Lantern');
     expect(a.sources).toEqual([]);
   });
