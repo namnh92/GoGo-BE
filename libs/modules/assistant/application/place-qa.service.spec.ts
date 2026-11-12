@@ -144,7 +144,7 @@ describe('S3 producer and control precedence', () => {
       });
     });
     expect(await f.run()).toBe(true);
-    expect((await f.rendered()).text).toContain('12000–24000 VND/người');
+    expect((await f.rendered()).text).toContain('12.000–24.000 VND/người');
     expect(JSON.stringify([f.state.text, f.state.trace, f.frames])).not.toMatch(
       /Fictional Lantern|12000|Fictional Street/,
     );
@@ -587,20 +587,22 @@ describe('Sol fix round (r5)', () => {
       });
       expect(reply.qa).toMatchObject({ outcome: 'answer', topic: 'price' });
       expect(reply.f.state.trace.placeQa).toMatchObject({ candidateIds: [FIXTURE_A] });
+      expect(reply.f.input.locale).toBe('vi');
+      expect(reply.view.text).toContain('12.000–24.000 VND/người');
     },
   );
 });
 
 describe('Fable fix round — Sol F-02: old client types the emitted confirm option', () => {
-  it('two-turn confirmation: emitted ordinal for a choice, then the emitted singleton confirm text, answers', async () => {
+  it('two-turn confirmation: legacy typed ordinal for a choice, then the emitted singleton confirm text, answers', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(now);
     const c = qaConversation();
     const choice = await c.send('Song Ngọc mở cửa mấy giờ thứ tư?', (f) =>
       f.search.resolvePlaceName.mockResolvedValue(exact(FIXTURE_A, FIXTURE_B)),
     );
     expect(choice.qa).toMatchObject({ outcome: 'choice', topic: 'hours' });
-    // The client ignores replyToMessageId/followUpOptionId and types the option text.
-    const first = await c.send(choice.view.followUps[0]!.options[1]!.text);
+    // A legacy client sends an ordinal without the source-bound id pair.
+    const first = await c.send('2');
     expect(first.qa).toMatchObject({ outcome: 'confirm', pending: { kind: 'confirm' } });
     expect(first.qa!.pending!.slots[0].candidateIds).toEqual([FIXTURE_B]);
     expect(first.f.search.placeFacts).not.toHaveBeenCalled();
@@ -634,7 +636,7 @@ describe('Fable fix round — Sol F-02: old client types the emitted confirm opt
       ),
     );
     expect(named.qa).toMatchObject({ outcome: 'confirm', topic: 'price' });
-    expect(named.view.text).not.toContain('12000–24000 VND/người');
+    expect(named.view.text).not.toContain('12.000–24.000 VND/người');
   });
   it('legacy-district confirm (§4.4) is answered after the emitted option text, with the original topic', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(now);
@@ -664,10 +666,10 @@ describe('Fable fix round — Sol F-02: old client types the emitted confirm opt
   it('a confirmed candidate that became unavailable is rechecked and never answered with facts', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(now);
     const c = qaConversation();
-    const choice = await c.send('Song Ngọc giá bao nhiêu?', (f) =>
+    const _choice = await c.send('Song Ngọc giá bao nhiêu?', (f) =>
       f.search.resolvePlaceName.mockResolvedValue(exact(FIXTURE_A, FIXTURE_B)),
     );
-    const confirm = await c.send(choice.view.followUps[0]!.options[0]!.text);
+    const confirm = await c.send('1');
     const emitted = confirm.view.followUps[0]!.options[0]!.text;
     c.places.set(FIXTURE_A, { ...fictionalPlace(FIXTURE_A, 'Song Ngọc'), available: false });
     const closed = await c.send(emitted);
@@ -677,14 +679,13 @@ describe('Fable fix round — Sol F-02: old client types the emitted confirm opt
   it('round 2: a stale ordinal of the earlier choice never confirms the other branch', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(now);
     const c = qaConversation();
-    const choice = await c.send('Song Ngọc giá bao nhiêu?', (f) =>
+    const _choice = await c.send('Song Ngọc giá bao nhiêu?', (f) =>
       f.search.resolvePlaceName.mockResolvedValue(exact(FIXTURE_A, FIXTURE_B)),
     );
-    const [chipA, chipB] = choice.view.followUps[0]!.options;
-    const confirmB = await c.send(chipB!.text);
+    const confirmB = await c.send('2');
     expect(confirmB.qa!.pending!.slots[0].candidateIds).toEqual([FIXTURE_B]);
     // Old client taps A's chip from the earlier message: the bare ordinal "1".
-    const stale = await c.send(chipA!.text);
+    const stale = await c.send('1');
     expect(stale.qa).toMatchObject({ outcome: 'confirm' });
     expect(stale.qa!.pending!.slots[0].candidateIds).toEqual([FIXTURE_B]);
     expect(stale.f.search.placeFacts).not.toHaveBeenCalled();
@@ -703,10 +704,10 @@ describe('Fable fix round — Sol F-02: old client types the emitted confirm opt
   it('an ordinal outside a singleton confirm is not a confirmation', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(now);
     const c = qaConversation();
-    const choice = await c.send('Song Ngọc giá bao nhiêu?', (f) =>
+    const _choice = await c.send('Song Ngọc giá bao nhiêu?', (f) =>
       f.search.resolvePlaceName.mockResolvedValue(exact(FIXTURE_A, FIXTURE_B)),
     );
-    await c.send(choice.view.followUps[0]!.options[0]!.text);
+    await c.send('1');
     const other = await c.send('2', (f) =>
       f.search.resolvePlaceName.mockResolvedValue(
         resolvePlaceNameOutcome({ candidates: [], overflow: false, areaMismatch: false }),
@@ -768,7 +769,7 @@ describe('Fable fix round — Astra F-01: referent continuation keeps the name-b
         topic: 'price',
         args: question.qa!.args,
       });
-      expect(refined.view.text).toContain('12000–24000 VND/người');
+      expect(refined.view.text).toContain('12.000–24.000 VND/người');
     },
   );
   it('a branch choice inside the area keeps question, name source, topic and the original expiry', async () => {
@@ -1013,10 +1014,10 @@ describe('Fable fix round 2 — open decision at the first-text deadline, and co
         ...fictionalPlace(FIXTURE_B, name),
         areaLabel: 'Phường Cầu Giấy, Hà Nội',
       });
-      const choice = await c.send('Song Ngọc giá bao nhiêu?', (f) =>
+      const _choice = await c.send('Song Ngọc giá bao nhiêu?', (f) =>
         f.search.resolvePlaceName.mockResolvedValue(exact(FIXTURE_A, FIXTURE_B)),
       );
-      const confirm = await c.send(choice.view.followUps[0]!.options[1]!.text);
+      const confirm = await c.send('2');
       const emitted = confirm.view.followUps[0]!.options[0]!.text;
       expect(emitted).toContain(name);
       const answered = await c.send(emitted);
@@ -1091,10 +1092,10 @@ describe('Astra amendment regressions', () => {
       ...fictionalPlace(FIXTURE_A, 'Song Ngọc'),
       areaLabel: 'Phường Ba Đình, Hà Nội',
     });
-    const choice = await c.send('Song Ngọc giá bao nhiêu?', (f) =>
+    const _choice = await c.send('Song Ngọc giá bao nhiêu?', (f) =>
       f.search.resolvePlaceName.mockResolvedValue(exact(FIXTURE_A, FIXTURE_B)),
     );
-    const confirm = await c.send(choice.view.followUps[0]!.options[0]!.text);
+    const confirm = await c.send('1');
     expect(confirm.view.followUps[0]!.options[0]!.text).toBe(
       'Xác nhận Song Ngọc · Phường Ba Đình, Hà Nội',
     );
@@ -1427,4 +1428,113 @@ describe('GoGo-BE#876 bare venue-name answers', () => {
       expect(result.view.cards.map((card) => card.placeId)).toEqual([FIXTURE_A]);
     },
   );
+});
+
+describe('GoGo-BE#877 typed choice continuation', () => {
+  function duplicateBranches(c: ReturnType<typeof qaConversation>, address = true) {
+    for (const [i, id] of [FIXTURE_A, FIXTURE_B].entries()) {
+      const name = 'The Workshop Coffee';
+      c.places.set(id, {
+        ...fictionalPlace(id, name),
+        areaLabel: 'Phường Ba Đình, Hà Nội',
+        hasIdentityCollision: true,
+        card: {
+          kind: 'place',
+          placeId: id,
+          available: true,
+          facts: { name, ...(address ? { addressText: `${i ? 27 : 12} Đường Mây` } : {}) },
+        },
+      });
+    }
+  }
+  it('retains the original topic and confirms only the addressed branch, without ids', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const c = qaConversation();
+    duplicateBranches(c);
+    const first = await c.send('The Workshop Coffee giá bao nhiêu?');
+    expect(first.view.followUps[0]!.options[1]!.text).toBe('The Workshop Coffee · 27 Đường Mây');
+    const confirm = await c.send(first.view.followUps[0]!.options[1]!.text);
+    expect(confirm.qa).toMatchObject({ outcome: 'confirm', topic: 'price' });
+    expect(confirm.qa!.pending!.slots[0].candidateIds).toEqual([FIXTURE_B]);
+    expect(confirm.view.followUps[0]!.options[0]!.text).toContain('27 Đường Mây');
+    const answer = await c.send(confirm.view.followUps[0]!.options[0]!.text);
+    expect(answer.qa).toMatchObject({ outcome: 'answer', topic: 'price' });
+    expect(answer.f.state.trace.placeAnswerGroup).toMatchObject({ cards: [FIXTURE_B] });
+  });
+  it.each([true, false])(
+    'a duplicate bare name re-asks with both branches (address=%s)',
+    async (address) => {
+      vi.spyOn(Date, 'now').mockReturnValue(now);
+      const c = qaConversation();
+      duplicateBranches(c, address);
+      await c.send('The Workshop Coffee giá bao nhiêu?');
+      const again = await c.send('The Workshop Coffee');
+      expect(again.qa).toMatchObject({ outcome: 'choice', topic: 'price' });
+      expect(again.f.state.trace.placeAnswerGroup).toMatchObject({ cards: [FIXTURE_A, FIXTURE_B] });
+      expect(again.view.text).not.toContain('VND');
+    },
+  );
+  it('same-name branches with no address never authorize an ambiguous text confirmation', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const c = qaConversation();
+    duplicateBranches(c, false);
+    await c.send('The Workshop Coffee giá bao nhiêu?');
+    const confirm = await c.send('1');
+    const again = await c.send(confirm.view.followUps[0]!.options[0]!.text);
+    expect(again.qa?.outcome).not.toBe('answer');
+    expect(again.view.text).not.toContain('VND');
+  });
+  it('a stale ordinal retains branch B when both choice texts have the same area discriminator', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const c = qaConversation();
+    duplicateBranches(c, false);
+    const choice = await c.send('The Workshop Coffee giá bao nhiêu?');
+    expect(choice.view.followUps[0]!.options.slice(0, 2).map((o) => o.text)).toEqual([
+      'The Workshop Coffee · Phường Ba Đình, Hà Nội',
+      'The Workshop Coffee · Phường Ba Đình, Hà Nội',
+    ]);
+    const confirmB = await c.send('2');
+    expect(confirmB.qa!.pending!.slots[0].candidateIds).toEqual([FIXTURE_B]);
+    const stale = await c.send('1');
+    expect(stale.qa).toMatchObject({ outcome: 'confirm' });
+    expect(stale.qa!.pending!.slots[0].candidateIds).toEqual([FIXTURE_B]);
+    expect(stale.view.text).not.toContain('VND');
+    const ambiguous = await c.send(stale.view.followUps[0]!.options[0]!.text);
+    expect(ambiguous.qa?.outcome).not.toBe('answer');
+    expect(ambiguous.view.text).not.toContain('VND');
+  });
+  it('oversized addressed identities keep valid chip text and remain ambiguous without ids', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const c = qaConversation();
+    duplicateBranches(c);
+    for (const [i, id] of [FIXTURE_A, FIXTURE_B].entries()) {
+      const p = c.places.get(id)!;
+      c.places.set(id, {
+        ...p,
+        card: {
+          ...p.card!,
+          facts: { name: p.name, addressText: `${i + 1} ${'Đường Mây '.repeat(30)}` },
+        },
+      });
+    }
+    const first = await c.send('The Workshop Coffee giá bao nhiêu?');
+    for (const option of first.view.followUps[0]!.options) {
+      expect(option.text.length).toBeLessThanOrEqual(200);
+      expect(Array.from(option.label).length).toBeLessThanOrEqual(40);
+    }
+    const again = await c.send(first.view.followUps[0]!.options[0]!.text);
+    expect(again.qa).toMatchObject({ outcome: 'choice', topic: 'price' });
+  });
+  it('id pair selects the source-bound option even when its name text is duplicated', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const c = qaConversation();
+    duplicateBranches(c, false);
+    const first = await c.send('The Workshop Coffee giá bao nhiêu?');
+    const selected = await c.send(first.view.followUps[0]!.options[0]!.text, (f) => {
+      f.input.replyToMessageId = first.assistantId;
+      f.input.followUpOptionId = first.view.followUps[0]!.options[1]!.id;
+    });
+    expect(selected.qa).toMatchObject({ outcome: 'answer', topic: 'price' });
+    expect(selected.f.state.trace.placeAnswerGroup).toMatchObject({ cards: [FIXTURE_B] });
+  });
 });

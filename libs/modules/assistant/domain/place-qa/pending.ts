@@ -1,3 +1,4 @@
+import type { PlaceFacts } from './place-facts';
 import { z } from 'zod';
 import { normalizeVietnamese } from '../../../search/domain/normalize';
 import {
@@ -157,9 +158,10 @@ export function confirmText(
   locale: 'vi' | 'en',
   name: string,
   area: string | undefined,
+  discriminator?: string,
 ): string | null {
   if (!name.trim() || !area?.trim()) return null;
-  const text = `${locale === 'en' ? 'Confirm' : 'Xác nhận'} ${name} · ${area}`;
+  const text = `${locale === 'en' ? 'Confirm' : 'Xác nhận'} ${name} · ${area}${discriminator ? ` · ${discriminator}` : ''}`;
   return text.length <= 200 && !/[\uE000\uE001]/u.test(text) ? text : null;
 }
 export function isTypedConfirm(text: string): boolean {
@@ -168,4 +170,89 @@ export function isTypedConfirm(text: string): boolean {
       .replace(/[.!?]+$/u, '')
       .trim(),
   );
+}
+
+/** Compare complete normalized identities, never guess a branch from an ordinal.
+ * Only existing public identity facts may discriminate; no synthetic codes. */
+export function choiceDiscriminator(
+  place: PlaceFacts,
+  candidates: readonly PlaceFacts[],
+  scope: 'choice' | 'confirm' = 'confirm',
+): string | undefined {
+  const peers = candidates.filter(
+    (p) =>
+      p.available &&
+      normalizeVietnamese(p.name) === normalizeVietnamese(place.name) &&
+      (scope === 'choice' ||
+        normalizeVietnamese(p.areaLabel ?? '') === normalizeVietnamese(place.areaLabel ?? '')),
+  );
+  if (peers.length < 2 && !place.hasIdentityCollision) return undefined;
+  const address = place.card?.facts.addressText?.trim();
+  if (address) {
+    const parts = address
+      .split(',')
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const peerParts = peers
+      .filter((p) => p.id !== place.id)
+      .map((p) =>
+        (p.card?.facts.addressText ?? '')
+          .split(',')
+          .map((part) => normalizeVietnamese(part.trim())),
+      );
+    // Prefer house number + street. If shared, use the first distinguishing
+    // address component; only combine components when no single part suffices.
+    return (
+      parts.find((part) =>
+        peerParts.every((other) => !other.includes(normalizeVietnamese(part))),
+      ) ??
+      parts
+        .map((_, i) => parts.slice(0, i + 1).join(', '))
+        .find((prefix) =>
+          peers.every(
+            (p) =>
+              p.id === place.id ||
+              !normalizeVietnamese(p.card?.facts.addressText ?? '').startsWith(
+                normalizeVietnamese(prefix),
+              ),
+          ),
+        ) ??
+      address
+    );
+  }
+  return (
+    place.card?.facts.areaKey?.trim() ||
+    (scope === 'choice' ? place.areaLabel?.trim() : undefined) ||
+    undefined
+  );
+}
+export function choiceText(place: PlaceFacts, candidates: readonly PlaceFacts[]): string {
+  const discriminator = choiceDiscriminator(place, candidates, 'choice');
+  const text = `${place.name}${discriminator ? ` · ${discriminator}` : ''}`;
+  // Do not truncate an identity into a different branch's name. A full name
+  // still fits the contract; if the address cannot fit, typing it must re-ask.
+  return text.length <= 200 ? text : place.name;
+}
+
+/** OpenAPI maxLength counts Unicode code points, not UTF-16 units. Only the
+ * display label is shortened; typed identity and prompt text stay independent.
+ * Each option's unique ordinal survives shortening, so two labels cannot collide
+ * even if their shortened names and discriminators have identical prefixes. */
+export function choiceLabel(ordinal: number, name: string, discriminator?: string): string {
+  const prefix = `${ordinal}. `;
+  const available = 40 - Array.from(prefix).length;
+  if (!discriminator) return prefix + shorten(name, available);
+  const nameBudget = Math.max(1, available - 3 - Array.from(discriminator).length);
+  const shortName = shorten(name, nameBudget);
+  const addressBudget = available - 3 - Array.from(shortName).length;
+  return `${prefix}${shortName} · ${shorten(discriminator, addressBudget)}`;
+}
+function shorten(value: string, max: number): string {
+  const points = Array.from(value);
+  return points.length <= max
+    ? value
+    : `${points
+        .slice(0, max - 1)
+        .join('')
+        .trimEnd()}…`;
 }

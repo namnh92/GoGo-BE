@@ -121,6 +121,43 @@ describe('read-time templates over eligible facts', () => {
       'đóng cửa',
     );
   });
+  it.each(['vi', 'en'] as const)(
+    'keeps verification and asked dates ISO with HH:mm reference hours (%s)',
+    (locale) => {
+      const p = fictionalPlace();
+      const place = {
+        ...p,
+        facts: {
+          hours: p.facts.hours!.map((day) => ({
+            ...day,
+            intervals: day.intervals.map((fact) => ({
+              ...fact,
+              tier: 'verified_reference' as const,
+              verifiedAt: '2025-02-03T00:00:00Z',
+            })),
+          })),
+        },
+      };
+      const answer = render('hours', place, {
+        locale,
+        day: 'date',
+        date: '2026-12-25',
+        d: 3,
+        tz: 'Asia/Ho_Chi_Minh',
+      });
+      expect(answer.text).toContain('2025-02-03');
+      expect(answer.text).toContain('2026-12-25');
+      expect(answer.text).toContain('09:00–12:00.');
+      expect(answer.text).toContain('18:00–02:00');
+      expect(answer.text).toContain(
+        locale === 'vi' ? '. Thông tin tham khảo' : '. Reference information',
+      );
+      expect(answer.tier).toBe('verified_reference');
+      expect(answer.sources.every((source) => source.verifiedAt === '2025-02-03T00:00:00Z')).toBe(
+        true,
+      );
+    },
+  );
   it.each(['closed', 'open_24h'] as const)(
     'renders explicitly verified schedule kind %s',
     (kind) => {
@@ -173,7 +210,7 @@ describe('independently dated fact bundles', () => {
       verifiedAt: '2020-01-01T00:00:00Z',
     };
     const a = render('price', { ...fictionalPlace(), facts: { price: [current, old] } });
-    expect(a.text).toMatch(/12000 VND\/người.*2026-11-10.*1,00 USD\/món.*2020-01-01/);
+    expect(a.text).toMatch(/12\.000 VND\/người.*2026-11-10.*1,00 USD\/món.*2020-01-01/);
     expect(a.sources.map((s) => s.verifiedAt)).toEqual([
       '2026-11-10T00:00:00Z',
       '2020-01-01T00:00:00Z',
@@ -251,7 +288,7 @@ describe('remaining S1 topic and numeric cells', () => {
         ],
       },
     };
-    expect(render('price', p).text).toContain('90071992547409,91 USD/món');
+    expect(render('price', p).text).toContain('90.071.992.547.409,91 USD/món');
   });
   it('does not promote Google-owned contacts or active-only unverified assignments', () => {
     const p = fictionalPlace();

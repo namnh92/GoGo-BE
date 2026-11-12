@@ -13,6 +13,8 @@ import {
 import { PLACE_QA_CONFIG_VERSION } from '../domain/place-qa/config';
 import {
   confirmText,
+  choiceText,
+  choiceDiscriminator,
   makeQaPending,
   readQaPending,
   isTypedConfirm,
@@ -497,7 +499,12 @@ export class PlaceQaService {
             const facts = await this.search.placeFacts(candidates, { signal, deadlineAt });
             const candidate = facts.places.get(candidates[0]!);
             const phrase = candidate?.available
-              ? confirmText(latest?.locale ?? 'vi', candidate.name, candidate.areaLabel)
+              ? confirmText(
+                  latest?.locale ?? 'vi',
+                  candidate.name,
+                  candidate.areaLabel,
+                  choiceDiscriminator(candidate, [...facts.places.values()]),
+                )
               : null;
             if (phrase && normalizeVietnamese(phrase) === t) {
               // Re-read the complete canonical-name family, not just the last
@@ -512,7 +519,12 @@ export class PlaceQaService {
                 const matching = ids.filter((id) => {
                   const place = all.places.get(id);
                   const identity = place?.available
-                    ? confirmText(latest?.locale ?? 'vi', place.name, place.areaLabel)
+                    ? confirmText(
+                        latest?.locale ?? 'vi',
+                        place.name,
+                        place.areaLabel,
+                        choiceDiscriminator(place, [...all.places.values()]),
+                      )
                     : null;
                   return identity !== null && normalizeVietnamese(identity) === t;
                 });
@@ -536,6 +548,24 @@ export class PlaceQaService {
           await clarify('confirm', [candidates[Number(ordinal[1]) - 1]!], p.questionMessageId);
           return true;
         }
+        if (candidates.length) {
+          const facts = await this.search.placeFacts(candidates, { signal, deadlineAt });
+          const named = candidates.filter((id) => {
+            const f = facts.places.get(id);
+            return (
+              f?.available &&
+              [f.name, choiceText(f, [...facts.places.values()])].some(
+                (identity) =>
+                  normalizeVietnamese(identity) ===
+                  t.replace(/^(?:xac nhan|dung la|confirm) /u, ''),
+              )
+            );
+          });
+          if (named.length) {
+            await clarify(named.length === 1 ? 'confirm' : 'choice', named, p.questionMessageId);
+            return true;
+          }
+        }
         const a = await this.area(input.text);
         if (a.kind === 'current') {
           // The whole name query is rerun from the name-bearing message; the
@@ -546,20 +576,6 @@ export class PlaceQaService {
           });
           if (original.kind === 'named_place_question' || original.kind === 'name_only') {
             return await resolve(original, () => sources.question.id, a, sources.name.text);
-          }
-        }
-        if (candidates.length) {
-          const facts = await this.search.placeFacts(candidates, { signal, deadlineAt });
-          const named = candidates.filter((id) => {
-            const f = facts.places.get(id);
-            return (
-              f?.available &&
-              normalizeVietnamese(f.name) === t.replace(/^(?:xac nhan|dung la|confirm) /u, '')
-            );
-          });
-          if (named.length === 1) {
-            await clarify('confirm', named, p.questionMessageId);
-            return true;
           }
         }
         if (classified.kind === 'name_only') {

@@ -151,7 +151,7 @@ describe('S1 server-authored reference groups on real read surfaces', () => {
     expect(live.status).toBe(200);
     const rendered = parseSse(live.body);
     expect(rendered.map((r) => r.event)).toContain('done');
-    expect(live.body).toContain('12000');
+    expect(live.body).toContain('12,000');
     expect(live.body).not.toMatch(/[\uE000\uE001]/);
     expect(lookupIds).toEqual([[FIXTURE_A, FIXTURE_B]]);
     lookupIds = [];
@@ -173,7 +173,7 @@ describe('S1 server-authored reference groups on real read surfaces', () => {
     lookupIds = [];
     const first = await history(s.conversationId);
     expect(first.statusCode).toBe(200);
-    expect(first.body).toContain('12000');
+    expect(first.body).toContain('12,000');
     expect(lookupIds).toEqual([[FIXTURE_A, FIXTURE_B]]);
     expect((await history(s.conversationId, bob)).statusCode).toBe(404);
     await f.inject({
@@ -188,7 +188,7 @@ describe('S1 server-authored reference groups on real read surfaces', () => {
       token: moderator,
     });
     expect(cms.statusCode).toBe(200);
-    expect(cms.body).toContain('12000');
+    expect(cms.body).toContain('12,000');
     expect(cms.body).not.toContain(s.messageId);
     expect(cms.body).not.toContain(s.userId);
     snapshot = {
