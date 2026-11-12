@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { schema } from '@gogo/database';
+import { SearchService } from '../../../libs/modules/search/application/search.service';
 import { ASSISTANT_LLM, type AssistantLlmPort, type DecisionProviderPort } from '@gogo/providers';
 import { ASSISTANT_DECISION_PROVIDER } from '../../../libs/modules/assistant/application/assistant.config';
 import { AssistantRepository } from '../../../libs/modules/assistant/infrastructure/assistant.repository';
@@ -23,6 +24,8 @@ const names = {
   unique1: 'Mây Hồng Coffee',
   unique2: 'Mây Hồng Garden',
   price: 'CGV Vincom Đồng Khởi',
+  control1: 'Quán 2',
+  control2: 'Quán 3',
 };
 
 beforeAll(async () => {
@@ -43,6 +46,9 @@ beforeAll(async () => {
     const [place] = await f.db
       .insert(schema.places)
       .values({
+        ...(key.startsWith('control')
+          ? { id: `87700000-0000-4000-8000-00000000000${key === 'control1' ? 1 : 2}` }
+          : {}),
         name,
         nameNormalized: 'trigger',
         status: 'published',
@@ -215,6 +221,29 @@ describe('GoGo-BE#877 public send → SQL → SSE → history', () => {
       candidateIds: [first.message.cards[1].placeId],
     });
   });
+  it('880-F-01: emitted Quán 2 never selects legacy ordinal candidate 2', async () => {
+    const c = await conversation();
+    // Both fixtures are fuzzy candidates for this absent name; tied scores use
+    // the seeded UUID order so Quán 2 is option 1 and Quán 3 is option 2.
+    const first = await turn(c, 'Quán 4 giá bao nhiêu?');
+    expect(first.message.cards.map((card: { placeId: string }) => card.placeId)).toEqual([
+      ids.control1,
+      ids.control2,
+    ]);
+    expect(first.message.followUps[0].options[0].text).toBe('Quán 2');
+    const reply = await turn(c, first.message.followUps[0].options[0].text);
+    expect(reply.qa).toMatchObject({
+      outcome: 'choice',
+      topic: 'price',
+      candidateIds: [ids.control1, ids.control2],
+    });
+    expect(reply.message.followUps[0].field).toBe('place_choice');
+    expect(reply.message.cards.map((card: { placeId: string }) => card.placeId)).toEqual([
+      ids.control1,
+      ids.control2,
+    ]);
+    expect(reply.message.text).not.toContain('VND');
+  });
   it('877-AMBIGUOUS: typed duplicate name without ids re-asks and never answers a branch', async () => {
     const c = await conversation();
     await turn(c, `${names.duplicate1} ở đâu?`);
@@ -234,7 +263,25 @@ describe('GoGo-BE#877 public send → SQL → SSE → history', () => {
       topic: 'address',
       candidateIds: [first.message.cards[1].placeId],
     });
-    const confirmed = await turn(c, reply.message.followUps[0].options[0].text);
+    const confirmOption = reply.message.followUps[0].options[0];
+    const identity = await f.app.get(SearchService).placeFacts([first.message.cards[1].placeId], {
+      signal: new AbortController().signal,
+      deadlineAt: Date.now() + 2000,
+    });
+    expect(confirmOption.text).toBe(
+      `Xác nhận ${names.duplicate1} · ${identity.places.get(first.message.cards[1].placeId)!.areaLabel}`,
+    );
+    expect(confirmOption.text).not.toContain('Đường Mây');
+    const ambiguous = await turn(c, confirmOption.text);
+    expect(ambiguous.qa).not.toMatchObject({ outcome: 'answer' });
+    expect(ambiguous.qa).toMatchObject({
+      pending: { slots: [{ candidateIds: [first.message.cards[1].placeId] }] },
+    });
+    const confirmAgain = await turn(c, first.message.followUps[0].options[1].text);
+    const confirmed = await turn(c, confirmAgain.message.followUps[0].options[0].text, {
+      replyToMessageId: confirmAgain.id,
+      followUpOptionId: confirmAgain.message.followUps[0].options[0].id,
+    });
     expect(confirmed.qa).toMatchObject({
       outcome: 'answer',
       topic: 'address',

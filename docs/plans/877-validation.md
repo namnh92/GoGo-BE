@@ -3,6 +3,104 @@
 Ngày 2026-11-12. DEV: Sol. Branch `bugfix/GOGO-877-place-qa-presentation`,
 base `ad8f1419` (`origin/re-design`). Không commit, không migration, không triển khai.
 
+## PR #880 — review round 1 fixes (Sol, 2026-11-12)
+
+Basis: `f1b0e3520ea5556cabdd1d0bd5f49c63ff492d04`, worktree hiện tại.
+Nguồn findings: `dev/handoffs/codex-review-request-be-880.dev.out` ở workspace
+cha. Chỉ sửa F-01/F-02; không commit. Log round này: `/tmp/be-880-round1/`.
+Các kết quả ở những phần continuation phía dưới là lịch sử, không thay thế
+bằng chứng round này.
+
+### F-01 P1 — emitted identity bị legacy control bắt trước
+
+- **Cause:** parser chạy none/typed-confirm/ordinal trước identity của candidates.
+  Option 1 tên `Quán 2` bị hiểu thành ordinal 2, chuyển singleton sang candidate B.
+  Tên trùng none control bị chuyển sang narrow; tên giống confirm phrase bị retry.
+- **Change:** sau khi xác thực latest pending và các source references, đọc current
+  identities trước legacy controls/area parsing. So cả full text và spelling có
+  punctuation cuối câu. Nếu identity đụng ordinal của nhánh khác, none hoặc
+  typed-confirm control thì giữ toàn bộ candidates và hỏi lại, giữ topic/args.
+  Legacy ordinal không collision vẫn yêu cầu singleton confirm. Structured ids
+  vẫn chạy trước text. Ba unit assertions cũ được đổi từ “không đọc facts” sang
+  “đọc identities nhưng chỉ clarification”, vì đây là read bắt buộc để phát hiện
+  collision; không nới assertion chọn nhánh/trả lời.
+- **Regression:** `place-qa.service.spec.ts`, describe
+  `GoGo-BE#880 F-01 emitted identities before legacy controls`: 6 cells gồm
+  `Quán 2`, `Quán 2!`, hai locale của none và hai locale của confirm phrase.
+  Trên basis: **6 FAIL**, `Quán 2` thực tế giữ duy nhất candidate B thay vì
+  `[A, B]`. Candidate: **6 PASS** trong focused run exit 0.
+  Thêm cell public API `880-F-01` vào `apps/api/test/place-qa-877.int.spec.ts`;
+  hai fixtures `Quán 2`/`Quán 3` dùng UUID cố định để option order tái lập được.
+  Integration **NOT RUN — DEV chạy**, chưa có FAIL/PASS runtime cho cell này.
+
+### F-02 P1 — address lọt vào singleton confirm identity
+
+- **Cause:** `confirmText` nhận discriminator và reader/parser đều truyền address
+  của duplicate family, tạo phrase ngoài amendment được duyệt.
+- **Change:** bỏ tham số discriminator khỏi `confirmText`; reader chỉ dùng address
+  cho place choice (kể cả fuzzy multi-candidate clarification). Singleton prompt,
+  label và text không thêm address. Text chính xác
+  `Xác nhận <name> · <commune, province>` / `Confirm …`; missing/oversized identity
+  dùng ordinal để hỏi lại như `origin/re-design`. Typed confirmation kiểm tra
+  name + area trên toàn canonical family; trùng identity thì retry/restate,
+  không trả lời nhánh nào. Cặp source-bound ids vẫn trả lời singleton đã chọn.
+- **Regression:** hai cells `F-02: vi/en addressed choice…` trong unit service:
+  addressed choice chọn B, confirm giữ nguyên name + area, typed text không trả
+  lời B khi A có cùng name/area. Basis **2 FAIL** vì thêm ` · 27 Đường Mây`;
+  candidate **2 PASS**, kèm unit id-pair PASS. Cell `877-TYPED` integration được
+  sửa theo cùng kỳ vọng, kiểm tra cả text re-ask lẫn id-pair answer.
+  Integration **NOT RUN — DEV chạy**, không gán unit PASS thành integration PASS.
+
+### FAIL-before / PASS-after và commands
+
+`before-final.log`: chỉ overlay tests/docs trên production nguyên bytes của
+`f1b0e352`; xác minh không có production diff trước khi chạy, rồi phục hồi
+candidate bằng `finally`. `before-manifest.json` ghi source SHA-256,
+unit-spec SHA-256 và `candidateRestored: true`. Cùng bytes unit spec chạy
+before/after: `12b0a0af4ac2533a7094b9b80ea4cc842fe01089585d43174977566fd215aacf`.
+Integration spec được sửa type assertions sau baseline unit run; không được chạy
+ở cả hai phía. Không có source overlay từ candidate khi lấy FAIL-before.
+
+```sh
+# FAIL-before: original f1b0e352 production + final unit spec
+pnpm -s vitest run --project unit libs/modules/assistant/application/place-qa.service.spec.ts -t 'GoGo-BE#880 F-01|F-02: (vi|en) addressed'
+# exit 1: 8 FAIL, 109 skipped; before-final.log
+
+# PASS-after: candidate; includes all eight regressions + id-pair/legacy coverage
+pnpm -s vitest run --project unit libs/modules/assistant/application/place-qa.service.spec.ts -t 'GoGo-BE#880 F-01|F-02:'
+# exit 0: 15 PASS, 102 skipped; after-targeted.log
+
+pnpm -s vitest run --project unit libs/modules/assistant/application/place-qa.service.spec.ts libs/modules/assistant/application/place-answer-reader.spec.ts libs/modules/assistant/application/place-qa-877.spec.ts libs/modules/assistant/domain/place-qa/pending.spec.ts
+# exit 0: 182 PASS / 4 suites; focused.log
+
+pnpm typecheck
+# final: exit 0, 8/8 packages; typecheck-final2.log
+pnpm exec eslint $(git diff --name-only -- '*.ts')
+# final: exit 0; eslint-final.log
+pnpm exec prettier --check $(git diff --name-only -- '*.ts' '*.md')
+# final: exit 0; prettier-final.log
+pnpm api:check
+# exit 0; api-check.log
+pnpm test
+# exit 1: 5014 PASS, 1 skipped, 345 suites PASS; unit.log
+# sentry-request.spec.ts BLOCKED: listen EPERM 127.0.0.1 (sandbox)
+git diff --check
+# final: exit 0
+```
+
+Hai lần typecheck trước exit 2 vì test mới thiếu `placeFacts` options và access
+`trace.placeQa` dạng unknown. Đã sửa thành options có `signal`/`deadlineAt`
+và `toMatchObject`;
+không thay đổi expected product behavior. Full unit không có assertion FAIL;
+không sửa/skip test socket. DEV vẫn cần full unit trong môi trường cho phép
+listen và integration before/after trên basis/candidate. Round này không chạy
+integration theo phân công của task.
+
+**Layer A / OpenAPI:** kiểm tra nguyên bytes của cả 9 overlay files, gồm bốn
+file Layer A được chỉ định, và toàn bộ `openapi/` so với basis; exit 0.
+Không đổi OpenAPI hay generated types. Fingerprint cuối:
+`/tmp/be-880-round1/final-manifest.json`.
+
 ## Phạm vi và quyết định
 
 1. **Card:** tái dùng nguyên SQL/public projection của PlaceDetail và tách mapper
@@ -21,7 +119,8 @@ base `ad8f1419` (`origin/re-design`). Không commit, không migration, không tr
    Text và prompt không dùng label đã cắt: giữ tên đầy đủ + discriminator.
    Thiếu address dùng public areaKey/current area có sẵn, không bịa mã.
    Singleton confirm cũng dùng label có giới hạn 40, text vẫn là câu xác nhận
-   đầy đủ; metadata collision giữ địa chỉ khi chuyển sang singleton.
+   đầy đủ. **Round 1 #880 sửa lại:** địa chỉ chỉ phân biệt ở place_choice;
+   singleton dùng đúng tên + commune/province, không thêm địa chỉ.
    Parser dùng cùng identity builder, match text trước area parsing, giữ topic
    và args. Text không phân biệt được thì hỏi lại; cặp ids vẫn quyết định lựa chọn.
 3. **Format:** vi `90.000–180.000 VND/người. Thông tin tham khảo, xác minh ngày 2026-10-20`; en `90,000–180,000 VND per person` và mọi ngày xác minh/ngày được hỏi giữ ISO `yyyy-MM-dd` ở cả hai locale. BigInt
@@ -64,7 +163,7 @@ surrogate pair. Không đổi request validation.
 | 877-LABEL           | `877-LABEL`: tên Việt dài, rút name trước address, giữ discriminator và ordinal, label khác nhau; distinct names giữ label cũ; text/prompt đầy đủ; same street/cross-area/emoji | DEV chạy integration ngoài sandbox                                                       | Base 6 FAIL / 1 PASS; candidate 7 PASS        |
 | 877-TEXT            | `877-TEXT`: text tên quán                                                                                                                                                       | tên khác nhau; gửi text A nhưng id pair B vẫn chọn B                                     | Primary unit FAIL / PASS; integration BLOCKED |
 | 877-AMBIGUOUS       | place-qa.service.spec.ts, describe `GoGo-BE#877 typed choice continuation`: có/không address                                                                                    | gõ tên trùng không ids: hỏi lại cả hai, giữ topic                                        | PASS / integration BLOCKED                    |
-| 877-TYPED           | emitted address text → singleton confirm → exact branch answer; kiểm tra id pair và no-address ambiguity                                                                        | cùng flow qua public API/SSE/history                                                     | PASS / integration BLOCKED                    |
+| 877-TYPED           | emitted address text → singleton confirm; trùng name/area thì typed text hỏi lại, id pair mới trả lời nhánh; kiểm tra no-address ambiguity                                      | cùng flow qua public API/SSE/history                                                     | PASS / integration BLOCKED                    |
 | 877-FORMAT          | `877-FORMAT` vi/en, thêm existing max-safe-integer regression                                                                                                                   | giá 90.000–180.000, 2026-10-20, 09:00–23:00                                              | Primary unit FAIL / PASS; integration BLOCKED |
 | Unknown / threshold | search/application/place-qa-877.spec.ts: thiếu address/rating/unit; community 4 lượt; unpublished                                                                               | card parity cell dùng stored Google rating không provider source row                     | 3 unit PASS; integration BLOCKED              |
 | Legacy / fence      | giữ ordinal literal 1/2 trong test legacy; cập nhật kỳ vọng formatting; contract pins giữ base                                                                                  | s3, s3-fence, 875                                                                        | Unit PASS; integration BLOCKED                |

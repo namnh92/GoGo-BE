@@ -158,10 +158,9 @@ export function confirmText(
   locale: 'vi' | 'en',
   name: string,
   area: string | undefined,
-  discriminator?: string,
 ): string | null {
   if (!name.trim() || !area?.trim()) return null;
-  const text = `${locale === 'en' ? 'Confirm' : 'Xác nhận'} ${name} · ${area}${discriminator ? ` · ${discriminator}` : ''}`;
+  const text = `${locale === 'en' ? 'Confirm' : 'Xác nhận'} ${name} · ${area}`;
   return text.length <= 200 && !/[\uE000\uE001]/u.test(text) ? text : null;
 }
 export function isTypedConfirm(text: string): boolean {
@@ -177,14 +176,9 @@ export function isTypedConfirm(text: string): boolean {
 export function choiceDiscriminator(
   place: PlaceFacts,
   candidates: readonly PlaceFacts[],
-  scope: 'choice' | 'confirm' = 'confirm',
 ): string | undefined {
   const peers = candidates.filter(
-    (p) =>
-      p.available &&
-      normalizeVietnamese(p.name) === normalizeVietnamese(place.name) &&
-      (scope === 'choice' ||
-        normalizeVietnamese(p.areaLabel ?? '') === normalizeVietnamese(place.areaLabel ?? '')),
+    (p) => p.available && normalizeVietnamese(p.name) === normalizeVietnamese(place.name),
   );
   if (peers.length < 2 && !place.hasIdentityCollision) return undefined;
   const address = place.card?.facts.addressText?.trim();
@@ -220,14 +214,10 @@ export function choiceDiscriminator(
       address
     );
   }
-  return (
-    place.card?.facts.areaKey?.trim() ||
-    (scope === 'choice' ? place.areaLabel?.trim() : undefined) ||
-    undefined
-  );
+  return place.card?.facts.areaKey?.trim() || place.areaLabel?.trim() || undefined;
 }
 export function choiceText(place: PlaceFacts, candidates: readonly PlaceFacts[]): string {
-  const discriminator = choiceDiscriminator(place, candidates, 'choice');
+  const discriminator = choiceDiscriminator(place, candidates);
   const text = `${place.name}${discriminator ? ` · ${discriminator}` : ''}`;
   // Do not truncate an identity into a different branch's name. A full name
   // still fits the contract; if the address cannot fit, typing it must re-ask.

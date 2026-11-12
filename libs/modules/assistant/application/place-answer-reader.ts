@@ -181,7 +181,7 @@ export class PlaceAnswerReader {
             const p = context.places.get(id);
             return p?.available ? [p] : [];
           });
-          const identityScope = group.prompt === 'place_confirm' ? 'confirm' : 'choice';
+          const isChoice = group.prompt === 'place_choice' || group.cards.length > 1;
           let unknown = false,
             unavailable = false;
           const text = mapPrivateTokens(row.text, (token) => {
@@ -195,8 +195,8 @@ export class PlaceAnswerReader {
             if (match && group.cards.includes(match[1]!)) {
               const p = context.places.get(match[1]!);
               const discriminator =
-                p?.available && group.kind === 'clarification'
-                  ? choiceDiscriminator(p, candidates, identityScope)
+                p?.available && group.kind === 'clarification' && isChoice
+                  ? choiceDiscriminator(p, candidates)
                   : undefined;
               return p?.available
                 ? `${safeText(p.name)}${group.kind === 'clarification' && p.areaLabel ? ` ${locale === 'en' ? 'in' : 'ở'} ${safeText(p.areaLabel)}` : ''}${discriminator ? ` · ${safeText(discriminator)}` : ''}`
@@ -231,7 +231,7 @@ export class PlaceAnswerReader {
             if ('placeId' in o) {
               const p = context.places.get(o.placeId);
               if (!p?.available) return [];
-              const discriminator = choiceDiscriminator(p, candidates, identityScope);
+              const discriminator = isChoice ? choiceDiscriminator(p, candidates) : undefined;
               const label = choiceLabel(
                 i + 1,
                 safeText(p.name),
@@ -243,8 +243,7 @@ export class PlaceAnswerReader {
                       locale,
                       safeText(p.name),
                       p.areaLabel ? safeText(p.areaLabel) : undefined,
-                      discriminator ? safeText(discriminator) : undefined,
-                    ) ?? safeText(choiceText(p, candidates)))
+                    ) ?? String(i + 1))
                   : safeText(choiceText(p, candidates));
               return [{ id: o.id, label, text }];
             }

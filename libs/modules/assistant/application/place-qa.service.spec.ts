@@ -342,7 +342,9 @@ describe('S3 producer and control precedence', () => {
     f.input.text = '1';
     await f.run();
     expect(f.state.trace.placeQa).toMatchObject({ outcome: 'confirm' });
-    expect(f.search.placeFacts).not.toHaveBeenCalled();
+    // Current identities must be read before interpreting a legacy ordinal.
+    expect(f.search.placeFacts).toHaveBeenCalledWith([FIXTURE_A], expect.anything());
+    expect(f.state.trace.placeAnswerGroup).toMatchObject({ kind: 'clarification' });
     const retry = qaFixture();
     retry.search.resolvePlaceName.mockResolvedValue(
       resolvePlaceNameOutcome({ candidates: [], overflow: false, areaMismatch: false }),
@@ -605,7 +607,11 @@ describe('Fable fix round — Sol F-02: old client types the emitted confirm opt
     const first = await c.send('2');
     expect(first.qa).toMatchObject({ outcome: 'confirm', pending: { kind: 'confirm' } });
     expect(first.qa!.pending!.slots[0].candidateIds).toEqual([FIXTURE_B]);
-    expect(first.f.search.placeFacts).not.toHaveBeenCalled();
+    expect(first.f.search.placeFacts).toHaveBeenCalledWith(
+      [FIXTURE_A, FIXTURE_B],
+      expect.anything(),
+    );
+    expect(first.f.state.trace.placeAnswerGroup).toMatchObject({ kind: 'clarification' });
     const emitted = first.view.followUps[0]!.options[0]!.text;
     const second = await c.send(emitted);
     expect(second.qa).toMatchObject({ outcome: 'answer', topic: 'hours', args: choice.qa!.args });
@@ -688,7 +694,7 @@ describe('Fable fix round — Sol F-02: old client types the emitted confirm opt
     const stale = await c.send('1');
     expect(stale.qa).toMatchObject({ outcome: 'confirm' });
     expect(stale.qa!.pending!.slots[0].candidateIds).toEqual([FIXTURE_B]);
-    expect(stale.f.search.placeFacts).not.toHaveBeenCalled();
+    expect(stale.f.search.placeFacts).toHaveBeenCalledWith([FIXTURE_B], expect.anything());
     expect(stale.f.state.trace.placeAnswerGroup).toMatchObject({ kind: 'clarification' });
     // The emitted confirm text identifies the candidate of THIS confirmation.
     const emitted = stale.view.followUps[0]!.options[0]!.text;
@@ -1430,6 +1436,42 @@ describe('GoGo-BE#876 bare venue-name answers', () => {
   );
 });
 
+describe('GoGo-BE#880 F-01 emitted identities before legacy controls', () => {
+  it.each([
+    ['vi', 'Quán 2'],
+    ['vi', 'Quán 2!'],
+    ['vi', 'Không phải các quán này'],
+    ['en', 'None of these'],
+    ['vi', 'Xác nhận Song Ngọc · Phường Ba Đình, Hà Nội'],
+    ['en', 'Confirm Song Ngọc · Ba Dinh, Hanoi'],
+  ] as const)(
+    're-asks when emitted %s name "%s" also means a legacy control',
+    async (locale, name) => {
+      vi.spyOn(Date, 'now').mockReturnValue(now);
+      const c = qaConversation();
+      c.places.set(FIXTURE_A, { ...fictionalPlace(FIXTURE_A, name), areaLabel: 'Ba Dinh, Hanoi' });
+      c.places.set(FIXTURE_B, {
+        ...fictionalPlace(FIXTURE_B, 'Other Cafe'),
+        areaLabel: 'Ba Dinh, Hanoi',
+      });
+      const configure = (f: ReturnType<typeof qaFixture>) => {
+        f.input.locale = locale;
+      };
+      const first = await c.send(
+        locale === 'vi' ? 'Song Ngọc giá bao nhiêu?' : 'Price of Song Ngọc?',
+        configure,
+      );
+      expect(first.qa).toMatchObject({ outcome: 'choice', topic: 'price' });
+      expect(first.view.followUps[0]!.options[0]!.text).toBe(name);
+      const reply = await c.send(first.view.followUps[0]!.options[0]!.text, configure);
+      expect(reply.qa!.pending!.slots[0].candidateIds).toEqual([FIXTURE_A, FIXTURE_B]);
+      expect(reply.qa).toMatchObject({ outcome: 'choice', topic: 'price', args: first.qa!.args });
+      expect(reply.f.state.trace.placeAnswerGroup).toMatchObject({ cards: [FIXTURE_A, FIXTURE_B] });
+      expect(reply.view.text).not.toContain('VND');
+    },
+  );
+});
+
 describe('GoGo-BE#877 typed choice continuation', () => {
   function duplicateBranches(c: ReturnType<typeof qaConversation>, address = true) {
     for (const [i, id] of [FIXTURE_A, FIXTURE_B].entries()) {
@@ -1447,18 +1489,49 @@ describe('GoGo-BE#877 typed choice continuation', () => {
       });
     }
   }
-  it('retains the original topic and confirms only the addressed branch, without ids', async () => {
+  it.each(['vi', 'en'] as const)(
+    'F-02: %s addressed choice keeps exact name + area confirm and ambiguous typed text re-asks',
+    async (locale) => {
+      vi.spyOn(Date, 'now').mockReturnValue(now);
+      const c = qaConversation();
+      duplicateBranches(c);
+      const configure = (f: ReturnType<typeof qaFixture>) => {
+        f.input.locale = locale;
+      };
+      const first = await c.send(
+        locale === 'vi' ? 'The Workshop Coffee giá bao nhiêu?' : 'Price of The Workshop Coffee?',
+        configure,
+      );
+      expect(first.view.followUps[0]!.options[1]!.text).toBe('The Workshop Coffee · 27 Đường Mây');
+      const confirm = await c.send(first.view.followUps[0]!.options[1]!.text, configure);
+      expect(confirm.qa).toMatchObject({ outcome: 'confirm', topic: 'price' });
+      expect(confirm.qa!.pending!.slots[0].candidateIds).toEqual([FIXTURE_B]);
+      expect(confirm.view.followUps[0]!.options[0]!.text).toBe(
+        `${locale === 'en' ? 'Confirm' : 'Xác nhận'} The Workshop Coffee · Phường Ba Đình, Hà Nội`,
+      );
+      expect(confirm.view.text).not.toContain('27 Đường Mây');
+      expect(confirm.view.followUps[0]!.options[0]!.label).not.toContain('27 Đường Mây');
+      const reply = await c.send(confirm.view.followUps[0]!.options[0]!.text, configure);
+      expect(reply.qa?.outcome).not.toBe('answer');
+      expect(reply.qa!.pending!.slots[0].candidateIds).toEqual([FIXTURE_B]);
+      expect(reply.view.text).not.toContain('VND');
+    },
+  );
+  it('F-02: the id pair still confirms the addressed singleton despite ambiguous text', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(now);
     const c = qaConversation();
     duplicateBranches(c);
     const first = await c.send('The Workshop Coffee giá bao nhiêu?');
-    expect(first.view.followUps[0]!.options[1]!.text).toBe('The Workshop Coffee · 27 Đường Mây');
     const confirm = await c.send(first.view.followUps[0]!.options[1]!.text);
-    expect(confirm.qa).toMatchObject({ outcome: 'confirm', topic: 'price' });
-    expect(confirm.qa!.pending!.slots[0].candidateIds).toEqual([FIXTURE_B]);
-    expect(confirm.view.followUps[0]!.options[0]!.text).toContain('27 Đường Mây');
-    const answer = await c.send(confirm.view.followUps[0]!.options[0]!.text);
-    expect(answer.qa).toMatchObject({ outcome: 'answer', topic: 'price' });
+    const answer = await c.send(confirm.view.followUps[0]!.options[0]!.text, (f) => {
+      f.input.replyToMessageId = confirm.assistantId;
+      f.input.followUpOptionId = confirm.view.followUps[0]!.options[0]!.id;
+    });
+    expect(answer.qa).toMatchObject({
+      outcome: 'answer',
+      topic: 'price',
+      candidateIds: [FIXTURE_B],
+    });
     expect(answer.f.state.trace.placeAnswerGroup).toMatchObject({ cards: [FIXTURE_B] });
   });
   it.each([true, false])(

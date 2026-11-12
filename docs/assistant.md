@@ -792,11 +792,17 @@ name + discriminator within its 200-character bound, independently of label
 shortening; the prompt retains full identity wording. Same names in different
 areas also receive a choice discriminator. If no address exists, use an existing
 public area key/current area, otherwise leave the ambiguity visible.
-No synthetic identifier is invented. A complete name + area confirmation still
-uses that phrase as its text. Typed ordinals/names ask for explicit confirmation;
+No synthetic identifier is invented. Address discrimination applies only to
+place choices. Singleton confirmation text is exactly
+`Xác nhận <complete name> · <complete current commune/province label>` (English
+`Confirm …`), with no address suffix, including duplicate name/area families.
+Typed ordinals/names ask for explicit confirmation;
 a typed duplicate name re-asks with all matching branches and preserves the
 original topic. Address-bearing text is matched against the same current identity
-builder before area parsing. A confirmation rechecks the full canonical-name
+builder before legacy controls and area parsing. If a current emitted identity
+also means another option's ordinal, the none control, or a confirmation control,
+re-ask with the current candidates; never select either interpretation.
+A confirmation rechecks the full canonical-name
 family, not just the singleton, and never answers an ambiguous identity. Missing
 area, incomplete retrieval or identity over 200 characters cannot authorize a
 text-only answer. The id pair remains authoritative over display text.
