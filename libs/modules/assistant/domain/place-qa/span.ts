@@ -85,22 +85,23 @@ function tokenize(text: string): Token[] {
 export function extractComparisonPlaceNameSpans(text: string): PlaceNameSpans {
   const tokens = tokenize(text);
   const folded = tokens.map((t) => t.grammar).join(' ');
-  const explicit = folded.startsWith('so sanh ');
+  const explicit = folded.startsWith('so sanh ') || folded.startsWith('compare ');
   const tail =
-    /\s+(?:quan nao re hon|quan nao dat hon|ve gia|ve gio mo cua|which is cheaper)\s*$/u.exec(
+    /\s+(?:quan nao (?:re hon|dat hon|tot hon)|re hon|dat hon|ve (?:gia|gio mo cua|dia chi|wifi|cho dau xe|danh gia|thong tin)(?: .+)?|(?:about|on) (?:price|opening hours|address|parking|rating)(?: .+)?|which is cheaper)\s*$/u.exec(
       folded,
     );
-  if (!tail) return { kind: 'ambiguous' };
-  const count = folded.slice(0, tail.index).split(/\s+/).length;
+  if (!tail && !explicit) return { kind: 'ambiguous' };
+  const count = tail ? folded.slice(0, tail.index).split(/\s+/).length : tokens.length;
   const end = tokens[count]?.start ?? text.length;
   const connectors = tokens.filter(
     (t) =>
       t.start < end &&
-      (['voi', 'vs', 'versus'].includes(t.grammar) || (explicit && t.grammar === 'va')),
+      (['voi', 'vs', 'versus', 'with'].includes(t.grammar) ||
+        (explicit && ['va', 'and'].includes(t.grammar))),
   );
   if (connectors.length !== 1) return { kind: 'ambiguous' };
   const connector = connectors[0]!;
-  const start = explicit ? (tokens[2]?.start ?? end) : 0;
+  const start = explicit ? (tokens[folded.startsWith('compare ') ? 1 : 2]?.start ?? end) : 0;
   const parts = [
     { start, end: connector.start },
     { start: connector.end, end },
@@ -133,7 +134,23 @@ export function extractComparisonPlaceNameSpans(text: string): PlaceNameSpans {
       : parsed;
   });
   if (spans[0]?.kind !== 'span' || spans[1]?.kind !== 'span') return { kind: 'ambiguous' };
-  return { kind: 'spans', spans: [spans[0], spans[1]] };
+  // A requested-topic suffix can itself be part of a published venue name.
+  // Probe every complete longer reading, as single-place grammar already does.
+  const right = spans[1];
+  const alternates = [...(right.alternates ?? [])];
+  for (const token of tokens.filter((t) => t.wordEnd > end)) {
+    const reading = text.slice(right.start, token.wordEnd);
+    if (reading.length > 120 || alternates.length + 1 >= PLACE_NAME_READING_LIMIT)
+      return { kind: 'ambiguous' };
+    if (!alternates.some((a) => a.text === reading))
+      alternates.push({
+        text: reading,
+        start: right.start,
+        end: token.wordEnd,
+        ...(right.areaSpan ? { includesArea: true as const } : {}),
+      });
+  }
+  return { kind: 'spans', spans: [spans[0], { ...right, alternates }] };
 }
 
 /**

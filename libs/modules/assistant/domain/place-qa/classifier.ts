@@ -2,8 +2,9 @@ import { PLACE_NAME_READING_LIMIT } from './config';
 import vi from './lexicon.vi.json';
 import en from './lexicon.en.json';
 import { normalizeVietnamese } from '../../../search/domain/normalize';
-import { extractPlaceNameSpan, type PlaceNameSpan } from './span';
+import { extractPlaceNameSpan, extractComparisonPlaceNameSpans, type PlaceNameSpan } from './span';
 import { isTypedConfirm } from './pending';
+import { isTopicLabel } from './topics';
 import type { AnswerQuery, AnswerTopic } from './tokens';
 
 export type QaArgs = {
@@ -26,19 +27,49 @@ export type QaClass =
   | 'not_qa';
 export type QaClassification =
   | { kind: 'not_qa' }
-  | { kind: 'compare'; topic: AnswerTopic; args: QaArgs }
+  | {
+      kind: 'compare';
+      topic: AnswerTopic;
+      args: QaArgs;
+      spans: readonly [
+        Extract<PlaceNameSpan, { kind: 'span' }>,
+        Extract<PlaceNameSpan, { kind: 'span' }>,
+      ];
+    }
   | {
       kind: 'named_place_question' | 'name_only';
       topic: AnswerTopic;
       args: QaArgs;
       span: Extract<PlaceNameSpan, { kind: 'span' }>;
     }
-  | { kind: 'referent_question' | 'clarify_referent'; topic: AnswerTopic; args: QaArgs };
+  | { kind: 'referent_question'; topic: AnswerTopic; args: QaArgs; ordinal?: 1 | 2 | 3 }
+  | { kind: 'clarify_referent'; topic: AnswerTopic; args: QaArgs };
 const test = (pattern: string, text: string) => new RegExp(`(?:${pattern})`, 'u').test(text);
 const folded = (text: string) =>
   normalizeVietnamese(text)
     .replace(/[?!.,;]+$/u, '')
     .trim();
+/**
+ * A previous-card ordinal is the WHOLE referent between the topic prefix and the
+ * question clause ("quán thứ 2 giá bao nhiêu"). A venue name that merely starts
+ * with one ("Quán 3 Miền", "Place 2 Be") is a name, never an ordinal.
+ */
+export function cardOrdinal(
+  t: string,
+  prefixLength: number,
+  suffixIndex: number | undefined,
+): { n: 1 | 2 | 3; consumed?: string } | undefined {
+  const head = t.slice(prefixLength, suffixIndex ?? t.length).trim();
+  const whole = /^(?:quan|dia diem|place)(?: thu| so| number)? ([1-3])(?: vao| ngay)?$/u.exec(head);
+  if (whole) return { n: Number(whole[1]) as 1 | 2 | 3 };
+  // "quán thứ 2 mở cửa…": the question clause starts at "thứ 2". The ordinal
+  // owns those words, so they never also supply a weekday (Astra, #874 M-02).
+  if (suffixIndex !== undefined && /^(?:quan|dia diem|place)$/u.test(head)) {
+    const day = /^thu ([1-3])(?: |$)/u.exec(t.slice(suffixIndex).trimStart());
+    if (day) return { n: Number(day[1]) as 1 | 2 | 3, consumed: day[0] };
+  }
+  return undefined;
+}
 /** Bare “bao nhiêu” is a name token unless a ticket-price head supplies the question. */
 function lexiconFor(text: string, locale: 'vi' | 'en') {
   if (locale === 'en') return en;
@@ -56,6 +87,14 @@ export function isNewNonQaRequest(text: string): boolean {
     if (test(l.guard, t) || test(l.category, t)) return true;
     const recommendation = new RegExp(l.recommend, 'u').exec(t);
     if (!recommendation) return false;
+    // Compare grammar owns both complete identity spans before the generic
+    // recommendation matcher. 'Aster Tím quán nào rẻ hơn' is not 'tìm quán'.
+    const comparison = test(l.compare, t) ? compareSpans(text) : null;
+    if (comparison) {
+      let outside = t;
+      for (const span of comparison) outside = outside.replace(folded(span.text), ' ');
+      return test(l.recommend, outside);
+    }
     if (recommendation.index === 0) return true;
     const prefix = new RegExp(l.prefix, 'u').exec(t);
     const suffix = lastQuestionClause(
@@ -100,6 +139,10 @@ export function qaProbeOf(
   // never let its identity words enter a recommendation model request.
   if (isTypedConfirm(text)) return 'control';
   if (isNewNonQaRequest(text)) return null;
+  // A typed topic-chip label ("Giờ mở cửa") is a reply to the QA turn that
+  // offered it: recovery keeps it out of recommendation history whenever the
+  // preceding turn is QA, even with the flag off (#874 Astra F-01).
+  if (isTopicLabel(text)) return 'reply';
   const kind = new PlaceQaClassifier().classify(text, context, { now: new Date(), locale }).kind;
   return kind === 'not_qa' ? 'reply' : kind === 'name_only' ? 'name' : 'question';
 }
@@ -123,7 +166,19 @@ export class PlaceQaClassifier {
       t,
       prefix ? prefix[0].trimEnd().length : 0,
     );
-    const topicText = suffix ? t.slice(suffix.index).trim() : (prefix?.[0].trim() ?? t);
+    const compareTopic = test(lex.compare, t)
+      ? /(?: ve | about | on )(.+)$/u.exec(t)?.[1]
+      : undefined;
+    // A compared venue's own words ("Cafe Đánh Giá") never pick the topic: read
+    // it from the text outside both spans when no "về …" tail names it.
+    const compareRest =
+      test(lex.compare, t) && compareTopic === undefined
+        ? (compareSpans(text) ?? []).reduce((rest, span) => rest.replace(folded(span.text), ' '), t)
+        : undefined;
+    const topicText =
+      compareTopic ??
+      compareRest ??
+      (suffix ? t.slice(suffix.index).trim() : (prefix?.[0].trim() ?? t));
     let topic = (Object.entries(lex.topics).find(([, p]) =>
       test(`(?:^| )(${p})(?: |$)`, topicText),
     )?.[0] ?? null) as AnswerTopic | null;
@@ -144,10 +199,24 @@ export class PlaceQaClassifier {
             ? 'parking'
             : 'amenity';
     if (!topic && /(?:^| )(?:co .+ khong$|has .+|have .+)/u.test(topicText)) topic = 'out_of_data';
-    if (test(lex.compare, t)) return { kind: 'compare', topic: topic ?? 'overview', args: {} };
+    const comparing = test(lex.compare, t);
+    if (comparing && !topic)
+      topic =
+        (Object.entries(lex.topics).find(([, pattern]) =>
+          test(`(?:^| )(${pattern})(?: |$)`, compareRest ?? t),
+        )?.[0] as AnswerTopic | undefined) ?? 'overview';
+    const ordinal =
+      topic && !comparing
+        ? cardOrdinal(t, prefix ? prefix[0].length : 0, suffix?.index)
+        : undefined;
     const args: QaArgs = {};
     if (topic === 'hours') {
-      const day = dayArgs(topicText, qaView.now);
+      const day = dayArgs(
+        ordinal?.consumed && topicText.startsWith(ordinal.consumed)
+          ? topicText.slice(ordinal.consumed.length)
+          : topicText,
+        qaView.now,
+      );
       if (!day) return { kind: 'clarify_referent', topic, args };
       Object.assign(args, day);
     }
@@ -167,6 +236,13 @@ export class PlaceQaClassifier {
       if (vocabulary.kind === 'suitability') args.s = vocabulary.key;
       else args.k = vocabulary.key;
     }
+    if (comparing) {
+      const spans = compareSpans(text);
+      return spans
+        ? { kind: 'compare', topic: topic ?? 'overview', args, spans }
+        : { kind: 'clarify_referent', topic: topic ?? 'overview', args };
+    }
+    if (topic && ordinal) return { kind: 'referent_question', topic, args, ordinal: ordinal.n };
     if (!topic) {
       // Pure categories and fragments never become fuzzy QA. A name-only probe
       // must match the WHOLE canonical name; failures return to the old path.
@@ -181,7 +257,7 @@ export class PlaceQaClassifier {
       )
     )
       return {
-        kind: context?.kind === 'place' ? 'referent_question' : 'clarify_referent',
+        kind: 'referent_question',
         topic,
         args,
       };
@@ -307,7 +383,7 @@ export class PlaceQaClassifier {
       (name === t && test(`^(?:${Object.values(lex.topics).join('|')})$`, t))
     )
       return {
-        kind: context?.kind === 'place' ? 'referent_question' : 'clarify_referent',
+        kind: 'referent_question',
         topic,
         args,
       };
@@ -382,4 +458,10 @@ function lastQuestionClause(
       selected = { index: particle.index, 0: text.slice(particle.index) };
   }
   return selected;
+}
+
+/** Shared S2 span grammar protects name tokens and original offsets. */
+function compareSpans(text: string) {
+  const parsed = extractComparisonPlaceNameSpans(text);
+  return parsed.kind === 'spans' ? parsed.spans : null;
 }

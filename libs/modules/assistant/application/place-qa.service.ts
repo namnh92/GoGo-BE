@@ -1,7 +1,9 @@
+import { eligibleTopicQueries, isTopicLabel, TOPIC_LABELS } from '../domain/place-qa/topics';
 import { Injectable, Inject, Optional } from '@nestjs/common';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { SearchService } from '../../search/application/search.service';
 import { normalizeVietnamese } from '../../search/domain/normalize';
+import { extractPlaceNameSpan } from '../domain/place-qa/span';
 import { AssistantRepository, type MessageRow } from '../infrastructure/assistant.repository';
 import {
   PlaceQaClassifier,
@@ -19,7 +21,7 @@ import {
   isTypedConfirm,
   type QaPending,
 } from '../domain/place-qa/pending';
-import { answerToken, type AnswerTopic } from '../domain/place-qa/tokens';
+import { answerToken, parseAnswerToken, type AnswerTopic } from '../domain/place-qa/tokens';
 import { placeToken } from '../domain/place-tokens';
 import { UNPRODUCED_GROUP, type PlaceAnswerGroup } from '../domain/place-qa/reference-group';
 import { renderPlaceAnswer } from '../domain/place-qa/templates';
@@ -51,7 +53,7 @@ type QaTrace = {
 /** Bound on the flag read that settles an undecided QA question at the deadline. */
 const QA_SETTLE_FLAG_MS = 1_500;
 
-/** S3 producer. One admitted turn; no model, card hydrator or recommendation state. */
+/** S3/S4 producer. One admitted turn; no model, card hydrator or recommendation state. */
 @Injectable()
 export class PlaceQaService {
   private readonly classifier = new PlaceQaClassifier();
@@ -159,6 +161,11 @@ export class PlaceQaService {
     // The message the place name is read from, when it is not the question
     // itself (a name supplied after a referent clarification). Astra F-01.
     let nameSourceId: string | undefined;
+    let retainedSlots: QaPending['slots'] | undefined;
+    let activeSlot: 0 | 1 = 0;
+    let originalQuestionId: string | undefined;
+    let referentMessageId: string | undefined;
+    let resumedPending: QaPending | undefined;
     const mark = async (kind: QaTrace['class'], topic: AnswerTopic, args: QaArgs) => {
       const questionId = await this.fence(input, state);
       trace = {
@@ -202,7 +209,22 @@ export class PlaceQaService {
     ) => {
       const p = makeQaPending({
         kind,
-        questionMessageId,
+        questionMessageId: originalQuestionId ?? questionMessageId,
+        referentMessageId,
+        ...(kind === 'topic' && resumedPending?.kind === 'topic'
+          ? {
+              slots: resumedPending.slots,
+              topicQueries: resumedPending.options.flatMap((o) => (o.query ? [o.query] : [])),
+            }
+          : {}),
+        ...(retainedSlots
+          ? {
+              slots: retainedSlots.map((slot, i) =>
+                i === activeSlot ? { ...slot, candidateIds: [...candidates] } : slot,
+              ),
+              activeSlot,
+            }
+          : {}),
         sourceMessageId: nameSourceId,
         assistantMessageId: input.messageId,
         now: pendingCreatedAt ?? started,
@@ -241,37 +263,228 @@ export class PlaceQaService {
         ids.map(placeToken).join(', '),
       );
     };
-    const answer = async (placeId: string) => {
-      const query = { placeId, locale: input.locale, topic: trace!.topic, ...trace!.args };
-      const facts = await this.search.placeFacts([placeId], { signal, deadlineAt });
+    const answer = async (placeId: string | readonly string[], topicSelection = false) => {
+      const ids = typeof placeId === 'string' ? [placeId] : [...placeId];
+      if (ids.length === 2 && ids[0] === ids[1]) {
+        // Unresolve the slot that produced the duplicate, so a later refinement
+        // re-runs it instead of skipping both resolved slots forever.
+        if (retainedSlots?.[activeSlot]) delete retainedSlots[activeSlot]!.resolvedPlaceId;
+        pending('referent', originalQuestionId ?? trace!.questionMessageId);
+        await notice('clarify_referent');
+        return;
+      }
+      const queries = ids.map((placeId) => ({
+        placeId,
+        locale: input.locale,
+        topic: trace!.topic,
+        ...trace!.args,
+      }));
+      const facts = await this.search.placeFacts(ids, { signal, deadlineAt });
       signal.throwIfAborted();
-      const rendered = renderPlaceAnswer(query, facts);
-      trace!.candidateIds = [placeId];
-      trace!.outcome = rendered.unavailable
+      const rendered = queries.map((query) => renderPlaceAnswer(query, facts));
+      if (
+        topicSelection &&
+        (rendered.some((r) => r.unavailable) || !rendered.some((r) => r.eligible))
+      ) {
+        await notice('stale_choice');
+        return;
+      }
+      trace!.candidateIds = ids;
+      trace!.outcome = rendered.some((r) => r.unavailable)
         ? 'unavailable'
-        : rendered.eligible
+        : rendered.some((r) => r.eligible)
           ? 'answer'
           : 'no_data';
-      trace!.tier = rendered.tier;
-      const token = answerToken(query);
-      await group({ v: 1, kind: 'answer', cards: [placeId], sources: [token], options: [] }, token);
+      trace!.tier = rendered.some((r) => r.unavailable)
+        ? 'unavailable'
+        : rendered.some((r) => r.tier === 'verified_reference')
+          ? 'verified_reference'
+          : rendered.some((r) => r.eligible)
+            ? 'verified_current'
+            : 'absent';
+      const tokens = queries.map(answerToken);
+      const topicQueries = eligibleTopicQueries(ids, input.locale, facts, trace!.topic, now).map(
+        answerToken,
+      );
+      let options: PlaceAnswerGroup['options'] = [];
+      if (topicQueries.length && !rendered.some((r) => r.unavailable)) {
+        const slots = ids.map((resolvedPlaceId, i) => ({
+          slot: i as 0 | 1,
+          sourceMessageId:
+            retainedSlots?.[i]?.sourceMessageId ?? nameSourceId ?? trace!.questionMessageId,
+          resolvedPlaceId,
+        }));
+        const p = makeQaPending({
+          kind: 'topic',
+          questionMessageId: originalQuestionId ?? trace!.questionMessageId,
+          referentMessageId,
+          assistantMessageId: input.messageId,
+          now: pendingCreatedAt ?? started,
+          topic: trace!.topic,
+          args: trace!.args,
+          slots,
+          topicQueries,
+        });
+        trace!.pending = p;
+        options = p.options.map((o) => ({ id: o.optionId, query: o.query! }));
+      }
+      await group(
+        {
+          v: 1,
+          kind: ids.length === 2 ? 'compare' : 'answer',
+          cards: ids,
+          sources: tokens,
+          options,
+        },
+        tokens.join('\n'),
+      );
     };
-    // Both references of a pending state, each re-read under the current user
-    // and conversation (deleted, expired or foreign rows read as missing).
+    // Every retained source is checked under the current user/conversation.
     const sourcesOf = async (p: QaPending) => {
       const question = await this.repo.findMessage(
         input.userId,
         input.conversationId,
         p.questionMessageId,
       );
-      const nameId = p.slots[0]!.sourceMessageId;
-      const name =
-        nameId === p.questionMessageId
-          ? question
-          : await this.repo.findMessage(input.userId, input.conversationId, nameId);
-      if (!question || question.role !== 'user' || !name || name.role !== 'user') return null;
-      nameSourceId = name.id === question.id ? undefined : name.id;
-      return { question, name };
+      if (!question || question.role !== 'user') return null;
+      if (p.referentMessageId) {
+        const source = await this.repo.findMessage(
+          input.userId,
+          input.conversationId,
+          p.referentMessageId,
+        );
+        const ids = p.slots.flatMap((s) =>
+          s.resolvedPlaceId ? [s.resolvedPlaceId] : (s.candidateIds ?? []),
+        );
+        if (
+          !source ||
+          source.role !== 'assistant' ||
+          source.status !== 'complete' ||
+          ids.some((id) => !source.cards?.some((c) => c.kind === 'place' && c.placeId === id))
+        )
+          return null;
+      }
+      const names: MessageRow[] = [];
+      for (const slot of p.slots) {
+        const name =
+          slot.sourceMessageId === p.questionMessageId
+            ? question
+            : await this.repo.findMessage(input.userId, input.conversationId, slot.sourceMessageId);
+        if (!name || name.role !== 'user') return null;
+        names.push(name);
+      }
+      nameSourceId = names[p.activeSlot]!.id === question.id ? undefined : names[p.activeSlot]!.id;
+      return { question, name: names[p.activeSlot]! };
+    };
+    const resume = (p: QaPending) => {
+      resumedPending = p;
+      originalQuestionId = p.questionMessageId;
+      referentMessageId = p.referentMessageId;
+      retainedSlots = p.slots.length === 2 ? p.slots.map((s) => ({ ...s })) : undefined;
+      activeSlot = p.activeSlot;
+      trace!.topic = p.topic;
+      trace!.args = p.args;
+      pendingCreatedAt = Date.parse(p.createdAt);
+    };
+    const resolveCompare = async (
+      c: Extract<QaClassification, { kind: 'compare' }>,
+      areaOverride?: PlaceNameArea,
+    ) => {
+      retainedSlots ??= c.spans.map((_, i) => ({
+        slot: i as 0 | 1,
+        sourceMessageId: originalQuestionId ?? trace!.questionMessageId,
+      }));
+      for (let i = 0; i < 2; i++) {
+        if (retainedSlots[i]!.resolvedPlaceId) continue;
+        activeSlot = i as 0 | 1;
+        let span = c.spans[i]!;
+        const sourceId = retainedSlots[i]!.sourceMessageId;
+        if (sourceId !== (originalQuestionId ?? trace!.questionMessageId)) {
+          const source = await this.repo.findMessage(input.userId, input.conversationId, sourceId);
+          if (!source || source.role !== 'user') {
+            await notice('stale_choice');
+            return;
+          }
+          const parsed = this.classifier.classify(source.text, null, {
+            now: new Date(pendingCreatedAt ?? started),
+            locale: source.locale ?? input.locale,
+          });
+          if (parsed.kind !== 'name_only' && parsed.kind !== 'named_place_question') {
+            await notice('stale_choice');
+            return;
+          }
+          span = parsed.span;
+        }
+        const area =
+          areaOverride ?? (span.statedArea ? await this.area(span.statedArea) : undefined);
+        const result = await this.search.resolvePlaceName(span.text, {
+          signal,
+          deadlineAt,
+          ...(area ? { area } : {}),
+          alternates: span.alternates,
+        });
+        signal.throwIfAborted();
+        trace!.row = result.row;
+        const ids = result.candidates.map((c) => c.id);
+        if (result.kind === 'answer') retainedSlots[i]!.resolvedPlaceId = ids[0]!;
+        else {
+          if (result.kind === 'choice' || result.kind === 'confirm')
+            await clarify(
+              result.kind,
+              ids,
+              originalQuestionId ?? trace!.questionMessageId,
+              area?.kind === 'legacy',
+            );
+          else {
+            pending(
+              result.kind === 'narrow' ? 'narrow' : 'referent',
+              originalQuestionId ?? trace!.questionMessageId,
+            );
+            await notice(result.kind);
+          }
+          return;
+        }
+        areaOverride = undefined;
+      }
+      await answer(retainedSlots.map((s) => s.resolvedPlaceId!));
+    };
+    const selected = async (id: string, p: QaPending) => {
+      if (retainedSlots && retainedSlots.length === 2) {
+        retainedSlots[activeSlot]!.resolvedPlaceId = id;
+        const original = await this.repo.findMessage(
+          input.userId,
+          input.conversationId,
+          p.questionMessageId,
+        );
+        const c =
+          original &&
+          this.classifier.classify(original.text, null, {
+            now: new Date(p.createdAt),
+            locale: original.locale ?? input.locale,
+          });
+        if (!c || c.kind !== 'compare') {
+          await notice('stale_choice');
+          return;
+        }
+        await resolveCompare(c);
+      } else await answer(id);
+    };
+    const selectTopic = async (p: QaPending, queryToken: string) => {
+      const query = parseAnswerToken(queryToken)!;
+      trace!.topic = query.topic;
+      const { placeId: _id, locale: _locale, topic: _topic, ...args } = query;
+      // An hours chip means "today": recompute the local date at selection, so
+      // a chip produced before midnight never answers for yesterday (#874 F-03).
+      if (query.topic === 'hours' && args.day === 'date') {
+        const local = new Date(started + 7 * 60 * 60 * 1000);
+        args.date = local.toISOString().slice(0, 10);
+        args.d = local.getUTCDay();
+      }
+      trace!.args = args;
+      await answer(
+        p.slots.map((s) => s.resolvedPlaceId!),
+        true,
+      );
     };
     const resolve = async (
       c: Extract<QaClassification, { kind: 'named_place_question' | 'name_only' }>,
@@ -389,11 +602,15 @@ export class PlaceQaService {
         !structured &&
         !isTypedConfirm(input.text) &&
         classified.kind !== 'not_qa' &&
-        classified.kind !== 'name_only';
+        classified.kind !== 'name_only' &&
+        !isTopicLabel(input.text);
       if (!enabled && freshQuestion) return false;
-      const latest = freshQuestion
-        ? null
-        : await this.repo.latestAssistant(input.userId, input.conversationId, input.messageId);
+      const needsCards =
+        enabled && classified.kind === 'referent_question' && input.context?.kind !== 'place';
+      const latest =
+        freshQuestion && !needsCards
+          ? null
+          : await this.repo.latestAssistant(input.userId, input.conversationId, input.messageId);
       signal.throwIfAborted();
       const isQa = latest?.trace?.route === 'place_qa';
       if (typedControl && !structured && !isQa) {
@@ -429,15 +646,15 @@ export class PlaceQaService {
           await notice('stale_choice');
           return true;
         }
-        trace!.topic = p.topic;
-        trace!.args = p.args;
-        pendingCreatedAt = Date.parse(p.createdAt);
-        if (option.key === 'none') {
+        resume(p);
+        if (option.key === 'topic') {
+          await selectTopic(p, option.query!);
+        } else if (option.key === 'none') {
           pending('narrow', p.questionMessageId);
           await notice('narrow');
         } else {
           trace!.row = 3;
-          await answer(option.placeId!);
+          await selected(option.placeId!, p);
         }
         return true;
       }
@@ -477,15 +694,32 @@ export class PlaceQaService {
           await notice('stale_choice');
           return true;
         }
-        pendingCreatedAt = Date.parse(p.createdAt);
+        resume(p);
         const sources = await sourcesOf(p);
         if (!sources) {
           await notice('stale_choice');
           return true;
         }
+        if (p.kind === 'topic') {
+          const option = p.options.find(
+            (o) =>
+              o.query &&
+              normalizeVietnamese(
+                TOPIC_LABELS[parseAnswerToken(o.query)!.locale][parseAnswerToken(o.query)!.topic],
+              ) === normalizeVietnamese(input.text).trim(),
+          );
+          if (option?.query) {
+            await selectTopic(p, option.query);
+            return true;
+          }
+          if (isTopicLabel(input.text)) {
+            await notice('stale_choice');
+            return true;
+          }
+        }
         const identityText = normalizeVietnamese(input.text);
         const t = identityText.replace(/[.!?]+$/u, '').trim();
-        const candidates = p.slots[0]!.candidateIds ?? [];
+        const candidates = p.slots[p.activeSlot]!.candidateIds ?? [];
         const confirming = p.kind === 'confirm' && candidates.length === 1;
         const none = /^(?:khong phai cac quan nay|none of these)$/u.test(t);
         const ordinal = /^(?:quan |chi nhanh |so |place )?([1-3])$/u.exec(t);
@@ -547,7 +781,7 @@ export class PlaceQaService {
                 });
                 if (matching.length === 1 && matching[0] === candidates[0]) {
                   trace!.row = 3;
-                  await answer(matching[0]!);
+                  await selected(matching[0]!, p);
                   return true;
                 }
               }
@@ -585,10 +819,27 @@ export class PlaceQaService {
         if (a.kind === 'current') {
           // The whole name query is rerun from the name-bearing message; the
           // topic, arguments and lifetime stay those of the original question.
+          // A compare keeps both slots: once a slot's name came from a separate
+          // reply, the name source is that reply, but the comparison itself is
+          // still the original question (resolveCompare re-reads reply slots).
+          const comparing = retainedSlots
+            ? this.classifier.classify(sources.question.text, null, {
+                now: new Date(p.createdAt),
+                locale: sources.question.locale ?? input.locale,
+              })
+            : undefined;
+          if (comparing?.kind === 'compare') {
+            await resolveCompare(comparing, a);
+            return true;
+          }
           const original = this.classifier.classify(sources.name.text, null, {
             now: new Date(p.createdAt),
             locale: sources.name.locale ?? input.locale,
           });
+          if (original.kind === 'compare') {
+            await resolveCompare(original, a);
+            return true;
+          }
           if (original.kind === 'named_place_question' || original.kind === 'name_only') {
             return await resolve(original, () => sources.question.id, a, sources.name.text);
           }
@@ -605,8 +856,13 @@ export class PlaceQaService {
               trace!.topic = 'overview';
               trace!.args = {};
               pendingCreatedAt = undefined;
+              originalQuestionId = undefined;
+              referentMessageId = undefined;
+              retainedSlots = undefined;
               nameSourceId = undefined;
             } else {
+              if (retainedSlots)
+                retainedSlots[activeSlot]!.sourceMessageId = trace!.questionMessageId;
               // This reply carries the name; the question keeps its own id.
               nameSourceId =
                 trace!.questionMessageId === p.questionMessageId
@@ -616,7 +872,7 @@ export class PlaceQaService {
             trace!.row = fresh.row;
             const ids = fresh.candidates.map((c) => c.id);
             const source = p.kind === 'referent' ? p.questionMessageId : trace!.questionMessageId;
-            if (fresh.kind === 'answer') await answer(ids[0]!);
+            if (fresh.kind === 'answer') await selected(ids[0]!, p);
             else if (fresh.kind === 'choice' || fresh.kind === 'confirm')
               await clarify(fresh.kind, ids, source);
             else {
@@ -636,8 +892,8 @@ export class PlaceQaService {
       if (!trace && classified.kind !== 'name_only')
         await mark(classified.kind, classified.topic, classified.args);
       if (classified.kind === 'compare') {
-        await notice('unsupported');
-        trace!.outcome = 'unavailable';
+        await sink.emit({ type: 'step', step: 'searching_places' });
+        await resolveCompare(classified);
         return true;
       }
       if (classified.kind === 'clarify_referent') {
@@ -646,9 +902,106 @@ export class PlaceQaService {
         return true;
       }
       if (classified.kind === 'referent_question') {
+        // A whole exact venue name precedes an ordinal reading ("Quán 2 giá bao
+        // nhiêu?" about a venue named "Quán 2"), even over a context id.
+        if (classified.ordinal) {
+          const span = extractPlaceNameSpan(input.text);
+          if (span.kind === 'span') {
+            const named = await this.search.resolvePlaceName(span.text, {
+              signal,
+              deadlineAt,
+              alternates: span.alternates,
+            });
+            signal.throwIfAborted();
+            if (named.candidates.some((c) => c.exact)) {
+              await sink.emit({ type: 'step', step: 'searching_places' });
+              return await resolve(
+                {
+                  kind: 'named_place_question',
+                  topic: classified.topic,
+                  args: classified.args,
+                  span,
+                },
+                () => trace!.questionMessageId,
+              );
+            }
+          }
+        }
         if (input.context?.kind === 'place') {
           trace!.row = 3;
           await answer(input.context.id);
+          return true;
+        }
+        const ids =
+          latest?.status === 'complete'
+            ? [
+                ...new Set(
+                  (latest.cards ?? []).flatMap((c) => (c.kind === 'place' ? [c.placeId] : [])),
+                ),
+              ]
+            : [];
+        const facts = ids.length ? await this.search.placeFacts(ids, { signal, deadlineAt }) : null;
+        const available = ids.filter((id) => facts?.places.get(id)?.available);
+        const ordinal = classified.ordinal;
+        const chosen = ordinal
+          ? ids[ordinal - 1]
+          : available.length === 1
+            ? available[0]
+            : undefined;
+        const latestGroup = isQa
+          ? (latest?.trace?.placeAnswerGroup as
+              { kind?: string; prompt?: string; legacyArea?: boolean } | undefined)
+          : undefined;
+        if (latestGroup?.kind === 'clarification') {
+          // Clarification cards are candidates, never answers: a referent over
+          // them clarifies (Astra, #874 F-02). A valid pending keeps its compare
+          // slots and expiry with the new topic; an expired one seeds a fresh
+          // clarification bound to this question, with no retained partner.
+          const valid = ordinal
+            ? Boolean(chosen && available.includes(chosen))
+            : available.length > 0;
+          const resumable = p !== null && (p.kind === 'choice' || p.kind === 'confirm');
+          // Re-check the pending's lineage this turn (question, referent, name
+          // sources); sourcesOf also restores a reply-sourced name binding. A
+          // broken lineage recovers neither candidates nor partner (Astra table).
+          if (resumable && !(await sourcesOf(p!))) {
+            pending('referent', trace!.questionMessageId);
+            await notice('clarify_referent');
+            return true;
+          }
+          if (resumable) {
+            // Same lineage: keep its own referent source, compare partner and
+            // expiry; only the topic changes (an invalid ordinal included).
+            resume(p!);
+            trace!.topic = classified.topic;
+            trace!.args = classified.args;
+          }
+          const source = resumable ? p!.questionMessageId : trace!.questionMessageId;
+          if (!valid) {
+            pending('referent', source);
+            await notice('clarify_referent');
+            return true;
+          }
+          if (!resumable) referentMessageId = latest!.id;
+          if (ordinal) await clarify('confirm', [chosen!], source, latestGroup.legacyArea === true);
+          else
+            await clarify(
+              latestGroup.prompt === 'place_confirm' && available.length === 1
+                ? 'confirm'
+                : 'choice',
+              available.slice(0, 3),
+              source,
+              latestGroup.legacyArea === true,
+            );
+          return true;
+        }
+        if (chosen && available.includes(chosen)) {
+          referentMessageId = latest!.id;
+          trace!.row = 3;
+          await answer(chosen);
+        } else if (!ordinal && available.length > 1) {
+          referentMessageId = latest!.id;
+          await clarify('choice', available.slice(0, 3), trace!.questionMessageId);
         } else {
           pending('referent', trace!.questionMessageId);
           await notice('clarify_referent');
@@ -723,7 +1076,7 @@ function continuesQa(
   if (latest?.trace?.route !== 'place_qa') return false;
   // An emitted confirm text carries the place NAME, which may contain category
   // or recommendation words; it is QA control whatever the name says.
-  if (isTypedConfirm(text)) return true;
+  if (isTypedConfirm(text) || isTopicLabel(text)) return true;
   const explicitNewQa = classified.kind !== 'not_qa' && classified.kind !== 'name_only';
   return !isNewNonQaRequest(text) && !explicitNewQa;
 }

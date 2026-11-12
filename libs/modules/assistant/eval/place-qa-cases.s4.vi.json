@@ -1,0 +1,1203 @@
+{
+  "version": 1,
+  "scope": "S4 dark; immutable S3 selection plus S4 replacements for three referent sources per topic and eight comparisons = 234 core. Aliases remain S5.",
+  "clock": "2026-11-11T10:00:00.000Z",
+  "coreS3Ids": [
+    "hours-01",
+    "hours-05",
+    "hours-06",
+    "hours-07",
+    "hours-08",
+    "hours-09",
+    "hours-10",
+    "hours-11",
+    "hours-12",
+    "price-01",
+    "price-05",
+    "price-06",
+    "price-07",
+    "price-08",
+    "price-09",
+    "price-10",
+    "price-11",
+    "price-12",
+    "address-01",
+    "address-05",
+    "address-06",
+    "address-07",
+    "address-08",
+    "address-09",
+    "address-10",
+    "address-11",
+    "address-12",
+    "directions-01",
+    "directions-05",
+    "directions-06",
+    "directions-07",
+    "directions-08",
+    "directions-09",
+    "directions-10",
+    "directions-11",
+    "directions-12",
+    "parking-01",
+    "parking-05",
+    "parking-06",
+    "parking-07",
+    "parking-08",
+    "parking-09",
+    "parking-10",
+    "parking-11",
+    "parking-12",
+    "amenity-01",
+    "amenity-05",
+    "amenity-06",
+    "amenity-07",
+    "amenity-08",
+    "amenity-09",
+    "amenity-10",
+    "amenity-11",
+    "amenity-12",
+    "suitability-01",
+    "suitability-05",
+    "suitability-06",
+    "suitability-07",
+    "suitability-08",
+    "suitability-09",
+    "suitability-10",
+    "suitability-11",
+    "suitability-12",
+    "rating-01",
+    "rating-05",
+    "rating-06",
+    "rating-07",
+    "rating-08",
+    "rating-09",
+    "rating-10",
+    "rating-11",
+    "rating-12",
+    "contact-01",
+    "contact-05",
+    "contact-06",
+    "contact-07",
+    "contact-08",
+    "contact-09",
+    "contact-10",
+    "contact-11",
+    "contact-12",
+    "overview-01",
+    "overview-05",
+    "overview-06",
+    "overview-07",
+    "overview-08",
+    "overview-09",
+    "overview-10",
+    "overview-11",
+    "overview-12",
+    "out_of_data-01",
+    "out_of_data-05",
+    "out_of_data-06",
+    "out_of_data-07",
+    "out_of_data-08",
+    "out_of_data-09",
+    "out_of_data-10",
+    "out_of_data-11",
+    "out_of_data-12",
+    "resolution-01-0",
+    "resolution-01-1",
+    "resolution-02-0",
+    "resolution-02-1",
+    "resolution-03-0",
+    "resolution-03-1",
+    "resolution-04-0",
+    "resolution-04-1",
+    "resolution-05-0",
+    "resolution-05-1",
+    "resolution-06-0",
+    "resolution-06-1",
+    "resolution-07-0",
+    "resolution-07-1",
+    "resolution-08-0",
+    "resolution-08-1",
+    "resolution-09-0",
+    "resolution-09-1",
+    "resolution-10-0",
+    "resolution-10-1",
+    "resolution-11-0",
+    "resolution-11-1",
+    "resolution-12-0",
+    "resolution-12-1",
+    "resolution-13-0",
+    "resolution-13-1",
+    "resolution-14-0",
+    "resolution-14-1",
+    "resolution-15-0",
+    "resolution-15-1",
+    "resolution-16-0",
+    "resolution-16-1",
+    "resolution-17-0",
+    "resolution-17-1",
+    "resolution-18-0",
+    "resolution-18-1",
+    "resolution-19-0",
+    "resolution-19-1",
+    "resolution-20-0",
+    "resolution-20-1",
+    "choice-01",
+    "choice-02",
+    "choice-03",
+    "choice-04",
+    "choice-05",
+    "choice-06",
+    "choice-07",
+    "choice-08",
+    "choice-09",
+    "choice-10",
+    "choice-11",
+    "choice-12",
+    "not-found-01",
+    "not-found-02",
+    "not-found-03",
+    "not-found-04",
+    "not-found-05",
+    "not-found-06",
+    "not-found-07",
+    "not-found-08",
+    "not-found-09",
+    "not-found-10",
+    "not-found-11",
+    "not-found-12",
+    "negative-01",
+    "negative-02",
+    "negative-03",
+    "negative-04",
+    "negative-05",
+    "negative-06",
+    "negative-07",
+    "negative-08",
+    "negative-09",
+    "negative-10",
+    "negative-11",
+    "negative-12",
+    "negative-13",
+    "negative-14",
+    "negative-15",
+    "negative-16",
+    "negative-17",
+    "negative-18",
+    "negative-19",
+    "negative-20",
+    "negative-21",
+    "negative-22",
+    "negative-23",
+    "negative-24",
+    "negative-25",
+    "negative-26",
+    "negative-27",
+    "negative-28",
+    "negative-29",
+    "negative-30"
+  ],
+  "coreS4Ids": [
+    "s4-compare-01",
+    "s4-compare-02",
+    "s4-compare-03",
+    "s4-compare-04",
+    "s4-compare-05",
+    "s4-compare-06",
+    "s4-compare-07",
+    "s4-compare-08",
+    "s4-hours-context",
+    "s4-hours-sole",
+    "s4-hours-ordinal",
+    "s4-price-context",
+    "s4-price-sole",
+    "s4-price-ordinal",
+    "s4-address-context",
+    "s4-address-sole",
+    "s4-address-ordinal",
+    "s4-directions-context",
+    "s4-directions-sole",
+    "s4-directions-ordinal",
+    "s4-parking-context",
+    "s4-parking-sole",
+    "s4-parking-ordinal",
+    "s4-amenity-context",
+    "s4-amenity-sole",
+    "s4-amenity-ordinal",
+    "s4-suitability-context",
+    "s4-suitability-sole",
+    "s4-suitability-ordinal",
+    "s4-rating-context",
+    "s4-rating-sole",
+    "s4-rating-ordinal",
+    "s4-contact-context",
+    "s4-contact-sole",
+    "s4-contact-ordinal",
+    "s4-overview-context",
+    "s4-overview-sole",
+    "s4-overview-ordinal",
+    "s4-out_of_data-context",
+    "s4-out_of_data-sole",
+    "s4-out_of_data-ordinal"
+  ],
+  "cases": [
+    {
+      "id": "s4-compare-01",
+      "bucket": "compare",
+      "slice": "S4",
+      "partition": "held_out",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": [],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán Sao Lạ với Quán Không Giá quán nào rẻ hơn?",
+      "expected": {
+        "outcome": "answer",
+        "places": ["lantern", "no_price"],
+        "contains": "GoGo chưa có giá đã xác minh",
+        "topic": "price"
+      },
+      "category": "incident"
+    },
+    {
+      "id": "s4-compare-02",
+      "bucket": "compare",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": [],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "So sánh Quán Sao Lạ với Quán Không Giá",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["lantern", "no_price"],
+        "topic": "overview"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-compare-03",
+      "bucket": "compare",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": [],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quan Sao La voi Quan Khong Gia quan nao dat hon?",
+      "expected": {
+        "outcome": "answer",
+        "places": ["lantern", "no_price"],
+        "contains": "12.000",
+        "topic": "price"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-compare-04",
+      "bucket": "compare",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": [],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "So sánh Quán Sao Lạ với Song Ngọc về giá",
+      "expected": {
+        "outcome": "choice",
+        "places": ["branch_a", "branch_b"],
+        "topic": "price"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-compare-05",
+      "bucket": "compare",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": [],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán Sao Lạ với Quán Sao Lạ quán nào rẻ hơn?",
+      "expected": {
+        "outcome": "clarify_referent",
+        "places": [],
+        "topic": "price"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-compare-06",
+      "bucket": "compare",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": [],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán Không Giá với Quán Sao Lạ quán nào rẻ hơn?",
+      "expected": {
+        "outcome": "answer",
+        "places": ["no_price", "lantern"],
+        "contains": "12.000",
+        "topic": "price"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-compare-07",
+      "bucket": "compare",
+      "slice": "S4",
+      "partition": "held_out",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": [],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "So sánh Song Ngọc với Quán Sao Lạ về giờ mở cửa",
+      "expected": {
+        "outcome": "choice",
+        "places": ["branch_a", "branch_b"],
+        "topic": "hours"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-compare-08",
+      "bucket": "compare",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": [],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán Không Giá với Aster Tím quán nào rẻ hơn?",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["no_price", "resolution_1"],
+        "contains": "GoGo chưa có giá đã xác minh",
+        "topic": "price"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-card-sole",
+      "bucket": "previous_card",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["Thông tin về Quán Sao Lạ"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán này giá bao nhiêu?",
+      "expected": {
+        "outcome": "answer",
+        "places": ["lantern"],
+        "contains": "12.000",
+        "topic": "price"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-card-many",
+      "bucket": "previous_card",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["So sánh Quán Sao Lạ với Quán Không Giá"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán này ở đâu?",
+      "expected": {
+        "outcome": "choice",
+        "places": ["lantern", "no_price"],
+        "topic": "address"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-card-ordinal",
+      "bucket": "previous_card",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["So sánh Quán Sao Lạ với Quán Không Giá"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán thứ 2 giá bao nhiêu?",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["no_price"],
+        "contains": "GoGo chưa có giá đã xác minh",
+        "topic": "price"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-card-none",
+      "bucket": "previous_card",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": [],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán này giá bao nhiêu?",
+      "expected": {
+        "outcome": "clarify_referent",
+        "places": [],
+        "topic": "price"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-topic-structured",
+      "bucket": "topic",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["Quán Sao Lạ giá bao nhiêu?"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "xem thêm",
+      "expected": {
+        "outcome": "answer",
+        "places": ["lantern"],
+        "contains": "09:00",
+        "topic": "hours"
+      },
+      "category": "capability",
+      "selection": {
+        "mode": "structured",
+        "label": "Giờ mở cửa"
+      }
+    },
+    {
+      "id": "s4-topic-typed",
+      "bucket": "topic",
+      "slice": "S4",
+      "partition": "held_out",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["Quán Sao Lạ giá bao nhiêu?"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Giờ mở cửa",
+      "expected": {
+        "outcome": "answer",
+        "places": ["lantern"],
+        "contains": "09:00",
+        "topic": "hours"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-topic-compare",
+      "bucket": "topic",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["Quán Sao Lạ với Quán Không Giá quán nào rẻ hơn?"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Địa chỉ",
+      "expected": {
+        "outcome": "answer",
+        "places": ["lantern", "no_price"],
+        "contains": "12 Đường Hư Cấu",
+        "topic": "address"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-hours-context",
+      "bucket": "hours",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": "lantern",
+        "priorTurns": [],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán này mở cửa mấy giờ?",
+      "expected": {
+        "outcome": "answer",
+        "places": ["lantern"],
+        "topic": "hours",
+        "contains": "09:00"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-hours-sole",
+      "bucket": "hours",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["Thông tin về Quán Sao Lạ"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán này mở cửa mấy giờ?",
+      "expected": {
+        "outcome": "answer",
+        "places": ["lantern"],
+        "topic": "hours",
+        "contains": "09:00"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-hours-ordinal",
+      "bucket": "hours",
+      "slice": "S4",
+      "partition": "held_out",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["So sánh Quán Sao Lạ với Quán Không Giá"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán thứ 1 mở cửa mấy giờ?",
+      "expected": {
+        "outcome": "answer",
+        "places": ["lantern"],
+        "topic": "hours",
+        "contains": "09:00"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-price-context",
+      "bucket": "price",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": "lantern",
+        "priorTurns": [],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán này giá bao nhiêu?",
+      "expected": {
+        "outcome": "answer",
+        "places": ["lantern"],
+        "topic": "price",
+        "contains": "VND/người"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-price-sole",
+      "bucket": "price",
+      "slice": "S4",
+      "partition": "held_out",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["Thông tin về Quán Sao Lạ"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán này giá bao nhiêu?",
+      "expected": {
+        "outcome": "answer",
+        "places": ["lantern"],
+        "topic": "price",
+        "contains": "VND/người"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-price-ordinal",
+      "bucket": "price",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["So sánh Quán Sao Lạ với Quán Không Giá"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán thứ 1 giá bao nhiêu?",
+      "expected": {
+        "outcome": "answer",
+        "places": ["lantern"],
+        "topic": "price",
+        "contains": "VND/người"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-address-context",
+      "bucket": "address",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": "lantern",
+        "priorTurns": [],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán này ở đâu?",
+      "expected": {
+        "outcome": "answer",
+        "places": ["lantern"],
+        "topic": "address",
+        "contains": "12 Đường Hư Cấu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-address-sole",
+      "bucket": "address",
+      "slice": "S4",
+      "partition": "held_out",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["Thông tin về Quán Sao Lạ"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán này ở đâu?",
+      "expected": {
+        "outcome": "answer",
+        "places": ["lantern"],
+        "topic": "address",
+        "contains": "12 Đường Hư Cấu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-address-ordinal",
+      "bucket": "address",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["So sánh Quán Sao Lạ với Quán Không Giá"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán thứ 1 ở đâu?",
+      "expected": {
+        "outcome": "answer",
+        "places": ["lantern"],
+        "topic": "address",
+        "contains": "12 Đường Hư Cấu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-directions-context",
+      "bucket": "directions",
+      "slice": "S4",
+      "partition": "held_out",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": "lantern",
+        "priorTurns": [],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán này đi đường nào?",
+      "expected": {
+        "outcome": "answer",
+        "places": ["lantern"],
+        "topic": "directions",
+        "contains": "12 Đường Hư Cấu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-directions-sole",
+      "bucket": "directions",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["Thông tin về Quán Sao Lạ"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán này đi đường nào?",
+      "expected": {
+        "outcome": "answer",
+        "places": ["lantern"],
+        "topic": "directions",
+        "contains": "12 Đường Hư Cấu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-directions-ordinal",
+      "bucket": "directions",
+      "slice": "S4",
+      "partition": "held_out",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["So sánh Quán Sao Lạ với Quán Không Giá"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán thứ 1 đi đường nào?",
+      "expected": {
+        "outcome": "answer",
+        "places": ["lantern"],
+        "topic": "directions",
+        "contains": "12 Đường Hư Cấu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-parking-context",
+      "bucket": "parking",
+      "slice": "S4",
+      "partition": "held_out",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": "lantern",
+        "priorTurns": [],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán này có chỗ đậu xe không?",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["lantern"],
+        "topic": "parking",
+        "contains": "chưa có dữ liệu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-parking-sole",
+      "bucket": "parking",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["Thông tin về Quán Sao Lạ"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán này có chỗ đậu xe không?",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["lantern"],
+        "topic": "parking",
+        "contains": "chưa có dữ liệu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-parking-ordinal",
+      "bucket": "parking",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["So sánh Quán Sao Lạ với Quán Không Giá"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán thứ 1 có chỗ đậu xe không?",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["lantern"],
+        "topic": "parking",
+        "contains": "chưa có dữ liệu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-amenity-context",
+      "bucket": "amenity",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": "lantern",
+        "priorTurns": [],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán này có wifi không?",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["lantern"],
+        "topic": "amenity",
+        "contains": "chưa có dữ liệu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-amenity-sole",
+      "bucket": "amenity",
+      "slice": "S4",
+      "partition": "held_out",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["Thông tin về Quán Sao Lạ"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán này có wifi không?",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["lantern"],
+        "topic": "amenity",
+        "contains": "chưa có dữ liệu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-amenity-ordinal",
+      "bucket": "amenity",
+      "slice": "S4",
+      "partition": "held_out",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["So sánh Quán Sao Lạ với Quán Không Giá"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán thứ 1 có wifi không?",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["lantern"],
+        "topic": "amenity",
+        "contains": "chưa có dữ liệu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-suitability-context",
+      "bucket": "suitability",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": "lantern",
+        "priorTurns": [],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán này hợp hẹn hò không?",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["lantern"],
+        "topic": "suitability",
+        "contains": "chưa có dữ liệu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-suitability-sole",
+      "bucket": "suitability",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["Thông tin về Quán Sao Lạ"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán này hợp hẹn hò không?",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["lantern"],
+        "topic": "suitability",
+        "contains": "chưa có dữ liệu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-suitability-ordinal",
+      "bucket": "suitability",
+      "slice": "S4",
+      "partition": "held_out",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["So sánh Quán Sao Lạ với Quán Không Giá"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán thứ 1 hợp hẹn hò không?",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["lantern"],
+        "topic": "suitability",
+        "contains": "chưa có dữ liệu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-rating-context",
+      "bucket": "rating",
+      "slice": "S4",
+      "partition": "held_out",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": "lantern",
+        "priorTurns": [],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán này đánh giá thế nào?",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["lantern"],
+        "topic": "rating",
+        "contains": "chưa có dữ liệu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-rating-sole",
+      "bucket": "rating",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["Thông tin về Quán Sao Lạ"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán này đánh giá thế nào?",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["lantern"],
+        "topic": "rating",
+        "contains": "chưa có dữ liệu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-rating-ordinal",
+      "bucket": "rating",
+      "slice": "S4",
+      "partition": "held_out",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["So sánh Quán Sao Lạ với Quán Không Giá"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán thứ 1 đánh giá thế nào?",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["lantern"],
+        "topic": "rating",
+        "contains": "chưa có dữ liệu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-contact-context",
+      "bucket": "contact",
+      "slice": "S4",
+      "partition": "held_out",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": "lantern",
+        "priorTurns": [],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Số điện thoại của quán này",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["lantern"],
+        "topic": "contact",
+        "contains": "chưa có dữ liệu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-contact-sole",
+      "bucket": "contact",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["Thông tin về Quán Sao Lạ"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Số điện thoại của quán này",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["lantern"],
+        "topic": "contact",
+        "contains": "chưa có dữ liệu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-contact-ordinal",
+      "bucket": "contact",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["So sánh Quán Sao Lạ với Quán Không Giá"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Số điện thoại của quán thứ 1",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["lantern"],
+        "topic": "contact",
+        "contains": "chưa có dữ liệu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-overview-context",
+      "bucket": "overview",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": "lantern",
+        "priorTurns": [],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Thông tin về quán này",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["lantern"],
+        "topic": "overview",
+        "contains": "chưa có dữ liệu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-overview-sole",
+      "bucket": "overview",
+      "slice": "S4",
+      "partition": "held_out",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["Thông tin về Quán Sao Lạ"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Thông tin về quán này",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["lantern"],
+        "topic": "overview",
+        "contains": "chưa có dữ liệu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-overview-ordinal",
+      "bucket": "overview",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["So sánh Quán Sao Lạ với Quán Không Giá"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Thông tin về quán thứ 1",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["lantern"],
+        "topic": "overview",
+        "contains": "chưa có dữ liệu"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-out_of_data-context",
+      "bucket": "out_of_data",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": "lantern",
+        "priorTurns": [],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán này có menu không?",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["lantern"],
+        "topic": "out_of_data",
+        "contains": "hỏi trực tiếp"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-out_of_data-sole",
+      "bucket": "out_of_data",
+      "slice": "S4",
+      "partition": "calibration",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["Thông tin về Quán Sao Lạ"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán này có menu không?",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["lantern"],
+        "topic": "out_of_data",
+        "contains": "hỏi trực tiếp"
+      },
+      "category": "capability"
+    },
+    {
+      "id": "s4-out_of_data-ordinal",
+      "bucket": "out_of_data",
+      "slice": "S4",
+      "partition": "held_out",
+      "fixture": {
+        "catalogue": "s3-fictional-v1",
+        "contextPlace": null,
+        "priorTurns": ["So sánh Quán Sao Lạ với Quán Không Giá"],
+        "clock": "2026-11-11T10:00:00.000Z"
+      },
+      "text": "Quán thứ 1 có menu không?",
+      "expected": {
+        "outcome": "no_data",
+        "places": ["lantern"],
+        "topic": "out_of_data",
+        "contains": "hỏi trực tiếp"
+      },
+      "category": "capability"
+    }
+  ]
+}

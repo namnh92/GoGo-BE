@@ -6,7 +6,7 @@ import {
   PLACE_QA_PENDING_TTL_MS,
   PLACE_QA_SEMANTIC_VERSION,
 } from './config';
-import { ANSWER_TOPICS, answerToken, type AnswerTopic } from './tokens';
+import { ANSWER_TOPICS, answerToken, parseAnswerToken, type AnswerTopic } from './tokens';
 import type { QaArgs } from './classifier';
 const uuid = z.string().uuid();
 const args = z
@@ -23,8 +23,9 @@ const args = z
 const schema = z
   .object({
     v: z.literal(1),
-    kind: z.enum(['choice', 'confirm', 'narrow', 'referent']),
+    kind: z.enum(['choice', 'confirm', 'narrow', 'referent', 'topic']),
     questionMessageId: uuid,
+    referentMessageId: uuid.optional(),
     assistantMessageId: uuid,
     configVersion: z.literal(PLACE_QA_CONFIG_VERSION),
     semanticVersion: z.literal(PLACE_QA_SEMANTIC_VERSION),
@@ -37,22 +38,24 @@ const schema = z
       .array(
         z
           .object({
-            slot: z.literal(0),
+            slot: z.union([z.literal(0), z.literal(1)]),
             sourceMessageId: uuid,
             resolvedPlaceId: uuid.optional(),
             candidateIds: z.array(uuid).max(3).optional(),
           })
           .strict(),
       )
-      .length(1),
-    activeSlot: z.literal(0),
+      .min(1)
+      .max(2),
+    activeSlot: z.union([z.literal(0), z.literal(1)]),
     options: z
       .array(
         z
           .object({
             optionId: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
-            key: z.enum(['place', 'none']),
-            slot: z.literal(0),
+            key: z.enum(['place', 'none', 'topic']),
+            query: z.string().max(512).optional(),
+            slot: z.union([z.literal(0), z.literal(1)]),
             placeId: uuid.optional(),
           })
           .strict(),
@@ -84,12 +87,32 @@ export function readQaPending(
     expires - created !== PLACE_QA_PENDING_TTL_MS
   )
     return null;
-  const candidates = p.slots[0]!.candidateIds ?? [];
+  if (p.slots.some((s, i) => s.slot !== i) || !p.slots[p.activeSlot]) return null;
+  if (
+    p.slots.some(
+      (s) =>
+        new Set(s.candidateIds).size !== s.candidateIds?.length && s.candidateIds !== undefined,
+    )
+  )
+    return null;
+  const candidates = p.slots[p.activeSlot]!.candidateIds ?? [];
+  if (p.kind === 'topic' && p.slots.some((s) => !s.resolvedPlaceId)) return null;
   if (
     new Set(candidates).size !== candidates.length ||
     new Set(p.options.map((o) => o.optionId)).size !== p.options.length ||
-    p.options.some((o) =>
-      o.key === 'place' ? !o.placeId || !candidates.includes(o.placeId) : o.placeId !== undefined,
+    p.options.some(
+      (o) =>
+        o.slot !== p.activeSlot ||
+        (o.key === 'topic'
+          ? p.kind !== 'topic' ||
+            !o.query ||
+            !parseAnswerToken(o.query) ||
+            !p.slots.some((s) => s.resolvedPlaceId === parseAnswerToken(o.query!)?.placeId) ||
+            o.placeId !== undefined
+          : o.query !== undefined ||
+            (o.key === 'place'
+              ? !o.placeId || !candidates.includes(o.placeId)
+              : o.placeId !== undefined)),
     )
   )
     return null;
@@ -108,6 +131,7 @@ export function readQaPending(
 export function makeQaPending(input: {
   kind: QaPending['kind'];
   questionMessageId: string;
+  referentMessageId?: string | undefined;
   /** Name-bearing message; defaults to the question itself. */
   sourceMessageId?: string | undefined;
   assistantMessageId: string;
@@ -115,6 +139,9 @@ export function makeQaPending(input: {
   topic: AnswerTopic;
   args: QaArgs;
   candidates?: readonly string[];
+  slots?: QaPending['slots'];
+  activeSlot?: 0 | 1;
+  topicQueries?: readonly string[];
   retryCount?: number;
 }): QaPending {
   const candidates = [...(input.candidates ?? [])];
@@ -122,6 +149,7 @@ export function makeQaPending(input: {
     v: 1,
     kind: input.kind,
     questionMessageId: input.questionMessageId,
+    ...(input.referentMessageId ? { referentMessageId: input.referentMessageId } : {}),
     assistantMessageId: input.assistantMessageId,
     configVersion: PLACE_QA_CONFIG_VERSION,
     semanticVersion: PLACE_QA_SEMANTIC_VERSION,
@@ -130,23 +158,32 @@ export function makeQaPending(input: {
     retryCount: input.retryCount ?? 0,
     topic: input.topic,
     args: input.args,
-    slots: [
+    slots: input.slots ?? [
       {
         slot: 0,
         sourceMessageId: input.sourceMessageId ?? input.questionMessageId,
         candidateIds: candidates,
       },
     ],
-    activeSlot: 0,
-    options: [
-      ...candidates.map((placeId, i) => ({
-        optionId: `pick_${i + 1}`,
-        key: 'place' as const,
-        slot: 0 as const,
-        placeId,
-      })),
-      ...(candidates.length ? [{ optionId: 'none', key: 'none' as const, slot: 0 as const }] : []),
-    ],
+    activeSlot: input.activeSlot ?? 0,
+    options: input.topicQueries
+      ? input.topicQueries.map((query, i) => ({
+          optionId: `topic_${i + 1}`,
+          key: 'topic' as const,
+          slot: 0 as const,
+          query,
+        }))
+      : [
+          ...candidates.map((placeId, i) => ({
+            optionId: `pick_${i + 1}`,
+            key: 'place' as const,
+            slot: input.activeSlot ?? 0,
+            placeId,
+          })),
+          ...(candidates.length
+            ? [{ optionId: 'none', key: 'none' as const, slot: input.activeSlot ?? 0 }]
+            : []),
+        ],
   };
 }
 

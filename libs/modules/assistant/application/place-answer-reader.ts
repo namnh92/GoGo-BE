@@ -1,3 +1,4 @@
+import { TOPIC_LABELS } from '../domain/place-qa/topics';
 import { QA_COPY } from '../domain/place-qa/copy';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
@@ -325,32 +326,3 @@ function card(p: PlaceFacts | undefined, id: string, locale: 'vi' | 'en'): Place
       }
     : { kind: 'place', placeId: id, available: true, facts: { name: safeText(p.name) } };
 }
-
-const TOPIC_LABELS = {
-  vi: {
-    hours: 'Giờ mở cửa',
-    price: 'Giá',
-    address: 'Địa chỉ',
-    directions: 'Đường đi',
-    parking: 'Chỗ đậu xe',
-    amenity: 'Tiện ích',
-    suitability: 'Mức độ phù hợp',
-    rating: 'Đánh giá',
-    contact: 'Liên hệ',
-    overview: 'Tổng quan',
-    out_of_data: 'Thông tin khác',
-  },
-  en: {
-    hours: 'Hours',
-    price: 'Price',
-    address: 'Address',
-    directions: 'Directions',
-    parking: 'Parking',
-    amenity: 'Amenities',
-    suitability: 'Suitability',
-    rating: 'Ratings',
-    contact: 'Contact',
-    overview: 'Overview',
-    out_of_data: 'Other information',
-  },
-} as const;
