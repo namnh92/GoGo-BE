@@ -135,7 +135,9 @@ describe('S4 comparison and two-slot clarification', () => {
       { kind: 'place', placeId: B },
     ]);
     expect(parseReferenceGroup(r.state.trace.placeAnswerGroup, r.state.text)?.kind).toBe('compare');
-    expect(JSON.stringify([r.state.text, r.state.trace])).not.toMatch(/Fictional|12[.,]?000|Ward/);
+    expect(JSON.stringify([r.state.text, r.state.trace])).not.toMatch(
+      /Fictional|(?<![0-9a-fA-F:.-])12[.,]?000(?![0-9a-fA-FZ])|Ward/,
+    );
     expect(r.state.costs).toMatchObject({ jevCalls: 0, haikuCalls: 0, jevCostUsd: 0 });
   });
   it.each(['structured', 'typed'])(
@@ -165,6 +167,54 @@ describe('S4 comparison and two-slot clarification', () => {
       expect(done.view.cards.map((c) => c.placeId)).toEqual([A, B]);
     },
   );
+  it('slot 2 typed emitted choice text confirms only that branch and keeps slot 1', async () => {
+    const f = fixture();
+    const r = await f.send('Fictional Lantern với Fictional Orchid quán nào rẻ hơn?');
+    const option = r.view.followUps[0]!.options[1]!;
+    const typed = await f.send(option.text);
+    expect(typed.qa.pending).toMatchObject({
+      kind: 'confirm',
+      activeSlot: 1,
+      topic: 'price',
+      slots: [{ resolvedPlaceId: A }, { candidateIds: [C] }],
+    });
+    const done = await f.send(typed.view.followUps[0]!.options[0]!.text);
+    expect(done.view.cards.map((c) => c.placeId)).toEqual([A, C]);
+  });
+  it.each(['Quán 2'])(
+    'slot 2 venues named %s re-ask the whole choice instead of guessing',
+    async (name) => {
+      const f = fixture();
+      f.update(B, { name });
+      f.update(C, { name });
+      const r = await f.send(`Fictional Lantern với ${name} quán nào rẻ hơn?`);
+      expect(r.qa.pending).toMatchObject({
+        activeSlot: 1,
+        slots: [{ resolvedPlaceId: A }, { candidateIds: [B, C] }],
+      });
+      const typed = await f.send(name);
+      expect(typed.qa.outcome).not.toBe('stale_choice');
+      expect(typed.qa.pending).toMatchObject({
+        kind: 'choice',
+        activeSlot: 1,
+        slots: [{ resolvedPlaceId: A }, { candidateIds: [B, C] }],
+      });
+      expect(typed.view.cards.map((c) => c.placeId)).toEqual([B, C]);
+    },
+  );
+  it('a topic label typed during a slot 2 choice never selects a branch', async () => {
+    const f = fixture();
+    const r = await f.send('Fictional Lantern với Fictional Orchid quán nào rẻ hơn?');
+    const typed = await f.send('Giờ mở cửa');
+    expect(typed.view.cards.map((c) => c.placeId)).not.toEqual([A, B]);
+    expect(typed.view.cards.map((c) => c.placeId)).not.toEqual([A, C]);
+    expect(typed.qa.pending).toMatchObject({
+      activeSlot: 1,
+      topic: 'price',
+      slots: [{ resolvedPlaceId: A }, { candidateIds: [B, C] }],
+      expiresAt: r.qa.pending.expiresAt,
+    });
+  });
   it('resolves both ambiguous slots separately', async () => {
     const f = fixture();
     f.update(A, { name: 'Fictional Orchid' });

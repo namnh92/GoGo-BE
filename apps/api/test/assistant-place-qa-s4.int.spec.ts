@@ -20,6 +20,7 @@ const corpus = {
   cases: [...s3.cases.filter((c) => s4.coreS3Ids.includes(c.id)), ...s4.cases],
 };
 import catalogue from '../../../libs/modules/assistant/eval/place-qa-fixtures.json';
+import { stripVolatile } from './support/strip-volatile';
 
 /** Layer A, not a resolver/producer simulation. Real API/auth/admission/modules,
  * Testcontainers PostGIS, SQL catalogue/facts, runner, SSE/replay and history.
@@ -334,9 +335,9 @@ describe('layer A S4 234 core and scenario cells — public send → SSE → his
             c.expected.outcome,
           );
           expect(capture).toEqual({ jev: [], haiku: [] });
-          expect(JSON.stringify([r.stored?.text, r.stored?.frames, r.stored?.trace])).not.toMatch(
-            /Quán Sao Lạ|12[.,]?000|12 Đường Hư Cấu/,
-          );
+          expect(
+            stripVolatile(JSON.stringify([r.stored?.text, r.stored?.frames, r.stored?.trace])),
+          ).not.toMatch(/Quán Sao Lạ|12[.,]?000|12 Đường Hư Cấu/);
           expect(r.text).not.toMatch(/[\uE000\uE001]/u);
           const ledger = await f.db.execute(
             sql`select u.*, (select count(*)::int from assistant_usage_calls c where c.usage_ledger_id=u.id) as attempts from assistant_usage_ledger u where message_id=${r.id}`,
@@ -507,7 +508,18 @@ describe('S4 public consumer and lifecycle matrix', () => {
   it('expires topic state without extending its lifetime', () =>
     scenario('s4-state-topic-expired', async (c) => {
       const first = await turn(c, 'Quán Sao Lạ giá bao nhiêu?');
-      vi.setSystemTime(now + 30 * 60_000);
+      // Age the stored topic state instead of moving the clock: a clock jump
+      // past the access-token lifetime turns the send into a 401, not a proof.
+      const qa = first.stored!.trace!.placeQa as {
+        pending: { createdAt: string; expiresAt: string };
+      };
+      expect(qa.pending).toBeDefined();
+      const ttl = Date.parse(qa.pending.expiresAt) - Date.parse(qa.pending.createdAt);
+      qa.pending.createdAt = new Date(now - ttl).toISOString();
+      qa.pending.expiresAt = new Date(now).toISOString();
+      await f.db.execute(
+        sql`update assistant_messages set trace=jsonb_set(trace,'{placeQa}',${JSON.stringify(qa)}::jsonb) where id=${first.id}`,
+      );
       const r = await turn(c, options(first)[0]!.text, {
         replyToMessageId: first.id,
         followUpOptionId: options(first)[0]!.id,
