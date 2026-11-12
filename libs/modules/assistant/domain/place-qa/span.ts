@@ -50,7 +50,7 @@ export type PlaceNameSpans =
  */
 const ACCENTED_GRAMMAR = new Set(
   (
-    'giờ mở cửa đóng giá địa chỉ số điện thoại thông của về đánh có không mấy lúc nào ' +
+    'giờ mở cửa đóng giá vé địa chỉ số điện thoại thông của về đánh có không mấy lúc nào ' +
     'nhiêu ở đâu là gì chỗ đậu thế tại quận huyện phường xã tỉnh thành với và sánh quán rẻ hơn đắt'
   )
     .normalize('NFC')
@@ -172,7 +172,7 @@ export function extractPlaceNameSpan(
   // Only anchored topic clauses outside a name are removed. A name containing
   // Cafe, Mới, Gần, Tìm, numbers or administrative words keeps those tokens.
   const prefix =
-    /^(?:(?:gio mo cua|gio dong cua|gia|dia chi|so dien thoai|thong tin|danh gia)( cua| ve)?|(?:opening hours|price|address|phone number|information)( of| for)?)\s+/;
+    /^(?:(?:gio mo cua|gio dong cua|gia(?: ve)?|dia chi|so dien thoai|thong tin|danh gia)( cua| ve)?|(?:opening hours|price|address|phone number|information)( of| for)?)\s+/;
   const leading = prefix.exec(tokens.map((t) => t.grammar).join(' '));
   // A bare single-word topic can also identify a venue (Gia Bảo, Price Cafe).
   // Keep it when a terminal question supplies the topic; otherwise clarify.
@@ -198,7 +198,11 @@ export function extractPlaceNameSpan(
     if (clause) return;
     const usable = tokens.filter((t) => t.start >= start && t.end <= end);
     const tail = usable.map((t) => t.grammar).join(' ');
-    const match = suffix.exec(tail);
+    const match =
+      suffix.exec(tail) ??
+      (leading && /^gia ve(?: |$)/u.test(leading[0])
+        ? /\s+(?:la )?bao nhieu\s*$/u.exec(tail)
+        : null);
     if (!match) return;
     if (bareNoun.test(match[0].trim())) {
       // A stripped leading topic already supplies the question, so the noun

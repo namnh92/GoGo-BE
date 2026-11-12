@@ -102,3 +102,13 @@ describe('fixed no-reference groups across text/export readers', () => {
     expect(placeTokensAsIds('malicious prose', 'en', undefined, trace)).toBe('this place');
   });
 });
+
+describe('GoGo-BE#875 complete typed identity', () => {
+  it('keeps the display dash and middle dot and preserves the pending topic without storing identity', () => {
+    const text = confirmText('vi', 'Mizu – Bến Sương', 'Phường Cầu Giấy, Hà Nội')!;
+    expect(text).toBe('Xác nhận Mizu – Bến Sương · Phường Cầu Giấy, Hà Nội');
+    expect(isTypedConfirm(text)).toBe(true);
+    expect(readQaPending(make(), FIXTURE_B, now)?.topic).toBe('hours');
+    expect(JSON.stringify(make())).not.toMatch(/Mizu|Bến Sương|Cầu Giấy/);
+  });
+});

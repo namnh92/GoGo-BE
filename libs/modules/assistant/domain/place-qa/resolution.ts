@@ -21,15 +21,18 @@ export type PlaceNameResolution = PlaceNameMatches & {
 
 /**
  * Whole-name spelling variants only. No stopword/area-word removal or
- * bag-of-words equality. The ONLY approved equivalence is the possessive of one
- * digit-bearing brand token: `4p's` = `4ps` = `4p s`. Every other character,
- * unrelated apostrophes and punctuation included, is kept as typed, so the
+ * bag-of-words equality. En/em dashes and typographic apostrophes fold like
+ * PostgreSQL unaccent. The other approved equivalence is the possessive of one
+ * digit-bearing brand token: `4p's` = `4ps` = `4p s`. Other characters,
+ * unrelated apostrophes and punctuation included, are kept as typed, so the
  * whole folded name is always a member of its own variant set.
  */
 export function placeNameVariants(span: string): string[] {
-  // Typographic apostrophes (the iOS keyboard default) fold to the ASCII one,
-  // as `f_unaccent` does for the stored `name_normalized`.
-  const folded = normalizeVietnamese(span).replace(/[\u2018\u2019\u201B\u02BC]/g, "'");
+  // Mirror the stored f_unaccent punctuation before probing the indexed key.
+  // Keep the dash (and its spacing): deleting it would invent exact matches.
+  const folded = normalizeVietnamese(span)
+    .replace(/[\u2013\u2014]/g, '-')
+    .replace(/[\u2018\u2019\u201B\u02BC]/g, "'");
   if (!folded) return [];
   const brands = [...folded.matchAll(/(\b[a-z]*\d[a-z]*)(?:'s|s|\s+s)\b/g)];
   // Several brand tokens would need 3^n spellings. No equivalence is applied
@@ -56,13 +59,16 @@ export function resolvePlaceNameOutcome(
     row: PlaceNameResolution['row'],
     list = candidates,
   ): PlaceNameResolution => ({ ...matches, kind, row, candidates: list });
-  if (matches.overflow || options.ambiguous || options.area?.kind === 'unresolved')
-    return result('narrow', 2);
+  if (options.ambiguous || options.area?.kind === 'unresolved') return result('narrow', 2);
   const exact = candidates.filter((c) => c.exact);
+  // Owner decision 2026-11-12 (BE#875), amending rev3 §4.3: the
+  // complete exact channel wins over fuzzy/FTS overflow. Exact families
+  // larger than the three-card choice still require an area.
+  if (exact.length > 3 || (!exact.length && matches.overflow)) return result('narrow', 2);
   if (matches.areaMismatch) {
-    const elsewhere = candidates.filter(
-      (c) => c.exact || c.score >= Math.fround(PLACE_QA_WEAK_THRESHOLD),
-    );
+    const elsewhere = exact.length
+      ? exact
+      : candidates.filter((c) => c.score >= Math.fround(PLACE_QA_WEAK_THRESHOLD));
     return elsewhere.length
       ? result('choice', 4, elsewhere.slice(0, 3))
       : result('not_found', 6, []);

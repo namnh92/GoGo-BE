@@ -454,18 +454,22 @@ export class PlaceQaService {
             });
             signal.throwIfAborted();
             const exact = fresh.candidates.filter((c) => c.exact);
-            if (exact.length && !fresh.overflow) {
+            if (exact.length) {
               trace!.class = 'name_only';
               trace!.topic = 'overview';
               trace!.args = {};
               trace!.row = fresh.row;
-              if (exact.length === 1) await answer(exact[0]!.id);
-              else
+              if (fresh.kind === 'answer') await answer(exact[0]!.id);
+              else if (fresh.kind === 'choice' || fresh.kind === 'confirm')
                 await clarify(
-                  'choice',
-                  exact.slice(0, 3).map((c) => c.id),
+                  fresh.kind,
+                  fresh.candidates.map((c) => c.id),
                   trace!.questionMessageId,
                 );
+              else {
+                if (fresh.kind === 'narrow') pending('narrow', trace!.questionMessageId);
+                await notice(fresh.kind);
+              }
               return true;
             }
           }
@@ -564,7 +568,7 @@ export class PlaceQaService {
             deadlineAt,
           });
           signal.throwIfAborted();
-          if (fresh.candidates.some((c) => c.exact) && !fresh.overflow) {
+          if (fresh.candidates.some((c) => c.exact)) {
             trace!.class = 'name_only';
             if (p.kind !== 'referent') {
               trace!.topic = 'overview';
@@ -579,14 +583,15 @@ export class PlaceQaService {
                   : trace!.questionMessageId;
             }
             trace!.row = fresh.row;
-            const ids = fresh.candidates.filter((c) => c.exact).map((c) => c.id);
-            if (ids.length === 1) await answer(ids[0]!);
-            else
-              await clarify(
-                'choice',
-                ids.slice(0, 3),
-                p.kind === 'referent' ? p.questionMessageId : trace!.questionMessageId,
-              );
+            const ids = fresh.candidates.map((c) => c.id);
+            const source = p.kind === 'referent' ? p.questionMessageId : trace!.questionMessageId;
+            if (fresh.kind === 'answer') await answer(ids[0]!);
+            else if (fresh.kind === 'choice' || fresh.kind === 'confirm')
+              await clarify(fresh.kind, ids, source);
+            else {
+              if (fresh.kind === 'narrow') pending('narrow', source);
+              await notice(fresh.kind);
+            }
             return true;
           }
         }

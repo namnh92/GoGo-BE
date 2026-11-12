@@ -153,3 +153,63 @@ describe('Astra A1: initial named questions protect command words', () => {
     ).toBe('not_qa');
   });
 });
+
+describe('GoGo-BE#875 ticket-price span', () => {
+  it.each([
+    'Giá vé Rạp Sao Mộc Bến Sương bao nhiêu?',
+    'Giá vé của Rạp Sao Mộc Bến Sương bao nhiêu?',
+    'Giá vé Rạp Sao Mộc Bến Sương là bao nhiêu?',
+  ])('%s strips the whole topic head and terminal question', (text) => {
+    const result = classifier.classify(text, null, { now: new Date(corpus.clock), locale: 'vi' });
+    expect(result).toMatchObject({
+      kind: 'named_place_question',
+      topic: 'price',
+      span: { text: 'Rạp Sao Mộc Bến Sương' },
+    });
+    if ('span' in result)
+      expect(text.slice(result.span.start, result.span.end)).toBe(result.span.text);
+  });
+});
+
+describe('GoGo-BE#876 ticket grammar name collisions', () => {
+  it.each(['Rạp Bao Nhiêu', 'Rạp Là Bao Nhiêu', 'Rạp Vé Bao Nhiêu', 'Rạp Vé', 'Rạp Vé Sao Mộc'])(
+    'bare complete name: %s',
+    (name) => {
+      expect(
+        classifier.classify(name, null, { now: new Date(corpus.clock), locale: 'vi' }),
+      ).toMatchObject({
+        kind: 'name_only',
+        topic: 'overview',
+        span: { text: name },
+      });
+    },
+  );
+  it.each(['Rạp Bao Nhiêu', 'Rạp Vé', 'Vé Rạp Sao Mộc'])(
+    'explicit information preserves %s',
+    (name) => {
+      const result = classifier.classify(`Thông tin ${name}`, null, {
+        now: new Date(corpus.clock),
+        locale: 'vi',
+      });
+      expect(result).toMatchObject({ kind: 'named_place_question', topic: 'overview' });
+      if ('span' in result)
+        expect([result.span.text, ...(result.span.alternates ?? []).map((a) => a.text)]).toContain(
+          name,
+        );
+    },
+  );
+  it.each(['Rạp Bao Nhiêu', 'Rạp Vé', 'Vé Rạp Sao Mộc'])(
+    'ticket question preserves name reading: %s',
+    (name) => {
+      const text = `Giá vé ${name} bao nhiêu?`;
+      const result = classifier.classify(text, null, { now: new Date(corpus.clock), locale: 'vi' });
+      expect(result).toMatchObject({ kind: 'named_place_question', topic: 'price' });
+      if ('span' in result) {
+        const readings = [result.span.text, ...(result.span.alternates ?? []).map((a) => a.text)];
+        expect(readings).toContain(name);
+        expect(readings).toContain(`${name} bao nhiêu`);
+        expect(readings).toContain(`vé ${name}`);
+      }
+    },
+  );
+});

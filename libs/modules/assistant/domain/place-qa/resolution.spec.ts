@@ -7,6 +7,52 @@ const matches = (candidates: PlaceNameCandidate[], overflow = false, areaMismatc
   overflow,
   areaMismatch,
 });
+describe('GoGo-BE#875 owner decision 2026-11-12: exact before fuzzy overflow', () => {
+  const fuzzy = Array.from({ length: 9 }, (_, i) => ({
+    id: `coffee-${i}`,
+    exact: false,
+    score: 0.6,
+  }));
+  it.each([1, 2, 3, 4, 8])(
+    '%i complete exact candidates govern even with fuzzy overflow',
+    (count) => {
+      const exact = Array.from({ length: count }, (_, i) => ({
+        id: `workshop-${i}`,
+        exact: true,
+        score: 1,
+      }));
+      for (const overflow of [false, true]) {
+        const result = resolvePlaceNameOutcome(matches([...fuzzy, ...exact], overflow));
+        expect(result).toMatchObject({
+          kind: count === 1 ? 'answer' : count <= 3 ? 'choice' : 'narrow',
+          row: count === 1 ? 3 : count <= 3 ? 4 : 2,
+          overflow,
+        });
+        if (count <= 3) expect(result.candidates).toEqual(exact);
+      }
+    },
+  );
+  it('still narrows fuzzy-only overflow and unsafe parsing/area, and keeps §4.4 restrictions', () => {
+    expect(resolvePlaceNameOutcome(matches(fuzzy, true))).toMatchObject({ kind: 'narrow', row: 2 });
+    const exact = { id: 'workshop', exact: true, score: 1 };
+    const candidates = [...fuzzy, exact];
+    expect(resolvePlaceNameOutcome(matches(candidates, true), { ambiguous: true }).kind).toBe(
+      'narrow',
+    );
+    expect(
+      resolvePlaceNameOutcome(matches(candidates, true), { area: { kind: 'unresolved' } }).kind,
+    ).toBe('narrow');
+    expect(
+      resolvePlaceNameOutcome(matches(candidates, true), { area: { kind: 'legacy' } }),
+    ).toMatchObject({ kind: 'confirm', row: 3, candidates: [exact] });
+    expect(resolvePlaceNameOutcome(matches([exact], true, true))).toMatchObject({
+      kind: 'choice',
+      row: 4,
+      candidates: [exact],
+      areaMismatch: true,
+    });
+  });
+});
 describe('S2 resolution truth table', () => {
   it('only whole exact unique can answer; fuzzy never answers, regardless of margin', () => {
     for (let i = 0; i <= 100; i++) {
@@ -18,9 +64,8 @@ describe('S2 resolution truth table', () => {
       'answer',
     );
   });
-  it('overflow and unsafe area/parsing take precedence over exact uniqueness', () => {
+  it('unsafe area/parsing take precedence over exact uniqueness', () => {
     const candidate = { id: 'a', score: 1, exact: true };
-    expect(resolvePlaceNameOutcome(matches([candidate], true)).kind).toBe('narrow');
     expect(resolvePlaceNameOutcome(matches([candidate]), { ambiguous: true }).kind).toBe('narrow');
     expect(
       resolvePlaceNameOutcome(matches([candidate]), { area: { kind: 'unresolved' } }).kind,
@@ -47,7 +92,7 @@ describe('S2 resolution truth table', () => {
     });
     expect(
       resolvePlaceNameOutcome(matches(candidates.map((c) => ({ ...c, exact: true })))).kind,
-    ).toBe('choice');
+    ).toBe('narrow');
   });
   it('punctuation variants are bounded and diacritics do not erase identifying tokens', () => {
     expect(placeNameVariants("Pizza 4P's Bến Thành")).toEqual([
@@ -448,4 +493,44 @@ it('round-4: reading budget overflow and unrepresentable full readings clarify w
   expect(extractPlaceNameSpan(`Giờ mở cửa của ${'a'.repeat(115)} có wifi không?`)).toEqual({
     kind: 'ambiguous',
   });
+});
+
+describe('GoGo-BE#875 stored name keys', () => {
+  it('folds the en/em dash like PostgreSQL unaccent without deleting punctuation', () => {
+    for (const dash of ['–', '—', '-']) {
+      expect(placeNameVariants(`Mizu – Bến Sương`.replace('–', dash))).toEqual([
+        'mizu - ben suong',
+      ]);
+    }
+    expect(placeNameVariants('Mizu Bến Sương')).toEqual(['mizu ben suong']);
+  });
+  it('extracts a ticket-price question without leaking vé or bao nhiêu into the name', () => {
+    const text = 'Giá vé Rạp Sao Mộc Bến Sương bao nhiêu?';
+    const span = extractPlaceNameSpan(text);
+    expect(span).toMatchObject({ kind: 'span', text: 'Rạp Sao Mộc Bến Sương' });
+    if (span.kind === 'span') {
+      expect(text.slice(span.start, span.end)).toBe(span.text);
+      expect(span.alternates?.some((a) => a.text.startsWith('vé '))).toBe(true);
+    }
+  });
+  it('two complete exact duplicates choose with cards, never select by score', () => {
+    expect(
+      resolvePlaceNameOutcome(
+        matches([
+          { id: 'second', exact: true, score: 1 },
+          { id: 'first', exact: true, score: 1 },
+        ]),
+      ),
+    ).toMatchObject({ kind: 'choice', row: 4, candidates: [{ id: 'first' }, { id: 'second' }] });
+  });
+});
+
+describe('GoGo-BE#876 S2 ticket grammar name collisions', () => {
+  it.each(['Rạp Bao Nhiêu', 'Rạp Là Bao Nhiêu', 'Rạp Vé Bao Nhiêu', 'Rạp Vé'])(
+    'preserves bare %s',
+    (name) => {
+      expect(extractPlaceNameSpan(name)).toMatchObject({ kind: 'span', text: name });
+      expect(extractPlaceNameSpan(`Thông tin ${name}`)).toMatchObject({ kind: 'span', text: name });
+    },
+  );
 });
