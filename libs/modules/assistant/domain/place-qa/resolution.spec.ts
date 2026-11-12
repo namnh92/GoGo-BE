@@ -524,3 +524,13 @@ describe('GoGo-BE#875 stored name keys', () => {
     ).toMatchObject({ kind: 'choice', row: 4, candidates: [{ id: 'first' }, { id: 'second' }] });
   });
 });
+
+describe('GoGo-BE#876 S2 ticket grammar name collisions', () => {
+  it.each(['Rạp Bao Nhiêu', 'Rạp Là Bao Nhiêu', 'Rạp Vé Bao Nhiêu', 'Rạp Vé'])(
+    'preserves bare %s',
+    (name) => {
+      expect(extractPlaceNameSpan(name)).toMatchObject({ kind: 'span', text: name });
+      expect(extractPlaceNameSpan(`Thông tin ${name}`)).toMatchObject({ kind: 'span', text: name });
+    },
+  );
+});

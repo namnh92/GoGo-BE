@@ -1,147 +1,100 @@
-# GoGo-BE#875 validation — uncommitted worktree
+# GoGo-BE#875 validation
 
-Basis: `586944a5`, branch `bugfix/GOGO-875-place-qa-exact-match`.
-Product edits cover the QA name variants, Vietnamese topic/span grammar and
-exact-candidate precedence over fuzzy overflow (owner decision 2026-11-12).
-No commit, deployment, feature-flag update or external write was made.
+## Committed head and DEV execution — 2026-11-12
 
-## Diagnosis and change
+Basis: `5bc9b466292dc6e3b3ccdac6838656e9eb618787`, branch
+`bugfix/GOGO-875-place-qa-exact-match`; baseline `586944a5`.
+The earlier sandbox runs were blocked by socket/container access. The later DEV
+execution below supersedes those environment-blocked results. DEV chat acceptance
+is **pending**; passing suites do not establish acceptance or deployment.
 
-1. **Dash-name exact lookup.** `normalizeVietnamese` preserves the en dash, while
-   PostgreSQL `f_unaccent` stores it as ASCII `-`. `placeNameKey` only collapses
-   whitespace; it cannot repair a query-side dash. `placeNameVariants` now folds
-   en/em dashes to ASCII before all indexed exact and fuzzy reads, including
-   alternate readings. No column expression/index migration is needed. Dashes
-   are retained, not deleted, so a name with no dash stays a different identity.
-   PostgreSQL 16's [unaccent rules](https://github.com/postgres/postgres/blob/REL_16_STABLE/contrib/unaccent/unaccent.rules)
-   explicitly map both characters to `-`.
-2. **Ticket-price span.** On the base classifier, `Giá vé … bao nhiêu?` produces
-   the span `… bao nhiêu`: `vé` is already consumed by the generalized prefix's
-   optional folded `ve`, but `bao nhiêu` has no suffix rule. The S2 extractor
-   additionally does not recognize accented `vé` as grammar. Both grammars now
-   recognize the whole `Giá vé [của]` head and `[là] bao nhiêu` tail. Longer
-   whole-name readings remain exact probes, preserving topic words in names.
-3. **Duplicate-name narrow: owner decision applied.** The 2026-11-12 BE#875
-   entry in `dev/policy/decisions-log.md` amends rev3 §4.3: the complete exact
-   lookup (§4.2, aliases included when available) takes precedence over fuzzy/FTS
-   overflow. One exact candidate uses row 3, subject to §4.4; two or three use
-   row 4 with only those exact cards; more than three narrow for an area.
-   Overflow alone narrows only with no exact candidate. Ambiguous parsing and
-   unresolved stated areas still narrow; legacy areas confirm; area mismatch
-   offers a choice elsewhere without silently answering. S3 has no curated
-   aliases. The indexed exact SQL channel stays separate from fuzzy retrieval;
-   even a smaller caller fuzzy limit retains up to four exact rows (enough to
-   distinguish a one-to-three candidate result from the narrowing boundary).
-   The verbatim case 3 now has a service unit regression and an independent
-   integration cell: two `The Workshop Coffee` rows plus ten non-exact
-   `The Workshop Coffee Garden N` names. The cell asserts that all ten non-exact
-   rows satisfy the actual fuzzy/FTS predicates at production thresholds and
-   that the real resolver reports overflow before checking row 4, exact card
-   identities in SSE/history and `place_choice`. It also checks a fuzzy limit
-   of one cannot hide the second exact row. No live DEV candidate set was read.
-4. **Typed confirmation retry.** The full emitted name + `·` + area phrase
-   reconstructs correctly. Reader and service both use `PlaceFacts.areaLabel`,
-   projected from the published current area summary plus province name, rather
-   than the card's address or a mobile label. After phrase equality succeeds,
-   the canonical-name family re-read uses the same broken dash variants, so no
-   candidate is marked exact and confirmation retries. Fix (1) repairs this
-   revalidation without weakening whole-phrase, expiry, publication, uniqueness,
-   missing/long-area, duplicate-label or structured-source checks. A real reader
-   chip round trip is covered by a unit service test and the new integration spec.
+| Check                                    | Result on `5bc9b466`                                                  | Evidence                                                              |
+| ---------------------------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Build                                    | PASS                                                                  | DEV handoff `dev/handoffs/codex-review-request-be-876.md`, Gates      |
+| Full unit                                | 4954 PASS                                                             | Same DEV handoff                                                      |
+| Integration                              | 11 files selected: 10 passed, 1 skipped; 568 tests passed, 21 skipped | `dev/test-evidence/be-875/int-head.log`                               |
+| S3 Layer A                               | 417/417 PASS, included in integration                                 | DEV handoff, Gates                                                    |
+| New `place-qa-875.int.spec.ts`           | All 5 cells PASS on head; 4 FAIL / 1 PASS on `586944a5`               | `dev/test-evidence/be-875/int-before-586944a5.log` and `int-head.log` |
+| Typecheck, ESLint, Prettier, `api:check` | PASS                                                                  | DEV handoff, Gates                                                    |
 
-## Earlier cases 1/2/4 evidence (prior continuation)
+Evidence paths above are relative to the parent GoGo workspace
+(`/Users/maxnguyen/MyWorks/GoGo`), not this worktree. Build/unit/gate and Layer A
+counts are reported by the DEV handoff; both saved integration logs were inspected
+in this fix round. The baseline integration failures cover dash-name lookup,
+ticket-price span, the exact pair with fuzzy overflow and typed confirmation
+retry. The separate duplicate-name cell without overflow already passed on that
+baseline.
 
-- Tests were added before production edits. The initial four-spec unit run on
-  unchanged `586944a5` product code exited **1**: **6 symptom failures, 432 passes**
-  (three ticket-price classifier spellings, dash variants, S2 ticket span, typed
-  confirmation retry). The pending-copy and two-exact-duplicate checks passed
-  on base. Two additional service answer checks were added afterwards. A final replay
-  of all nine focused specs against the three unchanged baseline product files
-  exited **1** with **8 symptom failures and 678 passes**; production edits were
-  restored in a `finally` block. Request-shape and intent preservation remained
-  green on both versions.
-- Focused final unit command: `pnpm exec vitest run --project unit
-libs/modules/assistant/domain/place-qa
-libs/modules/assistant/application/place-qa.service.spec.ts
-libs/modules/assistant/application/place-qa-request-shape.spec.ts
-libs/modules/assistant/domain/grounding.spec.ts` — exit **0**, **686 passed**.
-  Includes request-shape equality, 156 intent preservation cases plus vi-065,
-  pending guards, whole-name alternate readings and overflow preservation.
-- Full unit: `pnpm exec vitest run --project unit` — exit **1**: 342 files passed,
-  one socket-denied suite and one unrelated grounding timing failure at 1157 ms.
-  Repeat with `--maxWorkers=2` — exit **1**: **343 files / 4944 tests passed**,
-  one skipped test; only `apps/api/src/sentry-request.spec.ts` is blocked by
-  `listen EPERM: operation not permitted 127.0.0.1`. Grounding timing passes.
-  The later two service additions also pass in the final focused run above.
-- `pnpm typecheck` — exit **0**, all eight packages. An earlier integration-test
-  type error (missing required placeFacts read budget) was corrected before this pass.
-- ESLint on touched TypeScript files — exit **0**.
-- Prettier on all touched files — exit **0**.
-- `pnpm api:check` — exit **0**.
-- `git diff --check` — exit **0**.
-- Integration before and after: `pnpm exec vitest run --project integration
-apps/api/test/place-qa-875.int.spec.ts` — exit **1**, setup blocked with
-  `Could not find a working container runtime strategy`; all four tests unexecuted.
-  No FAIL-before/PASS-after integration claim is made. DEV must execute it with
-  real PostGIS using the existing fixture's dedicated-database mechanism.
+## Implemented behavior
 
-`assistant-place-qa-s3.int.spec.ts`, the Layer A corpus and its fixtures are
-untouched. The new spec uses separate fictional dash, sibling and duplicate
-fixtures and sends the singleton chip text without follow-up ids. It asserts
-SQL normalization, row/outcome/card identity, SSE/history chip equality and zero
-model calls. Integration and real DEV chat acceptance remain outstanding.
+1. `placeNameVariants` folds en/em dashes to ASCII like PostgreSQL `unaccent`
+   before indexed exact and fuzzy reads, including alternate readings. It retains
+   dashes as identity; no column/index migration is needed.
+2. Ticket-price parsing recognizes `Giá vé [của] … [là] bao nhiêu`. Every longer
+   whole-name reading remains an exact probe, including `vé` at the grammar/name
+   boundary. The #876 correction below restricts the quantity suffix to this
+   ticket-price context so names ending in `Bao Nhiêu` remain complete.
+3. Owner decision `dev/policy/decisions-log.md`, 2026-11-12, amends rev3 §4.3:
+   exact 1 → answer; exact 2–3 → choice containing only those exact cards;
+   exact >3 → narrow. Fuzzy/FTS overflow narrows only without exact candidates.
+   Ambiguous parsing, unresolved areas and §4.4 area rules remain applicable.
+   Exact retrieval is separate from fuzzy retrieval and retains at least four
+   exact rows even with a smaller caller limit. The integration cell proves
+   genuine fuzzy overflow and exact-only cards for `The Workshop Coffee`.
+4. Typed confirmation re-reads the complete canonical-name family. The dash fix
+   repairs equality without weakening source, expiry, publication, whole-phrase,
+   area-label or branch-uniqueness checks. SSE/history chip equality and the
+   text-only confirmation round trip are covered by the integration spec.
 
-## Case 3 continuation — 2026-11-12
+S3 Layer A spec, corpus and fixtures were not edited for #875 or this fix round.
+The separate `place-qa-875.int.spec.ts` uses fictional fixtures and zero model
+calls. The Layer A `Bát Diệp` overflow case has nine exact names, so it still
+narrows under the owner rule.
 
-- Source: owner decision `dev/policy/decisions-log.md`, 2026-11-12,
-  “BE#875: khớp đúng được ưu tiên hơn overflow (sửa shape rev3 §4.3)”.
-- Baseline replay: restored `resolution.ts`, `span.ts` and `lexicon.vi.json`
-  from **586944a5**, ran the new unit cells, then restored all three preserved
-  worktree files byte-for-byte in `finally`. Command: `pnpm exec vitest run
---project unit libs/modules/assistant/domain/place-qa/resolution.spec.ts
-libs/modules/assistant/application/place-qa.service.spec.ts -t
-'GoGo-BE#875.*exact before|The Workshop Coffee'`.
-  Exit **1**, **7 failed / 148 skipped**, including the verbatim question
-  returning `narrow` instead of `choice`. Log: `/tmp/be-875-case3-baseline.log`.
-- After patch: both full affected unit specs exited **0**, **155 passed**.
-  Log: `/tmp/be-875-case3-after.log`. Coverage includes exact counts 1/2/3/4/8,
-  fuzzy-only overflow, ambiguous parsing, unresolved/legacy/mismatched areas,
-  and only the two exact cards for the verbatim case 3 question.
-- Layer A expectation audit (read-only): no contradictory expectation found in
-  `apps/api/test/assistant-place-qa-s3.int.spec.ts` or its corpus/fixtures.
-  `overflow-narrow` asks about `Bát Diệp`; its fixture has **nine identical
-  exact names**, so it still narrows under the >3-exact rule. `Song Ngọc`
-  has two exact rows and still chooses; typo cases have no exact candidate.
-  These files remain untouched. This audit does not claim a Layer A runtime pass.
-- Integration before/after: exit **1**, setup blocked by
-  `Could not find a working container runtime strategy`; all **five** cells
-  unexecuted after patch. No accessible Docker socket or configured dedicated
-  test database is available in this sandbox. The new integration cell carries
-  assertions for genuine fuzzy overflow, but **integration FAIL-before/PASS-after
-  remains unverified**. Logs: `/tmp/be-875-case3-int-before.log`,
-  `/tmp/be-875-integration-final.log`.
+## GoGo-BE#876 fix round — uncommitted delta on `5bc9b466`
 
-Final checks for this continuation:
+- **F-01:** Both pending and stale-pending recovery name lookups now dispatch on
+  resolver `fresh.kind`. Exact counts 1/2/3 answer or choose despite fuzzy overflow;
+  counts 4/8 narrow with no cards. Regression cells cover both paths and preserve
+  the original topic/question for referent replies and overview for recovered names.
+- **F-02:** General Vietnamese topic/suffix grammar no longer treats bare
+  `bao nhiêu` as a price question. Classifier/admission and S2 span extraction
+  enable `[là] bao nhiêu` only with a `giá vé` head. Name-collision regressions
+  cover bare and information-prefixed `Bao Nhiêu` names, `Vé` name tokens,
+  ticket-question alternate readings and service overview answers.
+- **F-03:** This record now distinguishes committed-head DEV execution from
+  the current uncommitted fix. Live DEV acceptance remains pending.
 
-| Command                                                                                           | Exit  | Result                                                                                                                                                            |
-| ------------------------------------------------------------------------------------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pnpm typecheck`                                                                                  | **0** | All eight packages pass; `/tmp/be-875-typecheck-final.log`.                                                                                                       |
-| `pnpm exec vitest run --project unit --maxWorkers=2`                                              | **1** | 343 files / 4953 tests pass, one skipped; only `apps/api/src/sentry-request.spec.ts` cannot bind `127.0.0.1` (`listen EPERM`). `/tmp/be-875-unit-full-final.log`. |
-| Focused final unit (QA domain, service, request shape, grounding, search application and QA read) | **0** | 14 files / 737 tests pass; `/tmp/be-875-focused-final.log`.                                                                                                       |
-| `pnpm exec eslint .`                                                                              | **0** | Whole repository; `/tmp/be-875-eslint.log`.                                                                                                                       |
-| `pnpm exec prettier --check .`                                                                    | **0** | Whole repository; `/tmp/be-875-prettier.log`.                                                                                                                     |
-| `pnpm api:check`                                                                                  | **0** | Generated declarations match; `/tmp/be-875-api-check.log`.                                                                                                        |
-| `git diff --check`                                                                                | **0** | No whitespace errors.                                                                                                                                             |
+Regression command:
 
-The initial continuation typecheck exited **2** because the new integration
-assertion accessed an untyped trace property. The assertion now uses the same
-object matching as the surrounding tests; the final typecheck above passes.
-No test expectation or gate was suppressed to bypass an environment failure.
-Changes remain uncommitted; existing cases 1/2/4 edits are preserved. Runtime
-integration and live DEV chat acceptance remain outstanding.
+```sh
+pnpm exec vitest run --project unit \
+  libs/modules/assistant/application/place-qa.service.spec.ts \
+  libs/modules/assistant/domain/place-qa/classifier.spec.ts \
+  libs/modules/assistant/domain/place-qa/resolution.spec.ts -t 'GoGo-BE#876'
+```
 
-The full unit suite was repeated after the final production edits: the same
-343 files / 4953 tests pass, with only the socket-denied Sentry suite blocked
-(exit **1**). The local PostgreSQL fallback also has no server listening on
-`/tmp/.s.PGSQL.5432`. Final integration assertion ordering was linted again
-(exit **0**); formatting and `git diff --check` remain clean.
+- FAIL-before: restored the four affected production files from `5bc9b466` while
+  retaining the final regression tests. Exit **1**, **20 failed / 9 passed /
+  431 skipped**: 10 F-01 failures and 10 F-02 failures.
+  Log: `/tmp/be-876-before-final.log`.
+- All four production files were restored byte-for-byte in `finally`.
+- PASS-after: the same three specs without the title filter exited **0**,
+  **460 passed**. Log: `/tmp/be-876-focused.log`.
+
+Final checks for this delta:
+
+| Command                                              | Exit  | Result / log                                                                                                                                                                                 |
+| ---------------------------------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm typecheck`                                     | **0** | All 8 packages; `/tmp/be-876-typecheck.log`                                                                                                                                                  |
+| `pnpm exec vitest run --project unit --maxWorkers=2` | **1** | 343 files / 4982 tests pass, 1 test skipped. Only `apps/api/src/sentry-request.spec.ts` is BLOCKED by sandbox `listen EPERM: operation not permitted 127.0.0.1`; `/tmp/be-876-unit-full.log` |
+| `pnpm exec eslint .`                                 | **0** | Whole repository; `/tmp/be-876-eslint.log`                                                                                                                                                   |
+| `pnpm exec prettier --check .`                       | **0** | Whole repository; `/tmp/be-876-prettier.log`                                                                                                                                                 |
+| `pnpm api:check`                                     | **0** | Generated declarations match; `/tmp/be-876-api-check.log`                                                                                                                                    |
+| `git diff --check`                                   | **0** | No whitespace errors                                                                                                                                                                         |
+
+Integration/build were not rerun for this uncommitted delta; the committed-head
+DEV evidence above remains scoped to `5bc9b466`. No gate or expectation was
+suppressed to bypass the socket failure. S3 Layer A files remain untouched.
+No commit, deployment, flag change or external write was made. DEV acceptance
+is still **pending**.

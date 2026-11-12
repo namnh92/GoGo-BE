@@ -39,10 +39,20 @@ const folded = (text: string) =>
   normalizeVietnamese(text)
     .replace(/[?!.,;]+$/u, '')
     .trim();
+/** Bare “bao nhiêu” is a name token unless a ticket-price head supplies the question. */
+function lexiconFor(text: string, locale: 'vi' | 'en') {
+  if (locale === 'en') return en;
+  if (!/^gia ve /u.test(text)) return vi;
+  return {
+    ...vi,
+    suffix: `(?:${vi.suffix}| (?:la )?bao nhieu$)`,
+    topics: { ...vi.topics, price: `${vi.topics.price}|(?:la )?bao nhieu` },
+  };
+}
 export function isNewNonQaRequest(text: string): boolean {
   const t = folded(text);
   if (isTypedConfirm(text)) return false;
-  return [vi, en].some((l) => {
+  return [lexiconFor(t, 'vi'), en].some((l) => {
     if (test(l.guard, t) || test(l.category, t)) return true;
     const recommendation = new RegExp(l.recommend, 'u').exec(t);
     if (!recommendation) return false;
@@ -105,7 +115,7 @@ export class PlaceQaClassifier {
   ): QaClassification {
     const t = folded(text);
     if (!t || /[\uE000\uE001]/u.test(text) || isNewNonQaRequest(text)) return { kind: 'not_qa' };
-    const lex = qaView.locale === 'en' ? en : vi;
+    const lex = lexiconFor(t, qaView.locale);
     const prefix = new RegExp(lex.prefix, 'u').exec(t);
     const suffix = lastQuestionClause(
       lex.suffix,

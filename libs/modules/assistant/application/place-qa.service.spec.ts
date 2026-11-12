@@ -1355,3 +1355,76 @@ describe('GoGo-BE#875 question to resolved group', () => {
     expect(result.view.cards.map((card) => card.placeId)).toEqual([FIXTURE_A]);
   });
 });
+
+describe('GoGo-BE#876 continuation exact precedence', () => {
+  for (const mode of ['pending', 'recovery'] as const) {
+    it.each([1, 2, 3, 4, 8])(
+      `${mode}: %i exact candidates win over fuzzy overflow`,
+      async (count) => {
+        vi.spyOn(Date, 'now').mockReturnValue(now);
+        const c = qaConversation();
+        const first = await c.send(mode === 'pending' ? 'Giờ mở cửa' : 'Song Ngọc ở đâu?', (f) =>
+          f.search.resolvePlaceName.mockResolvedValue(exact(FIXTURE_A)),
+        );
+        expect(first.qa).toMatchObject({
+          outcome: mode === 'pending' ? 'clarify_referent' : 'answer',
+        });
+        const ids = Array.from(
+          { length: count },
+          (_, i) => `87600000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+        );
+        for (const id of ids) c.places.set(id, fictionalPlace(id, 'Rạp Sao Mộc'));
+        const result = await c.send('Rạp Sao Mộc', (f) =>
+          f.search.resolvePlaceName.mockResolvedValue(
+            resolvePlaceNameOutcome({
+              candidates: [
+                ...ids.map((id) => ({ id, exact: true, score: 1 })),
+                ...Array.from({ length: 9 }, (_, i) => ({
+                  id: `fuzzy-${i}`,
+                  exact: false,
+                  score: 0.6,
+                })),
+              ],
+              overflow: count <= 3,
+              areaMismatch: false,
+            }),
+          ),
+        );
+        const outcome = count === 1 ? 'answer' : count <= 3 ? 'choice' : 'narrow';
+        expect(result.qa).toMatchObject({
+          outcome,
+          topic: mode === 'pending' ? 'hours' : 'overview',
+        });
+        expect(result.f.state.trace.placeQa).toMatchObject({
+          row: count === 1 ? 3 : count <= 3 ? 4 : 2,
+        });
+        expect(result.view.cards.map((card) => card.placeId)).toEqual(count <= 3 ? ids : []);
+        if (count > 1)
+          expect(result.qa!.pending).toMatchObject({
+            kind: outcome,
+            questionMessageId: mode === 'pending' ? first.userId : result.userId,
+          });
+        if (count <= 3 && count > 1) expect(result.qa!.pending!.slots[0].candidateIds).toEqual(ids);
+      },
+    );
+  }
+});
+
+describe('GoGo-BE#876 bare venue-name answers', () => {
+  it.each(['Rạp Bao Nhiêu', 'Rạp Là Bao Nhiêu', 'Rạp Vé Bao Nhiêu', 'Rạp Vé'])(
+    '%s uses whole-name equality and overview',
+    async (name) => {
+      vi.spyOn(Date, 'now').mockReturnValue(now);
+      const c = qaConversation();
+      c.places.set(FIXTURE_A, fictionalPlace(FIXTURE_A, name));
+      const result = await c.send(name, (f) =>
+        f.search.resolvePlaceName.mockImplementation(async (span) => {
+          expect(span).toBe(name);
+          return exact(FIXTURE_A);
+        }),
+      );
+      expect(result.qa).toMatchObject({ outcome: 'answer', topic: 'overview' });
+      expect(result.view.cards.map((card) => card.placeId)).toEqual([FIXTURE_A]);
+    },
+  );
+});

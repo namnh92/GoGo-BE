@@ -185,7 +185,7 @@ export function extractPlaceNameSpan(
   // inside the span. Negation belongs to that clause, never to the name. The
   // có / không có particle is matched ONCE, so "Quán Có có wifi không?" keeps Có.
   const suffix =
-    /\s+(?:(?:co|khong co)\s+)?(?:mo cua(?: may gio| luc nao| khong)?|dong cua(?: may gio)?|gia bao nhieu|(?:la )?bao nhieu|o dau|dia chi la gi|(?:cho dau xe|wifi)(?: khong)?|danh gia the nao|may sao|so dien thoai la gi|opening hours|price|address|rating)\s*$/;
+    /\s+(?:(?:co|khong co)\s+)?(?:mo cua(?: may gio| luc nao| khong)?|dong cua(?: may gio)?|gia bao nhieu|o dau|dia chi la gi|(?:cho dau xe|wifi)(?: khong)?|danh gia the nao|may sao|so dien thoai la gi|opening hours|price|address|rating)\s*$/;
   // The same words with no question grammar around them may equally be the end
   // of a venue name (Cafe Wifi, Sunset Address).
   const bareNoun = /^(?:cho dau xe|wifi|opening hours|price|address|rating)$/;
@@ -198,7 +198,11 @@ export function extractPlaceNameSpan(
     if (clause) return;
     const usable = tokens.filter((t) => t.start >= start && t.end <= end);
     const tail = usable.map((t) => t.grammar).join(' ');
-    const match = suffix.exec(tail);
+    const match =
+      suffix.exec(tail) ??
+      (leading && /^gia ve(?: |$)/u.test(leading[0])
+        ? /\s+(?:la )?bao nhieu\s*$/u.exec(tail)
+        : null);
     if (!match) return;
     if (bareNoun.test(match[0].trim())) {
       // A stripped leading topic already supplies the question, so the noun

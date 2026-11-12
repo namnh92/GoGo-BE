@@ -4,11 +4,11 @@
   "category": "^(?:(?:quan |cho |mot |vai )?(?:ca phe|cafe|nha hang|bar|an uong|an toi|di choi))(?: (?:lang man|yen tinh|gan day|o .+|tai .+|cho .+|chill|gia re|ngon|moi))*[?.!]*$",
   "deictic": "^(?:quan|cho|dia diem)(?: nay| do| ay)?$",
   "prefix": "^(?:(?:cho (?:minh|toi) biet|thong tin phu hop|thong tin|gio mo cua|gio dong cua|dia chi|so dien thoai|danh gia|gia(?: ve)?|cho dau xe|wifi|menu|chi duong)(?: cua| ve| den)?|ve) ",
-  "suffix": " (?:(?:hom nay|ngay mai|thu [2-7]|chu nhat|cn) )?(?:(?:co|khong co) )?(?:mo cua.*|dong cua.*|gia bao nhieu|gia the nao|(?:la )?bao nhieu|o dau|dia chi.*|di duong nao|bao xa|(?:cho |bai )?(?:dau|do|gui) xe.*|wifi.*|hop hen ho.*|phu hop.*|di nhom.*|danh gia.*|may sao|so dien thoai.*|menu.*|thuc don.*|khuyen mai.*|con ban.*|dong khong|thong tin.*|co .+ khong)$",
+  "suffix": " (?:(?:hom nay|ngay mai|thu [2-7]|chu nhat|cn) )?(?:(?:co|khong co) )?(?:mo cua.*|dong cua.*|gia bao nhieu|gia the nao|o dau|dia chi.*|di duong nao|bao xa|(?:cho |bai )?(?:dau|do|gui) xe.*|wifi.*|hop hen ho.*|phu hop.*|di nhom.*|danh gia.*|may sao|so dien thoai.*|menu.*|thuc don.*|khuyen mai.*|con ban.*|dong khong|thong tin.*|co .+ khong)$",
   "compare": "(?:^so sanh |(?: voi | versus | vs ).*(?:quan nao|re hon|dat hon|tot hon|so sanh)|(?: va ).*(?:quan nao re hon|quan nao dat hon))",
   "topics": {
     "hours": "gio mo cua|mo cua|dong cua",
-    "price": "(?:la )?bao nhieu|gia bao nhieu|gia the nao|^gia(?: cua| ve)?|(?:^| )gia(?:\\?|$)|re hon|dat hon",
+    "price": "gia bao nhieu|gia the nao|^gia(?: cua| ve)?|(?:^| )gia(?:\\?|$)|re hon|dat hon",
     "address": "dia chi|o dau",
     "directions": "di duong nao|chi duong|bao xa",
     "parking": "(?:cho |bai )?(?:dau|do|gui) xe",
