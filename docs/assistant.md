@@ -767,9 +767,10 @@ records the server's question association; the QA producer durably marks
 and stop/reaper retain this association. No QA text, chip, token or trace enters
 recommendation episode construction or model requests.
 
-An equality-only name probe is fenced before lookup. A complete probe with no
-whole canonical match restores the ordinary path before emitting a frame; a
-lost turn cannot proceed to a model. Fuzzy name-only matches do not claim a QA
+An equality-only name probe has a provisional INSERT-time association, not a
+QA route. Exact canonical qualification establishes QA; an interrupted or
+unqualified probe without prior QA context retains ordinary history. Terminal
+uncertain probes are excluded from recommendation history and episode reads. Fuzzy name-only matches do not claim a QA
 answer. Factual unresolved names always remain QA and never borrow the opened
 context place. Explicit context-place referents work; previous-card and ordinal
 card referents remain S4.
@@ -781,7 +782,11 @@ retries, or earlier when superseded, inaccessible or incompatible. Send
 `replyToMessageId` and `followUpOptionId` together or omit both (`400` for an
 unpaired field). Only a matching option on the latest accessible QA message
 selects a place. Typed ordinals/names ask for explicit confirmation; a confirmed
-name or valid source-bound selection rechecks current availability/eligibility.
+name + current commune/province label or valid source-bound selection rechecks
+current availability/eligibility. The text-only chip is `Xác nhận <name> · <area>`
+without a code. A bare name/ordinal re-asks; identical labels across branches,
+incomplete candidate retrieval, missing area or identity over 200 characters
+never authorize an answer. Identity text is rendered, never persisted.
 Ambiguous replies receive one retry, then a restatement request. Current-area
 refinement reruns the complete original name query. Old districts require
 explicit branch confirmation; successor mapping is not implemented in S3.
@@ -789,8 +794,24 @@ explicit branch confirmation; successor mapping is not implemented in S3.
 S3 emits no `place_topic` chips. Comparisons are recognized and consume a QA
 turn with neutral “chưa hỗ trợ” copy, with zero model calls. Full compare,
 previous-card references, topic chips/client consumers (S4), and curated aliases
-(S5) remain pending. The reader compatibility floor remains S1 after emission;
-rollback disables the flag and retains readers, filtering and control handling.
+(S5) remain pending. S3 raises the deployment floor to marker-aware history,
+episode readers and recovery. Pause sends and drain old runners; deploy and
+verify that floor on every API/runner/reaper/recommendation instance before
+resuming sends. `0dd18c5e` is below the floor: its history predicate leaks a
+terminal `qaProbe` left by a newer writer. A mixed rollout with those readers is
+prohibited. Rollback disables the flag and retains the marker-aware floor;
+flag off alone does not permit an old binary because admission still writes
+probes. Returning below the floor requires a separate migration and owner order.
+
+Unequivocal new recommendation/action/guide/category requests bypass all QA
+reads, including the flag, in both flag states. Structured controls still take
+precedence. Fresh explicit factual questions skip latest-pending reads; flag
+disabled or a flag read error/1.5-second timeout takes the ordinary path.
+An observed disabled value is retained for terminal recovery. The first-text
+cleanup has one 1.5-second budget including flag, pool wait, UPDATE and commit;
+Stop/ceiling cancels it. Failed settlement keeps an uncertain probe, not a QA
+route. SQL statement timeout and connection destruction prevent abandoned work
+from committing later. See the [Astra S3 amendment](plans/sa-shape-be-844-ai-place-qa.rev3-amend-s3.astra.md).
 
 Telemetry uses closed class/topic/outcome/tier/row labels. Trace retains
 semantic/config versions and references, never names, text or fact snapshots.

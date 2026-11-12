@@ -425,3 +425,116 @@ this round.
   marker and that pair stays out of recommendation history even when it was an
   ordinary bare reply. Over-exclusion only, never a leak; DEV is one instance.
   No migration; rollback is the previous build.
+
+## Astra fix round (2026-11-12, owner-authorized shape amendment + implementation)
+
+BASIS: clean `00f691f14630f3bafebf5c151017a9a4009a5514`; all four DEV/SA
+review rounds, rev3, this document's Fable rounds, owner decisions 2026-11-11/12.
+No commit, push, merge, deploy, GitHub write or flag enablement. S3 stays dark.
+
+The normative amendment is
+[sa-shape-be-844-ai-place-qa.rev3-amend-s3.astra.md](sa-shape-be-844-ai-place-qa.rev3-amend-s3.astra.md).
+It was written before implementation. The requested parent-workspace destination
+`dev/handoffs/sa-shape-be-844-ai-place-qa.rev3-amend-s3.astra.md` is outside this
+session's writable roots, so this worktree copy is the deliverable awaiting
+placement there. No attempt was made to bypass that filesystem restriction.
+The later amendment supersedes the conflicting Fable residuals above; their
+historical evidence is not relabeled as current.
+
+### Decisions, implementation and per-finding proof
+
+| Round-4 finding          | Amendment and implementation                                                                                                                                                                                                                                                                                                                                                                           | Regression proof / DEV cell                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| DEV F-01 P1              | Protect the grammatical name span before interior recommendation matches; actual imperative heads and outside command clauses still win. `qaProbeOf` uses the same rule.                                                                                                                                                                                                                               | A1 classifier: Vietnamese name-prefix/suffix examples, English name with `Suggest and Find`, action-word preservation and external-command negatives. Four intended symptom failures on base; all nine cells pass after. Public A1 cells (two names) await DEV.                                                                                                                                                                                                                                                                 |
+| DEV F-02 P1              | Remove FNV/modulo codes. Render full name + area, validate against the latest singleton and a complete canonical-name family, re-ask on duplicate/overflow/missing/oversized identity. Bare names/ordinals only re-confirm. Recognize stale full/legacy confirmation text as control; never send it to a model.                                                                                        | A2 copy, duplicate-label and concrete collision regressions fail before/pass after. Old `(0000018d-0000-4000-8000-00000000000b, FIXTURE_A)` and latest `(000009f8-0000-4000-8000-00000000000b, FIXTURE_B)` both produce **574568** on base: A's chip incorrectly answers B. After: retry, no answer. Additional unit coverage: other-area stale text, missing/long labels, stale source, and command words inside names. DEV: existing old-client/legacy-district/structured cells, with identical labels now requiring re-ask. |
+| DEV F-03 P2 + SA F-04 P2 | Explicit new ordinary commands bypass flag/latest/source/catalogue/taxonomy reads in both states. Fresh factual questions skip latest; disabled flag takes the ordinary path. Structured/full typed control precedence is retained.                                                                                                                                                                    | A3: four failed-dependency bypass cells plus two fresh-question flag states fail before/pass after. Request-shape equality and all 156 intent preservation cases pass in the full unit run; vi-065 remains QA only while enabled. Public A3 flag-off/on cells await DEV.                                                                                                                                                                                                                                                        |
+| SA F-01 P1               | Raise deployment/rollback floor to marker-aware readers/recovery. Pause sends, drain old instances, deploy/verify the floor everywhere, then resume. No pre-floor mixed deployment or previous-build rollback, even with flag off. Updated runbook and ADR-0055.                                                                                                                                       | **A4 integration NOT RUN.** New admission → legacy-style finalization → old predicate demonstrably includes the question, whereas floor history/episode readers and following model requests exclude it. This is a deployment-policy correction: no claim that the already marker-aware `00f691f1` predicate newly fails. DEV must execute A4 and provide instance/floor evidence; an old-reader combination remains prohibited, not made safe by this code.                                                                    |
+| SA F-02 P2               | One absolute 1.5-second cleanup budget includes flag, pool, UPDATE and commit; unknown recovery flag gets at most half the budget so settlement has time left. Stop/ceiling propagates abort. Reuse the bounded DB transaction/connection-destruction mechanism, preserving read-only behavior for S1/S2 callers. On interruption retain provisional exclusion, never set a QA route from uncertainty. | A5 stalled UPDATE, both flag states: pending forever on base, bounded rejection after. Supplementary unit cases cover Stop/ceiling signals, late completion, uncertain terminal options, pool wait and no late commit. DEV A5: four flag × Stop/ceiling cells and actual row-lock timeout/cancellation.                                                                                                                                                                                                                         |
+| SA F-03 P2               | Unknown/rejected/timed-out flag means disabled, not enabled; latch that decision through producer failure/Stop/deadline. Recovery samples only without a producer observation. No QA await before funding.                                                                                                                                                                                             | A6 producer rejection and recovery rejection fail before/pass after. Additional units cover 1.5-second stall, late true, observed false, runner failure, and orphan recovery. DEV A6: failed flag during crash/reaper; existing stalled-flag Stop cells now require ordinary history.                                                                                                                                                                                                                                           |
+
+The existing first-text guard was moved unchanged to `first-text-guard.ts`
+and re-exported from the orchestrator, avoiding a service/orchestrator runtime
+import cycle when QA and terminal recovery reuse it. No admission statement,
+funding policy, fact eligibility rule, resolver threshold, wire field, contract
+version or model request shape changed. Contract remains `10.2.0-alpha.1`.
+
+Changed old expectations are intentional and limited to the amendment: coded
+confirm copy and bare-name confirmation, identical-label ambiguity, stale text
+for the same uniquely identified branch, disabled default on flag errors, and
+QA reads that the new fast path no longer invokes. The per-turn service fixture
+now gives each turn its own deadline (its prior constant deadline expired when
+TTL tests advanced the clock); source/topic/expiry assertions remain intact.
+Only the fence spec's local setup/expectations changed, never Layer A data.
+
+### Identical regression specs on base and fixed production
+
+Command: `pnpm -s vitest run --project unit
+libs/modules/assistant/domain/place-qa/classifier.spec.ts
+libs/modules/assistant/application/place-qa.service.spec.ts
+-t 'Astra A1|Astra amendment regressions'`.
+
+The final specs were retained unchanged while each modified tracked production
+TypeScript file was temporarily restored from `git show 00f691f1:<path>`.
+A `finally` block restored every saved worktree byte before the after run; no
+checkout/index/commit was changed. Manifest checks both restoration and identical
+test hashes. New extracted guard files are unused by the original production.
+
+- Base: **17 failed / 5 passed**, exit **1**, at behavioral assertions (not setup/import errors).
+- Fixed: **22 passed**, exit **0**. Five base passes are preservation controls.
+- Before/after logs: `/private/tmp/be873-astra-final-before.log`, `/private/tmp/be873-astra-final-after.log`.
+- Manifest: `/private/tmp/be873-astra-regression-manifest.json`.
+- Supplementary lifecycle/reader/runner units pass in the full run below; they are not relabeled as this 22-cell fail-before comparison.
+
+### Gates on the final worktree
+
+| Command                                                                        | Exit | Actual result / log                                                                                                                                                                                                              |
+| ------------------------------------------------------------------------------ | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm -s typecheck`                                                            | 0    | All 8 packages pass. Shared-cache write warnings from the sandbox only. `/private/tmp/be873-astra-typecheck.log`                                                                                                                 |
+| `pnpm -s vitest run --project unit`                                            | 1    | **4,920 passed, 1 skipped; 342 suites passed.** `apps/api/src/sentry-request.spec.ts` cannot set up its listener: `listen EPERM 127.0.0.1`. Environment-blocked suite, not a green full run. `/private/tmp/be873-astra-unit.log` |
+| ESLint on all touched TypeScript                                               | 0    | `/private/tmp/be873-astra-eslint.log`                                                                                                                                                                                            |
+| Prettier on all touched TypeScript/Markdown                                    | 0    | `/private/tmp/be873-astra-prettier.log`; appendix checked after insertion                                                                                                                                                        |
+| `pnpm -s api:check`                                                            | 0    | Generated declarations match. `/private/tmp/be873-astra-api-check.log`                                                                                                                                                           |
+| `git diff --check`                                                             | 0    | No whitespace errors                                                                                                                                                                                                             |
+| `vitest list --project integration ...assistant-place-qa-s3-fence.int.spec.ts` | 0    | **37 cells collected**, not executed. `/private/tmp/be873-astra-integration-cells.log`                                                                                                                                           |
+| `docker info`                                                                  | 1    | Permission denied at `/Users/maxnguyen/.docker/run/docker.sock`. `/private/tmp/be873-astra-docker.log`                                                                                                                           |
+
+Protected SHA-256 values match `00f691f1` byte for byte:
+
+- Layer A spec: `9c504fcd4f14502e84dd24b6a4a41bb9ce04d3ea12ac1f08be41dde96d59f5a3`.
+- QA cases: `c8a3d1005830e8df53e46be7964f72fdea0e6c4b8d400a23038728a588cbb39f`.
+- QA fixtures: `789eee8cd81519e179b22499ef28908fa142edf7eae0f89b1f3dff87aa4fb634`.
+- Intent cases: `48c1cc3317309907d43235f6f5425252d8eca83cca1799fd3b562204217ba6a6`.
+
+### DEV handoff and NOT RUN
+
+Run on this dirty source snapshot (bind a source manifest), or the later commit
+that includes it, then repeat the existing hash-bound Layer A base/head procedure:
+
+```sh
+pnpm -s vitest run --project integration --no-file-parallelism \
+  apps/api/test/assistant-place-qa-s3-fence.int.spec.ts \
+  apps/api/test/assistant-place-qa-s3.int.spec.ts \
+  apps/api/test/assistant-place-answer.int.spec.ts \
+  apps/api/test/assistant.int.spec.ts \
+  apps/api/test/assistant-credit-settlement.int.spec.ts \
+  apps/api/test/assistant-credit-spend-admission.int.spec.ts \
+  apps/api/test/assistant-credit-spend-migration.int.spec.ts
+```
+
+Every fence cell must pass; prioritize A4 (unsafe old-reader predicate versus
+supported floor), A5 (actual row lock and flag × Stop/ceiling), A1 public routing,
+A3 failure-path bypass, A6 orphan recovery, and text-only confirmation including
+duplicate labels. The prior 417/417 Layer A evidence is historical, not acceptance
+of this worktree. Unit preservation/request equality is green; rendered/public
+preservation on this source snapshot remains NOT RUN.
+
+NOT RUN: all Docker integration execution, new Layer A base/head reports,
+Redis/live-provider suites, remote CI, deployed-instance reader-floor inventory,
+DEV/simulator acceptance, S4/S5 acceptance, deployment or flag changes. No external
+agent or provider was started. Source manifest and diff digest:
+`/private/tmp/be873-astra-source-manifest.json`.
+
+Open questions: none requiring a new owner product decision. Outstanding work is
+DEV integration/release-floor evidence and independent review, plus placing the
+amendment at its requested parent-workspace handoff path. This report is not a
+clean review verdict, merge instruction or DEV acceptance.

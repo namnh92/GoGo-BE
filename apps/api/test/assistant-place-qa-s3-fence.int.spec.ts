@@ -1,3 +1,4 @@
+import { APP_CONFIG } from '../../../libs/modules/shared/config';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
@@ -469,10 +470,10 @@ describe('Round 2 — Sol F-02 / Astra F-01: the send-commit → fence crash win
 
 describe('Round 2 — Sol F-04 / Astra F-04: QA reads stay inside deadline and cancellation', () => {
   it.each([
-    ['flag off', 'recommendation', 'placeQaEnabled'],
+    ['flag off', 'QA question', 'placeQaEnabled'],
     ['flag on', 'QA question', 'placeQaEnabled'],
-    ['flag off', 'recommendation', 'latestAssistant'],
-    ['flag on', 'QA question', 'latestAssistant'],
+    ['flag off', 'bare reply', 'latestAssistant'],
+    ['flag on', 'bare reply', 'latestAssistant'],
   ] as const)('%s, %s: a stalled %s read cannot hold a Stop', async (state, what, read) => {
     await qaFlag(state === 'flag on');
     const c = await conversation();
@@ -500,7 +501,7 @@ describe('Round 2 — Sol F-04 / Astra F-04: QA reads stay inside deadline and c
             .spyOn(repo, 'latestAssistant')
             .mockImplementationOnce((...a) => stall(() => realLatest(...a)));
     try {
-      const sent = await send(c, what === 'QA question' ? QUESTION : RECOMMEND);
+      const sent = await send(c, what === 'QA question' ? QUESTION : 'Cầu Giấy');
       await until(() => entered);
       const startedAt = Date.now();
       const stopped = await f.inject({
@@ -513,8 +514,8 @@ describe('Round 2 — Sol F-04 / Astra F-04: QA reads stay inside deadline and c
       const stored = await repo.findMessageById(sent.id);
       expect.soft(stored?.status).toBe('stopped');
       expect.soft(Date.now() - startedAt).toBeLessThan(4_000);
-      if (what === 'QA question') expect.soft(stored?.trace).toMatchObject({ route: 'place_qa' });
-      else {
+      // Cancellation before the first flag decision defaults disabled.
+      {
         expect.soft(stored?.trace?.route).toBeUndefined();
         expect.soft(stored?.trace).not.toHaveProperty('qaProbe');
       }
@@ -530,7 +531,7 @@ describe('Round 2 — Sol F-04 / Astra F-04: QA reads stay inside deadline and c
 
 describe('Round 2 — first-text deadline with the QA decision still open', () => {
   it.each([
-    ['flag on', 'QA question', 'placeQaEnabled', 'qa'],
+    ['flag on', 'QA question', 'placeQaEnabled', 'ordinary'],
     ['flag on', 'typed reply to the latest QA turn', 'latestAssistant', 'qa'],
     ['flag off', 'bare reply', 'placeQaEnabled', 'ordinary'],
     ['flag on', 'bare reply', 'latestAssistant', 'ordinary'],
@@ -588,9 +589,11 @@ describe('Round 2 — first-text deadline with the QA decision still open', () =
           expect(seen).toEqual(clean);
         } else {
           // The ordinary deterministic timeout reply, exactly as before S3.
-          expect.soft(stored?.status).toBe('fallback');
           expect.soft(stored?.trace?.route).not.toBe('place_qa');
-          expect.soft(stored?.notice).toMatchObject({ kind: 'fallback', reason: 'timeout' });
+          if (read === 'latestAssistant') {
+            expect.soft(stored?.status).toBe('fallback');
+            expect.soft(stored?.notice).toMatchObject({ kind: 'fallback', reason: 'timeout' });
+          } else expect(stored?.status).not.toBe('failed');
           const next = await turn(c, RECOMMEND);
           expect((await repo.history(c.id, next.id, 50)).map((m) => m.id)).toContain(sent.userId);
         }
@@ -604,7 +607,7 @@ describe('Round 2 — first-text deadline with the QA decision still open', () =
 });
 
 describe('Round 2 — terminal recovery is bounded and never promotes an ordinary turn', () => {
-  it('a QA flag read that never returns cannot hold a Stop; the question fails closed (fenced)', async () => {
+  it('a QA flag read that never returns cannot hold a Stop; unknown defaults disabled', async () => {
     await qaFlag(true);
     const c = await conversation();
     const repo = f.app.get(AssistantRepository);
@@ -628,7 +631,8 @@ describe('Round 2 — terminal recovery is bounded and never promotes an ordinar
       expect(Date.now() - startedAt).toBeLessThan(4_000);
       const stored = await repo.findMessageById(sent.id);
       expect(stored?.status).toBe('stopped');
-      expect(stored?.trace).toMatchObject({ route: 'place_qa', questionMessageId: sent.userId });
+      expect(stored?.trace).toMatchObject({ questionMessageId: sent.userId });
+      expect(stored?.trace?.route).toBeUndefined();
       expect(stored?.trace).not.toHaveProperty('qaProbe');
       await until(() => !runner.isRunningHere(sent.id));
     } finally {
@@ -675,7 +679,14 @@ describe('Sol F-02: an old client types the emitted option text', () => {
     expect(confirm.message.followUps[0].field).toBe('place_confirm');
     expect(confirm.qa).toMatchObject({ outcome: 'confirm', topic: 'price' });
     expect(confirm.qa!.candidateIds).toHaveLength(1);
-    const answered = await turn(c, confirm.message.followUps[0].options[0].text);
+    const ambiguous = await turn(c, confirm.message.followUps[0].options[0].text);
+    expect(ambiguous.qa?.outcome).not.toBe('answer');
+    // Restore a fresh source-bound choice for structured clients.
+    const fresh = await turn(c, 'Song Ngọc giá bao nhiêu?');
+    const answered = await turn(c, '1', {
+      replyToMessageId: fresh.id,
+      followUpOptionId: fresh.message.followUps[0].options[0].id,
+    });
     expect(answered.qa).toMatchObject({
       outcome: 'answer',
       topic: 'price',
@@ -704,8 +715,9 @@ describe('Sol F-02: an old client types the emitted option text', () => {
     const emitted = stale.message.followUps[0].options[0].text as string;
     expect(emitted).toContain('Song Ngọc');
     expect(emitted).not.toMatch(/^\d+$/);
-    const answered = await turn(c, emitted);
-    expect(answered.qa).toMatchObject({ outcome: 'answer', candidateIds: [b] });
+    const ambiguous = await turn(c, emitted);
+    expect(ambiguous.qa?.outcome).not.toBe('answer');
+    expect(ambiguous.text).not.toContain('VND');
     expect(capture).toEqual({ jev: [], haiku: [] });
   });
   it('legacy-district confirm (§4.4) → emitted text → answer', async () => {
@@ -761,4 +773,181 @@ describe('Astra F-01: referent → name → choice/none → area keeps the name 
       expect(capture).toEqual({ jev: [], haiku: [] });
     },
   );
+});
+
+describe('Astra amendment — public/SQL release cells', () => {
+  it.each(['Cafe Gợi Ý Quán Ngon', 'Nhà hàng Tìm Quán Cafe'])(
+    'A1 initial question for %s never calls a model',
+    async (name) => {
+      const [place] = await f.db
+        .insert(schema.places)
+        .values({
+          name,
+          nameNormalized: 'trigger',
+          status: 'published',
+          geom: { x: 105.79, y: 21.03 },
+        })
+        .returning();
+      try {
+        const c = await conversation();
+        resetCapture();
+        const asked = await turn(c, `${name} giá bao nhiêu?`);
+        expect(asked.stored?.trace?.route).toBe('place_qa');
+        expect(asked.qa?.candidateIds).toEqual([place!.id]);
+        expect(capture).toEqual({ jev: [], haiku: [] });
+      } finally {
+        await f.db.execute(sql`delete from places where id=${place!.id}`);
+      }
+    },
+  );
+  it.each([false, true])(
+    'A3 ordinary traffic skips rejected/stalled QA reads, flag %s',
+    async (enabled) => {
+      await qaFlag(enabled);
+      const c = await conversation();
+      const availability = f.app.get(AssistantAvailabilityService);
+      const repo = f.app.get(AssistantRepository);
+      const flag = vi
+        .spyOn(availability, 'placeQaEnabled')
+        .mockRejectedValue(new Error('fixture unavailable'));
+      const latest = vi
+        .spyOn(repo, 'latestAssistant')
+        .mockImplementation(() => new Promise(() => {}));
+      try {
+        const ordinary = await turn(c, RECOMMEND);
+        expect(ordinary.stored?.status).toBe('complete');
+        expect(ordinary.stored?.trace?.route).not.toBe('place_qa');
+        expect(flag).not.toHaveBeenCalled();
+        expect(latest).not.toHaveBeenCalled();
+      } finally {
+        flag.mockRestore();
+        latest.mockRestore();
+        await qaFlag(true);
+      }
+    },
+  );
+  it('A4 new admission → legacy finalization requires marker-aware readers (pre-floor predicate leaks)', async () => {
+    const c = await conversation();
+    const repo = f.app.get(AssistantRepository);
+    const start = vi
+      .spyOn(f.app.get(AssistantTurnRunner), 'start')
+      .mockImplementationOnce(() => undefined);
+    let sent: Awaited<ReturnType<typeof send>>;
+    try {
+      sent = await send(c, QUESTION);
+    } finally {
+      start.mockRestore();
+    }
+    expect((await repo.findMessageById(sent.id))?.trace?.qaProbe).toBe('question');
+    // Legacy terminal-write semantics: merge trace, no probe interpretation.
+    await f.db.execute(
+      sql`update assistant_messages set status='failed', completed_at=now(), lease_owner=null, lease_expires_at=null, trace=trace || '{"orphaned":true}'::jsonb where id=${sent.id}`,
+    );
+    await repo.closeLedgerForMessage(sent.id);
+    const legacy = await f.db.execute(
+      sql`select u.id from assistant_messages u where u.id=${sent.userId} and not exists(select 1 from assistant_messages qa where qa.conversation_id=u.conversation_id and qa.trace->>'route'='place_qa' and qa.trace->>'questionMessageId'=u.id::text)`,
+    );
+    expect(legacy.rows.map((r) => r.id)).toContain(sent.userId);
+    const { next, expected, seen } = await followingRecommendation(c);
+    expect((await repo.history(c.id, next.id, 50)).map((r) => r.id)).not.toContain(sent.userId);
+    expect(await repo.episodeMessages(c.id, [sent.userId])).toEqual([]);
+    expect(seen).toEqual(expected);
+  });
+  it.each([
+    [false, 'Stop'],
+    [true, 'Stop'],
+    [false, 'ceiling'],
+    [true, 'ceiling'],
+  ] as const)(
+    'A5 flag %s: stalled deadline settlement + %s retains uncertain exclusion',
+    async (enabled, ending) => {
+      await qaFlag(true);
+      const c = await conversation();
+      await turn(c, 'Song Ngọc giá bao nhiêu?');
+      await qaFlag(enabled);
+      const repo = f.app.get(AssistantRepository);
+      const runner = f.app.get(AssistantTurnRunner);
+      const config = f.app.get<{ ASSISTANT_REPLY_MAX_MS: number }>(APP_CONFIG);
+      const ceilingBefore = config.ASSISTANT_REPLY_MAX_MS;
+      if (ending === 'ceiling') config.ASSISTANT_REPLY_MAX_MS = 5000;
+      const latest = vi
+        .spyOn(repo, 'latestAssistant')
+        .mockImplementationOnce(() => new Promise(() => {}));
+      let entered = false;
+      let cleanupSignal: AbortSignal | undefined;
+      const settle = vi
+        .spyOn(repo, 'settleQaProbe')
+        .mockImplementationOnce(async (_id, _enabled, options) => {
+          entered = true;
+          cleanupSignal = options?.signal;
+          return new Promise(() => {});
+        });
+      try {
+        const sent = await send(c, 'Không phải các quán này');
+        await until(() => entered);
+        const at = Date.now();
+        if (ending === 'Stop') await runner.stopLocal(sent.id);
+        else await until(() => !runner.isRunningHere(sent.id), 3000);
+        expect(Date.now() - at).toBeLessThan(1500);
+        expect(cleanupSignal?.aborted).toBe(true);
+        const stopped = await repo.findMessageById(sent.id);
+        expect(stopped?.status).toBe(ending === 'Stop' ? 'stopped' : 'truncated');
+        expect(stopped?.trace?.route).toBeUndefined();
+        expect(stopped?.trace?.qaProbe).toBeDefined();
+        expect(await repo.episodeMessages(c.id, [sent.userId])).toEqual([]);
+      } finally {
+        config.ASSISTANT_REPLY_MAX_MS = ceilingBefore;
+        latest.mockRestore();
+        settle.mockRestore();
+        await qaFlag(true);
+      }
+    },
+  );
+  it('A5 row-lock timeout cancels the UPDATE and cannot settle after the lock is released', async () => {
+    const c = await conversation();
+    const repo = f.app.get(AssistantRepository);
+    const runner = f.app.get(AssistantTurnRunner);
+    const start = vi.spyOn(runner, 'start').mockImplementationOnce(() => undefined);
+    let sent: Awaited<ReturnType<typeof send>>;
+    try {
+      sent = await send(c, QUESTION);
+    } finally {
+      start.mockRestore();
+    }
+    const blocker = await f.db.$client.connect();
+    try {
+      await blocker.query('begin');
+      await blocker.query('select id from assistant_messages where id=$1 for update', [sent.id]);
+      const at = Date.now();
+      await expect(
+        repo.settleQaProbe(sent.id, true, { deadlineAt: at + 100 }),
+      ).rejects.toBeDefined();
+      expect(Date.now() - at).toBeLessThan(1500);
+      await blocker.query('rollback');
+      expect((await repo.findMessageById(sent.id))?.trace?.qaProbe).toBe('question');
+      await runner.finalizeOrphan((await repo.findMessageById(sent.id))!, 'stopped', null);
+    } finally {
+      await blocker.query('rollback');
+      blocker.release();
+    }
+  });
+  it('A6 failed flag read after send/crash defaults disabled on reaper recovery', async () => {
+    await qaFlag(false);
+    const c = await conversation();
+    const flag = vi
+      .spyOn(f.app.get(AssistantAvailabilityService), 'placeQaEnabled')
+      .mockRejectedValue(new Error('fixture flag failure'));
+    try {
+      const dead = await sendThenDie(c, QUESTION);
+      expect(dead.stored?.trace?.route).toBeUndefined();
+      expect(dead.stored?.trace).not.toHaveProperty('qaProbe');
+      const next = await turn(c, RECOMMEND);
+      expect(
+        (await f.app.get(AssistantRepository).history(c.id, next.id, 50)).map((m) => m.id),
+      ).toContain(dead.userId);
+    } finally {
+      flag.mockRestore();
+      await qaFlag(true);
+    }
+  });
 });

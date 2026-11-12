@@ -1,12 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { placeTokensAsIds, renderPlaceTokens } from '../place-tokens';
-import {
-  confirmCode,
-  confirmText,
-  makeQaPending,
-  readQaPending,
-  typedConfirmCode,
-} from './pending';
+import { isTypedConfirm, confirmText, makeQaPending, readQaPending } from './pending';
 import { FIXTURE_A, FIXTURE_B } from './fixtures';
 import { PLACE_QA_PENDING_TTL_MS } from './config';
 const now = Date.parse('2026-11-11T10:00:00Z');
@@ -65,20 +59,25 @@ describe('pending v1 reference validation', () => {
   });
 });
 
-describe('GoGo-BE#873 round 2: confirm text bound to one message and place', () => {
-  it('names the candidate, carries a six-digit code and survives folding', () => {
-    const text = confirmText('vi', 'Song Ngọc', FIXTURE_B, FIXTURE_A);
-    expect(text).toMatch(/^Xác nhận Song Ngọc \(\d{6}\)$/);
-    expect(typedConfirmCode('xac nhan song ngoc (' + confirmCode(FIXTURE_B, FIXTURE_A) + ')')).toBe(
-      confirmCode(FIXTURE_B, FIXTURE_A),
-    );
-    expect(confirmText('en', 'Song Ngọc', FIXTURE_B, FIXTURE_A)).toMatch(/^Confirm Song Ngọc \(/);
+describe('Astra A2: full identity confirmation copy', () => {
+  it('recognizes complete chips and legacy coded text, never a command word alone inside a name', () => {
+    expect(isTypedConfirm('Xác nhận Song Ngọc · Phường Ba Đình, Hà Nội')).toBe(true);
+    expect(isTypedConfirm('Xác nhận Song Ngọc (123456)')).toBe(true);
+    expect(isTypedConfirm('Confirm Cafe is open today?')).toBe(false);
+    expect(isTypedConfirm('Xác Nhận Bistro giá bao nhiêu?')).toBe(false);
   });
-  it('differs for another message or another place; plain names and ordinals carry none', () => {
-    expect(confirmCode(FIXTURE_B, FIXTURE_A)).not.toBe(confirmCode(FIXTURE_A, FIXTURE_A));
-    expect(confirmCode(FIXTURE_B, FIXTURE_A)).not.toBe(confirmCode(FIXTURE_B, FIXTURE_B));
-    for (const t of ['1', 'song ngoc', 'xac nhan song ngoc', 'song ngoc (123456)'])
-      expect(typedConfirmCode(t)).toBeNull();
+
+  it('uses the complete name and area, never a visible code', () => {
+    expect(confirmText('vi', 'Song Ngọc', 'Phường Ba Đình, Hà Nội')).toBe(
+      'Xác nhận Song Ngọc · Phường Ba Đình, Hà Nội',
+    );
+    expect(confirmText('en', 'Song Ngọc', 'Ba Dinh, Hanoi')).toBe(
+      'Confirm Song Ngọc · Ba Dinh, Hanoi',
+    );
+  });
+  it('does not truncate an oversized identity or invent a missing area', () => {
+    expect(confirmText('vi', 'a'.repeat(190), 'Phường Ba Đình, Hà Nội')).toBeNull();
+    expect(confirmText('vi', 'Song Ngọc', undefined)).toBeNull();
   });
 });
 

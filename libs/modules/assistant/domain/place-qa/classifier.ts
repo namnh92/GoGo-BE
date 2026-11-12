@@ -41,7 +41,31 @@ const folded = (text: string) =>
     .trim();
 export function isNewNonQaRequest(text: string): boolean {
   const t = folded(text);
-  return [vi, en].some((l) => test(l.guard, t) || test(l.recommend, t) || test(l.category, t));
+  if (isTypedConfirm(text)) return false;
+  return [vi, en].some((l) => {
+    if (test(l.guard, t) || test(l.category, t)) return true;
+    const recommendation = new RegExp(l.recommend, 'u').exec(t);
+    if (!recommendation) return false;
+    if (recommendation.index === 0) return true;
+    const prefix = new RegExp(l.prefix, 'u').exec(t);
+    const suffix = lastQuestionClause(
+      l.suffix,
+      Object.values(l.topics).join('|'),
+      t,
+      prefix ? prefix[0].trimEnd().length : 0,
+    );
+    const start = prefix?.[0].length ?? 0;
+    const end = suffix?.index ?? t.length;
+    const name = t.slice(start, end).trim();
+    // A factual clause supplies the name boundary. Protect the complete venue
+    // span, not a bag of words. An imperative head or an external command still
+    // wins; category-only traffic never requires a catalogue read.
+    if (!(prefix || suffix) || !name) return true;
+    if (!prefix && !/^(?:cafe|ca phe|quan|nha hang|restaurant|bistro|bar) /u.test(name))
+      return true;
+    if (test(l.guard, name) || /^[^.;!?]*[.;!?]/u.test(name)) return true;
+    return test(l.recommend, t.slice(0, start)) || test(l.recommend, t.slice(end));
+  });
 }
 /**
  * GoGo-BE#873 round 2. What the send can know about a turn from its own text,
@@ -62,9 +86,9 @@ export function qaProbeOf(
   structured: boolean,
 ): QaProbe | null {
   if (structured) return 'control';
-  // An emitted confirm text is a reply even when its place name reads like a
-  // category or a recommendation; it is QA only after a QA turn.
-  if (isTypedConfirm(text)) return 'reply';
+  // An explicit confirmation remains control even after its source is stale;
+  // never let its identity words enter a recommendation model request.
+  if (isTypedConfirm(text)) return 'control';
   if (isNewNonQaRequest(text)) return null;
   const kind = new PlaceQaClassifier().classify(text, context, { now: new Date(), locale }).kind;
   return kind === 'not_qa' ? 'reply' : kind === 'name_only' ? 'name' : 'question';

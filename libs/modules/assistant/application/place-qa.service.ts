@@ -12,11 +12,10 @@ import {
 } from '../domain/place-qa/classifier';
 import { PLACE_QA_CONFIG_VERSION } from '../domain/place-qa/config';
 import {
-  confirmCode,
+  confirmText,
   makeQaPending,
   readQaPending,
   isTypedConfirm,
-  typedConfirmCode,
   type QaPending,
 } from '../domain/place-qa/pending';
 import { answerToken, type AnswerTopic } from '../domain/place-qa/tokens';
@@ -30,6 +29,7 @@ import { AssistantAreaResolver } from './area-resolver.service';
 import { AssistantTaxonomyService } from './taxonomy.service';
 import { AssistantAvailabilityService } from './assistant-availability.service';
 import type { TurnInput } from './assistant-orchestrator.service';
+import { firstTextGuard } from './first-text-guard';
 import type { TurnSink, TurnState } from './turn-state';
 
 type QaOutcome =
@@ -63,32 +63,58 @@ export class PlaceQaService {
     @Optional() private readonly qaTaxonomy?: AssistantTaxonomyService,
   ) {}
 
-  /**
-   * GoGo-BE#873 round 2. The first-text deadline passed while the QA decision
-   * was still open (a stalled flag, latest-turn or probe read). Before the
-   * orchestrator publishes the ordinary timeout reply, the turn's admission
-   * marker is settled from durable facts: true means the turn is QA and must
-   * fail through the QA error path instead. One flag read bounded at
-   * QA_SETTLE_FLAG_MS for a `question` only, never a new first-text allowance;
-   * an unknown flag reads as enabled.
+  /** One cleanup budget, including flag lookup and the cancellable SQL write.
+   * Failure retains uncertain exclusion; it never establishes a QA route.
    */
-  async settleUndecided(input: TurnInput, state: TurnState): Promise<boolean> {
+  async settleUndecided(
+    input: TurnInput,
+    state: TurnState,
+    signal: AbortSignal = new AbortController().signal,
+  ): Promise<boolean> {
     if (state.qaDecided === true || !input.qaProbe || input.qaProbe === 'control') return false;
-    const enabled =
-      input.qaProbe === 'question'
-        ? await Promise.race([
-            this.availability.placeQaEnabled().catch(() => true),
-            new Promise<boolean>((resolve) =>
-              setTimeout(() => resolve(true), QA_SETTLE_FLAG_MS).unref(),
-            ),
-          ])
-        : false;
-    const qa = await this.repo.settleQaProbe(input.messageId, enabled);
-    state.qaDecided = true;
-    if (!qa) return false;
-    state.trace.route = 'place_qa';
-    state.trace.placeAnswerGroup ??= UNPRODUCED_GROUP;
-    return true;
+    const deadlineAt = Date.now() + QA_SETTLE_FLAG_MS;
+    const guard = firstTextGuard(deadlineAt, signal);
+    try {
+      const qa = await guard.run(async () => {
+        let enabled = state.qaEnabled ?? false;
+        if (state.qaEnabled === undefined && input.qaProbe === 'question') {
+          const flagDeadline = Date.now() + QA_SETTLE_FLAG_MS / 2;
+          const flagGuard = firstTextGuard(flagDeadline, guard.signal);
+          try {
+            enabled = await flagGuard.run(() =>
+              this.availability.placeQaEnabled({
+                signal: flagGuard.signal,
+                deadlineAt: flagDeadline,
+              }),
+            );
+          } catch {
+            enabled = false;
+          } finally {
+            flagGuard.dispose();
+          }
+          guard.signal.throwIfAborted();
+          state.qaEnabled = enabled;
+        }
+        return this.repo.settleQaProbe(input.messageId, enabled, {
+          signal: guard.signal,
+          deadlineAt,
+        });
+      });
+      signal.throwIfAborted();
+      state.qaDecided = true;
+      if (qa) {
+        state.trace.route = 'place_qa';
+        state.trace.placeAnswerGroup ??= UNPRODUCED_GROUP;
+      }
+      return qa;
+    } catch (error) {
+      // A stalled flag is disabled, but a stalled UPDATE cannot be called
+      // settled. Finalization preserves the probe until safe recovery.
+      state.qaSettlementUncertain = true;
+      throw error;
+    } finally {
+      guard.dispose();
+    }
   }
 
   /** Idempotent for one turn: the in-process marker first, then the durable row. */
@@ -125,6 +151,7 @@ export class PlaceQaService {
       locale: input.locale,
     });
     const structured = input.replyToMessageId !== undefined || input.followUpOptionId !== undefined;
+    const typedControl = isTypedConfirm(input.text);
     let trace: QaTrace | undefined;
     let undecided = false;
     let pendingCreatedAt: number | undefined;
@@ -293,10 +320,29 @@ export class PlaceQaService {
     };
 
     try {
+      if (!structured && isNewNonQaRequest(input.text)) return false;
       // Structured QA control is fenced before all control/source lookups,
       // including when disabled. It can never enter the model pipeline.
-      if (structured) await mark('control', 'overview', {});
-      const enabled = await this.availability.placeQaEnabled();
+      if (structured || typedControl) await mark('control', 'overview', {});
+      state.qaEnabled = false; // Unknown stays disabled, including cancellation before the read settles.
+      const flagGuard = firstTextGuard(
+        Math.min(deadlineAt, Date.now() + QA_SETTLE_FLAG_MS),
+        signal,
+      );
+      let enabled: boolean;
+      try {
+        enabled = await flagGuard.run(() =>
+          this.availability.placeQaEnabled({
+            signal: flagGuard.signal,
+            deadlineAt: Math.min(deadlineAt, Date.now() + QA_SETTLE_FLAG_MS),
+          }),
+        );
+      } catch {
+        enabled = false;
+      } finally {
+        flagGuard.dispose();
+      }
+      state.qaEnabled = enabled;
       signal.throwIfAborted();
       // A bare name is only a probe here: it becomes QA after exact canonical
       // qualification (resolve) or as a typed reply to a QA turn, never before.
@@ -323,13 +369,21 @@ export class PlaceQaService {
           trace.args = classified.args;
         }
       }
-      const latest = await this.repo.latestAssistant(
-        input.userId,
-        input.conversationId,
-        input.messageId,
-      );
+      const freshQuestion =
+        !structured &&
+        !isTypedConfirm(input.text) &&
+        classified.kind !== 'not_qa' &&
+        classified.kind !== 'name_only';
+      if (!enabled && freshQuestion) return false;
+      const latest = freshQuestion
+        ? null
+        : await this.repo.latestAssistant(input.userId, input.conversationId, input.messageId);
       signal.throwIfAborted();
       const isQa = latest?.trace?.route === 'place_qa';
+      if (typedControl && !structured && !isQa) {
+        await notice('stale_choice');
+        return true;
+      }
       const qa = latest?.trace?.placeQa as { pending?: unknown } | undefined;
       const p =
         latest && latest.status === 'complete'
@@ -418,21 +472,39 @@ export class PlaceQaService {
           return true;
         }
         const candidates = p.slots[0]!.candidateIds ?? [];
-        // One candidate of a `confirm` was shown back to the user. What
-        // confirms it from a text-only client is text that identifies THAT
-        // candidate: the emitted confirm text (bound to this message and
-        // place) or its exact name. A bare ordinal never does — an old client
-        // may have tapped a chip of an earlier message (§4.5). `answer`
-        // re-reads publication and fact eligibility before any fact is shown.
         const confirming = p.kind === 'confirm' && candidates.length === 1;
-        const code = typedConfirmCode(t);
-        if (code !== null) {
-          if (confirming && code === confirmCode(latest!.id, candidates[0]!)) {
-            trace!.row = 3;
-            await answer(candidates[0]!);
-            return true;
+        if (isTypedConfirm(input.text)) {
+          if (confirming) {
+            const facts = await this.search.placeFacts(candidates, { signal, deadlineAt });
+            const candidate = facts.places.get(candidates[0]!);
+            const phrase = candidate?.available
+              ? confirmText(input.locale, candidate.name, candidate.areaLabel)
+              : null;
+            if (phrase && normalizeVietnamese(phrase) === t) {
+              // Re-read the complete canonical-name family, not just the last
+              // singleton: identical labels on another branch must re-ask.
+              const family = await this.search.resolvePlaceName(candidate!.name, {
+                signal,
+                deadlineAt,
+              });
+              const ids = family.candidates.filter((c) => c.exact).map((c) => c.id);
+              if (!family.overflow && ids.includes(candidates[0]!)) {
+                const all = await this.search.placeFacts(ids, { signal, deadlineAt });
+                const matching = ids.filter((id) => {
+                  const place = all.places.get(id);
+                  const identity = place?.available
+                    ? confirmText(input.locale, place.name, place.areaLabel)
+                    : null;
+                  return identity !== null && normalizeVietnamese(identity) === t;
+                });
+                if (matching.length === 1 && matching[0] === candidates[0]) {
+                  trace!.row = 3;
+                  await answer(matching[0]!);
+                  return true;
+                }
+              }
+            }
           }
-          // The confirm text of another message or branch: never a name match.
           if (p.retryCount === 0) {
             pending(p.kind, p.questionMessageId, candidates, 1);
             await notice('retry');
@@ -459,7 +531,6 @@ export class PlaceQaService {
         }
         if (candidates.length) {
           const facts = await this.search.placeFacts(candidates, { signal, deadlineAt });
-          const explicit = /^(?:xac nhan|dung la|confirm) /u.test(t);
           const named = candidates.filter((id) => {
             const f = facts.places.get(id);
             return (
@@ -468,10 +539,7 @@ export class PlaceQaService {
             );
           });
           if (named.length === 1) {
-            if (p.kind === 'confirm' && (explicit || confirming)) {
-              trace!.row = 3;
-              await answer(named[0]!);
-            } else await clarify('confirm', named, p.questionMessageId);
+            await clarify('confirm', named, p.questionMessageId);
             return true;
           }
         }

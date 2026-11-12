@@ -222,11 +222,15 @@ export class PlaceAnswerReader {
               const ordinal = group.cards.indexOf(o.placeId) + 1;
               const label = `${ordinal}. ${safeText(p.name)}`.slice(0, 40);
               // A one-candidate confirmation is answered by text that names the
-              // candidate and is bound to this message; a bare ordinal is not
+              // candidate by name + area; a bare ordinal is not
               // proof of which chip an old client tapped (shape rev3 §4.5).
               const text =
                 group.prompt === 'place_confirm' && group.cards.length === 1
-                  ? confirmText(locale, safeText(p.name), row.id, o.placeId)
+                  ? (confirmText(
+                      locale,
+                      safeText(p.name),
+                      p.areaLabel ? safeText(p.areaLabel) : undefined,
+                    ) ?? String(ordinal))
                   : String(ordinal);
               return [{ id: o.id, label, text }];
             }

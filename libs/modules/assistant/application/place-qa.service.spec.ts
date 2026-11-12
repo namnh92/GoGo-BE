@@ -67,7 +67,7 @@ export function qaFixture() {
         },
       },
       new AbortController().signal,
-      now + 15000,
+      Date.now() + 15000,
     );
   const rendered = async () =>
     (
@@ -417,7 +417,7 @@ describe('QA-only CMS vocabulary wiring', () => {
           applyFrame(f.state, { ...frame, messageId: f.input.messageId, seq: 1 } as never),
       },
       new AbortController().signal,
-      now + 15000,
+      Date.now() + 15000,
     );
     expect(qaVocabulary).toHaveBeenCalledOnce();
     expect(f.state.trace.placeQa).toMatchObject({
@@ -432,9 +432,12 @@ describe('QA-only CMS vocabulary wiring', () => {
  * turn's persisted trace and the user messages by id, as the repository does. */
 function qaConversation() {
   const users = new Map<string, { id: string; role: 'user'; text: string; locale: 'vi' }>();
-  const places = new Map([
-    [FIXTURE_A, fictionalPlace(FIXTURE_A, 'Song Ngọc')],
-    [FIXTURE_B, fictionalPlace(FIXTURE_B, 'Song Ngọc')],
+  const places = new Map<string, ReturnType<typeof fictionalPlace>>([
+    [FIXTURE_A, { ...fictionalPlace(FIXTURE_A, 'Song Ngọc'), areaLabel: 'Phường Ba Đình, Hà Nội' }],
+    [
+      FIXTURE_B,
+      { ...fictionalPlace(FIXTURE_B, 'Song Ngọc'), areaLabel: 'Phường Cầu Giấy, Hà Nội' },
+    ],
   ]);
   let previous: { id: string; status: 'complete'; trace: Record<string, unknown> } | null = null;
   let n = 0;
@@ -455,6 +458,7 @@ function qaConversation() {
     );
     f.repo.latestAssistant.mockResolvedValue(previous);
     f.search.placeFacts.mockImplementation((async () => ({ places })) as never);
+    f.search.resolvePlaceName.mockImplementation(async () => exact(...places.keys()));
     configure(f);
     const handled = await f.run();
     if (handled)
@@ -506,7 +510,7 @@ describe('Fable fix round — Sol F-02: old client types the emitted confirm opt
       cards: [FIXTURE_B],
     });
   });
-  it('the exact place name confirms a singleton confirm without an invented prefix', async () => {
+  it('the exact place name re-asks for the complete name + area confirmation', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(now);
     const c = qaConversation();
     c.places.set(FIXTURE_A, fictionalPlace(FIXTURE_A, 'Fictional Lantern'));
@@ -524,8 +528,8 @@ describe('Fable fix round — Sol F-02: old client types the emitted confirm opt
         resolvePlaceNameOutcome({ candidates: [], overflow: false, areaMismatch: false }),
       ),
     );
-    expect(named.qa).toMatchObject({ outcome: 'answer', topic: 'price' });
-    expect(named.view.text).toContain('12000–24000 VND/người');
+    expect(named.qa).toMatchObject({ outcome: 'confirm', topic: 'price' });
+    expect(named.view.text).not.toContain('12000–24000 VND/người');
   });
   it('legacy-district confirm (§4.4) is answered after the emitted option text, with the original topic', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(now);
@@ -562,7 +566,7 @@ describe('Fable fix round — Sol F-02: old client types the emitted confirm opt
     const emitted = confirm.view.followUps[0]!.options[0]!.text;
     c.places.set(FIXTURE_A, { ...fictionalPlace(FIXTURE_A, 'Song Ngọc'), available: false });
     const closed = await c.send(emitted);
-    expect(closed.qa).toMatchObject({ outcome: 'unavailable' });
+    expect(closed.qa).toMatchObject({ outcome: 'retry' });
     expect(closed.view.text).not.toMatch(/12000|VND/);
   });
   it('round 2: a stale ordinal of the earlier choice never confirms the other branch', async () => {
@@ -586,9 +590,10 @@ describe('Fable fix round — Sol F-02: old client types the emitted confirm opt
     expect(emitted).not.toMatch(/^\d+$/);
     // An emitted confirm text of an earlier confirmation (another message) is
     // not this one's, even for an identically named branch.
-    expect(confirmB.view.followUps[0]!.options[0]!.text).not.toBe(emitted);
-    const foreign = await c.send(confirmB.view.followUps[0]!.options[0]!.text);
-    expect(foreign.qa?.outcome).not.toBe('answer');
+    expect(confirmB.view.followUps[0]!.options[0]!.text).toBe(emitted);
+    // Same complete unique identity still denotes the same branch, not a source id.
+    const same = await c.send(emitted);
+    expect(same.qa).toMatchObject({ outcome: 'answer' });
   });
   it('an ordinal outside a singleton confirm is not a confirmation', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(now);
@@ -792,21 +797,14 @@ describe('Fable fix round 2 — fence decisions stay inside the guarded producer
     expect(f.state.qaDecided).toBe(true);
     expect(f.state.trace.route).toBe(qa ? 'place_qa' : undefined);
   });
-  it.each([
-    ['placeQaEnabled', 'Gợi ý quán cafe ở Hà Nội giá 100k'],
-    ['placeQaEnabled', 'Fictional Lantern giá bao nhiêu?'],
-    ['latestAssistant', 'Gợi ý quán cafe ở Hà Nội giá 100k'],
-    ['latestAssistant', 'Cầu Giấy'],
-  ] as const)(
+  it.each([['latestAssistant', 'Cầu Giấy']] as const)(
     'a stalled %s read ends at the one first-text deadline, with no fence and no new allowance (%s)',
     async (read, text) => {
       vi.useFakeTimers();
       try {
         const f = qaFixture();
         f.input.text = text;
-        if (read === 'placeQaEnabled')
-          f.availability.placeQaEnabled.mockReturnValue(new Promise<boolean>(() => {}));
-        else f.repo.latestAssistant.mockReturnValue(new Promise(() => {}));
+        f.repo.latestAssistant.mockReturnValue(new Promise(() => {}));
         const deadline = Date.now() + 15_000;
         const guard = firstTextGuard(deadline, new AbortController().signal);
         const settled = guard
@@ -847,7 +845,14 @@ describe('Fable fix round 2 — open decision at the first-text deadline, and co
       f.availability.placeQaEnabled.mockResolvedValue(on);
       f.repo.settleQaProbe.mockResolvedValue(sent || probe !== 'question');
       const qa = await f.service.settleUndecided(f.input, f.state);
-      expect(f.repo.settleQaProbe).toHaveBeenCalledWith(f.input.messageId, sent);
+      expect(f.repo.settleQaProbe).toHaveBeenCalledWith(
+        f.input.messageId,
+        sent,
+        expect.objectContaining({
+          signal: expect.any(AbortSignal),
+          deadlineAt: expect.any(Number),
+        }),
+      );
       expect(f.availability.placeQaEnabled).toHaveBeenCalledTimes(probe === 'question' ? 1 : 0);
       expect(f.state.qaDecided).toBe(true);
       expect(qa).toBe(sent || probe !== 'question');
@@ -866,17 +871,21 @@ describe('Fable fix round 2 — open decision at the first-text deadline, and co
     expect(f.repo.settleQaProbe).not.toHaveBeenCalled();
     expect(f.availability.placeQaEnabled).not.toHaveBeenCalled();
   });
-  it('a flag read that never returns is bounded and fails closed', async () => {
+  it('a flag read that never returns is bounded and defaults disabled', async () => {
     vi.useFakeTimers();
     try {
       const f = qaFixture();
       f.input.qaProbe = 'question';
       f.availability.placeQaEnabled.mockReturnValue(new Promise<boolean>(() => {}));
-      f.repo.settleQaProbe.mockResolvedValue(true);
+      f.repo.settleQaProbe.mockResolvedValue(false);
       const settled = f.service.settleUndecided(f.input, f.state);
       await vi.advanceTimersByTimeAsync(1_500);
-      expect(await settled).toBe(true);
-      expect(f.repo.settleQaProbe).toHaveBeenCalledWith(f.input.messageId, true);
+      expect(await settled).toBe(false);
+      expect(f.repo.settleQaProbe).toHaveBeenCalledWith(
+        f.input.messageId,
+        false,
+        expect.anything(),
+      );
     } finally {
       vi.useRealTimers();
     }
@@ -886,13 +895,19 @@ describe('Fable fix round 2 — open decision at the first-text deadline, and co
     async (name) => {
       vi.spyOn(Date, 'now').mockReturnValue(now);
       for (const locale of ['vi', 'en'] as const) {
-        const text = confirmText(locale, name, FIXTURE_C, FIXTURE_A);
+        const text = confirmText(locale, name, 'Phường Ba Đình, Hà Nội')!;
         expect(isTypedConfirm(text)).toBe(true);
-        expect(qaProbeOf(text, null, locale, false)).toBe('reply');
+        expect(qaProbeOf(text, null, locale, false)).toBe('control');
       }
       const c = qaConversation();
-      c.places.set(FIXTURE_A, fictionalPlace(FIXTURE_A, name));
-      c.places.set(FIXTURE_B, fictionalPlace(FIXTURE_B, name));
+      c.places.set(FIXTURE_A, {
+        ...fictionalPlace(FIXTURE_A, name),
+        areaLabel: 'Phường Ba Đình, Hà Nội',
+      });
+      c.places.set(FIXTURE_B, {
+        ...fictionalPlace(FIXTURE_B, name),
+        areaLabel: 'Phường Cầu Giấy, Hà Nội',
+      });
       const choice = await c.send('Song Ngọc giá bao nhiêu?', (f) =>
         f.search.resolvePlaceName.mockResolvedValue(exact(FIXTURE_A, FIXTURE_B)),
       );
@@ -905,4 +920,235 @@ describe('Fable fix round 2 — open decision at the first-text deadline, and co
       expect(answered.f.search.placeFacts).toHaveBeenCalledWith([FIXTURE_B], expect.anything());
     },
   );
+});
+
+describe('Astra amendment regressions', () => {
+  it.each(['Gợi ý quán cafe ở Hà Nội', 'Tạo kèo ở Song Ngọc', 'GoGo tạo kèo thế nào?', 'cafe'])(
+    'A3 bypasses failed QA dependencies: %s',
+    async (text) => {
+      const f = qaFixture();
+      f.input.text = text;
+      f.availability.placeQaEnabled.mockRejectedValue(new Error('QA flag unavailable'));
+      f.repo.latestAssistant.mockRejectedValue(new Error('QA latest unavailable'));
+      expect(await f.run()).toBe(false);
+      expect(f.state.qaDecided).toBe(true);
+      expect(f.availability.placeQaEnabled).not.toHaveBeenCalled();
+      expect(f.repo.latestAssistant).not.toHaveBeenCalled();
+    },
+  );
+  it.each([true, false])('A3 fresh question skips latest with flag %s', async (enabled) => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const f = qaFixture();
+    f.availability.placeQaEnabled.mockResolvedValue(enabled);
+    f.repo.latestAssistant.mockRejectedValue(new Error('unneeded read failed'));
+    expect(await f.run()).toBe(enabled);
+    expect(f.repo.latestAssistant).not.toHaveBeenCalled();
+  });
+  it('A6 flag rejection takes the ordinary path without a QA route', async () => {
+    const f = qaFixture();
+    f.availability.placeQaEnabled.mockRejectedValue(new Error('flag read failed'));
+    expect(await f.run()).toBe(false);
+    expect(f.state.trace.route).toBeUndefined();
+    expect(f.state.qaDecided).toBe(true);
+  });
+  it('A6 recovery flag rejection is disabled, never enabled', async () => {
+    const f = qaFixture();
+    f.input.qaProbe = 'question';
+    f.availability.placeQaEnabled.mockRejectedValue(new Error('flag read failed'));
+    await f.service.settleUndecided(f.input, f.state);
+    expect(f.repo.settleQaProbe.mock.calls[0]?.[1]).toBe(false);
+  });
+  it.each([true, false])(
+    'A5 stalled settlement ends within the cleanup budget (flag %s)',
+    async (enabled) => {
+      vi.useFakeTimers();
+      try {
+        const f = qaFixture();
+        f.input.qaProbe = 'question';
+        f.availability.placeQaEnabled.mockResolvedValue(enabled);
+        f.repo.settleQaProbe.mockReturnValue(new Promise(() => {}));
+        const result = f.service.settleUndecided(f.input, f.state).then(
+          () => 'resolved',
+          () => 'rejected',
+        );
+        await vi.advanceTimersByTimeAsync(1501);
+        expect(await Promise.race([result, Promise.resolve('pending')])).toBe('rejected');
+        expect(f.state.trace.route).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+  it('A2 reader emits the owner name + area copy without a code', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const c = qaConversation();
+    c.places.set(FIXTURE_A, {
+      ...fictionalPlace(FIXTURE_A, 'Song Ngọc'),
+      areaLabel: 'Phường Ba Đình, Hà Nội',
+    });
+    const choice = await c.send('Song Ngọc giá bao nhiêu?', (f) =>
+      f.search.resolvePlaceName.mockResolvedValue(exact(FIXTURE_A, FIXTURE_B)),
+    );
+    const confirm = await c.send(choice.view.followUps[0]!.options[0]!.text);
+    expect(confirm.view.followUps[0]!.options[0]!.text).toBe(
+      'Xác nhận Song Ngọc · Phường Ba Đình, Hà Nội',
+    );
+  });
+  it('A2 identical name + area across branches never confirms from emitted text', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const c = qaConversation();
+    for (const id of [FIXTURE_A, FIXTURE_B])
+      c.places.set(id, { ...fictionalPlace(id, 'Song Ngọc'), areaLabel: 'Phường Ba Đình, Hà Nội' });
+    const configure = (f: ReturnType<typeof qaFixture>) =>
+      f.search.resolvePlaceName.mockResolvedValue(exact(FIXTURE_A, FIXTURE_B));
+    const choice = await c.send('Song Ngọc giá bao nhiêu?', configure);
+    const confirm = await c.send(choice.view.followUps[0]!.options[0]!.text, configure);
+    const reply = await c.send(confirm.view.followUps[0]!.options[0]!.text, configure);
+    expect(reply.qa?.outcome).not.toBe('answer');
+    expect(reply.f.state.trace.placeAnswerGroup).not.toMatchObject({ kind: 'answer' });
+  });
+});
+
+describe('Astra cleanup cancellation and authoritative disabled decision', () => {
+  it.each(['Stop', 'ceiling'])(
+    'A5 %s cancels settlement immediately; late completion cannot mutate route',
+    async (_reason) => {
+      const f = qaFixture();
+      f.input.qaProbe = 'question';
+      let finish!: (qa: boolean) => void;
+      let signal: AbortSignal | undefined;
+      f.repo.settleQaProbe.mockImplementation((async (
+        _id: string,
+        _enabled: boolean,
+        options: { signal: AbortSignal },
+      ) => {
+        signal = options.signal;
+        return new Promise<boolean>((resolve) => {
+          finish = resolve;
+        });
+      }) as never);
+      const controller = new AbortController();
+      const work = f.service.settleUndecided(f.input, f.state, controller.signal);
+      const rejected = expect(work).rejects.toBeDefined();
+      for (let i = 0; i < 20 && !finish; i++) await Promise.resolve();
+      expect(finish).toBeDefined();
+      controller.abort();
+      await rejected;
+      expect(signal?.aborted).toBe(true);
+      expect(f.state.qaSettlementUncertain).toBe(true);
+      finish(true);
+      await Promise.resolve();
+      expect(f.state.trace.route).toBeUndefined();
+      expect(f.state.qaDecided).not.toBe(true);
+    },
+  );
+  it('A6 deadline recovery retains an observed disabled value without resampling', async () => {
+    const f = qaFixture();
+    f.input.qaProbe = 'question';
+    f.state.qaEnabled = false;
+    f.availability.placeQaEnabled.mockResolvedValue(true);
+    expect(await f.service.settleUndecided(f.input, f.state)).toBe(false);
+    expect(f.availability.placeQaEnabled).not.toHaveBeenCalled();
+    expect(f.repo.settleQaProbe).toHaveBeenCalledWith(f.input.messageId, false, expect.anything());
+  });
+  it('A6 stalled producer flag defaults disabled at 1.5s and ignores late true', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = qaFixture();
+      let release!: (enabled: boolean) => void;
+      f.availability.placeQaEnabled.mockReturnValue(
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+      );
+      const work = f.service.handle(
+        f.input,
+        f.state,
+        { emit: async () => {} },
+        new AbortController().signal,
+        Date.now() + 15000,
+      );
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(await work).toBe(false);
+      release(true);
+      await Promise.resolve();
+      expect(f.state.qaEnabled).toBe(false);
+      expect(f.state.qaDecided).toBe(true);
+      expect(f.state.trace.route).toBeUndefined();
+      expect(f.repo.latestAssistant).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+it('Astra A2: a text-only confirmation after an ordinary turn is stale control, never a model input', async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(now);
+  const f = qaFixture();
+  f.input.text = 'Xác nhận Song Ngọc · Phường Ba Đình, Hà Nội';
+  f.repo.latestAssistant.mockResolvedValue({ id: FIXTURE_B, status: 'complete', trace: {} });
+  expect(qaProbeOf(f.input.text, null, 'vi', false)).toBe('control');
+  expect(await f.run()).toBe(true);
+  expect(f.state.trace.placeQa).toMatchObject({ outcome: 'stale_choice' });
+  expect(f.search.resolvePlaceName).not.toHaveBeenCalled();
+  expect(f.search.placeFacts).not.toHaveBeenCalled();
+});
+
+it('Astra A2: stale name + other-area text cannot confirm the latest branch', async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(now);
+  const c = qaConversation();
+  const configure = (f: ReturnType<typeof qaFixture>) =>
+    f.search.resolvePlaceName.mockResolvedValue(exact(FIXTURE_A, FIXTURE_B));
+  await c.send('Song Ngọc giá bao nhiêu?', configure);
+  const confirmA = await c.send('1');
+  const oldText = confirmA.view.followUps[0]!.options[0]!.text;
+  await c.send('Song Ngọc giá bao nhiêu?', configure);
+  const confirmB = await c.send('2');
+  expect(confirmB.view.followUps[0]!.options[0]!.text).not.toBe(oldText);
+  const stale = await c.send(oldText);
+  expect(stale.qa?.outcome).toBe('retry');
+  expect(stale.view.text).not.toContain('VND');
+});
+
+it('Astra amendment regressions A2: the concrete 574568 legacy collision cannot confirm another branch', async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(now);
+  // At 00f691f1, FNV-1a modulo 1e6 gives 574568 for BOTH:
+  // (0000018d-0000-4000-8000-00000000000b, FIXTURE_A) and
+  // (000009f8-0000-4000-8000-00000000000b, FIXTURE_B).
+  // The old text-only client sends branch A's earlier chip to latest branch B.
+  const f = qaFixture();
+  const latestId = '000009f8-0000-4000-8000-00000000000b';
+  f.input.text = 'Xác nhận Song Ngọc (574568)';
+  const pending = makeQaPending({
+    kind: 'confirm',
+    questionMessageId: FIXTURE_A,
+    assistantMessageId: latestId,
+    now,
+    topic: 'price',
+    args: {},
+    candidates: [FIXTURE_B],
+  });
+  f.repo.latestAssistant.mockResolvedValue({
+    id: latestId,
+    status: 'complete',
+    trace: {
+      route: 'place_qa',
+      placeQa: { pending },
+    },
+  });
+  f.search.placeFacts.mockResolvedValue({
+    places: new Map([
+      [
+        FIXTURE_B,
+        {
+          ...fictionalPlace(FIXTURE_B, 'Song Ngọc'),
+          areaLabel: 'Phường Cầu Giấy, Hà Nội',
+        },
+      ],
+    ]),
+  });
+  expect(await f.run()).toBe(true);
+  expect(f.state.trace.placeQa).toMatchObject({ outcome: 'retry' });
+  expect(f.state.trace.placeAnswerGroup).not.toMatchObject({ kind: 'answer' });
+  expect(f.state.text).not.toContain('VND');
 });

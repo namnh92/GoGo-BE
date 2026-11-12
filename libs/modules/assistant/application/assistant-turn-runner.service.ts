@@ -1,3 +1,4 @@
+import { firstTextGuard } from './first-text-guard';
 import { isPlaceAnswerRow } from '../domain/place-qa/reference-group';
 import {
   Inject,
@@ -346,7 +347,11 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
         // GoGo-BE#873: a turn that ended before PlaceQaService chose leaves
         // its admission marker to the terminal write. No QA read precedes
         // funding or escapes the first-text guard any more.
-        { qa: await this.qaResolution(state.qaDecided === true, turn.qaProbe) },
+        {
+          qa: state.qaSettlementUncertain
+            ? { uncertain: true }
+            : await this.qaResolution(state.qaDecided === true, turn.qaProbe, state.qaEnabled),
+        },
       );
       // A-R-11 / A-R2-09: only the writer that finalized publishes — the
       // frames it held back after an abort, then its terminal. A runner that
@@ -418,20 +423,29 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
   /**
    * How the terminal write settles a provisional QA marker (GoGo-BE#873). The
    * flag is read only for an undecided QA-shaped question, bounded, and it can
-   * never fail or hold the terminal write: unknown reads as enabled, so a
-   * question whose flag state cannot be established stays out of history.
+   * never enable QA on failure. A producer observation wins over recovery;
+   * otherwise unknown defaults disabled for this turn.
    */
   private async qaResolution(
     decided: boolean,
     probe: unknown,
+    observed?: boolean,
   ): Promise<{ decided: true } | { decided: false; enabled: boolean }> {
     if (decided) return { decided: true };
     if (probe !== 'question') return { decided: false, enabled: false };
-    const enabled = await Promise.race([
-      this.availability.placeQaEnabled().catch(() => true),
-      sleep(QA_FLAG_RECOVERY_MS).then(() => true),
-    ]);
-    return { decided: false, enabled };
+    if (observed !== undefined) return { decided: false, enabled: observed };
+    const deadlineAt = Date.now() + QA_FLAG_RECOVERY_MS;
+    const guard = firstTextGuard(deadlineAt, new AbortController().signal);
+    try {
+      const enabled = await guard.run(() =>
+        this.availability.placeQaEnabled({ signal: guard.signal, deadlineAt }),
+      );
+      return { decided: false, enabled };
+    } catch {
+      return { decided: false, enabled: false };
+    } finally {
+      guard.dispose();
+    }
   }
 
   /** Ends a streaming turn no process here is running (stop fallback, reaper). */

@@ -128,3 +128,28 @@ describe('semantic arguments belong to the asked clause, never identifying name 
     ).toMatchObject({ topic, args });
   });
 });
+
+describe('Astra A1: initial named questions protect command words', () => {
+  it.each([
+    ['Cafe Gợi Ý Quán Ngon giá bao nhiêu?', 'Cafe Gợi Ý Quán Ngon', 'vi'],
+    ['Nhà hàng Tìm Quán Cafe mở cửa mấy giờ?', 'Nhà hàng Tìm Quán Cafe', 'vi'],
+    ['Giá của Cafe Gợi Ý Quán Ngon', 'Cafe Gợi Ý Quán Ngon', 'vi'],
+    ['Cafe Tạo Kèo mở cửa mấy giờ?', 'Cafe Tạo Kèo', 'vi'],
+    ['Cafe Suggest and Find is open today?', 'Cafe Suggest and Find', 'en'],
+  ] as const)('%s', (text, name, locale) => {
+    expect(classifier.classify(text, null, { now: new Date(corpus.clock), locale })).toMatchObject({
+      kind: 'named_place_question',
+      span: { text: name },
+    });
+  });
+  it.each([
+    'Gợi ý quán giống Cafe Gợi Ý Quán Ngon',
+    'Cafe Gợi Ý Quán Ngon giá bao nhiêu? Và gợi ý quán khác',
+    'Tạo kèo ở Cafe Tìm Quán Cafe',
+    'Giá của Song Ngọc và tạo kèo ở đó',
+  ])('external command still wins: %s', (text) => {
+    expect(
+      classifier.classify(text, null, { now: new Date(corpus.clock), locale: 'vi' }).kind,
+    ).toBe('not_qa');
+  });
+});

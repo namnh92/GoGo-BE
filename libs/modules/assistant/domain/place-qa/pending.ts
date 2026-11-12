@@ -149,42 +149,23 @@ export function makeQaPending(input: {
   };
 }
 
-/**
- * GoGo-BE#873 round 2 (Sol F-01 / Astra F-03). The text a text-only client sends
- * back for a one-candidate confirmation names the candidate and carries a code
- * bound to THAT confirmation message and place, so a chip of an earlier message
- * (a bare ordinal, or the confirm text of another message or branch) can never
- * confirm this one. Derived, never stored; six digits of FNV-1a over both ids,
- * so an unrelated confirm text matches with probability 1e-6.
+/** Owner 2026-11-12: identity is the complete name + current area, never a code.
+ * Missing/oversized identity has no safe text confirmation; use an ordinal to
+ * re-ask instead. The service checks uniqueness against the complete catalogue.
  */
-export function confirmCode(assistantMessageId: string, placeId: string): string {
-  let h = 0x811c9dc5;
-  for (const ch of `${assistantMessageId}:${placeId}`) {
-    h ^= ch.codePointAt(0)!;
-    h = Math.imul(h, 0x01000193) >>> 0;
-  }
-  return String(h % 1_000_000).padStart(6, '0');
-}
 export function confirmText(
   locale: 'vi' | 'en',
   name: string,
-  assistantMessageId: string,
-  placeId: string,
-): string {
-  // Option text is at most 200 characters (OpenAPI); the code is what binds.
-  return `${locale === 'en' ? 'Confirm' : 'Xác nhận'} ${name.slice(0, 160)} (${confirmCode(assistantMessageId, placeId)})`;
+  area: string | undefined,
+): string | null {
+  if (!name.trim() || !area?.trim()) return null;
+  const text = `${locale === 'en' ? 'Confirm' : 'Xác nhận'} ${name} · ${area}`;
+  return text.length <= 200 && !/[\uE000\uE001]/u.test(text) ? text : null;
 }
-/** The code of a typed confirm text (already folded), or null when it has none. */
-export function typedConfirmCode(folded: string): string | null {
-  return /^(?:xac nhan|confirm) .*\((\d{6})\)$/u.exec(folded)?.[1] ?? null;
-}
-/** Raw user text that is an emitted confirm text, whatever words its name holds. */
 export function isTypedConfirm(text: string): boolean {
-  return (
-    typedConfirmCode(
-      normalizeVietnamese(text)
-        .replace(/[.!?]+$/u, '')
-        .trim(),
-    ) !== null
+  return /^(?:xac nhan|confirm) .+(?: · .+| \(\d{6}\))$/u.test(
+    normalizeVietnamese(text)
+      .replace(/[.!?]+$/u, '')
+      .trim(),
   );
 }

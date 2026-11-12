@@ -1,3 +1,7 @@
+import {
+  placeQaTransaction,
+  type PlaceQaReadOptions,
+} from '../../search/infrastructure/place-qa-read';
 import { AssistantUsageEvidenceRepository } from './assistant-usage-evidence.repository';
 import { AppError } from '../../shared/app-error';
 import {
@@ -123,8 +127,7 @@ const CONVERSATION_COLUMNS = sql`c.id, c.user_id, c.title, c.context_kind, c.con
 /**
  * GoGo-BE#873 — the assistant partner (`qa`) that keeps a user message out of
  * recommendation history: a QA route, or a terminal row whose provisional
- * marker was never resolved (no terminal write leaves one; excluded until one
- * does). A marker on a still-streaming row hides nothing: that turn needs its
+ * marker was never resolved (legacy finalization or interrupted settlement). A marker on a still-streaming row hides nothing: that turn needs its
  * own question, and one conversation has one streaming turn.
  */
 const QA_PARTNER = sql`(qa.trace->>'route'='place_qa' or (qa.status<>'streaming' and qa.trace->>'qaProbe' is not null))`;
@@ -623,13 +626,19 @@ export class AssistantRepository {
    * first-text deadline fallback). True: the turn is QA now. A row another
    * writer already ended matches nothing.
    */
-  async settleQaProbe(messageId: string, enabled: boolean): Promise<boolean> {
+  async settleQaProbe(
+    messageId: string,
+    enabled: boolean,
+    options: PlaceQaReadOptions = {},
+  ): Promise<boolean> {
     const current = sql`coalesce(m.trace, '{}'::jsonb)`;
-    const res = await this.db.execute(sql`
+    const res = await placeQaTransaction(this.db, 1500, options, (tx) =>
+      tx.execute(sql`
       update assistant_messages m set trace = ${qaSettled(qaRecovered(current, enabled), current)}
       where m.id = ${messageId} and m.status = 'streaming'
         and m.trace->>'qaProbe' is not null
-      returning m.trace->>'route' as route`);
+      returning m.trace->>'route' as route`),
+    );
     return rowsOf<{ route: string | null }>(res)[0]?.route === 'place_qa';
   }
 
@@ -661,7 +670,7 @@ export class AssistantRepository {
        * statement makes it, from durable facts only; `enabled` is the QA flag
        * as read by the caller, used for a `question` marker alone.
        */
-      qa?: { decided: true } | { decided: false; enabled: boolean };
+      qa?: { decided: true } | { decided: false; enabled: boolean } | { uncertain: true };
     } = {},
   ): Promise<MessageRow | null> {
     const leaseLapsed = options.onlyIfLeaseExpired
@@ -669,7 +678,9 @@ export class AssistantRepository {
       : sql``;
     const merged = sql`(coalesce(m.trace, '{}'::jsonb) || ${JSON.stringify(update.trace ?? {})}::jsonb)`;
     const qa = options.qa ?? { decided: true };
-    const recovered = qa.decided ? sql`false` : qaRecovered(merged, qa.enabled);
+    const recovered =
+      'uncertain' in qa || qa.decided ? sql`false` : qaRecovered(merged, qa.enabled);
+    const settled = 'uncertain' in qa ? merged : qaSettled(recovered, merged);
     return this.db.transaction(async (tx) => {
       const res = await tx.execute(sql`
         update assistant_messages m set
@@ -679,7 +690,7 @@ export class AssistantRepository {
           notice = ${update.notice ? JSON.stringify(update.notice) : null}::jsonb,
           error = ${update.error ? JSON.stringify(update.error) : null}::jsonb,
           frames = ${update.frames ? JSON.stringify(update.frames) : null}::jsonb,
-          trace = ${qaSettled(recovered, merged)},
+          trace = ${settled},
           completed_at = now(), lease_owner = null, lease_expires_at = null
         where m.id = ${messageId} and m.status = 'streaming' ${leaseLapsed}
         returning ${MESSAGE_COLUMNS}`);
