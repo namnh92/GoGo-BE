@@ -180,3 +180,30 @@ base run used `13701a66`. Originals kept; `opus-r2` sets both SHAs.
 Evidence: `dev/test-evidence/be-874/opus-r1/`, `opus-r2/`. S4 stays behind the
 S4+S5 gate; `place_qa` is ON in DEV by owner order, so a DEV deploy makes
 compare, referent and topic chips live there before the Mobile S4 consumer.
+
+## Review round 1 fixes (Opus review + Fable 5.2 advisor; Astra decisions 2026-11-12)
+
+Basis: findings on `6b24a966`; fixes on `e070bcfd`. Astra decision text:
+`dev/test-evidence/be-874/astra-referent-decision.txt`; amendment section "S4
+referents, ordinals and names" appended (both copies).
+
+| ID      | Fix                                                                                                                                                                                                                                                                                                                          | Regression cell (`place-qa-s4.service.spec.ts`, "S4 review round 1")                                                                             |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| F-01 P1 | Area refinement with retained slots re-runs the original compare question (`resolveCompare`), even when the active slot's name came from a reply                                                                                                                                                                             | not_found → name reply → choice → area → cards `[A, C]`                                                                                          |
+| F-02 P1 | Referents over QA clarification cards never answer: ordinal → singleton confirm; otherwise re-ask the same candidates; new topic replaces the old; valid pending keeps compare slots, expiry and its own referent lineage; expired pending seeds a fresh clarification with no partner; invalid ordinal → `clarify_referent` | ordinal over choice; non-ordinal re-ask; compare partner + confirmation answers `[A, C]` on the new topic; expired → fresh confirm; out-of-range |
+| M-01 P1 | `cardOrdinal()` (classifier, shared by the service): the ordinal must be the whole referent; a whole exact venue name wins over an ordinal reading (even over a context id)                                                                                                                                                  | `Quán 2`, `Quán 3 Miền` answer the named venue                                                                                                   |
+| M-02 P2 | "Quán thứ N" consumes "thứ N"; hours default to today; an external weekday clause still applies                                                                                                                                                                                                                              | card 2, `day: date` today                                                                                                                        |
+| F-03 P3 | `selectTopic` recomputes the local date of a default-today hours chip                                                                                                                                                                                                                                                        | chip at 23:50 local, selected 00:05 → next date                                                                                                  |
+| M-03 P3 | Duplicate compare unresolves the active slot before `referent` pending                                                                                                                                                                                                                                                       | slot 1 unresolved                                                                                                                                |
+| M-04 P3 | Compare topic read from text outside both spans when there is no "về …" tail                                                                                                                                                                                                                                                 | "Cafe Đánh Giá" → `overview`                                                                                                                     |
+
+FAIL-before (product files from `6b24a966`, new spec): 10 FAIL / 2 PASS (the
+non-ordinal re-ask and out-of-range cells were already base behaviour and stay as
+preservation) — `opus-r3/fail-before-6b24a966.log`; PASS-after 43/43.
+
+Gates on `e070bcfd`: lint, format:check, typecheck, api:check, api:routes,
+check:boundaries, test (5110), build, artifacts — all exit 0. Integration serial:
+s2 25, s2-wiring 2, 875 5, 877 7, s3 417, s3-fence 45, place-answer 11, assistant
+35, search 33. S4 Layer A head 412/412 (preservation 355, incident 1, capability
+55); base `13701a66` preservation 355 PASS, incident FAIL, capability 42 FAIL / 13
+PASS. Evidence `dev/test-evidence/be-874/opus-r3/`.
