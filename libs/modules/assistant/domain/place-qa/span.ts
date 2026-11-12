@@ -50,7 +50,7 @@ export type PlaceNameSpans =
  */
 const ACCENTED_GRAMMAR = new Set(
   (
-    'giờ mở cửa đóng giá địa chỉ số điện thoại thông của về đánh có không mấy lúc nào ' +
+    'giờ mở cửa đóng giá vé địa chỉ số điện thoại thông của về đánh có không mấy lúc nào ' +
     'nhiêu ở đâu là gì chỗ đậu thế tại quận huyện phường xã tỉnh thành với và sánh quán rẻ hơn đắt'
   )
     .normalize('NFC')
@@ -172,7 +172,7 @@ export function extractPlaceNameSpan(
   // Only anchored topic clauses outside a name are removed. A name containing
   // Cafe, Mới, Gần, Tìm, numbers or administrative words keeps those tokens.
   const prefix =
-    /^(?:(?:gio mo cua|gio dong cua|gia|dia chi|so dien thoai|thong tin|danh gia)( cua| ve)?|(?:opening hours|price|address|phone number|information)( of| for)?)\s+/;
+    /^(?:(?:gio mo cua|gio dong cua|gia(?: ve)?|dia chi|so dien thoai|thong tin|danh gia)( cua| ve)?|(?:opening hours|price|address|phone number|information)( of| for)?)\s+/;
   const leading = prefix.exec(tokens.map((t) => t.grammar).join(' '));
   // A bare single-word topic can also identify a venue (Gia Bảo, Price Cafe).
   // Keep it when a terminal question supplies the topic; otherwise clarify.
@@ -185,7 +185,7 @@ export function extractPlaceNameSpan(
   // inside the span. Negation belongs to that clause, never to the name. The
   // có / không có particle is matched ONCE, so "Quán Có có wifi không?" keeps Có.
   const suffix =
-    /\s+(?:(?:co|khong co)\s+)?(?:mo cua(?: may gio| luc nao| khong)?|dong cua(?: may gio)?|gia bao nhieu|o dau|dia chi la gi|(?:cho dau xe|wifi)(?: khong)?|danh gia the nao|may sao|so dien thoai la gi|opening hours|price|address|rating)\s*$/;
+    /\s+(?:(?:co|khong co)\s+)?(?:mo cua(?: may gio| luc nao| khong)?|dong cua(?: may gio)?|gia bao nhieu|(?:la )?bao nhieu|o dau|dia chi la gi|(?:cho dau xe|wifi)(?: khong)?|danh gia the nao|may sao|so dien thoai la gi|opening hours|price|address|rating)\s*$/;
   // The same words with no question grammar around them may equally be the end
   // of a venue name (Cafe Wifi, Sunset Address).
   const bareNoun = /^(?:cho dau xe|wifi|opening hours|price|address|rating)$/;

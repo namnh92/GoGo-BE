@@ -831,3 +831,14 @@ to expand QA admission. The repository spec amendment is
 
 Validation, the corpus and the reproducible baseline procedure are recorded in
 [864-s3-validation.md](plans/864-s3-validation.md). S3 is not #844 acceptance.
+
+The 2026-11-12 BE#875 owner decision in `dev/policy/decisions-log.md` amends
+rev3 §4.3: the complete exact lookup (§4.2, including aliases when available)
+takes precedence over fuzzy/FTS overflow (>8). One exact candidate uses row 3
+(answer, subject to §4.4 area rules); two or three use row 4 (choice with only
+those cards); more than three require an area (row 2/narrow). Overflow alone
+narrows only when there is no exact candidate. Ambiguous parsing and unresolved
+stated areas still narrow; legacy areas still require confirmation, and an
+area mismatch never silently answers elsewhere. S3 has no curated aliases yet.
+See [875-validation.md](plans/875-validation.md) for regression evidence and
+execution limits.

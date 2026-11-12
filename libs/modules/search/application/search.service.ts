@@ -217,7 +217,13 @@ export class SearchService implements PlaceFactsReader {
         const result = await read.execute(resolvePlaceNameQuery(variants, limit, area, readings));
         const rows = result.rows as (PlaceNameCandidate & { distinct_count: number })[];
         return {
-          candidates: rows.slice(0, limit).map(({ id, exact, score }) => ({ id, exact, score })),
+          // Keep up to four exact rows even for a smaller fuzzy limit: three
+          // fit a choice; the fourth proves that area narrowing is required.
+          // A capped fuzzy list must never manufacture exact uniqueness.
+          candidates: rows
+            .slice(0, Math.max(limit, 4))
+            .filter((c, i) => c.exact || i < limit)
+            .map(({ id, exact, score }) => ({ id, exact, score })),
           overflow: (rows[0]?.distinct_count ?? 0) > limit,
           areaMismatch: false,
         };

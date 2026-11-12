@@ -61,7 +61,7 @@ export function resolvePlaceNameQuery(
       select * from exact_matches union all ${sql.join(fuzzy, sql` union all `)}
     ) channels group by id
   ) select id, exact, score, count(*) over()::int as distinct_count
-    from merged order by exact desc, score desc, id limit ${limit + 1}`;
+    from merged order by exact desc, score desc, id limit ${Math.max(limit + 1, 4)}`;
 }
 
 /**
