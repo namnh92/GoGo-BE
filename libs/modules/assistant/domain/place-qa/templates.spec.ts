@@ -1,5 +1,5 @@
-import { minorUnitAmounts } from '../../../../../apps/api/test/support/minor-unit-amounts';
-import { stripVolatile } from '../../../../../apps/api/test/support/strip-volatile';
+import { minorUnitAmounts } from '../../../shared/test-support/minor-unit-amounts';
+import { stripVolatile } from '../../../shared/test-support/strip-volatile';
 import { describe, expect, it } from 'vitest';
 import { renderPlaceAnswer } from './templates';
 import { fictionalPlace, FIXTURE_A, verified } from './fixtures';

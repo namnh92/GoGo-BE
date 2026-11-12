@@ -1,6 +1,6 @@
 /** Match raw, vi dot-grouped and en comma-grouped integer minor-unit amounts.
  * Strip volatile UUIDs/timestamps from the subject before using this leak guard.
- * Substring matching deliberately preserves the existing guards' strictness.
+ * Match whole numeric tokens, including when surrounded by text or punctuation.
  */
 export function minorUnitAmounts(...amounts: readonly number[]): RegExp {
   const patterns = amounts.flatMap((amount) => {
@@ -15,5 +15,7 @@ export function minorUnitAmounts(...amounts: readonly number[]): RegExp {
     ];
   });
   if (!patterns.length) throw new RangeError('Expected at least one minor-unit amount');
-  return new RegExp(`(?:${[...new Set(patterns)].join('|')})`);
+  // All alternatives must reject adjacent digits or a digit across a grouping
+  // separator. Sentence punctuation is allowed unless it continues a number.
+  return new RegExp(`(?<!\\d)(?<!\\d[.,])(?:${[...new Set(patterns)].join('|')})(?!\\d|[.,]\\d)`);
 }

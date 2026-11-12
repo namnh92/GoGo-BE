@@ -3,8 +3,8 @@ import { AssistantRepository } from '../../../libs/modules/assistant/infrastruct
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
-import { minorUnitAmounts } from './support/minor-unit-amounts';
-import { stripVolatile } from './support/strip-volatile';
+import { minorUnitAmounts } from '../../../libs/modules/shared/test-support/minor-unit-amounts';
+import { stripVolatile } from '../../../libs/modules/shared/test-support/strip-volatile';
 import {
   startAssistantFixture,
   parseSse,

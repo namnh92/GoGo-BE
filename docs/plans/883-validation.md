@@ -1,5 +1,107 @@
 # GoGo-BE#883 — bằng chứng guard phát hiện rò rỉ giá
 
+## PR #884 — sửa review round 1
+
+Refs #883. Ngày chạy: 2026-11-12. Vai trò Sol; owner yêu cầu sửa và chạy gate.
+Worktree bắt đầu sạch tại `9ea70072a4f4e3261d7cb39eb2f8faefe2a60b6c`
+(`bugfix/GOGO-883-price-leak-guards`). Kết quả sau sửa áp dụng cho diff chưa commit
+trên HEAD này. Không commit; không sửa product code hoặc S3 Layer A.
+
+### F-01 P1 — dependency ngược từ libs vào apps
+
+Nguyên nhân: ba unit spec của assistant import `minorUnitAmounts` và
+`stripVolatile` từ `apps/api/test/support`, tạo sáu dependency vi phạm hướng
+`libs → apps`. Không thay đổi checker hoặc bỏ qua spec.
+
+Sửa: chuyển cả hai helper cùng hai spec sang
+`libs/modules/shared/test-support/` (thuộc `shared` trong tsconfig của modules).
+Ba unit spec import trong libs; integration spec tại
+`apps/api/test/assistant-place-answer.int.spec.ts` import vào libs.
+`stripVolatile` và spec của nó giữ nguyên byte; các assertion của bốn consumer
+không đổi.
+
+| Bằng chứng                               | Lệnh                    | Exit | Kết quả                                                    |
+| ---------------------------------------- | ----------------------- | ---- | ---------------------------------------------------------- |
+| FAIL trước sửa, worktree sạch `9ea70072` | `pnpm check:boundaries` | 1    | 823 file, 6 violation tại hai import đầu của mỗi unit spec |
+| PASS sau sửa                             | `pnpm check:boundaries` | 0    | 827 file, không còn violation                              |
+
+### F-02 P2 — regex match một phần số tiền khác
+
+Nguyên nhân: alternation không có ranh giới, nên `12000` match trong `120000`
+hoặc `112000`, và `12\.000` match trong `12.0000` hoặc `12.000.000`.
+
+Sửa: đặt `(?<!\d)(?<!\d[.,])` trước toàn bộ alternation và
+`(?!\d|[.,]\d)` sau nó. Mọi alternative raw/vi/en chịu cùng ranh giới:
+không có chữ số sát cạnh, không tiếp tục một số qua dấu chấm hoặc dấu phẩy.
+Dấu câu thông thường vẫn hợp lệ, ví dụ `Price:(12.000), per person.`.
+Không dùng word boundary vì giá có thể sát chữ hoặc ký hiệu tiền tệ.
+
+Thêm 42 negative cells cho 0, 123, 12000, 24000 và 1234567, gồm chữ số trước/sau,
+số raw/grouped lớn hơn, nhóm phân cách nối tiếp hoặc trộn dấu. Mỗi cell kiểm tra
+text, JSON và SSE frame. Giữ các positive cells raw/vi/en và volatile metadata;
+thêm positive text, JSON number/string và SSE cho cả 12000/24000.
+
+| Bằng chứng                                                       | Lệnh                                                                                   | Exit | Kết quả                                                                                          |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ---- | ------------------------------------------------------------------------------------------------ |
+| FAIL trên helper nguyên bản `9ea70072`, chỉ thêm regression spec | `pnpm exec vitest run --project unit apps/api/test/support/minor-unit-amounts.spec.ts` | 1    | 42 negative cells FAIL, 21 test khác PASS; lỗi assertion `.not.toMatch`, không phải setup/import |
+| PASS sau sửa và chuyển helper                                    | `pnpm exec vitest run --project unit <5 spec bên dưới>`                                | 0    | 5 file, 254 test PASS; riêng matcher 63/63                                                       |
+
+Log trước sửa: `/tmp/gogo-884-r1-boundaries-before.log`,
+`/tmp/gogo-884-r1-amounts-before.log`. Regression spec trước sửa chính là spec
+hiện tại ở `libs/modules/shared/test-support/minor-unit-amounts.spec.ts`, chạy
+khi còn ở đường dẫn app, với helper và `stripVolatile` nguyên bản từ HEAD.
+
+### Gate sau sửa
+
+| Lệnh                                                                                                                                     | Exit | Kết quả                                                                                                |
+| ---------------------------------------------------------------------------------------------------------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------ |
+| `pnpm check:boundaries`                                                                                                                  | 0    | 827 file, không có violation                                                                           |
+| `pnpm typecheck`                                                                                                                         | 0    | 8/8 package tasks PASS; Turbo cảnh báo không ghi được shared cache do sandbox, không có lỗi TypeScript |
+| `pnpm exec eslint <8 file TS>`                                                                                                           | 0    | PASS                                                                                                   |
+| `pnpm exec prettier --check <8 file TS> docs/plans/883-validation.md`                                                                    | 0    | PASS                                                                                                   |
+| `pnpm exec vitest run --project unit <5 spec>`                                                                                           | 0    | 5 file, 254 test PASS                                                                                  |
+| `pnpm test` (full unit)                                                                                                                  | 1    | 345 file PASS, 2 file FAIL; 5082 test PASS, 1 FAIL, 1 skipped                                          |
+| `pnpm exec vitest run --project unit --maxWorkers=1 apps/api/src/sentry-request.spec.ts libs/modules/assistant/domain/grounding.spec.ts` | 1    | Grounding: 38/38 PASS; Sentry: lỗi suite trước test do `listen EPERM`, 1 skipped                       |
+| `git diff --check`                                                                                                                       | 0    | PASS                                                                                                   |
+
+Full unit chưa xanh: `apps/api/src/sentry-request.spec.ts` không bind được
+`127.0.0.1` trong sandbox (`listen EPERM`). Test
+`S2-F-03: a long chain of overlapping names stays cheap and leaks nothing` tại
+`libs/modules/assistant/domain/grounding.spec.ts:315` mất 1532 ms, vượt ngưỡng
+1000 ms khi full unit chạy cùng typecheck/eslint/focused. Lần chạy cô lập, một
+worker và không còn gate khác, toàn bộ 38 grounding test PASS; lỗi bind của
+Sentry vẫn tái hiện. Không sửa hoặc skip test để làm gate xanh.
+`git diff --exit-code 9ea70072 -- apps/api/src/sentry-request.spec.ts libs/modules/assistant/domain/grounding.spec.ts libs/modules/assistant/domain/grounding.ts`
+exit 0: các file này không đổi; không import helper đang sửa.
+
+Log sau sửa: `/tmp/gogo-884-r1-{boundaries,typecheck,eslint,focused,unit}-after.log`,
+`/tmp/gogo-884-r1-unit-isolated.log`, `/tmp/gogo-884-r1-prettier-after.log`.
+
+Lệnh tái chạy trên diff hiện tại (8 file TS được chạm):
+
+```sh
+pnpm check:boundaries
+pnpm typecheck
+pnpm exec eslint libs/modules/shared/test-support/minor-unit-amounts.ts libs/modules/shared/test-support/minor-unit-amounts.spec.ts libs/modules/shared/test-support/strip-volatile.ts libs/modules/shared/test-support/strip-volatile.spec.ts apps/api/test/assistant-place-answer.int.spec.ts libs/modules/assistant/application/place-answer-reader.spec.ts libs/modules/assistant/application/place-qa.service.spec.ts libs/modules/assistant/domain/place-qa/templates.spec.ts
+pnpm exec prettier --check libs/modules/shared/test-support/minor-unit-amounts.ts libs/modules/shared/test-support/minor-unit-amounts.spec.ts libs/modules/shared/test-support/strip-volatile.ts libs/modules/shared/test-support/strip-volatile.spec.ts apps/api/test/assistant-place-answer.int.spec.ts libs/modules/assistant/application/place-answer-reader.spec.ts libs/modules/assistant/application/place-qa.service.spec.ts libs/modules/assistant/domain/place-qa/templates.spec.ts docs/plans/883-validation.md
+pnpm exec vitest run --project unit libs/modules/shared/test-support/minor-unit-amounts.spec.ts libs/modules/shared/test-support/strip-volatile.spec.ts libs/modules/assistant/application/place-answer-reader.spec.ts libs/modules/assistant/application/place-qa.service.spec.ts libs/modules/assistant/domain/place-qa/templates.spec.ts
+pnpm test
+git diff --check
+```
+
+Đã so sánh byte cả 9 file trong `overlay` của
+`scripts/eval/place-qa-layer-a-base.sh` với `git show 9ea70072:<path>`:
+9/9 không đổi. Không chạy integration hoặc Layer A; yêu cầu round này là
+focused và full unit. Các log `/tmp` là artifact cục bộ của phiên này.
+
+## Bằng chứng trước round 1 (lịch sử tại `9ea70072`)
+
+Các phần dưới ghi run tạo commit `9ea70072` từ base `13701a66`.
+Đường dẫn app, substring matching, số test và hash trong phần lịch sử là trạng
+thái trước hai fix trên; lệnh hiện tại dùng phần round 1. Runner lịch sử cần
+đổi hai helper import sang `../../../../libs/modules/shared/test-support/`
+khi chạy probe trong `apps/api/test/support` trên diff hiện tại.
+
 Refs #883, #877. Ngày chạy: 2026-11-12. Vai trò: Sol, chỉ sửa test.
 Branch `bugfix/GOGO-883-price-leak-guards`, HEAD/base `13701a66`.
 Không commit. Không sửa product code, OpenAPI hay file overlay Layer A.
