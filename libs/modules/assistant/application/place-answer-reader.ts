@@ -11,6 +11,7 @@ import {
   type PlaceFactsReader,
 } from '../domain/place-qa/place-facts';
 import { isPlaceAnswerRow, parseReferenceGroup } from '../domain/place-qa/reference-group';
+import { confirmText } from '../domain/place-qa/pending';
 import {
   answerQueries,
   hasMalformedCapacity,
@@ -220,7 +221,14 @@ export class PlaceAnswerReader {
               if (!p?.available) return [];
               const ordinal = group.cards.indexOf(o.placeId) + 1;
               const label = `${ordinal}. ${safeText(p.name)}`.slice(0, 40);
-              return [{ id: o.id, label, text: String(ordinal) }];
+              // A one-candidate confirmation is answered by text that names the
+              // candidate and is bound to this message; a bare ordinal is not
+              // proof of which chip an old client tapped (shape rev3 §4.5).
+              const text =
+                group.prompt === 'place_confirm' && group.cards.length === 1
+                  ? confirmText(locale, safeText(p.name), row.id, o.placeId)
+                  : String(ordinal);
+              return [{ id: o.id, label, text }];
             }
             const q = parseAnswerToken(o.query)!;
             const p = context.places.get(q.placeId);

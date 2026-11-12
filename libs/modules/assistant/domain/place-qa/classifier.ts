@@ -3,6 +3,7 @@ import vi from './lexicon.vi.json';
 import en from './lexicon.en.json';
 import { normalizeVietnamese } from '../../../search/domain/normalize';
 import { extractPlaceNameSpan, type PlaceNameSpan } from './span';
+import { isTypedConfirm } from './pending';
 import type { AnswerQuery, AnswerTopic } from './tokens';
 
 export type QaArgs = {
@@ -41,6 +42,32 @@ const folded = (text: string) =>
 export function isNewNonQaRequest(text: string): boolean {
   const t = folded(text);
   return [vi, en].some((l) => test(l.guard, t) || test(l.recommend, t) || test(l.category, t));
+}
+/**
+ * GoGo-BE#873 round 2. What the send can know about a turn from its own text,
+ * with no read: written into the assistant row in the admission transaction.
+ * It is a provisional marker, never a route. `control` alone is already QA
+ * (a structured follow-up is QA control in every flag state, §3.1 item 1).
+ * - `question`: QA-shaped question; QA when the flag is on.
+ * - `name`: bare text, a name-only PROBE; QA only after exact canonical-name
+ *   qualification, or as a typed reply to a QA turn.
+ * - `reply`: other text; QA only as a typed reply to a QA turn.
+ * `null`: an explicit recommendation/action/guide — never QA, no marker.
+ */
+export type QaProbe = 'control' | 'question' | 'name' | 'reply';
+export function qaProbeOf(
+  text: string,
+  context: { kind: string; id: string } | null,
+  locale: 'vi' | 'en',
+  structured: boolean,
+): QaProbe | null {
+  if (structured) return 'control';
+  // An emitted confirm text is a reply even when its place name reads like a
+  // category or a recommendation; it is QA only after a QA turn.
+  if (isTypedConfirm(text)) return 'reply';
+  if (isNewNonQaRequest(text)) return null;
+  const kind = new PlaceQaClassifier().classify(text, context, { now: new Date(), locale }).kind;
+  return kind === 'not_qa' ? 'reply' : kind === 'name_only' ? 'name' : 'question';
 }
 /** Newest text only. Catalogue evidence for a name-only query is supplied by the caller.
  * name_only is a probe, and may be admitted only for complete whole-name equality.

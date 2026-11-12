@@ -3,10 +3,11 @@ import { NoopMetrics } from '@gogo/observability';
 import { PlaceQaService } from './place-qa.service';
 import { PlaceAnswerReader } from './place-answer-reader';
 import { applyFrame, newTurnState } from './turn-state';
-import { makeQaPending } from '../domain/place-qa/pending';
+import { confirmText, isTypedConfirm, makeQaPending } from '../domain/place-qa/pending';
 import { resolvePlaceNameOutcome } from '../domain/place-qa/resolution';
 import { FIXTURE_A, FIXTURE_B, FIXTURE_C, fictionalPlace } from '../domain/place-qa/fixtures';
-import type { TurnInput } from './assistant-orchestrator.service';
+import { firstTextGuard, type TurnInput } from './assistant-orchestrator.service';
+import { qaProbeOf } from '../domain/place-qa/classifier';
 import type { AssistantFrameInput } from '../domain/assistant.types';
 const now = Date.parse('2026-11-11T10:00:00Z');
 afterEach(() => vi.restoreAllMocks());
@@ -22,6 +23,7 @@ export function qaFixture() {
   };
   const repo = {
     markPlaceQa: vi.fn(async () => FIXTURE_A),
+    settleQaProbe: vi.fn(async (_id: string, _enabled: boolean) => false),
     clearPlaceQa: vi.fn(async () => true),
     latestAssistant: vi.fn(async (): Promise<any> => null),
     findMessage: vi.fn(async () => ({
@@ -563,6 +565,31 @@ describe('Fable fix round — Sol F-02: old client types the emitted confirm opt
     expect(closed.qa).toMatchObject({ outcome: 'unavailable' });
     expect(closed.view.text).not.toMatch(/12000|VND/);
   });
+  it('round 2: a stale ordinal of the earlier choice never confirms the other branch', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const c = qaConversation();
+    const choice = await c.send('Song Ngọc giá bao nhiêu?', (f) =>
+      f.search.resolvePlaceName.mockResolvedValue(exact(FIXTURE_A, FIXTURE_B)),
+    );
+    const [chipA, chipB] = choice.view.followUps[0]!.options;
+    const confirmB = await c.send(chipB!.text);
+    expect(confirmB.qa!.pending!.slots[0].candidateIds).toEqual([FIXTURE_B]);
+    // Old client taps A's chip from the earlier message: the bare ordinal "1".
+    const stale = await c.send(chipA!.text);
+    expect(stale.qa).toMatchObject({ outcome: 'confirm' });
+    expect(stale.qa!.pending!.slots[0].candidateIds).toEqual([FIXTURE_B]);
+    expect(stale.f.search.placeFacts).not.toHaveBeenCalled();
+    expect(stale.f.state.trace.placeAnswerGroup).toMatchObject({ kind: 'clarification' });
+    // The emitted confirm text identifies the candidate of THIS confirmation.
+    const emitted = stale.view.followUps[0]!.options[0]!.text;
+    expect(emitted).toContain('Song Ngọc');
+    expect(emitted).not.toMatch(/^\d+$/);
+    // An emitted confirm text of an earlier confirmation (another message) is
+    // not this one's, even for an identically named branch.
+    expect(confirmB.view.followUps[0]!.options[0]!.text).not.toBe(emitted);
+    const foreign = await c.send(confirmB.view.followUps[0]!.options[0]!.text);
+    expect(foreign.qa?.outcome).not.toBe('answer');
+  });
   it('an ordinal outside a singleton confirm is not a confirmation', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(now);
     const c = qaConversation();
@@ -688,75 +715,194 @@ describe('Fable fix round — Astra F-01: referent continuation keeps the name-b
   );
 });
 
-describe('Fable fix round — Sol F-01: admission fence before cancellable work', () => {
-  it('admit writes the durable association with no signal; handle reuses its reads', async () => {
+describe('Fable fix round 2 — fence decisions stay inside the guarded producer', () => {
+  it.each([
+    [true, 'structured', '1', null, 'control'],
+    [false, 'explicit recommendation', 'Gợi ý quán cafe ở Hà Nội giá 100k', null, null],
+    [false, 'QA-shaped question', 'Fictional Lantern giá bao nhiêu?', null, 'question'],
+    [false, 'deictic question', 'Giá bao nhiêu?', null, 'question'],
+    [false, 'bare text', 'Cầu Giấy', null, 'name'],
+    [
+      false,
+      'long free text',
+      'ừ thì mình cũng chưa biết nữa để mình nghĩ thêm rồi nói sau nha bạn ơi',
+      null,
+      'reply',
+    ],
+  ] as const)('qaProbeOf(%s, %s) is pure and reads nothing', (structured, _n, text, ctx, probe) => {
+    expect(qaProbeOf(text, ctx, 'vi', structured)).toBe(probe);
+  });
+  it('a name-only probe writes no fence and sets no route until the whole name qualifies', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(now);
     const f = qaFixture();
-    await f.service.admit(f.input, f.state);
+    f.input.text = 'Fictional Lantern';
+    f.search.resolvePlaceName.mockImplementation(async () => {
+      expect(f.repo.markPlaceQa).not.toHaveBeenCalled();
+      expect(f.state.trace).toEqual({});
+      return resolvePlaceNameOutcome({
+        candidates: [{ id: FIXTURE_A, exact: true, score: 1 }],
+        overflow: false,
+        areaMismatch: false,
+      });
+    });
+    expect(await f.run()).toBe(true);
     expect(f.repo.markPlaceQa).toHaveBeenCalledOnce();
-    expect(f.search.resolvePlaceName).not.toHaveBeenCalled();
     expect(f.state.trace).toMatchObject({
       route: 'place_qa',
-      questionMessageId: FIXTURE_A,
-      placeAnswerGroup: { kind: 'notice', message: 'read_error' },
+      placeQa: { class: 'name_only', topic: 'overview', outcome: 'answer' },
     });
-    // Unknown cost stays unknown until the producer runs; nothing is dispatched.
-    expect(f.state.costs).toMatchObject({ jevCalls: 0, haikuCalls: 0, jevCostUsd: null });
-    // A flag flip after admission cannot send a fenced turn to the model path.
-    f.availability.placeQaEnabled.mockResolvedValue(false);
-    expect(await f.run()).toBe(true);
-    expect(f.availability.placeQaEnabled).toHaveBeenCalledOnce();
-    expect(f.repo.latestAssistant).toHaveBeenCalledOnce();
-    expect(f.repo.markPlaceQa).toHaveBeenCalledOnce();
-    expect(f.state.trace.placeQa).toMatchObject({ outcome: 'answer', topic: 'price' });
-    expect(f.state.trace.placeAnswerGroup).toMatchObject({ kind: 'answer' });
+    expect(f.state.qaDecided).toBe(true);
   });
-  it.each([
-    ['flag off', 'Fictional Lantern giá bao nhiêu?', false],
-    ['recommendation', 'Gợi ý quán cafe ở Hà Nội giá 100k', true],
-  ])('admit leaves a non-QA turn untouched (%s)', async (_name, text, enabled) => {
-    const f = qaFixture();
-    f.input.text = text;
-    f.availability.placeQaEnabled.mockResolvedValue(enabled);
-    await f.service.admit(f.input, f.state);
-    expect(f.repo.markPlaceQa).not.toHaveBeenCalled();
-    expect(f.state.trace).toEqual({});
-    expect(await f.run()).toBe(false);
-    expect(f.state.trace).toEqual({});
-    expect(f.availability.placeQaEnabled).toHaveBeenCalledOnce();
-  });
-  it.each(['structured control', 'typed reply to the latest QA turn'] as const)(
-    'admit fences %s even with the flag off',
-    async (mode) => {
-      vi.spyOn(Date, 'now').mockReturnValue(now);
-      const f = qaFixture();
-      f.setPending();
-      f.availability.placeQaEnabled.mockResolvedValue(false);
-      f.input.text = '1';
-      if (mode === 'structured control') {
-        f.input.replyToMessageId = FIXTURE_B;
-        f.input.followUpOptionId = 'pick_1';
-      }
-      await f.service.admit(f.input, f.state);
-      expect(f.state.trace.route).toBe('place_qa');
-      expect(f.repo.markPlaceQa).toHaveBeenCalledOnce();
-      expect(await f.run()).toBe(true);
-      expect(f.state.trace.placeQa).toMatchObject({ outcome: 'disabled' });
-    },
-  );
-  it('a failed name-only probe after admission restores the ordinary turn completely', async () => {
+  it('an unqualified probe is an ordinary turn: nothing written, nothing to undo', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(now);
     const f = qaFixture();
     f.input.text = 'Cầu Giấy';
     f.search.resolvePlaceName.mockResolvedValue(
       resolvePlaceNameOutcome({ candidates: [], overflow: false, areaMismatch: false }),
     );
-    await f.service.admit(f.input, f.state);
-    expect(f.state.trace.route).toBe('place_qa');
     expect(await f.run()).toBe(false);
-    expect(f.repo.clearPlaceQa).toHaveBeenCalledOnce();
+    expect(f.repo.markPlaceQa).not.toHaveBeenCalled();
     expect(f.state.trace).toEqual({});
     expect(f.state.costs).toMatchObject({ jevCostUsd: null, haikuUpstreamCostUsd: null });
     expect(f.frames).toEqual([]);
+    expect(f.state.qaDecided).toBe(true);
   });
+  // §4.3 row 1: a read error is never "not found" and never a silent fallback;
+  // §3.1: nothing qualified the name, so the failed turn is not a QA turn.
+  it('a probe read error fails the turn undecided and unfenced', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const f = qaFixture();
+    f.input.text = 'Cầu Giấy';
+    f.search.resolvePlaceName.mockRejectedValue(new Error('fixture failure'));
+    await expect(f.run()).rejects.toThrow('fixture failure');
+    expect(f.repo.markPlaceQa).not.toHaveBeenCalled();
+    expect(f.state.trace).toEqual({});
+    expect(f.state.qaDecided).toBeUndefined();
+  });
+  it.each([
+    ['flag on', true, 'Fictional Lantern giá bao nhiêu?', true],
+    ['flag off', false, 'Fictional Lantern giá bao nhiêu?', false],
+    ['flag off', false, 'Gợi ý quán cafe ở Hà Nội giá 100k', false],
+  ] as const)('%s: the producer records that it decided (%s → %s)', async (_n, on, text, qa) => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const f = qaFixture();
+    f.input.text = text;
+    f.availability.placeQaEnabled.mockResolvedValue(on);
+    expect(await f.run()).toBe(qa);
+    expect(f.state.qaDecided).toBe(true);
+    expect(f.state.trace.route).toBe(qa ? 'place_qa' : undefined);
+  });
+  it.each([
+    ['placeQaEnabled', 'Gợi ý quán cafe ở Hà Nội giá 100k'],
+    ['placeQaEnabled', 'Fictional Lantern giá bao nhiêu?'],
+    ['latestAssistant', 'Gợi ý quán cafe ở Hà Nội giá 100k'],
+    ['latestAssistant', 'Cầu Giấy'],
+  ] as const)(
+    'a stalled %s read ends at the one first-text deadline, with no fence and no new allowance (%s)',
+    async (read, text) => {
+      vi.useFakeTimers();
+      try {
+        const f = qaFixture();
+        f.input.text = text;
+        if (read === 'placeQaEnabled')
+          f.availability.placeQaEnabled.mockReturnValue(new Promise<boolean>(() => {}));
+        else f.repo.latestAssistant.mockReturnValue(new Promise(() => {}));
+        const deadline = Date.now() + 15_000;
+        const guard = firstTextGuard(deadline, new AbortController().signal);
+        const settled = guard
+          .run(() =>
+            f.service.handle(f.input, f.state, { emit: async () => {} }, guard.signal, deadline),
+          )
+          .then(
+            () => 'resolved',
+            (e: unknown) => (e as Error).name,
+          );
+        await vi.advanceTimersByTimeAsync(14_999);
+        expect(await Promise.race([settled, Promise.resolve('pending')])).toBe('pending');
+        await vi.advanceTimersByTimeAsync(1);
+        expect(await settled).toBe('FirstTextDeadlineError');
+        expect(f.repo.markPlaceQa).not.toHaveBeenCalled();
+        expect(f.state.trace).toEqual({});
+        expect(f.state.qaDecided).toBeUndefined();
+        expect(f.search.resolvePlaceName).not.toHaveBeenCalled();
+        guard.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+});
+
+describe('Fable fix round 2 — open decision at the first-text deadline, and confirm text', () => {
+  it.each([
+    ['question', true, true],
+    ['question', false, false],
+    ['name', true, false],
+    ['reply', true, false],
+  ] as const)(
+    'settleUndecided(%s, flag %s) passes enabled=%s and adopts the result',
+    async (probe, on, sent) => {
+      const f = qaFixture();
+      f.input.qaProbe = probe;
+      f.availability.placeQaEnabled.mockResolvedValue(on);
+      f.repo.settleQaProbe.mockResolvedValue(sent || probe !== 'question');
+      const qa = await f.service.settleUndecided(f.input, f.state);
+      expect(f.repo.settleQaProbe).toHaveBeenCalledWith(f.input.messageId, sent);
+      expect(f.availability.placeQaEnabled).toHaveBeenCalledTimes(probe === 'question' ? 1 : 0);
+      expect(f.state.qaDecided).toBe(true);
+      expect(qa).toBe(sent || probe !== 'question');
+      expect(f.state.trace.route).toBe(qa ? 'place_qa' : undefined);
+    },
+  );
+  it.each([
+    ['already decided', 'question', true],
+    ['no marker', null, false],
+    ['structured control', 'control', false],
+  ] as const)('settleUndecided reads and writes nothing when %s', async (_n, probe, decided) => {
+    const f = qaFixture();
+    f.input.qaProbe = probe;
+    if (decided) f.state.qaDecided = true;
+    expect(await f.service.settleUndecided(f.input, f.state)).toBe(false);
+    expect(f.repo.settleQaProbe).not.toHaveBeenCalled();
+    expect(f.availability.placeQaEnabled).not.toHaveBeenCalled();
+  });
+  it('a flag read that never returns is bounded and fails closed', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = qaFixture();
+      f.input.qaProbe = 'question';
+      f.availability.placeQaEnabled.mockReturnValue(new Promise<boolean>(() => {}));
+      f.repo.settleQaProbe.mockResolvedValue(true);
+      const settled = f.service.settleUndecided(f.input, f.state);
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(await settled).toBe(true);
+      expect(f.repo.settleQaProbe).toHaveBeenCalledWith(f.input.messageId, true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it.each(['Cafe Gợi Ý Quán Ngon', 'Nhà hàng Tìm Quán Cafe', 'Best Restaurant Recommend'])(
+    'the emitted confirm text of a place named "%s" is QA control, not a new request',
+    async (name) => {
+      vi.spyOn(Date, 'now').mockReturnValue(now);
+      for (const locale of ['vi', 'en'] as const) {
+        const text = confirmText(locale, name, FIXTURE_C, FIXTURE_A);
+        expect(isTypedConfirm(text)).toBe(true);
+        expect(qaProbeOf(text, null, locale, false)).toBe('reply');
+      }
+      const c = qaConversation();
+      c.places.set(FIXTURE_A, fictionalPlace(FIXTURE_A, name));
+      c.places.set(FIXTURE_B, fictionalPlace(FIXTURE_B, name));
+      const choice = await c.send('Song Ngọc giá bao nhiêu?', (f) =>
+        f.search.resolvePlaceName.mockResolvedValue(exact(FIXTURE_A, FIXTURE_B)),
+      );
+      const confirm = await c.send(choice.view.followUps[0]!.options[1]!.text);
+      const emitted = confirm.view.followUps[0]!.options[0]!.text;
+      expect(emitted).toContain(name);
+      const answered = await c.send(emitted);
+      expect(answered.handled).toBe(true);
+      expect(answered.qa).toMatchObject({ outcome: 'answer', topic: 'price' });
+      expect(answered.f.search.placeFacts).toHaveBeenCalledWith([FIXTURE_B], expect.anything());
+    },
+  );
 });

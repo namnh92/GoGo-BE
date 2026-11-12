@@ -7,6 +7,7 @@ import { ASSISTANT_DECISION_PROVIDER } from '../../../libs/modules/assistant/app
 import { AssistantRepository } from '../../../libs/modules/assistant/infrastructure/assistant.repository';
 import { AssistantTurnRunner } from '../../../libs/modules/assistant/application/assistant-turn-runner.service';
 import { PlaceQaService } from '../../../libs/modules/assistant/application/place-qa.service';
+import { AssistantAvailabilityService } from '../../../libs/modules/assistant/application/assistant-availability.service';
 import {
   startAssistantFixture,
   parseSse,
@@ -35,6 +36,8 @@ beforeAll(async () => {
     ASSISTANT_USER_DAILY_MAX_MESSAGES: '1000',
     ASSISTANT_USER_PER_MINUTE_MAX_MESSAGES: '600',
     ASSISTANT_MONTHLY_MAX_USD: '100',
+    // Short enough for the deadline cells; every other cell answers in well under it.
+    ASSISTANT_FIRST_TEXT_TIMEOUT_MS: '4000',
   });
   await placeNameKeyIndex(f.db);
   const decisions = f.app.get<DecisionProviderPort>(ASSISTANT_DECISION_PROVIDER);
@@ -323,11 +326,9 @@ describe('Sol F-01: stop/reaper before PlaceQaService.handle keeps the QA pair f
       stopLocal.mockRestore();
     }
   });
-  // Pinned residual, flag on only (docs/plans/864-s3-validation.md, residuals):
-  // a bare text is a name-only PROBE, fenced at admission exactly as it was
-  // fenced during the probe at 1c2dc953. Stopped before the probe can clear
-  // it, it stays QA. Whether to narrow this is an owner/SA shape decision.
-  it('a bare non-QA reply stopped before the name-only probe stays fenced (known flag-on residual)', async () => {
+  // Round 2 (Sol F-03 / Astra F-02): a bare text is only a name-only PROBE.
+  // Nothing established QA, so an interrupted probe is an ordinary turn.
+  it('a bare non-QA reply stopped before the name-only probe keeps ordinary history and continuation', async () => {
     const c = await conversation();
     const repo = f.app.get(AssistantRepository);
     const runner = f.app.get(AssistantTurnRunner);
@@ -348,22 +349,317 @@ describe('Sol F-01: stop/reaper before PlaceQaService.handle keeps the QA pair f
       expect((await stopping).statusCode).toBeLessThan(300);
       const stored = await repo.findMessageById(sent.id);
       expect(stored?.status).toBe('stopped');
-      expect(stored?.trace).toMatchObject({ route: 'place_qa', questionMessageId: sent.userId });
+      expect.soft(stored?.trace?.route).toBeUndefined();
+      expect.soft(stored?.trace).not.toHaveProperty('qaProbe');
       resetCapture();
       const again = await turn(c, 'Cầu Giấy');
       const history = await repo.history(c.id, again.id, 50);
-      expect(history.map((m) => m.id)).not.toContain(sent.userId);
-      // The repeated bare reply is read as QA control of the stopped turn.
-      expect(again.qa).toMatchObject({ class: 'control', outcome: 'stale_choice' });
-      expect(capture).toEqual({ jev: [], haiku: [] });
-      // An explicit request still reaches the recommendation path afterwards.
-      const resumed = await turn(c, 'Gợi ý quán cafe ở Phường Cầu Giấy, Hà Nội');
-      expect(resumed.stored?.trace?.route).not.toBe('place_qa');
+      expect.soft(history.map((m) => m.id)).toContain(sent.userId);
+      // The repeated reply is an ordinary continuation, not QA control.
+      expect.soft(again.stored?.trace?.route).not.toBe('place_qa');
+      expect.soft(again.qa).toBeUndefined();
       expect(capture.jev.length).toBeGreaterThan(0);
     } finally {
       funding.release();
       funding.restore();
       stopLocal.mockRestore();
+    }
+  });
+});
+
+async function qaFlag(enabled: boolean) {
+  await f.db
+    .insert(schema.featureFlags)
+    .values({ key: 'assistant.place_qa.enabled', environment: 'all', platform: 'all', enabled })
+    .onConflictDoUpdate({
+      target: [
+        schema.featureFlags.key,
+        schema.featureFlags.environment,
+        schema.featureFlags.platform,
+      ],
+      set: { enabled },
+    });
+}
+/** The process "dies" right after the send commits: the runner never starts,
+ * the lease lapses and the reaper (any instance) ends the turn. */
+async function sendThenDie(c: Conversation, text: string, control: Record<string, unknown> = {}) {
+  const runner = f.app.get(AssistantTurnRunner);
+  const start = vi.spyOn(runner, 'start').mockImplementationOnce(() => undefined);
+  try {
+    const sent = await send(c, text, control);
+    await f.db.execute(
+      sql`update assistant_messages set lease_expires_at=now()-interval '1 minute' where id=${sent.id}`,
+    );
+    expect(await runner.reap()).toBeGreaterThan(0);
+    const stored = await f.app.get(AssistantRepository).findMessageById(sent.id);
+    expect(stored?.status).toBe('failed');
+    return { ...sent, stored };
+  } finally {
+    start.mockRestore();
+  }
+}
+
+describe('Round 2 — Sol F-02 / Astra F-01: the send-commit → fence crash window', () => {
+  it.each(['question', 'typed reply to the latest QA turn', 'structured control'] as const)(
+    'a %s whose process dies before any fence write stays out of history and model requests',
+    async (kind) => {
+      await qaFlag(true);
+      const c = await conversation();
+      const repo = f.app.get(AssistantRepository);
+      const handle = vi.spyOn(f.app.get(PlaceQaService), 'handle');
+      try {
+        let text = QUESTION;
+        let control: Record<string, unknown> = {};
+        const earlier: string[] = [];
+        if (kind !== 'question') {
+          const choice = await turn(c, 'Song Ngọc giá bao nhiêu?');
+          expect(choice.qa).toMatchObject({ outcome: 'choice' });
+          earlier.push(choice.userId, choice.id);
+          text = kind === 'structured control' ? '1' : 'Không phải các quán này';
+          if (kind === 'structured control')
+            control = {
+              replyToMessageId: choice.id,
+              followUpOptionId: choice.message.followUps[0].options[0].id,
+            };
+          handle.mockClear();
+        }
+        const dead = await sendThenDie(c, text, control);
+        expect(handle).not.toHaveBeenCalled();
+        expect.soft(dead.stored?.trace).toMatchObject({
+          route: 'place_qa',
+          questionMessageId: dead.userId,
+          orphaned: true,
+        });
+        expect.soft(dead.stored?.trace).not.toHaveProperty('qaProbe');
+        const { next, expected, seen } = await followingRecommendation(c);
+        const history = await repo.history(c.id, next.id, 50);
+        expect.soft(history.map((m) => m.id)).not.toContain(dead.userId);
+        expect(history.map((m) => m.id)).not.toContain(dead.id);
+        for (const id of earlier) expect(history.map((m) => m.id)).not.toContain(id);
+        expect.soft(JSON.stringify(seen)).not.toMatch(/Quán Sao Lạ|Không phải các quán|placeQa/);
+        expect(seen).toEqual(expected);
+      } finally {
+        handle.mockRestore();
+      }
+    },
+  );
+  it.each([
+    ['QA-shaped question with the flag off', false, QUESTION],
+    ['bare reply with the flag off', false, 'Cầu Giấy'],
+    ['bare reply with the flag on (unqualified name probe)', true, 'Cầu Giấy'],
+    ['explicit recommendation', true, 'Gợi ý quán cafe ở Hà Nội'],
+  ] as const)(
+    '%s that dies the same way ends unmarked and stays in history',
+    async (_n, on, text) => {
+      await qaFlag(on);
+      try {
+        const c = await conversation();
+        const repo = f.app.get(AssistantRepository);
+        const dead = await sendThenDie(c, text);
+        expect(dead.stored?.trace?.route).toBeUndefined();
+        expect(dead.stored?.trace).not.toHaveProperty('qaProbe');
+        const next = await turn(c, RECOMMEND);
+        expect((await repo.history(c.id, next.id, 50)).map((m) => m.id)).toContain(dead.userId);
+      } finally {
+        await qaFlag(true);
+      }
+    },
+  );
+});
+
+describe('Round 2 — Sol F-04 / Astra F-04: QA reads stay inside deadline and cancellation', () => {
+  it.each([
+    ['flag off', 'recommendation', 'placeQaEnabled'],
+    ['flag on', 'QA question', 'placeQaEnabled'],
+    ['flag off', 'recommendation', 'latestAssistant'],
+    ['flag on', 'QA question', 'latestAssistant'],
+  ] as const)('%s, %s: a stalled %s read cannot hold a Stop', async (state, what, read) => {
+    await qaFlag(state === 'flag on');
+    const c = await conversation();
+    const repo = f.app.get(AssistantRepository);
+    const runner = f.app.get(AssistantTurnRunner);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = false;
+    const stall = async <T>(real: () => Promise<T>): Promise<T> => {
+      entered = true;
+      await gate;
+      return real();
+    };
+    const availability = f.app.get(AssistantAvailabilityService);
+    const realFlag = availability.placeQaEnabled.bind(availability);
+    const realLatest = repo.latestAssistant.bind(repo);
+    const spy =
+      read === 'placeQaEnabled'
+        ? vi
+            .spyOn(availability, 'placeQaEnabled')
+            .mockImplementationOnce((...a) => stall(() => realFlag(...a)))
+        : vi
+            .spyOn(repo, 'latestAssistant')
+            .mockImplementationOnce((...a) => stall(() => realLatest(...a)));
+    try {
+      const sent = await send(c, what === 'QA question' ? QUESTION : RECOMMEND);
+      await until(() => entered);
+      const startedAt = Date.now();
+      const stopped = await f.inject({
+        method: 'POST',
+        url: `/v1/assistant/conversations/${c.id}/messages/${sent.id}/stop`,
+        token: c.token,
+      });
+      expect(stopped.statusCode).toBeLessThan(300);
+      // The read is still stalled: the turn ended without waiting for it.
+      const stored = await repo.findMessageById(sent.id);
+      expect.soft(stored?.status).toBe('stopped');
+      expect.soft(Date.now() - startedAt).toBeLessThan(4_000);
+      if (what === 'QA question') expect.soft(stored?.trace).toMatchObject({ route: 'place_qa' });
+      else {
+        expect.soft(stored?.trace?.route).toBeUndefined();
+        expect.soft(stored?.trace).not.toHaveProperty('qaProbe');
+      }
+      release();
+      await until(() => !runner.isRunningHere(sent.id));
+    } finally {
+      release();
+      spy.mockRestore();
+      await qaFlag(true);
+    }
+  });
+});
+
+describe('Round 2 — first-text deadline with the QA decision still open', () => {
+  it.each([
+    ['flag on', 'QA question', 'placeQaEnabled', 'qa'],
+    ['flag on', 'typed reply to the latest QA turn', 'latestAssistant', 'qa'],
+    ['flag off', 'bare reply', 'placeQaEnabled', 'ordinary'],
+    ['flag on', 'bare reply', 'latestAssistant', 'ordinary'],
+  ] as const)(
+    '%s, %s: a %s read stalled past the deadline ends %s, never an unfenced QA pair',
+    async (state, what, read, expected) => {
+      await qaFlag(true);
+      const c = await conversation();
+      const repo = f.app.get(AssistantRepository);
+      const runner = f.app.get(AssistantTurnRunner);
+      const earlier: string[] = [];
+      let text: string = what === 'QA question' ? QUESTION : 'Cầu Giấy';
+      if (what === 'typed reply to the latest QA turn') {
+        const choice = await turn(c, 'Song Ngọc giá bao nhiêu?');
+        earlier.push(choice.userId);
+        text = 'Không phải các quán này';
+      }
+      await qaFlag(state === 'flag on');
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const availability = f.app.get(AssistantAvailabilityService);
+      const realFlag = availability.placeQaEnabled.bind(availability);
+      const realLatest = repo.latestAssistant.bind(repo);
+      const spy =
+        read === 'placeQaEnabled'
+          ? vi.spyOn(availability, 'placeQaEnabled').mockImplementationOnce(async (...a) => {
+              await gate;
+              return realFlag(...a);
+            })
+          : vi.spyOn(repo, 'latestAssistant').mockImplementationOnce(async (...a) => {
+              await gate;
+              return realLatest(...a);
+            });
+      try {
+        const sent = await send(c, text);
+        // No Stop: only the first-text deadline (4 s here) ends the stage.
+        await until(
+          async () => (await repo.findMessageById(sent.id))?.status !== 'streaming',
+          15_000,
+        );
+        const stored = await repo.findMessageById(sent.id);
+        expect.soft(stored?.trace).not.toHaveProperty('qaProbe');
+        release();
+        await until(() => !runner.isRunningHere(sent.id));
+        if (expected === 'qa') {
+          expect.soft(stored?.status).toBe('failed');
+          expect.soft(stored?.trace).toMatchObject({ route: 'place_qa' });
+          const { next, expected: clean, seen } = await followingRecommendation(c);
+          const history = await repo.history(c.id, next.id, 50);
+          expect.soft(history.map((m) => m.id)).not.toContain(sent.userId);
+          for (const id of earlier) expect(history.map((m) => m.id)).not.toContain(id);
+          expect.soft(JSON.stringify(seen)).not.toMatch(/Quán Sao Lạ|Không phải các quán|placeQa/);
+          expect(seen).toEqual(clean);
+        } else {
+          // The ordinary deterministic timeout reply, exactly as before S3.
+          expect.soft(stored?.status).toBe('fallback');
+          expect.soft(stored?.trace?.route).not.toBe('place_qa');
+          expect.soft(stored?.notice).toMatchObject({ kind: 'fallback', reason: 'timeout' });
+          const next = await turn(c, RECOMMEND);
+          expect((await repo.history(c.id, next.id, 50)).map((m) => m.id)).toContain(sent.userId);
+        }
+      } finally {
+        release();
+        spy.mockRestore();
+        await qaFlag(true);
+      }
+    },
+  );
+});
+
+describe('Round 2 — terminal recovery is bounded and never promotes an ordinary turn', () => {
+  it('a QA flag read that never returns cannot hold a Stop; the question fails closed (fenced)', async () => {
+    await qaFlag(true);
+    const c = await conversation();
+    const repo = f.app.get(AssistantRepository);
+    const runner = f.app.get(AssistantTurnRunner);
+    const availability = f.app.get(AssistantAvailabilityService);
+    let entered = false;
+    const spy = vi.spyOn(availability, 'placeQaEnabled').mockImplementation(() => {
+      entered = true;
+      return new Promise<boolean>(() => {});
+    });
+    try {
+      const sent = await send(c, QUESTION);
+      await until(() => entered);
+      const startedAt = Date.now();
+      const stopped = await f.inject({
+        method: 'POST',
+        url: `/v1/assistant/conversations/${c.id}/messages/${sent.id}/stop`,
+        token: c.token,
+      });
+      expect(stopped.statusCode).toBeLessThan(300);
+      expect(Date.now() - startedAt).toBeLessThan(4_000);
+      const stored = await repo.findMessageById(sent.id);
+      expect(stored?.status).toBe('stopped');
+      expect(stored?.trace).toMatchObject({ route: 'place_qa', questionMessageId: sent.userId });
+      expect(stored?.trace).not.toHaveProperty('qaProbe');
+      await until(() => !runner.isRunningHere(sent.id));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+  it('a question that already ran the ordinary path with the flag off is not promoted when the flag flips', async () => {
+    await qaFlag(false);
+    try {
+      const c = await conversation();
+      const repo = f.app.get(AssistantRepository);
+      const runner = f.app.get(AssistantTurnRunner);
+      resetCapture();
+      const ordinary = await turn(c, QUESTION);
+      const route = ordinary.stored?.trace?.route;
+      expect(route).not.toBe('place_qa');
+      expect(ordinary.stored?.trace).not.toHaveProperty('qaProbe');
+      expect(capture.jev.length).toBeGreaterThan(0);
+      // Its process "died" after dispatch, before the terminal write.
+      await f.db.execute(
+        sql`update assistant_messages set status='streaming', lease_expires_at=now()-interval '1 minute',
+          trace = trace || '{"qaProbe":"question"}'::jsonb where id=${ordinary.id}`,
+      );
+      await qaFlag(true);
+      expect(await runner.reap()).toBeGreaterThan(0);
+      const reaped = await repo.findMessageById(ordinary.id);
+      expect(reaped?.trace?.route).toBe(route);
+      expect(reaped?.trace?.streamRoute).toBe('ordinary');
+      expect(reaped?.trace).not.toHaveProperty('qaProbe');
+    } finally {
+      await qaFlag(true);
     }
   });
 });
@@ -387,6 +683,29 @@ describe('Sol F-02: an old client types the emitted option text', () => {
     });
     expect(answered.text).toContain('VND/người');
     expect(answered.stored?.status).toBe('complete');
+    expect(capture).toEqual({ jev: [], haiku: [] });
+  });
+  it('a stale ordinal from the earlier choice never confirms the other branch (round 2)', async () => {
+    const c = await conversation();
+    resetCapture();
+    const choice = await turn(c, 'Song Ngọc giá bao nhiêu?');
+    const options = choice.message.followUps[0].options;
+    expect(options.map((o: { text: string }) => o.text).slice(0, 2)).toEqual(['1', '2']);
+    const confirmB = await turn(c, options[1].text);
+    expect(confirmB.qa).toMatchObject({ outcome: 'confirm' });
+    const [b] = confirmB.qa!.candidateIds;
+    expect(b).toBe(choice.qa!.candidateIds[1]);
+    // The old client taps branch A's chip of the EARLIER message: text "1".
+    const stale = await turn(c, options[0].text);
+    expect(stale.qa?.outcome).not.toBe('answer');
+    expect(stale.text).not.toContain('VND');
+    expect(stale.qa).toMatchObject({ outcome: 'confirm', candidateIds: [b] });
+    // The emitted confirm text names the candidate and is not a bare ordinal.
+    const emitted = stale.message.followUps[0].options[0].text as string;
+    expect(emitted).toContain('Song Ngọc');
+    expect(emitted).not.toMatch(/^\d+$/);
+    const answered = await turn(c, emitted);
+    expect(answered.qa).toMatchObject({ outcome: 'answer', candidateIds: [b] });
     expect(capture).toEqual({ jev: [], haiku: [] });
   });
   it('legacy-district confirm (§4.4) → emitted text → answer', async () => {

@@ -11,10 +11,17 @@ import {
   type QaClass,
 } from '../domain/place-qa/classifier';
 import { PLACE_QA_CONFIG_VERSION } from '../domain/place-qa/config';
-import { makeQaPending, readQaPending, type QaPending } from '../domain/place-qa/pending';
+import {
+  confirmCode,
+  makeQaPending,
+  readQaPending,
+  isTypedConfirm,
+  typedConfirmCode,
+  type QaPending,
+} from '../domain/place-qa/pending';
 import { answerToken, type AnswerTopic } from '../domain/place-qa/tokens';
 import { placeToken } from '../domain/place-tokens';
-import type { PlaceAnswerGroup } from '../domain/place-qa/reference-group';
+import { UNPRODUCED_GROUP, type PlaceAnswerGroup } from '../domain/place-qa/reference-group';
 import { renderPlaceAnswer } from '../domain/place-qa/templates';
 import type { QaCopyKey } from '../domain/place-qa/copy';
 import type { PlaceNameArea } from '../domain/place-qa/resolution';
@@ -40,22 +47,13 @@ type QaTrace = {
   pending?: QaPending;
 };
 
-/** What `admit` read while deciding the fence; `handle` reuses it, never a second read. */
-type QaAdmission = { enabled: boolean; latest: MessageRow | null };
-const UNPRODUCED: PlaceAnswerGroup = {
-  v: 1,
-  kind: 'notice',
-  message: 'read_error',
-  cards: [],
-  sources: [],
-  options: [],
-};
+/** Bound on the flag read that settles an undecided QA question at the deadline. */
+const QA_SETTLE_FLAG_MS = 1_500;
 
 /** S3 producer. One admitted turn; no model, card hydrator or recommendation state. */
 @Injectable()
 export class PlaceQaService {
   private readonly classifier = new PlaceQaClassifier();
-  private readonly admissions = new WeakMap<TurnState, QaAdmission>();
   constructor(
     private readonly repo: AssistantRepository,
     private readonly search: SearchService,
@@ -66,31 +64,31 @@ export class PlaceQaService {
   ) {}
 
   /**
-   * GoGo-BE#873 Sol F-01. The durable QA association of one admitted turn,
-   * decided and written before any cancellable post-admission work (funding,
-   * kill switch, the first-text guard). It takes no AbortSignal on purpose: a
-   * stop or a kill switch arriving meanwhile ends a turn that is already
-   * fenced, so its question cannot reach recommendation history or a model.
-   * Same decisions, in the same order, as `handle` made at its start; `handle`
-   * reuses the flag and latest-turn reads so the two can never disagree.
+   * GoGo-BE#873 round 2. The first-text deadline passed while the QA decision
+   * was still open (a stalled flag, latest-turn or probe read). Before the
+   * orchestrator publishes the ordinary timeout reply, the turn's admission
+   * marker is settled from durable facts: true means the turn is QA and must
+   * fail through the QA error path instead. One flag read bounded at
+   * QA_SETTLE_FLAG_MS for a `question` only, never a new first-text allowance;
+   * an unknown flag reads as enabled.
    */
-  async admit(input: TurnInput, state: TurnState): Promise<void> {
-    const structured = input.replyToMessageId !== undefined || input.followUpOptionId !== undefined;
-    const classified = this.classifier.classify(input.text, input.context, {
-      now: new Date(),
-      locale: input.locale,
-    });
-    // Structured QA control is fenced before every lookup, even when disabled.
-    if (structured) await this.fence(input, state);
-    const enabled = await this.availability.placeQaEnabled();
-    if (!structured && enabled && classified.kind !== 'not_qa') await this.fence(input, state);
-    const latest = await this.repo.latestAssistant(
-      input.userId,
-      input.conversationId,
-      input.messageId,
-    );
-    if (!structured && continuesQa(latest, input.text, classified)) await this.fence(input, state);
-    this.admissions.set(state, { enabled, latest });
+  async settleUndecided(input: TurnInput, state: TurnState): Promise<boolean> {
+    if (state.qaDecided === true || !input.qaProbe || input.qaProbe === 'control') return false;
+    const enabled =
+      input.qaProbe === 'question'
+        ? await Promise.race([
+            this.availability.placeQaEnabled().catch(() => true),
+            new Promise<boolean>((resolve) =>
+              setTimeout(() => resolve(true), QA_SETTLE_FLAG_MS).unref(),
+            ),
+          ])
+        : false;
+    const qa = await this.repo.settleQaProbe(input.messageId, enabled);
+    state.qaDecided = true;
+    if (!qa) return false;
+    state.trace.route = 'place_qa';
+    state.trace.placeAnswerGroup ??= UNPRODUCED_GROUP;
+    return true;
   }
 
   /** Idempotent for one turn: the in-process marker first, then the durable row. */
@@ -109,7 +107,7 @@ export class PlaceQaService {
     state.trace.questionMessageId = questionId;
     // A fenced turn that ends before it produces a group reads as the fixed
     // load-error notice, exactly like one cancelled during resolution.
-    state.trace.placeAnswerGroup ??= UNPRODUCED;
+    state.trace.placeAnswerGroup ??= UNPRODUCED_GROUP;
     return questionId;
   }
 
@@ -120,9 +118,6 @@ export class PlaceQaService {
     signal: AbortSignal,
     deadlineAt: number,
   ): Promise<boolean> {
-    const admission = this.admissions.get(state);
-    this.admissions.delete(state);
-    const originalCosts = { ...state.costs };
     const started = Date.now();
     const now = new Date(started);
     let classified = this.classifier.classify(input.text, input.context, {
@@ -131,6 +126,7 @@ export class PlaceQaService {
     });
     const structured = input.replyToMessageId !== undefined || input.followUpOptionId !== undefined;
     let trace: QaTrace | undefined;
+    let undecided = false;
     let pendingCreatedAt: number | undefined;
     // The message the place name is read from, when it is not the question
     // itself (a name supplied after a referent clarification). Astra F-01.
@@ -251,7 +247,8 @@ export class PlaceQaService {
     };
     const resolve = async (
       c: Extract<QaClassification, { kind: 'named_place_question' | 'name_only' }>,
-      source: string,
+      // Read after qualification: a fresh name-only turn has no trace before it.
+      sourceOf: () => string,
       areaOverride?: PlaceNameArea,
       continuationText?: string,
     ) => {
@@ -264,9 +261,9 @@ export class PlaceQaService {
         alternates: c.span.alternates,
       });
       signal.throwIfAborted();
-      // Initial name-only admission needs canonical equality. A pending area
-      // refinement is already QA: validate the original source, not the area
-      // reply, and keep its fence even when the refined query has no match.
+      // Name-only needs canonical equality of the WHOLE text (§3.1). A pending
+      // area refinement is already QA: validate the original source, not the
+      // area reply, and keep its fence even when the refined query has no match.
       if (
         c.kind === 'name_only' &&
         ((continuationText === undefined && !result.candidates.some((x) => x.exact)) ||
@@ -277,24 +274,19 @@ export class PlaceQaService {
           await notice('restate');
           return true;
         }
-        if (!(await this.repo.clearPlaceQa(input.userId, input.conversationId, input.messageId)))
-          throw new Error('Place QA probe lost its turn');
-        delete state.trace.route;
-        delete state.trace.placeQa;
-        delete state.trace.questionMessageId;
-        delete state.trace.placeAnswerGroup;
-        state.costs = originalCosts;
-        trace = undefined;
+        // An unqualified probe wrote nothing: this is an ordinary turn.
         return false;
       }
+      // Qualified: only now does a fresh name-only turn become QA.
+      if (!trace) await mark(c.kind, c.topic, c.args);
       if (c.kind === 'name_only') await sink.emit({ type: 'step', step: 'searching_places' });
       trace!.row = result.row;
       const ids = result.candidates.map((x) => x.id);
       if (result.kind === 'answer') await answer(ids[0]!);
       else if (result.kind === 'choice' || result.kind === 'confirm')
-        await clarify(result.kind, ids, source, area?.kind === 'legacy');
+        await clarify(result.kind, ids, sourceOf(), area?.kind === 'legacy');
       else {
-        if (result.kind === 'narrow') pending('narrow', source);
+        if (result.kind === 'narrow') pending('narrow', sourceOf());
         await notice(result.kind);
       }
       return true;
@@ -304,9 +296,11 @@ export class PlaceQaService {
       // Structured QA control is fenced before all control/source lookups,
       // including when disabled. It can never enter the model pipeline.
       if (structured) await mark('control', 'overview', {});
-      const enabled = admission ? admission.enabled : await this.availability.placeQaEnabled();
+      const enabled = await this.availability.placeQaEnabled();
       signal.throwIfAborted();
-      if (!structured && enabled && classified.kind !== 'not_qa')
+      // A bare name is only a probe here: it becomes QA after exact canonical
+      // qualification (resolve) or as a typed reply to a QA turn, never before.
+      if (!structured && enabled && classified.kind !== 'not_qa' && classified.kind !== 'name_only')
         await mark(classified.kind, classified.topic, classified.args);
       if (
         !structured &&
@@ -329,9 +323,12 @@ export class PlaceQaService {
           trace.args = classified.args;
         }
       }
-      const latest = admission
-        ? admission.latest
-        : await this.repo.latestAssistant(input.userId, input.conversationId, input.messageId);
+      const latest = await this.repo.latestAssistant(
+        input.userId,
+        input.conversationId,
+        input.messageId,
+      );
+      signal.throwIfAborted();
       const isQa = latest?.trace?.route === 'place_qa';
       const qa = latest?.trace?.placeQa as { pending?: unknown } | undefined;
       const p =
@@ -421,18 +418,29 @@ export class PlaceQaService {
           return true;
         }
         const candidates = p.slots[0]!.candidateIds ?? [];
-        // Sol F-02: the one candidate of a `confirm` was already shown back to
-        // the user. Its emitted ordinal or exact name is that confirmation —
-        // an old client has nothing else to send. `answer` re-reads the place's
-        // publication and fact eligibility before any fact is rendered.
+        // One candidate of a `confirm` was shown back to the user. What
+        // confirms it from a text-only client is text that identifies THAT
+        // candidate: the emitted confirm text (bound to this message and
+        // place) or its exact name. A bare ordinal never does — an old client
+        // may have tapped a chip of an earlier message (§4.5). `answer`
+        // re-reads publication and fact eligibility before any fact is shown.
         const confirming = p.kind === 'confirm' && candidates.length === 1;
-        const ordinal = /^(?:quan |chi nhanh |so |place )?([1-3])$/u.exec(t);
-        if (ordinal && candidates[Number(ordinal[1]) - 1]) {
-          if (confirming) {
+        const code = typedConfirmCode(t);
+        if (code !== null) {
+          if (confirming && code === confirmCode(latest!.id, candidates[0]!)) {
             trace!.row = 3;
             await answer(candidates[0]!);
             return true;
           }
+          // The confirm text of another message or branch: never a name match.
+          if (p.retryCount === 0) {
+            pending(p.kind, p.questionMessageId, candidates, 1);
+            await notice('retry');
+          } else await notice('restate');
+          return true;
+        }
+        const ordinal = /^(?:quan |chi nhanh |so |place )?([1-3])$/u.exec(t);
+        if (ordinal && candidates[Number(ordinal[1]) - 1]) {
           // Old clients' text is not proof of which source chip was tapped.
           await clarify('confirm', [candidates[Number(ordinal[1]) - 1]!], p.questionMessageId);
           return true;
@@ -446,7 +454,7 @@ export class PlaceQaService {
             locale: sources.name.locale ?? input.locale,
           });
           if (original.kind === 'named_place_question' || original.kind === 'name_only') {
-            return await resolve(original, sources.question.id, a, sources.name.text);
+            return await resolve(original, () => sources.question.id, a, sources.name.text);
           }
         }
         if (candidates.length) {
@@ -506,7 +514,8 @@ export class PlaceQaService {
         return true;
       }
       if (!enabled || classified.kind === 'not_qa') return false;
-      if (!trace) await mark(classified.kind, classified.topic, classified.args);
+      if (!trace && classified.kind !== 'name_only')
+        await mark(classified.kind, classified.topic, classified.args);
       if (classified.kind === 'compare') {
         await notice('unsupported');
         trace!.outcome = 'unavailable';
@@ -529,9 +538,13 @@ export class PlaceQaService {
       }
       if (classified.kind === 'named_place_question')
         await sink.emit({ type: 'step', step: 'searching_places' });
-      if ('span' in classified) return await resolve(classified, trace!.questionMessageId);
+      if ('span' in classified) return await resolve(classified, () => trace!.questionMessageId);
       return true;
     } catch (error) {
+      // A failure, abort or deadline before the choice leaves the turn
+      // undecided: the terminal write then resolves the admission marker from
+      // durable facts alone (AssistantRepository.finalizeMessage).
+      undecided = !trace;
       if (trace) {
         trace.row = 1;
         trace.outcome =
@@ -542,11 +555,12 @@ export class PlaceQaService {
             : signal.aborted
               ? 'cancelled'
               : 'read_error';
-        state.trace.placeAnswerGroup = UNPRODUCED;
+        state.trace.placeAnswerGroup = UNPRODUCED_GROUP;
         if (!signal.aborted) await sink.emit({ type: 'delta', text: '' });
       }
       throw error;
     } finally {
+      if (!undecided) state.qaDecided = true;
       if (trace) {
         state.trace.latencyMs = Date.now() - started;
         this.metrics.increment('assistant_place_qa_total', {
@@ -587,6 +601,10 @@ function continuesQa(
   text: string,
   classified: QaClassification,
 ): boolean {
+  if (latest?.trace?.route !== 'place_qa') return false;
+  // An emitted confirm text carries the place NAME, which may contain category
+  // or recommendation words; it is QA control whatever the name says.
+  if (isTypedConfirm(text)) return true;
   const explicitNewQa = classified.kind !== 'not_qa' && classified.kind !== 'name_only';
-  return latest?.trace?.route === 'place_qa' && !isNewNonQaRequest(text) && !explicitNewQa;
+  return !isNewNonQaRequest(text) && !explicitNewQa;
 }

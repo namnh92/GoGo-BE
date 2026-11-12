@@ -1,4 +1,5 @@
 import { PlaceQaService } from './place-qa.service';
+import type { QaProbe } from '../domain/place-qa/classifier';
 import { flagEnvironmentOf } from '../../shared/feature-flags';
 import { AssistantUsageEvidenceRepository } from '../infrastructure/assistant-usage-evidence.repository';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
@@ -120,6 +121,8 @@ export type TurnInput = {
   text: string;
   locale: 'vi' | 'en';
   context: { kind: 'place' | 'plan'; id: string } | null;
+  /** GoGo-BE#873: the provisional marker the send wrote on the assistant row. */
+  qaProbe?: QaProbe | null;
 };
 
 /** Search candidates before ranking; cards shown after it (ADR-0036 §3D). */
@@ -363,6 +366,14 @@ export class AssistantOrchestrator {
     } catch (err) {
       if (state.trace.route === 'place_qa') throw err;
       if (!(err instanceof FirstTextDeadlineError) || state.textStarted) throw err;
+      signal.throwIfAborted();
+      // GoGo-BE#873: a turn whose QA decision is still open is settled from
+      // durable facts first. A QA turn fails through the QA error path; only
+      // an ordinary one gets the ordinary timeout reply.
+      if (await this.placeQa?.settleUndecided(input, state)) {
+        signal.throwIfAborted();
+        throw err;
+      }
       signal.throwIfAborted();
       await sink.emit({ type: 'delta', text: timeoutReply(input.locale) });
       await sink.emit({

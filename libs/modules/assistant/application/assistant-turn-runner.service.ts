@@ -23,7 +23,6 @@ import {
 } from '../infrastructure/frame-buffer';
 import { ASSISTANT_INSTANCE_ID, LEASE_MS, LEASE_RENEW_MS } from './assistant.config';
 import { AssistantAvailabilityService } from './assistant-availability.service';
-import { PlaceQaService } from './place-qa.service';
 import {
   AssistantOrchestrator,
   HaikuMidStreamError,
@@ -48,6 +47,8 @@ const KILL_SWITCH_POLL_MS = 3_000;
 const REAPER_MS = 60_000;
 /** How long ending a turn waits for the live buffer to take its frames. */
 const BUFFER_DRAIN_MS = 2_000;
+/** Bound on the one flag read a terminal write may need for an undecided QA question. */
+const QA_FLAG_RECOVERY_MS = 1_500;
 
 export type RunnableTurn = TurnInput;
 
@@ -79,7 +80,6 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
     @Inject(ASSISTANT_INSTANCE_ID) private readonly instanceId: string,
     @Inject(APP_CONFIG) private readonly config: AssistantConfig,
     @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
-    @Optional() private readonly placeQa?: PlaceQaService,
   ) {}
 
   onModuleInit(): void {
@@ -253,9 +253,6 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
     let status: AssistantTerminalStatus;
     let error: ErrorEnvelope | null = null;
     try {
-      // GoGo-BE#873: the QA association is durable before funding, the kill
-      // switch or any stage a stop can interrupt. Not cancellable by design.
-      await this.placeQa?.admit(turn, state);
       if (!(await this.repo.runnableFunding(turn.userId, turn.ledgerId, turn.messageId)))
         throw new Error('Assistant funding or master readiness unavailable');
       if (!(await this.availability.killSwitchOn())) {
@@ -333,17 +330,24 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
         ) as AssistantFrame;
         frames.push(terminal);
       }
-      const row = await this.repo.finalizeMessage(turn.messageId, {
-        status,
-        text: state.text,
-        cards: state.cards,
-        followUps: status === 'truncated' ? [] : state.followUps,
-        notice: state.notice,
-        error,
-        frames,
-        trace: state.trace,
-        sources: state.sources,
-      });
+      const row = await this.repo.finalizeMessage(
+        turn.messageId,
+        {
+          status,
+          text: state.text,
+          cards: state.cards,
+          followUps: status === 'truncated' ? [] : state.followUps,
+          notice: state.notice,
+          error,
+          frames,
+          trace: state.trace,
+          sources: state.sources,
+        },
+        // GoGo-BE#873: a turn that ended before PlaceQaService chose leaves
+        // its admission marker to the terminal write. No QA read precedes
+        // funding or escapes the first-text guard any more.
+        { qa: await this.qaResolution(state.qaDecided === true, turn.qaProbe) },
+      );
       // A-R-11 / A-R2-09: only the writer that finalized publishes — the
       // frames it held back after an abort, then its terminal. A runner that
       // lost to a stop or the reaper adds nothing after their terminal.
@@ -411,6 +415,25 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
     await this.repo.completeBufferPurges(dropped);
   }
 
+  /**
+   * How the terminal write settles a provisional QA marker (GoGo-BE#873). The
+   * flag is read only for an undecided QA-shaped question, bounded, and it can
+   * never fail or hold the terminal write: unknown reads as enabled, so a
+   * question whose flag state cannot be established stays out of history.
+   */
+  private async qaResolution(
+    decided: boolean,
+    probe: unknown,
+  ): Promise<{ decided: true } | { decided: false; enabled: boolean }> {
+    if (decided) return { decided: true };
+    if (probe !== 'question') return { decided: false, enabled: false };
+    const enabled = await Promise.race([
+      this.availability.placeQaEnabled().catch(() => true),
+      sleep(QA_FLAG_RECOVERY_MS).then(() => true),
+    ]);
+    return { decided: false, enabled };
+  }
+
   /** Ends a streaming turn no process here is running (stop fallback, reaper). */
   async finalizeOrphan(
     row: MessageRow,
@@ -440,7 +463,7 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
         trace: { ...row.trace, orphaned: true },
         sources: state.sources,
       },
-      options,
+      { ...options, qa: await this.qaResolution(false, row.trace?.qaProbe) },
     );
     if (finalized) {
       await this.buffer

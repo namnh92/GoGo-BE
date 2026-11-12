@@ -37,9 +37,9 @@ function harness(
     /** Holds finalizeMessage's answer until it resolves. */
     finalizeGate?: Promise<void>;
     metrics?: NoopMetrics;
-    /** GoGo-BE#873: the QA admission fence and the funding read it must precede. */
-    admit?: (turn: TurnInput, state: TurnState) => Promise<void>;
+    /** GoGo-BE#873: funding gate, and the QA flag a terminal write may read. */
     funding?: () => Promise<boolean>;
+    qaEnabled?: () => Promise<boolean>;
     persistRoute?: (
       messageId: string,
       owner: string,
@@ -84,6 +84,7 @@ function harness(
   } as unknown as AssistantOrchestrator;
   const availability = {
     killSwitchOn: async () => (opts.killSwitch ? opts.killSwitch() : true),
+    placeQaEnabled: () => (opts.qaEnabled ? opts.qaEnabled() : Promise.resolve(true)),
   } as unknown as AssistantAvailabilityService;
   const config = { ASSISTANT_REPLY_MAX_MS: opts.replyMaxMs ?? 60_000 } as AssistantConfig;
   const runner = new AssistantTurnRunner(
@@ -94,7 +95,6 @@ function harness(
     'test-instance',
     config,
     opts.metrics,
-    opts.admit ? ({ admit: opts.admit } as never) : undefined,
   );
   const turn = {
     messageId: 'm1',
@@ -270,7 +270,12 @@ describe('AssistantTurnRunner — Astra round 1 (GoGo-BE#717)', () => {
     await h.runner.finalizeOrphan({ id: 'm9', text: '' } as MessageRow, 'failed', null, {
       onlyIfLeaseExpired: true,
     });
-    expect(h.finalizeOptions[0]).toEqual({ onlyIfLeaseExpired: true });
+    // GoGo-BE#873 round 2: the terminal write also settles a provisional QA
+    // marker; this row has none, so nothing is read and nothing is promoted.
+    expect(h.finalizeOptions[0]).toEqual({
+      onlyIfLeaseExpired: true,
+      qa: { decided: false, enabled: false },
+    });
   });
 
   it('A-R-08: the reaper drops live buffers an erasure listed', async () => {
@@ -518,43 +523,94 @@ it.each(['failed write', 'lost lease'] as const)(
   },
 );
 
-describe('GoGo-BE#873 Sol F-01: QA admission precedes cancellable work', () => {
-  it('a Stop while funding is unresolved finalizes a turn that is already fenced', async () => {
-    const order: string[] = [];
+describe('GoGo-BE#873 round 2: no QA await before funding; the terminal write settles the marker', () => {
+  const gated = () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    // The scripted orchestrator has no first-text guard; the real one refuses
-    // an aborted signal before PlaceQaService.handle (covered at the API level).
+    return { gate, release };
+  };
+  it('a Stop while funding is unresolved hands an undecided QA question to the terminal write', async () => {
+    const order: string[] = [];
+    const { gate, release } = gated();
     const h = harness(async () => ({ status: 'complete' }), {
-      admit: async (_turn, state) => {
-        order.push('admit');
-        state.trace.route = 'place_qa';
-        state.trace.questionMessageId = 'q1';
-      },
       funding: async () => {
         order.push('funding');
         await gate;
         return true;
       },
+      qaEnabled: async () => {
+        order.push('flag');
+        return true;
+      },
     });
-    h.runner.start(h.turn);
+    h.runner.start({ ...h.turn, qaProbe: 'question' });
     await until(() => order.includes('funding'));
+    // Nothing QA-related ran or was awaited before funding.
+    expect(order).toEqual(['funding']);
     const stopping = h.runner.stopLocal(h.turn.messageId);
     release();
     await stopping;
-    expect(order).toEqual(['admit', 'funding']);
-    expect(h.finalized).toHaveLength(1);
-    expect(h.finalized[0]).toMatchObject({
-      status: 'stopped',
-      trace: { route: 'place_qa', questionMessageId: 'q1' },
+    expect(order).toEqual(['funding', 'flag']);
+    expect(h.finalized[0]).toMatchObject({ status: 'stopped' });
+    expect(h.finalizeOptions[0]).toEqual({ qa: { decided: false, enabled: true } });
+  });
+  it('a flag read that never returns cannot hold the terminal write and fails closed', async () => {
+    const { gate, release } = gated();
+    const h = harness(async () => ({ status: 'complete' }), {
+      funding: async () => {
+        await gate;
+        return true;
+      },
+      qaEnabled: () => new Promise<boolean>(() => {}),
+    });
+    h.runner.start({ ...h.turn, qaProbe: 'question' });
+    const stopping = h.runner.stopLocal(h.turn.messageId);
+    release();
+    const startedAt = Date.now();
+    await stopping;
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+    expect(h.finalized[0]).toMatchObject({ status: 'stopped' });
+    expect(h.finalizeOptions[0]).toEqual({ qa: { decided: false, enabled: true } });
+  });
+  it.each([
+    ['name', undefined],
+    ['reply', undefined],
+    [null, undefined],
+    ['question', true],
+  ] as const)('probe %s (producer decided: %s) never reads the flag', async (probe, decided) => {
+    let flagReads = 0;
+    const h = harness(
+      async (state) => {
+        if (decided) state.qaDecided = true;
+        return { status: 'complete' };
+      },
+      {
+        qaEnabled: async () => {
+          flagReads += 1;
+          return true;
+        },
+      },
+    );
+    h.runner.start({ ...h.turn, qaProbe: probe });
+    await until(() => h.finalized.length === 1);
+    expect(flagReads).toBe(0);
+    expect(h.finalizeOptions[0]).toEqual({
+      qa: decided ? { decided: true } : { decided: false, enabled: false },
     });
   });
-  it('without the QA service the runner is unchanged', async () => {
-    const h = harness(async () => ({ status: 'complete' }));
-    h.runner.start(h.turn);
-    await until(() => h.finalized.length === 1);
-    expect(h.finalized[0]).toMatchObject({ status: 'complete', trace: {} });
+  it('the reaper settles an orphan from the marker on its row', async () => {
+    const h = harness(async () => ({ status: 'complete' }), { qaEnabled: async () => false });
+    await h.runner.finalizeOrphan(
+      { id: 'm9', text: '', trace: { questionMessageId: 'q9', qaProbe: 'question' } } as never,
+      'failed',
+      null,
+      { onlyIfLeaseExpired: true },
+    );
+    expect(h.finalizeOptions[0]).toEqual({
+      onlyIfLeaseExpired: true,
+      qa: { decided: false, enabled: false },
+    });
   });
 });

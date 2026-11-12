@@ -26,6 +26,15 @@ export type PlaceAnswerGroup = Readonly<{
     | Readonly<{ id: string; none: true }>
   )[];
 }>;
+/** A fenced turn that ended before producing a group reads as the fixed load-error notice. */
+export const UNPRODUCED_GROUP: PlaceAnswerGroup = Object.freeze({
+  v: 1,
+  kind: 'notice',
+  message: 'read_error',
+  cards: [],
+  sources: [],
+  options: [],
+});
 export function isPlaceAnswerRow(row: {
   text: string;
   trace?: Record<string, unknown> | null;

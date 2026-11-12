@@ -262,3 +262,166 @@ deployment or flag change.
   confirm for another candidate is read as confirming the shown candidate
   (§4.5 "never silently choose a different latest branch"). The alternative is
   an explicit emitted confirm text; that changes the S1 reader output.
+
+## Fable fix round 2 (2026-11-12, after the round-3 confirm reviews)
+
+Starting head: `0dd18c5e960eaba931224eb71a762f5cb6ddb8cb` (round 1 = `5b14af7e`,
+docs only after). Authority: the round-3 outputs of Sol and Astra, shape rev3
+§§3.1, 3.2, 4.3, 4.5, and the owner's "Fable sửa thêm lượt". Worktree changes
+only; no commit. Every regression below ran first against unchanged `0dd18c5e`
+production code (FAIL) and then against the fix (PASS). The round-1 section
+above is left as written; where this round replaces a round-1 mechanism or
+residual, this section says so.
+
+### Shape of the fix
+
+Round 1 wrote the fence in a pre-funding `admit` step. That step is **removed**.
+The association now has three parts:
+
+1. **Marker at the send's commit.** `qaProbeOf(text, context, locale,
+structured)` is a pure function (no read). The send passes its result to
+   `insertTurn`, which writes it into the assistant row's trace in the same
+   INSERT of the same admission transaction: `control` → `route: place_qa`
+   immediately (a structured follow-up is QA control in every flag state);
+   `question` / `name` / `reply` → provisional `qaProbe`; an explicit
+   recommendation/action/guide → nothing. Admission checks, funding, limits,
+   locks and the number of statements are unchanged.
+2. **Decision inside the guarded producer.** `PlaceQaService.handle` reads the
+   flag and the latest turn exactly where `1c2dc953` did, inside the first-text
+   guard and under the turn's signal. A bare name is a probe: no fence write
+   and no in-memory route until the whole text equals an exact canonical name.
+3. **Settlement in the one terminal write.** `finalizeMessage` always strips
+   `qaProbe`. When the producer never reached its decision (stop, kill switch,
+   funding failure, crash + reaper, stop fallback) the same UPDATE decides from
+   durable facts: `question` + flag on → `place_qa`; `name`/`reply` → `place_qa`
+   only when the previous assistant turn is `place_qa` (typed QA control);
+   everything else → ordinary. It never promotes a row whose producer already
+   published ordinary frames (`streamRoute: ordinary`) or dispatched a model
+   call. The history and episode filters also exclude a terminal row that still
+   carries a marker, so a pair is excluded until resolved; a marker on a
+   streaming row hides nothing (its own turn needs its question).
+4. **Settlement before the ordinary timeout reply.** When the first-text
+   deadline passes with the decision still open (a stalled flag, latest-turn or
+   probe read), the orchestrator settles the marker with the same durable-fact
+   rule (`settleQaProbe`, one UPDATE; one flag read bounded at 1.5 s for a
+   `question` only) before it publishes anything. A QA turn then fails through
+   the QA error path; only an ordinary turn gets the ordinary timeout reply.
+   Without this step the timeout reply published ordinary frames and the pair
+   stayed in history (measured on the intermediate worktree, below).
+
+| Round-3 finding                                          | Change                                                                                                                                                                                                                                                                                                                                                                      |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sol F-02 / Astra F-01 (P1) crash window send → fence     | Parts 1 and 3. No instant exists after the commit at which a QA turn is unmarked. The reaper and the stop fallback settle the marker in their own terminal statement.                                                                                                                                                                                                       |
+| Sol F-03 / Astra F-02 (P2) name probe captures replies   | Part 2. `clearPlaceQa` and the mark-then-clear path are gone. An interrupted or unqualified probe ends ordinary: in history, and the next reply is an ordinary continuation. The round-1 residual test now asserts preservation.                                                                                                                                            |
+| Sol F-01 / Astra F-03 (P1/P2) stale ordinal confirms     | A bare ordinal is never terminal. A one-candidate `place_confirm` option now emits `Xác nhận <name> (<6 digits>)` / `Confirm <name> (…)`; the code is derived from the confirmation message id and the place id, so only that message's chip matches. The exact candidate name still confirms (no loop). A present-but-wrong code is rejected outright, never name-matched. |
+| Sol F-04 / Astra F-04 (P2) reads outside deadline/cancel | `admit` removed: the runner awaits nothing QA-related before `runnableFunding`. Flag and latest-turn reads are back under the first-text guard. The only remaining QA read outside it is the terminal write's flag read for an undecided `question` marker: bounded at 1.5 s, cannot fail the write, unknown reads as enabled.                                              |
+
+### Changed expectations in this round
+
+- `place-qa.service.spec.ts`, round-1 describe "Sol F-01: admission fence before
+  cancellable work" (4 cells on `admit`): replaced by "fence decisions stay
+  inside the guarded producer". `admit` no longer exists (Sol F-04 / Astra F-04).
+- `assistant-turn-runner.spec.ts`, round-1 describe "QA admission precedes
+  cancellable work": replaced by "no QA await before funding; the terminal
+  write settles the marker". Existing A-R-11 reaper cell: the options object
+  now also carries `qa: { decided: false, enabled: false }`.
+- `assistant-place-qa-s3-fence.int.spec.ts`: the round-1 residual cell "a bare
+  non-QA reply … stays fenced (known flag-on residual)" is flipped to "… keeps
+  ordinary history and continuation" (Sol F-03 / Astra F-02).
+- Reader output: the `text` of a one-candidate `place_confirm` option (was the
+  ordinal). Labels, ids and every multi-candidate option are unchanged. No
+  existing reader assertion changed.
+- Removed repository method `clearPlaceQa` (no caller left: nothing is fenced
+  before qualification, so nothing is cleared).
+- The fence spec's fixture sets `ASSISTANT_FIRST_TEXT_TIMEOUT_MS=4000` so the
+  deadline cells are affordable; no existing cell depended on the default.
+- No Layer A expectation, corpus or fixture changed; the Layer A spec bytes
+  are unchanged.
+
+### Regression tests, fail-before on `0dd18c5e` / pass-after
+
+| Finding       | Test (`assistant-place-qa-s3-fence.int.spec.ts` unless noted)                                                                                                                                           | FAIL on `0dd18c5e`                                                                                                                                                            |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Crash window  | "a question / typed reply to the latest QA turn / structured control whose process dies before any fence write stays out of history and model requests" (runner never starts, lease lapses, `reap()`)   | trace `{ orphaned, questionMessageId }` with no `route`; user row id in `repo.history`; Jev/Haiku capture matches `/Quán Sao Lạ\|Không phải các quán/` and differs from clean |
+| Name probe    | "a bare non-QA reply stopped before the name-only probe keeps ordinary history and continuation"                                                                                                        | `expected 'place_qa' to be undefined`; user row missing from history; repeat reply is QA control with zero model calls                                                        |
+| Stale ordinal | "a stale ordinal from the earlier choice never confirms the other branch (round 2)"; unit `place-qa.service.spec.ts` → "round 2: a stale ordinal of the earlier choice never confirms the other branch" | `expected 'answer' not to be 'answer'` (branch B answered on A's chip "1")                                                                                                    |
+| Stalled reads | "flag off, recommendation / flag on, QA question: a stalled placeQaEnabled / latestAssistant read cannot hold a Stop" (4 cells)                                                                         | Stop returned after the 5 s wait (`expected 5022 to be less than 4000`), row still `streaming` in the flag-off `placeQaEnabled` cell                                          |
+
+Fail-before runs: fence spec 9 failed / 11 passed, exit 1; service spec 1
+failed / 39 passed, exit 1. Logs (local scratchpad, not in the repo):
+`/private/tmp/claude-501/-Users-maxnguyen-MyWorks-GoGo/3887d62f-9086-42b1-acb1-ae3d94169004/scratchpad/be873/r2-int-before.log`
+and `…/be873/r2-unit-before.log`. Spec files were prettier-formatted after
+those runs; no assertion changed.
+
+Deadline cells ("first-text deadline with the QA decision still open", 4
+cells) were added after the first round-2 implementation and were **not run on
+`0dd18c5e`** (there `admit` awaits the stalled read outside every deadline, so
+the turn never ends). On the intermediate worktree, before part 4, the two QA
+cells failed: status `fallback`, trace `{ deadline: 'first_text', … }` without
+`route`, user row in `repo.history`, capture matching `/Quán Sao Lạ|Không phải
+các quán/`; log `…/be873/r2-deadline-intermediate.log`. After part 4: 4 passed.
+The confirm-text lexicon cell was mutation-checked: without the `isTypedConfirm`
+override in `continuesQa`, 2 of its 3 names fail.
+
+Cells added with the fix (not fail-before evidence): preservation after the
+same death for a flag-off question, flag-off and flag-on bare replies and an
+explicit recommendation (all end unmarked and in history); a flag read that
+never returns cannot hold a Stop and fails closed; a flag-off question that
+already ran the ordinary path is not promoted when the flag flips; unit cells
+for `qaProbeOf`, the unqualified/failed probe, the single first-text deadline
+over stalled reads (both read kinds), `confirmCode`, and the runner's terminal
+options.
+
+### Gates on the round-2 worktree
+
+Dirty worktree over `0dd18c5e` (2026-11-12, local, Docker 29.7.2). All rows ran
+serially on one frozen tree: SHA-256 of `git diff --binary HEAD` (excluding
+this document) was
+`7da94fecd0436603534fff74447c253aa0faa16319e4392bb584743d805403a5` before and
+after.
+
+| Command                                                                                                                                                                                                                                                                                   | Exit  | Result                                                                         |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------ |
+| `pnpm -s typecheck`                                                                                                                                                                                                                                                                       | 0     | all packages                                                                   |
+| `pnpm -s vitest run --project unit`                                                                                                                                                                                                                                                       | 0     | 343 files, 4,890 tests passed                                                  |
+| `pnpm -s vitest run --project integration --no-file-parallelism` on `assistant-place-qa-s3`, `assistant-place-qa-s3-fence`, `assistant-place-answer`, `assistant`, `assistant-credit-settlement`, `assistant-credit-spend-admission`, `assistant-credit-spend-migration` (`.int.spec.ts`) | 0     | 7 files, 538 tests passed; fence spec = 26 cells; Layer A spec bytes unchanged |
+| `prettier --check` / `eslint` on the 14 touched `.ts` files; `prettier --check` on this document                                                                                                                                                                                          | 0 / 0 |                                                                                |
+| `pnpm -s api:check`                                                                                                                                                                                                                                                                       | 0     | no contract change in this round                                               |
+
+NOT RUN: `assistant-frame-buffer-redis.int.spec.ts` (needs Redis) and
+`assistant.live.int.spec.ts` (needs live provider keys; it does exercise Stop),
+base-side Layer A, remote CI, any DEV deployment or flag
+change. The recorded Layer A head evidence is for `5b14af7e` and is not
+relabeled; the base/head pair must be re-recorded on the commit that carries
+this round.
+
+### Residuals for the owner / SA (round 2)
+
+- **Fail-closed corner.** A QA-shaped question sent while the flag is off ends
+  `place_qa` only if all three hold: the turn ends before the producer decides,
+  and the terminal write's flag read fails or exceeds 1.5 s. The alternative
+  (fail open) re-opens the leak for a real QA question during a flag-read
+  outage.
+- **Flag flip inside one turn.** An undecided `question` turn is settled with
+  the flag value at its terminal write, not at its send. A turn that already
+  published ordinary frames or dispatched a model is never promoted.
+- **Confirm text is new user-visible copy.** An old client's bubble shows
+  e.g. `Xác nhận Song Ngọc (482913)`. The code makes the text unique to one
+  confirmation message; an unrelated confirm text matches with probability
+  1e-6. Wording and the visible code are an owner copy decision; structured
+  clients are unaffected.
+- **Deadline settlement and the fail-closed corner.** With the flag off, a
+  QA-shaped question whose flag read stalls past the first-text deadline AND
+  past the 1.5 s settlement bound ends `failed` and fenced instead of getting
+  the timeout reply. Every other flag-off turn keeps the timeout reply.
+- **Probe read error.** A resolver error during a bare-name probe fails the
+  turn (as before) but the failed turn is now ordinary, not QA (§3.1: nothing
+  qualified the name; §4.3 row 1: never "not found"). Pinned by a unit test.
+- The stricter typed fallback means repeating a bare ordinal at a one-candidate
+  confirmation re-asks instead of answering.
+- **Mixed-version window / rollback.** Only this revision's terminal write
+  strips `qaProbe`. If an instance on an older build ends a turn that a newer
+  instance admitted (its reaper or stop fallback), the terminal row keeps the
+  marker and that pair stays out of recommendation history even when it was an
+  ordinary bare reply. Over-exclusion only, never a leak; DEV is one instance.
+  No migration; rollback is the previous build.

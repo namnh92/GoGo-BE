@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { placeTokensAsIds, renderPlaceTokens } from '../place-tokens';
-import { makeQaPending, readQaPending } from './pending';
+import {
+  confirmCode,
+  confirmText,
+  makeQaPending,
+  readQaPending,
+  typedConfirmCode,
+} from './pending';
 import { FIXTURE_A, FIXTURE_B } from './fixtures';
 import { PLACE_QA_PENDING_TTL_MS } from './config';
 const now = Date.parse('2026-11-11T10:00:00Z');
@@ -56,6 +62,23 @@ describe('pending v1 reference validation', () => {
       questionMessageId: make().questionMessageId,
       slots: [{ sourceMessageId: FIXTURE_B }],
     });
+  });
+});
+
+describe('GoGo-BE#873 round 2: confirm text bound to one message and place', () => {
+  it('names the candidate, carries a six-digit code and survives folding', () => {
+    const text = confirmText('vi', 'Song Ngọc', FIXTURE_B, FIXTURE_A);
+    expect(text).toMatch(/^Xác nhận Song Ngọc \(\d{6}\)$/);
+    expect(typedConfirmCode('xac nhan song ngoc (' + confirmCode(FIXTURE_B, FIXTURE_A) + ')')).toBe(
+      confirmCode(FIXTURE_B, FIXTURE_A),
+    );
+    expect(confirmText('en', 'Song Ngọc', FIXTURE_B, FIXTURE_A)).toMatch(/^Confirm Song Ngọc \(/);
+  });
+  it('differs for another message or another place; plain names and ordinals carry none', () => {
+    expect(confirmCode(FIXTURE_B, FIXTURE_A)).not.toBe(confirmCode(FIXTURE_A, FIXTURE_A));
+    expect(confirmCode(FIXTURE_B, FIXTURE_A)).not.toBe(confirmCode(FIXTURE_B, FIXTURE_B));
+    for (const t of ['1', 'song ngoc', 'xac nhan song ngoc', 'song ngoc (123456)'])
+      expect(typedConfirmCode(t)).toBeNull();
   });
 });
 
