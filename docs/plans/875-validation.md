@@ -51,7 +51,7 @@ The separate `place-qa-875.int.spec.ts` uses fictional fixtures and zero model
 calls. The Layer A `Bát Diệp` overflow case has nine exact names, so it still
 narrows under the owner rule.
 
-## GoGo-BE#876 fix round — uncommitted delta on `5bc9b466`
+## GoGo-BE#876 fix round — committed as `58aa7af9` (delta on `5bc9b466`)
 
 - **F-01:** Both pending and stale-pending recovery name lookups now dispatch on
   resolver `fresh.kind`. Exact counts 1/2/3 answer or choose despite fuzzy overflow;
@@ -62,8 +62,10 @@ narrows under the owner rule.
   enable `[là] bao nhiêu` only with a `giá vé` head. Name-collision regressions
   cover bare and information-prefixed `Bao Nhiêu` names, `Vé` name tokens,
   ticket-question alternate readings and service overview answers.
-- **F-03:** This record now distinguishes committed-head DEV execution from
-  the current uncommitted fix. Live DEV acceptance remains pending.
+- **F-03:** DEV gates on `58aa7af9`: build PASS; unit 4983 PASS; integration
+  11 assistant/place files 568 PASS / 21 skipped (pre-existing conditional suite),
+  including S3 Layer A 417/417 and `place-qa-875.int.spec.ts`. Logs in the GoGo
+  workspace `dev/test-evidence/be-875/`. Live DEV chat acceptance remains pending.
 
 Regression command:
 
