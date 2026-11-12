@@ -449,14 +449,20 @@ describe('Sol fix round (r5): durable producer observation before dispatch', () 
       await qaFlag(true);
       const c = await conversation();
       resetCapture();
-      const confirm = await turn(c, 'Quán Sao Lạ giá bao nhiêu ở Quận 1?', { locale: 'en' });
+      // English factual grammar selects price; the legacy district forces a
+      // confirm even for this unique exact name (rev3 §4.4).
+      const confirm = await turn(c, 'Price of Quán Sao Lạ in Quận 1?', { locale: 'en' });
       expect(confirm.qa).toMatchObject({ outcome: 'confirm', topic: 'price' });
+      expect(confirm.qa!.candidateIds).toEqual([ids['lantern']]);
+      expect(confirm.stored?.locale).toBe('en');
       const emitted = confirm.message.followUps[0].options[0].text as string;
-      expect(emitted).toMatch(/^Confirm Quán Sao Lạ · /u);
+      expect(emitted).toMatch(/^Confirm Quán Sao Lạ · .+/u);
+      expect(capture).toEqual({ jev: [], haiku: [] });
       const answered = await turn(c, emitted, mode === 'changed' ? { locale: 'vi' } : {});
       expect(answered.qa).toMatchObject({ outcome: 'answer', topic: 'price' });
       expect(answered.qa!.candidateIds).toEqual([ids['lantern']]);
       expect(answered.stored?.locale).toBe('vi');
+      expect(answered.text).toContain('12000–24000 VND/người');
       expect(capture).toEqual({ jev: [], haiku: [] });
     },
   );

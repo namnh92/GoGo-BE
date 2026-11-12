@@ -629,3 +629,45 @@ deployment and flag changes. DEV must execute the existing integration handoff
 command above on this snapshot or the later commit containing it. The blocked
 Sentry listener suite also needs execution in an environment permitting localhost
 binds. S3 stays dark; these results do not establish release acceptance.
+
+## Sol r5 continuation — English confirm fixture repair (2026-11-12)
+
+Basis: `e8da1e33`; owner authorized edits without a commit for BE #873.
+DEV's `dev/handoffs/be873f-int.log` reports both English cells failing at the
+first-turn QA assertion. This is a test setup defect: Vietnamese question grammar
+with `locale: en` selects the English lexicon, finds no price topic, and becomes a
+`name_only` probe. Its extracted name differs from the whole question, so it cannot
+qualify as exact canonical-name-only QA and falls through to ordinary handling.
+
+The two cells now ask `Price of Quán Sao Lạ in Quận 1?` with `locale: en`.
+The real classifier produces `named_place_question`, topic `price`, name
+`Quán Sao Lạ`, stated area `in Quận 1`. The legacy-district rule in rev3 §4.4
+forces a singleton confirm even for the exact name. The catalogue and current
+commune/province facts already support the complete English identity chip; no
+product change or protected Layer A fixture change is needed. First-turn checks
+also require the expected singleton id, stored English locale, a nonempty area in
+the English chip and zero model calls. Turn two still submits only that emitted
+text with omitted or changed locale and requires `answer`, original price topic,
+the same place id, stored Vietnamese locale, actual price text and zero model
+calls. The service unit cells now exercise the same two-turn legacy-area setup
+with the real classifier and resolution truth table.
+
+**Before-code reasoning (`df134cf0`, not integration execution):** classifier,
+span, resolution and send-default code are unchanged between that base and
+`e8da1e33`, so the corrected first turn reaches the same English singleton
+confirm. On turn two, omitted locale defaults to `vi`; explicit changed locale is
+also `vi`. The base's two `confirmText(input.locale, ...)` calls reconstruct
+`Xác nhận …` rather than the emitted `Confirm …`. The first identity comparison
+fails, leading to retry instead of answer. Thus the unchanged F-02 answer
+assertion fails for the intended locale reason. The fixed code uses the emitting
+message's `latest.locale` at both identity checks.
+
+| Check                                              | Exit | Result                                                                                                 |
+| -------------------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------ |
+| `pnpm -s typecheck`                                | 0    | All 8 packages pass; sandbox cache-write warnings only. `/private/tmp/be873-sol-r5-cont-typecheck.log` |
+| Unit service + classifier suites                   | 0    | 357 passed. `/private/tmp/be873-sol-r5-cont-unit.log`                                                  |
+| Prettier + ESLint on both touched TypeScript files | 0    | Pass                                                                                                   |
+| Fence integration collection                       | 0    | Both English cells collected. `/private/tmp/be873-sol-r5-cont-collection.log`                          |
+
+Docker integration execution and base-code F-02 execution are **NOT RUN** here;
+DEV will run them. These checks do not establish integration or DEV acceptance.

@@ -562,12 +562,23 @@ describe('Sol fix round (r5)', () => {
     async (mode) => {
       vi.spyOn(Date, 'now').mockReturnValue(now);
       const c = qaConversation();
-      await c.send('How much does Song Ngọc cost?', (f) => {
+      c.places.delete(FIXTURE_B);
+      const confirm = await c.send('Price of Song Ngọc in Quận 1?', (f) => {
         f.input.locale = 'en';
+        f.search.resolvePlaceName.mockImplementation(async (name, options) => {
+          expect(name).toBe('Song Ngọc');
+          expect(options).toMatchObject({ area: { kind: 'legacy' } });
+          return resolvePlaceNameOutcome(
+            {
+              candidates: [{ id: FIXTURE_A, exact: true, score: 1 }],
+              overflow: false,
+              areaMismatch: false,
+            },
+            { area: { kind: 'legacy' } },
+          );
+        });
       });
-      const confirm = await c.send('1', (f) => {
-        f.input.locale = 'en';
-      });
+      expect(confirm.qa).toMatchObject({ outcome: 'confirm', topic: 'price' });
       const emitted = confirm.view.followUps[0]!.options[0]!.text;
       expect(emitted).toMatch(/^Confirm Song Ngọc · /u);
       // The service receives vi both for the request default and explicit change.
