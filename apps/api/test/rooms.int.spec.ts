@@ -4,7 +4,7 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { and, eq } from 'drizzle-orm';
 import path from 'node:path';
 import { Pool } from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { schema } from '@gogo/database';
 import { JOINABLE_ROOM_STATUSES } from '../../../libs/modules/rooms/domain/invite-join';
@@ -759,6 +759,53 @@ describe('constraints + staleness (core rule #6)', () => {
 });
 
 describe('invites (BE-BFF-004, FR-ROOM-009)', () => {
+  it('creates a 24-hour invite and refuses its code after 24h+1s (GoGo-BE#882)', async () => {
+    const { token } = await registerUser('invite-ttl-882@gogo.id.vn');
+    const room = await createGroupRoom(token);
+    const beforeCreate = Date.now();
+    const created = await api().inject({
+      method: 'POST',
+      url: `/v1/rooms/${room.id}/invites`,
+      remoteAddress: ip(),
+      headers: auth(token),
+      payload: {},
+    });
+    const afterCreate = Date.now();
+    expect(created.statusCode).toBe(201);
+    const { inviteId, code, expiresAt } = created.json();
+    const deadline = new Date(expiresAt).getTime();
+    const dayMs = 24 * 60 * 60 * 1000;
+    expect.soft(deadline).toBeGreaterThanOrEqual(beforeCreate + dayMs);
+    expect.soft(deadline).toBeLessThanOrEqual(afterCreate + dayMs);
+    const [stored] = await db
+      .select()
+      .from(schema.roomInvites)
+      .where(eq(schema.roomInvites.id, inviteId));
+    expect(stored!.expiresAt.toISOString()).toBe(expiresAt);
+
+    // Fake only Date: HTTP/database timers keep running. Anonymous guest join
+    // avoids conflating invite expiry with the host access token's shorter TTL.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(afterCreate + dayMs + 1000);
+    try {
+      const joined = await api().inject({
+        method: 'POST',
+        url: '/v1/rooms/join/guest',
+        remoteAddress: ip(),
+        payload: { inviteCode: code, displayName: 'Late guest' },
+      });
+      expect(joined.statusCode).toBe(410);
+      expect(joined.json().code).toBe('INVITE_NOT_USABLE');
+    } finally {
+      vi.useRealTimers();
+    }
+    const [afterJoin] = await db
+      .select()
+      .from(schema.roomInvites)
+      .where(eq(schema.roomInvites.id, inviteId));
+    expect(afterJoin!.useCount).toBe(0);
+  });
+
   it('rechecks keyed previews after appointment edits and revocation (GoGo-BE#758, F-01)', async () => {
     const { token } = await registerUser('invite-preview-replay@gogo.id.vn', 'Chủ Kèo');
     const room = await createGroupRoom(token);
