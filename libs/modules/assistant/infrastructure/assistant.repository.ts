@@ -133,7 +133,7 @@ const CONVERSATION_COLUMNS = sql`c.id, c.user_id, c.title, c.context_kind, c.con
 const QA_PARTNER = sql`(qa.trace->>'route'='place_qa' or (qa.status<>'streaming' and qa.trace->>'qaProbe' is not null))`;
 /**
  * Whether an UNDECIDED provisional marker on row `m` is QA, from durable facts
- * only: a `question` when the flag is on; a `name`/`reply` only as a typed
+ * only: a `question` when the observed (or recovery) flag is on; a `name`/`reply` only as a typed
  * reply to a QA turn. Never once the producer published ordinary frames or
  * dispatched a model call — that turn already ran the ordinary path.
  */
@@ -147,7 +147,9 @@ function qaRecovered(merged: SQL, enabled: boolean): SQL {
       join assistant_usage_calls c on c.usage_ledger_id = u.id
       where u.message_id = m.id)
     and (
-      (m.trace->>'qaProbe' = 'question' and ${enabled})
+      (m.trace->>'qaProbe' = 'question' and
+        case when jsonb_typeof(m.trace->'qaEnabled') = 'boolean'
+          then (m.trace->>'qaEnabled')::boolean else ${enabled} end)
       or (m.trace->>'qaProbe' in ('name', 'reply') and (
         select l.trace->>'route' from assistant_messages l
         where l.conversation_id = m.conversation_id and l.user_id = m.user_id
@@ -616,6 +618,28 @@ export class AssistantRepository {
         text = ${text}
       where id = ${messageId} and status = 'streaming' and lease_owner = ${owner}
       returning id`);
+    return res.rows.length === 1;
+  }
+
+  /** Immutable producer observation, committed before any QA/ordinary dispatch.
+   * Pool acquisition, row lock, UPDATE and commit share the turn's deadline and cancellation.
+   */
+  async persistQaEnabled(
+    userId: string,
+    conversationId: string,
+    messageId: string,
+    enabled: boolean,
+    options: PlaceQaReadOptions,
+  ): Promise<boolean> {
+    const res = await placeQaTransaction(this.db, 1500, options, (tx) =>
+      tx.execute(sql`
+        update assistant_messages set
+          trace = coalesce(trace, '{}'::jsonb) || jsonb_build_object('qaEnabled', ${enabled}::boolean)
+        where id=${messageId} and conversation_id=${conversationId} and user_id=${userId}
+          and role='assistant' and status='streaming'
+          and (trace->'qaEnabled' is null or trace->'qaEnabled' = to_jsonb(${enabled}::boolean))
+        returning id`),
+    );
     return res.rows.length === 1;
   }
 

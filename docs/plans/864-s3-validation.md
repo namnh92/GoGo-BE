@@ -550,3 +550,82 @@ clean review verdict, merge instruction or DEV acceptance.
 | Build, full unit, api:check                                                                         | PASS (unit 343 files / 4921)                                                                                       |
 
 Logs: GoGo workspace `dev/test-evidence/be-864/r5/` (incl. `fence-before-00f691f1.log`). NOT RUN: frame-buffer Redis and live-provider suites.
+
+## Sol fix round (r5)
+
+2026-11-12. Owner authorized “Sol sửa”; basis: clean `df134cf0` (production
+`3fa56ecf`), DEV r5 findings F-01/F-02 and the Astra S3 amendment, especially A6.
+Edits only; no commit, push, deployment or flag enablement.
+
+- **F-01:** persist the producer's boolean flag observation as immutable
+  `trace.qaEnabled` immediately after the read, before further QA work or ordinary
+  dispatch. The write uses the existing cancellable transaction with one bounded
+  pool/lock/UPDATE/commit allowance, capped by the turn deadline. Orphan recovery
+  consumes the recorded observation without a new flag read; terminal and deadline
+  SQL settlement also prefer the stored boolean over a stale caller's value.
+  Missing observations retain the existing bounded, disabled-default recovery.
+  Unequivocal ordinary commands still bypass flag/latch/latest/catalogue reads.
+- **F-02:** rebuild both singleton and canonical-family confirmation identities
+  with the emitting message's `latest.locale` (default `vi`), preserving the exact
+  emitted text across an omitted or changed follow-up locale. Response rendering
+  still uses the current request locale.
+- Unit regressions cover both observed values, ordering before route/frames,
+  deadline/Stop during a stalled latch, the ordinary fast path, orphan recovery
+  without resampling, and English confirmation followed by default/changed locale.
+  The conversation fixture now retains each emitting message's locale.
+- Eight new fence integration cells cover both crash/reaper flip directions
+  before route/frame/provider dispatch; durable SQL precedence with stale terminal
+  and deadline recovery values (including rejected latch overwrites); and both
+  English chip locale round trips. These cells are collected, **NOT RUN** locally.
+
+### Regression proof and checks
+
+New focused regressions were run before production edits and after the fix with
+the same assertions. Command:
+
+```sh
+pnpm -s vitest run --project unit \
+  libs/modules/assistant/application/place-qa.service.spec.ts \
+  libs/modules/assistant/application/assistant-turn-runner.spec.ts \
+  -t 'Sol fix round \(r5\)|r5 orphan'
+```
+
+Before: **8 failed / 1 passed**, exit **1**, at the missing-latch/cancellation,
+orphan-resampling and confirmation-retry assertions. After: **9 passed**, exit
+**0**. The passing base cell preserves the unequivocal ordinary fast path.
+Logs: `/private/tmp/be873-sol-r5-before.log`,
+`/private/tmp/be873-sol-r5-after.log`.
+
+| Check                                                              | Exit | Result / evidence                                                                                                                                                                                                          |
+| ------------------------------------------------------------------ | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm -s typecheck`                                                | 0    | All 8 packages pass; sandbox shared-cache write warnings only. `/private/tmp/be873-sol-r5-typecheck.log`                                                                                                                   |
+| `pnpm -s vitest run --project unit`                                | 1    | **4,929 passed, 1 skipped; 342 suites passed, 1 failed.** `apps/api/src/sentry-request.spec.ts` cannot bind `127.0.0.1`: `listen EPERM`. Full unit is environment-blocked, not green. `/private/tmp/be873-sol-r5-unit.log` |
+| Focused service, runner, request-shape and classifier suites       | 0    | **391 passed.** `/private/tmp/be873-sol-r5-focused.log`                                                                                                                                                                    |
+| ESLint on all 6 touched TypeScript files                           | 0    | `/private/tmp/be873-sol-r5-eslint.log`                                                                                                                                                                                     |
+| Prettier check on all 7 touched TypeScript/Markdown files          | 0    | `/private/tmp/be873-sol-r5-prettier.log`                                                                                                                                                                                   |
+| `pnpm -s api:check`                                                | 0    | Generated declarations match. `/private/tmp/be873-sol-r5-api-check.log`                                                                                                                                                    |
+| Fence integration collection (`vitest list --project integration`) | 0    | **45 cells collected**; no execution. `/private/tmp/be873-sol-r5-integration-cells.log`                                                                                                                                    |
+| `rtk docker info`                                                  | 1    | Permission denied at `/Users/maxnguyen/.docker/run/docker.sock`. `/private/tmp/be873-sol-r5-docker.log`                                                                                                                    |
+| Protected-file byte/hash comparison with `HEAD`                    | 0    | Layer A spec, QA cases/fixtures and intent corpus unchanged, including the four recorded hashes above. `/private/tmp/be873-sol-r5-protected.json`                                                                          |
+| `git diff --check`, source snapshot verification                   | 0    | No whitespace errors; source snapshot matches.                                                                                                                                                                             |
+
+The full unit run includes all **156 preserved intent cases**, the approved
+**vi-065** classification/flag-state checks and complete Jev/Haiku request-byte
+equality. Those unit checks pass; public Layer A acceptance is **NOT RUN** on this
+snapshot. `apps/api/test/assistant-place-qa-s3.int.spec.ts` and all Layer A
+corpus/fixture files remain byte-identical to `HEAD`.
+
+Final source snapshot: `rs-e861ead2cf27`, manifest and retrievable diff at
+`/private/tmp/be873-sol-r5-snapshots/be873-sol-r5-rs-e861ead2cf27/MANIFEST.txt`.
+Scope: `apps`, `libs`, `openapi`; this validation appendix is outside that source
+scope. Production and unit bytes are unchanged since their checks; the subsequent
+changes only add fence integration assertions. Integration collection/lint/format
+are checked on the final source snapshot.
+
+**NOT RUN:** Docker integration execution (including all 45 fence cells and
+hash-bound Layer A base/head comparison), Redis/live-provider suites, remote CI,
+DEV acceptance, deployed-instance reader-floor verification, S4/S5 acceptance,
+deployment and flag changes. DEV must execute the existing integration handoff
+command above on this snapshot or the later commit containing it. The blocked
+Sentry listener suite also needs execution in an environment permitting localhost
+binds. S3 stays dark; these results do not establish release acceptance.

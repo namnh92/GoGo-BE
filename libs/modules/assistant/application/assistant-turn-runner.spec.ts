@@ -616,6 +616,21 @@ describe('GoGo-BE#873 round 2: no QA await before funding; the terminal write se
 });
 
 describe('Astra A5/A6 terminal decisions', () => {
+  it.each([true, false])('r5 orphan keeps durable flag %s without resampling', async (observed) => {
+    const flag = vi.fn(async () => !observed);
+    const h = harness(async () => ({ status: 'complete' }), { qaEnabled: flag });
+    await h.runner.finalizeOrphan(
+      {
+        id: 'm9',
+        text: '',
+        trace: { questionMessageId: 'q9', qaProbe: 'question', qaEnabled: observed },
+      } as never,
+      'failed',
+      null,
+    );
+    expect(flag).not.toHaveBeenCalled();
+    expect(h.finalizeOptions[0]).toEqual({ qa: { decided: false, enabled: observed } });
+  });
   it('keeps an observed disabled value through a producer failure', async () => {
     const flag = vi.fn(async () => true);
     const h = harness(

@@ -23,6 +23,7 @@ export function qaFixture() {
   };
   const repo = {
     markPlaceQa: vi.fn(async () => FIXTURE_A),
+    persistQaEnabled: vi.fn(async () => true),
     settleQaProbe: vi.fn(async (_id: string, _enabled: boolean) => false),
     clearPlaceQa: vi.fn(async () => true),
     latestAssistant: vi.fn(async (): Promise<any> => null),
@@ -431,7 +432,7 @@ describe('QA-only CMS vocabulary wiring', () => {
 /** One fictional conversation over several turns: each turn reads the previous
  * turn's persisted trace and the user messages by id, as the repository does. */
 function qaConversation() {
-  const users = new Map<string, { id: string; role: 'user'; text: string; locale: 'vi' }>();
+  const users = new Map<string, { id: string; role: 'user'; text: string; locale: 'vi' | 'en' }>();
   const places = new Map<string, ReturnType<typeof fictionalPlace>>([
     [FIXTURE_A, { ...fictionalPlace(FIXTURE_A, 'Song Ngọc'), areaLabel: 'Phường Ba Đình, Hà Nội' }],
     [
@@ -439,7 +440,12 @@ function qaConversation() {
       { ...fictionalPlace(FIXTURE_B, 'Song Ngọc'), areaLabel: 'Phường Cầu Giấy, Hà Nội' },
     ],
   ]);
-  let previous: { id: string; status: 'complete'; trace: Record<string, unknown> } | null = null;
+  let previous: {
+    id: string;
+    status: 'complete';
+    locale: 'vi' | 'en';
+    trace: Record<string, unknown>;
+  } | null = null;
   let n = 0;
   const send = async (
     text: string,
@@ -449,7 +455,6 @@ function qaConversation() {
     const f = qaFixture();
     const userId = `0000000${n}-0000-4000-8000-00000000000a`;
     const assistantId = `0000000${n}-0000-4000-8000-00000000000b`;
-    users.set(userId, { id: userId, role: 'user', text, locale: 'vi' });
     f.input.text = text;
     f.input.messageId = assistantId;
     f.repo.markPlaceQa.mockResolvedValue(userId);
@@ -460,12 +465,18 @@ function qaConversation() {
     f.search.placeFacts.mockImplementation((async () => ({ places })) as never);
     f.search.resolvePlaceName.mockImplementation(async () => exact(...places.keys()));
     configure(f);
+    users.set(userId, { id: userId, role: 'user', text, locale: f.input.locale });
     const handled = await f.run();
     if (handled)
-      previous = { id: assistantId, status: 'complete', trace: structuredClone(f.state.trace) };
+      previous = {
+        id: assistantId,
+        status: 'complete',
+        locale: f.input.locale,
+        trace: structuredClone(f.state.trace),
+      };
     const view = (
       await new PlaceAnswerReader({ placeFacts: async () => ({ places }) }).page(
-        [{ id: assistantId, text: f.state.text, trace: f.state.trace, locale: 'vi' }],
+        [{ id: assistantId, text: f.state.text, trace: f.state.trace, locale: f.input.locale }],
         'history',
       )
     ).get(assistantId)!;
@@ -485,6 +496,89 @@ const currentArea = {
   kind: 'resolved',
   value: { area: { datasetVersion: 'fixture', provinceCode: '01', communeCode: '00001' } },
 } as never;
+
+describe('Sol fix round (r5)', () => {
+  it.each([true, false])('latches flag %s before route, reads or frames', async (enabled) => {
+    const f = qaFixture();
+    f.availability.placeQaEnabled.mockResolvedValue(enabled);
+    f.repo.persistQaEnabled.mockImplementation(async () => {
+      expect(f.availability.placeQaEnabled).toHaveBeenCalledOnce();
+      expect(f.repo.markPlaceQa).not.toHaveBeenCalled();
+      expect(f.repo.latestAssistant).not.toHaveBeenCalled();
+      expect(f.search.resolvePlaceName).not.toHaveBeenCalled();
+      expect(f.frames).toEqual([]);
+      throw new Error('producer died after flag observation');
+    });
+    await expect(f.run()).rejects.toThrow('producer died after flag observation');
+    expect(f.repo.persistQaEnabled).toHaveBeenCalledWith(
+      f.input.userId,
+      f.input.conversationId,
+      f.input.messageId,
+      enabled,
+      expect.objectContaining({ signal: expect.any(AbortSignal), deadlineAt: expect.any(Number) }),
+    );
+    expect(f.state.qaEnabled).toBe(enabled);
+    expect(f.state.qaDecided).toBeUndefined();
+    expect(f.repo.markPlaceQa).not.toHaveBeenCalled();
+  });
+
+  it.each(['deadline', 'stop'] as const)('bounds a stalled flag latch by %s', async (mode) => {
+    vi.useFakeTimers();
+    try {
+      const f = qaFixture();
+      const controller = new AbortController();
+      let writeSignal: AbortSignal | undefined;
+      f.repo.persistQaEnabled.mockImplementation((async (...args: any[]) => {
+        writeSignal = args[4].signal;
+        return new Promise(() => {});
+      }) as never);
+      const deadlineAt = Date.now() + 100;
+      const work = f.service
+        .handle(f.input, f.state, { emit: async () => {} }, controller.signal, deadlineAt)
+        .catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(writeSignal).toBeDefined();
+      if (mode === 'stop') controller.abort(new Error('stopped'));
+      else await vi.advanceTimersByTimeAsync(100);
+      expect(await work).toBeInstanceOf(Error);
+      expect(writeSignal!.aborted).toBe(true);
+      expect(f.repo.markPlaceQa).not.toHaveBeenCalled();
+      expect(f.search.resolvePlaceName).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps unequivocal ordinary commands free of flag and latch work', async () => {
+    const f = qaFixture();
+    f.input.text = 'Gợi ý quán cafe ở Hà Nội';
+    expect(await f.run()).toBe(false);
+    expect(f.availability.placeQaEnabled).not.toHaveBeenCalled();
+    expect(f.repo.persistQaEnabled).not.toHaveBeenCalled();
+  });
+
+  it.each(['omitted', 'changed'] as const)(
+    'accepts the English emitted confirm text with %s follow-up locale',
+    async (mode) => {
+      vi.spyOn(Date, 'now').mockReturnValue(now);
+      const c = qaConversation();
+      await c.send('How much does Song Ngọc cost?', (f) => {
+        f.input.locale = 'en';
+      });
+      const confirm = await c.send('1', (f) => {
+        f.input.locale = 'en';
+      });
+      const emitted = confirm.view.followUps[0]!.options[0]!.text;
+      expect(emitted).toMatch(/^Confirm Song Ngọc · /u);
+      // The service receives vi both for the request default and explicit change.
+      const reply = await c.send(emitted, (f) => {
+        if (mode === 'changed') f.input.locale = 'vi';
+      });
+      expect(reply.qa).toMatchObject({ outcome: 'answer', topic: 'price' });
+      expect(reply.f.state.trace.placeQa).toMatchObject({ candidateIds: [FIXTURE_A] });
+    },
+  );
+});
 
 describe('Fable fix round — Sol F-02: old client types the emitted confirm option', () => {
   it('two-turn confirmation: emitted ordinal for a choice, then the emitted singleton confirm text, answers', async () => {

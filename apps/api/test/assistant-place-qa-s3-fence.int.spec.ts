@@ -8,6 +8,7 @@ import { ASSISTANT_DECISION_PROVIDER } from '../../../libs/modules/assistant/app
 import { AssistantRepository } from '../../../libs/modules/assistant/infrastructure/assistant.repository';
 import { AssistantTurnRunner } from '../../../libs/modules/assistant/application/assistant-turn-runner.service';
 import { PlaceQaService } from '../../../libs/modules/assistant/application/place-qa.service';
+import { newTurnState } from '../../../libs/modules/assistant/application/turn-state';
 import { AssistantAvailabilityService } from '../../../libs/modules/assistant/application/assistant-availability.service';
 import {
   startAssistantFixture,
@@ -399,6 +400,141 @@ async function sendThenDie(c: Conversation, text: string, control: Record<string
     start.mockRestore();
   }
 }
+
+describe('Sol fix round (r5): durable producer observation before dispatch', () => {
+  it.each([
+    [true, 'terminal'],
+    [false, 'terminal'],
+    [true, 'deadline'],
+    [false, 'deadline'],
+  ] as const)(
+    'SQL keeps durable flag %s over a stale %s recovery observation',
+    async (observed, recovery) => {
+      const c = await conversation();
+      const runner = f.app.get(AssistantTurnRunner);
+      const repo = f.app.get(AssistantRepository);
+      const start = vi.spyOn(runner, 'start').mockImplementationOnce(() => undefined);
+      const flag = vi
+        .spyOn(f.app.get(AssistantAvailabilityService), 'placeQaEnabled')
+        .mockResolvedValue(!observed);
+      try {
+        const sent = await send(c, QUESTION);
+        // Recovery may already hold this snapshot when the producer commits.
+        const admitted = (await repo.findMessageById(sent.id))!;
+        const input = start.mock.calls[0]![0];
+        const options = { deadlineAt: Date.now() + 1500 };
+        expect(await repo.persistQaEnabled(input.userId, c.id, sent.id, observed, options)).toBe(
+          true,
+        );
+        expect(await repo.persistQaEnabled(input.userId, c.id, sent.id, !observed, options)).toBe(
+          false,
+        );
+        if (recovery === 'deadline') {
+          expect(await repo.settleQaProbe(sent.id, !observed, options)).toBe(observed);
+          await runner.finalizeOrphan((await repo.findMessageById(sent.id))!, 'failed', null);
+        } else await runner.finalizeOrphan(admitted, 'failed', null);
+        const stored = await repo.findMessageById(sent.id);
+        expect(stored?.trace?.qaEnabled).toBe(observed);
+        expect(stored?.trace?.route).toBe(observed ? 'place_qa' : undefined);
+        expect(stored?.trace).not.toHaveProperty('qaProbe');
+      } finally {
+        start.mockRestore();
+        flag.mockRestore();
+      }
+    },
+  );
+  it.each(['omitted', 'changed'] as const)(
+    'English Confirm chip answers with %s follow-up locale',
+    async (mode) => {
+      await qaFlag(true);
+      const c = await conversation();
+      resetCapture();
+      const confirm = await turn(c, 'Quán Sao Lạ giá bao nhiêu ở Quận 1?', { locale: 'en' });
+      expect(confirm.qa).toMatchObject({ outcome: 'confirm', topic: 'price' });
+      const emitted = confirm.message.followUps[0].options[0].text as string;
+      expect(emitted).toMatch(/^Confirm Quán Sao Lạ · /u);
+      const answered = await turn(c, emitted, mode === 'changed' ? { locale: 'vi' } : {});
+      expect(answered.qa).toMatchObject({ outcome: 'answer', topic: 'price' });
+      expect(answered.qa!.candidateIds).toEqual([ids['lantern']]);
+      expect(answered.stored?.locale).toBe('vi');
+      expect(capture).toEqual({ jev: [], haiku: [] });
+    },
+  );
+  it.each([true, false])(
+    'reaper uses observed flag %s after its flip, before any route/frame/provider dispatch',
+    async (observed) => {
+      await qaFlag(observed);
+      const c = await conversation();
+      const runner = f.app.get(AssistantTurnRunner);
+      const repo = f.app.get(AssistantRepository);
+      const start = vi.spyOn(runner, 'start').mockImplementationOnce(() => undefined);
+      const flag = vi.spyOn(f.app.get(AssistantAvailabilityService), 'placeQaEnabled');
+      const mark = vi.spyOn(repo, 'markPlaceQa');
+      const persist = repo.persistQaEnabled.bind(repo);
+      // Commit the observation, then kill the producer before it can use it.
+      const crash = vi.spyOn(repo, 'persistQaEnabled').mockImplementationOnce(async (...args) => {
+        expect(await persist(...args)).toBe(true);
+        throw new Error('fixture process crash after durable flag observation');
+      });
+      try {
+        resetCapture();
+        const sent = await send(c, QUESTION);
+        const input = start.mock.calls[0]![0];
+        await expect(
+          f.app.get(PlaceQaService).handle(
+            input,
+            newTurnState(),
+            {
+              emit: async () => {
+                throw new Error('unexpected frame');
+              },
+            },
+            new AbortController().signal,
+            Date.now() + 4000,
+          ),
+        ).rejects.toThrow('fixture process crash after durable flag observation');
+        const before = await repo.findMessageById(sent.id);
+        expect(before?.trace).toMatchObject({ qaProbe: 'question', qaEnabled: observed });
+        expect(before?.trace).not.toHaveProperty('route');
+        expect(before?.trace).not.toHaveProperty('streamRoute');
+        expect(before?.frames ?? []).toEqual([]);
+        expect(mark).not.toHaveBeenCalled();
+        expect(capture).toEqual({ jev: [], haiku: [] });
+        const calls = await f.db.execute(sql`
+          select c.call_index from assistant_usage_calls c join assistant_usage_ledger u
+            on u.id=c.usage_ledger_id where u.message_id=${sent.id}`);
+        expect(calls.rows).toEqual([]);
+        flag.mockClear();
+        await qaFlag(!observed);
+        await f.db.execute(sql`
+          update assistant_messages set lease_expires_at=now()-interval '1 minute'
+          where id=${sent.id}`);
+        expect(await runner.reap()).toBeGreaterThan(0);
+        expect(flag).not.toHaveBeenCalled();
+        const reaped = await repo.findMessageById(sent.id);
+        expect(reaped?.status).toBe('failed');
+        expect(reaped?.trace?.route).toBe(observed ? 'place_qa' : undefined);
+        expect(reaped?.trace?.qaEnabled).toBe(observed);
+        expect(reaped?.trace).not.toHaveProperty('qaProbe');
+        const { next, expected, seen } = await followingRecommendation(c);
+        const historyIds = (await repo.history(c.id, next.id, 50)).map((m) => m.id);
+        expect(historyIds.includes(sent.userId)).toBe(!observed);
+        // The crashed assistant is empty; only the ordinary user row is history.
+        expect(historyIds).not.toContain(sent.id);
+        if (observed) {
+          expect(seen).toEqual(expected);
+          expect(JSON.stringify(seen)).not.toContain(QUESTION);
+        } else expect(JSON.stringify(seen)).toContain(QUESTION);
+      } finally {
+        start.mockRestore();
+        flag.mockRestore();
+        mark.mockRestore();
+        crash.mockRestore();
+        await qaFlag(true);
+      }
+    },
+  );
+});
 
 describe('Round 2 — Sol F-02 / Astra F-01: the send-commit → fence crash window', () => {
   it.each(['question', 'typed reply to the latest QA turn', 'structured control'] as const)(

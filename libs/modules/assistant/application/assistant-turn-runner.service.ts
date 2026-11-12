@@ -477,7 +477,14 @@ export class AssistantTurnRunner implements OnModuleInit, OnModuleDestroy {
         trace: { ...row.trace, orphaned: true },
         sources: state.sources,
       },
-      { ...options, qa: await this.qaResolution(false, row.trace?.qaProbe) },
+      {
+        ...options,
+        qa: await this.qaResolution(
+          false,
+          row.trace?.qaProbe,
+          typeof row.trace?.qaEnabled === 'boolean' ? row.trace.qaEnabled : undefined,
+        ),
+      },
     );
     if (finalized) {
       await this.buffer

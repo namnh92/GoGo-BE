@@ -343,6 +343,21 @@ export class PlaceQaService {
         flagGuard.dispose();
       }
       state.qaEnabled = enabled;
+      // Producer observation wins even if this process dies before the route
+      // fence or first ordinary frame. Never continue without a durable latch.
+      const observationDeadline = Math.min(deadlineAt, Date.now() + QA_SETTLE_FLAG_MS);
+      const observationGuard = firstTextGuard(observationDeadline, signal);
+      try {
+        const persisted = await observationGuard.run(() =>
+          this.repo.persistQaEnabled(input.userId, input.conversationId, input.messageId, enabled, {
+            signal: observationGuard.signal,
+            deadlineAt: observationDeadline,
+          }),
+        );
+        if (!persisted) throw new Error('Place QA flag observation lost');
+      } finally {
+        observationGuard.dispose();
+      }
       signal.throwIfAborted();
       // A bare name is only a probe here: it becomes QA after exact canonical
       // qualification (resolve) or as a typed reply to a QA turn, never before.
@@ -478,7 +493,7 @@ export class PlaceQaService {
             const facts = await this.search.placeFacts(candidates, { signal, deadlineAt });
             const candidate = facts.places.get(candidates[0]!);
             const phrase = candidate?.available
-              ? confirmText(input.locale, candidate.name, candidate.areaLabel)
+              ? confirmText(latest?.locale ?? 'vi', candidate.name, candidate.areaLabel)
               : null;
             if (phrase && normalizeVietnamese(phrase) === t) {
               // Re-read the complete canonical-name family, not just the last
@@ -493,7 +508,7 @@ export class PlaceQaService {
                 const matching = ids.filter((id) => {
                   const place = all.places.get(id);
                   const identity = place?.available
-                    ? confirmText(input.locale, place.name, place.areaLabel)
+                    ? confirmText(latest?.locale ?? 'vi', place.name, place.areaLabel)
                     : null;
                   return identity !== null && normalizeVietnamese(identity) === t;
                 });
