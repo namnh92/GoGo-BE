@@ -742,10 +742,10 @@ current-record updates, omission, and ref-only storage. Also run
 existing place-detail read/error metrics remain the source. Rollback removes
 the optional projection; no database migration is involved.
 
-## Named-place QA — S3, default off (#864 / #844)
+## Named-place QA — S3 + S4, default off (#864 / #874 / #844)
 
 `assistant.place_qa.enabled` is a server flag with `defaultValue: false`.
-S3 does not enable it. Enablement requires the combined S4 + S5 behavioural gate,
+S3 and S4 do not enable it. Enablement requires the combined S4 + S5 behavioural gate,
 source-bound client compatibility and the separate DEV acceptance chain.
 
 Inside the existing first-text deadline, before `resolveEpisode`, the newest
@@ -772,8 +772,11 @@ QA route. Exact canonical qualification establishes QA; an interrupted or
 unqualified probe without prior QA context retains ordinary history. Terminal
 uncertain probes are excluded from recommendation history and episode reads. Fuzzy name-only matches do not claim a QA
 answer. Factual unresolved names always remain QA and never borrow the opened
-context place. Explicit context-place referents work; previous-card and ordinal
-card referents remain S4.
+context place. Referents resolve the explicit context ID first, then the requested ordinal in
+latest accessible cards, then the sole previous card. Multiple cards ask for a
+choice (up to three options); no accessible card asks for the place. Ordinals
+keep their original card positions even if a place becomes unavailable. Every
+source read is scoped to the user and conversation and availability is rechecked.
 
 `trace.placeQa.pending` v1 stores references, closed semantic keys and arguments,
 config/semantic versions, source/assistant message IDs, candidate IDs, option
@@ -811,10 +814,37 @@ Ambiguous replies receive one retry, then a restatement request. Current-area
 refinement reruns the complete original name query. Old districts require
 explicit branch confirmation; successor mapping is not implemented in S3.
 
-S3 emits no `place_topic` chips. Comparisons are recognized and consume a QA
-turn with neutral “chưa hỗ trợ” copy, with zero model calls. Full compare,
-previous-card references, topic chips/client consumers (S4), and curated aliases
-(S5) remain pending. S3 raises the deployment floor to marker-aware history,
+S4 resolves explicit comparisons through the same truth table independently for
+each place. Both slots, original source messages, requested topic/arguments and
+expiry survive branch choice, confirmation and area refinement. Only exact unique
+or explicitly confirmed places answer; identical IDs ask for another referent.
+An answer renders both sides from the same fact snapshot, each under its own
+eligibility policy, without a verdict. A direct price comparison says “GoGo chưa
+có giá đã xác minh của địa điểm này” on the side without verified price (Q-2).
+
+Answers emit at most one `place_topic` group, with up to three other topics that
+currently have eligible data. `pending.kind=topic` retains one or both resolved
+places. Options persist semantic query tokens, never hydrated labels or values.
+The public paired reply fields select the server-stored option. Text clients may
+send the exact emitted localized topic label. Selection rechecks sources,
+publication and current topic eligibility; a lost/expired/superseded option is
+neutral stale, while flag-off controls are neutral disabled. A compare chip
+answers the same requested topic for both retained places. Replay derives option
+eligibility from the same snapshot as prose/cards/sources. Previous-card
+continuations also retain the source assistant message ID, so deletion makes
+later choices stale.
+
+The S4 Layer A harness and corpus manifest are separate from hash-bound S3
+evidence. The manifest assembles the disjoint 234-case core: 11 topics × 12,
+40 resolution, 12 branch, 12 not-found, 30 negatives and 8 comparisons. Each topic
+includes named, explicit context, sole-card and ordinal sources, retaining four
+unaccented and two typo cases. See [S4 validation](plans/874-s4-validation.md).
+Only curated aliases (S5) remain as core feature work. Combined S4 + S5 Layer A,
+Mobile consumer compatibility and owner DEV acceptance remain release gates;
+the flag stays default off. No wire fields change in S4: existing optional IDs
+and paired send fields carry the source-bound selections.
+
+S3 raises the deployment floor to marker-aware history,
 episode readers and recovery. Pause sends and drain old runners; deploy and
 verify that floor on every API/runner/reaper/recommendation instance before
 resuming sends. `0dd18c5e` is below the floor: its history predicate leaks a
@@ -825,7 +855,7 @@ probes. Returning below the floor requires a separate migration and owner order.
 
 Unequivocal new recommendation/action/guide/category requests bypass all QA
 reads, including the flag, in both flag states. Structured controls still take
-precedence. Fresh explicit factual questions skip latest-pending reads; flag
+precedence. Fresh named factual questions skip latest-pending reads; referents without an explicit context and exact topic-label controls read the latest source; flag
 disabled or a flag read error/1.5-second timeout takes the ordinary path.
 An observed disabled value is retained for terminal recovery. The first-text
 cleanup has one 1.5-second budget including flag, pool wait, UPDATE and commit;

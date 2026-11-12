@@ -620,7 +620,10 @@ describe('Fable fix round — Sol F-02: old client types the emitted confirm opt
     const emitted = first.view.followUps[0]!.options[0]!.text;
     const second = await c.send(emitted);
     expect(second.qa).toMatchObject({ outcome: 'answer', topic: 'hours', args: choice.qa!.args });
-    expect(second.qa!.pending).toBeUndefined();
+    expect(second.qa!.pending).toMatchObject({
+      kind: 'topic',
+      slots: [{ resolvedPlaceId: FIXTURE_B }],
+    });
     // Eligibility is re-read for exactly the confirmed candidate before answering.
     expect(second.f.search.placeFacts).toHaveBeenCalledWith([FIXTURE_B], expect.anything());
     expect(second.f.state.trace.placeAnswerGroup).toMatchObject({
