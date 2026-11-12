@@ -1,8 +1,9 @@
 # BE #874 — S4 validation
 
-Role: Sol (DEV coder), 2026-11-12. Branch
-`feature/GOGO-874-place-qa-compare`; base/HEAD `586944a5` (S0–S3).
-Worktree changes only; no commit, push, PR, deployment or flag enablement.
+Role: Sol drafted on base `586944a5`; Opus (DEV, owner's temporary role map for
+this session, 2026-11-12) took over, rebased onto `13701a66` (#876, #880) and
+owns the results in **Opus round** below. Sol's sections are kept as written
+and describe the pre-rebase tree; they are not results of the current head.
 Authority: Astra rev3 §§3.1, 3.3, 4.3, 4.5, 7–9 and the
 [S3 amendment](sa-shape-be-844-ai-place-qa.rev3-amend-s3.astra.md), plus owner
 Q-2 / vi-065 / name + area decisions dated 2026-11-11/12. The task's referenced
@@ -129,3 +130,53 @@ superseded by the final attempt paths above.
   reduction or live acceptance is claimed.
 - **Open questions:** none needed for this implementation. S6/S7 district policy
   and any rollout order remain separate scope. No new owner policy was inferred.
+
+## Opus round (2026-11-12, base `13701a66`)
+
+**Rebase.** One conflict (`place-qa.service.ts`, three hunks): the S4 topic-label
+branch runs first, then #880's emitted-identity-first block now reads the
+**active slot** (`p.slots[p.activeSlot]`), and #876's exact-wins outcome
+(`fresh.kind`) is kept with `selected()` so a compare continuation keeps its
+retained slot. New unit cells (`place-qa-s4.service.spec.ts`): slot-2 typed
+emitted text confirms only that branch; slot-2 venues named `Quán 2` re-ask the
+whole choice; a topic label typed during a slot-2 choice selects nothing.
+Mutation `p.slots[p.activeSlot]` → `p.slots[0]`: 4 FAIL; restored: 31/31 PASS.
+
+**Test fixes.** Money assertions follow #880 grouping (`12.000`); every absence
+guard matches raw and grouped forms and runs behind `stripVolatile` (integration)
+or a UUID/timestamp-safe pattern (unit). `s4-state-topic-expired` aged the
+stored pending instead of jumping the clock (a clock jump past the access-token
+lifetime gave 401, never a proof); moving `expiresAt` into the future makes it
+FAIL, restored PASS.
+
+**Reader compatibility.** S3's `readQaPending` (`13701a66`) is a strict schema
+(`kind` without `topic`, `activeSlot: literal(0)`): S4 pending degrades to
+`null` (stale), it never throws. Rollback floor stays S3 (flag off).
+
+**Layer A transition (Astra decision, shape amendment appended).** Corpus row
+`compare-s3-neutral` moved to the S4 contract (outcome `answer`, places
+`lantern`+`no_price`, contains `GoGo chưa có giá đã xác minh`, slice `S4`,
+`pendingSlice` removed); ID, input, fixture, clock and partition unchanged. It
+maps to `s4-compare-01` (same scenario, counted once in the 234 core). Every
+other S3 row and harness byte is unchanged.
+`place-qa-cases.vi.json` SHA-256: `c8a3d100…cbb39f` (origin/re-design) →
+`f694547b…08e0cc1`. On S3-only code the revised row FAILS ("GoGo chưa hỗ trợ so
+sánh"), on S4 it PASSES. Historical S3 proof: `dev/test-evidence/be-864`.
+
+**Metadata discrepancy.** The first Opus head run (`opus-r1/layer-a/head`) wrote
+`baseSha: 586944a5` because `PLACE_QA_BASE_SHA` was unset (spec default); its
+base run used `13701a66`. Originals kept; `opus-r2` sets both SHAs.
+
+**Results on head `08896685` (overlay SHA-256 in `opus-r2/layer-a/overlay-sha256.txt`).**
+
+| Gate                                                        | Result                                                                                          |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| typecheck / eslint / prettier / api:check (no OpenAPI diff) | 0 / 0 / 0 / 0                                                                                   |
+| unit (full)                                                 | 5098 PASS (before corpus edit); assistant+search 1723 PASS after                                |
+| S4 Layer A head                                             | 412/412 PASS — preservation 355, incident 1, capability 55                                      |
+| S4 Layer A base `13701a66`                                  | preservation 355 PASS, incident FAIL, capability 42 FAIL / 13 PASS                              |
+| integration serial                                          | s3 417, s3-fence 45, s2 25, s2-wiring 2, 875 5, 877 7, place-answer 11, assistant 35, search 33 |
+
+Evidence: `dev/test-evidence/be-874/opus-r1/`, `opus-r2/`. S4 stays behind the
+S4+S5 gate; `place_qa` is ON in DEV by owner order, so a DEV deploy makes
+compare, referent and topic chips live there before the Mobile S4 consumer.
