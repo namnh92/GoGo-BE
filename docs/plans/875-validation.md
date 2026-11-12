@@ -95,8 +95,7 @@ Final checks for this delta:
 | `pnpm api:check`                                     | **0** | Generated declarations match; `/tmp/be-876-api-check.log`                                                                                                                                    |
 | `git diff --check`                                   | **0** | No whitespace errors                                                                                                                                                                         |
 
-Integration/build were not rerun for this uncommitted delta; the committed-head
-DEV evidence above remains scoped to `5bc9b466`. No gate or expectation was
-suppressed to bypass the socket failure. S3 Layer A files remain untouched.
-No commit, deployment, flag change or external write was made. DEV acceptance
-is still **pending**.
+The table above is the fixer's sandbox run. DEV then committed the delta as `58aa7af9`
+and reran build (PASS), full unit (4983 PASS) and integration (568 PASS / 21 skipped,
+including S3 Layer A 417/417) on that head; see the F-03 bullet. No gate or expectation
+was suppressed. S3 Layer A files remain untouched. DEV chat acceptance is still **pending**.
