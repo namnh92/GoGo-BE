@@ -230,3 +230,11 @@ pending not re-checked; reply-sourced single-slot name binding lost), F-05 P2
   "vào thứ 3", "Quán này thứ 2" were already base behaviour: preservation). From
   `d4acca12`: both F-04 cells FAIL for the intended reason, the rest PASS.
   PASS-after 55/55. Logs `dev/test-evidence/be-874/opus-r4/`.
+
+## DEV review closure (2026-11-12)
+
+Opus confirm review on `9a8085af`: **clean** (F-04, F-05, F-06 closed). Fable 5.2
+advisor additionally raised M-05 (a venue literally named "Quán 2" asked with a
+non-S2 clause) and M-06 (a compared venue name containing "về"). Owner decision
+2026-11-12: "Không có trường hợp tên quán là quán 2 đâu. Đừng làm những case vô
+nghĩa nữa" → both **won't-fix**; no code or cells added for implausible names.
