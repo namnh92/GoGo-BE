@@ -778,6 +778,7 @@ describe('invites (BE-BFF-004, FR-ROOM-009)', () => {
       .from(schema.roomInvites)
       .where(eq(schema.roomInvites.id, inviteId));
     expect(stored!.expiresAt.toISOString()).toBe(expiresAt);
+    expect(stored!.expiresAt.getTime() - stored!.createdAt.getTime()).toBe(dayMs);
 
     // Fake only Date: HTTP/database timers keep running. Anonymous guest join
     // avoids conflating invite expiry with the host access token's shorter TTL.

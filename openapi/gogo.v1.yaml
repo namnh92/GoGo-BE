@@ -2,7 +2,7 @@ openapi: 3.1.0
 x-gogo-notification-preference-semantics: master-and-five-categories-v1
 info:
   title: GoGo API
-  version: 12.1.0-alpha.1
+  version: 12.2.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -1503,6 +1503,9 @@ paths:
       operationId: createRoomInvite
       tags: [rooms]
       summary: 'Host-only: create a high-entropy expiring invite (code shown once)'
+      description: >
+        New invites use the primary database room invite TTL setting (seeded at 86400 seconds).
+        Existing credentials retain their stored expiry. There is no runtime default on setting failure.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       requestBody:
@@ -1513,7 +1516,7 @@ paths:
               properties:
                 maxUses: { type: integer, minimum: 1, maximum: 100 }
       responses:
-        '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
+        '503': { $ref: '#/components/responses/InviteIssuanceUnavailable' }
         '201':
           description: Invite created — plaintext code returned exactly once, only hash stored.
           content:
@@ -2658,7 +2661,15 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '429': { $ref: '#/components/responses/RateLimited' }
-        '503': { $ref: '#/components/responses/AssistantDisabled' }
+        '503':
+          description: >
+            ASSISTANT_DISABLED when the assistant is unavailable. For create_invite,
+            INVITE_TTL_SETTING_UNAVAILABLE (retryable false for missing/invalid setting,
+            true for database/lock failure) rolls back issuance without a grant.
+            SERVICE_UNAVAILABLE (retryable true) is also possible for session lookup.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /assistant/proposals/{proposalId}/dismiss:
     post:
@@ -7212,7 +7223,9 @@ paths:
         for `PLAN`, any signed-in user for a published `PLACE`. `COLLECTION` and
         `REFERRAL` are reserved and answer 400 `SHARE_LINK_TYPE_UNSUPPORTED`.
         Guests cannot mint. 503 `SHARE_LINKS_UNAVAILABLE` (not retryable) when
-        the environment has no share host configured.
+        the environment has no share host configured. ROOM_INVITE mint also fails closed with
+        `INVITE_TTL_SETTING_UNAVAILABLE`: retryable false for a missing/invalid setting,
+        true for a database or lock timeout. Its expiry exactly copies the invite in the same transaction.
       requestBody:
         required: true
         content:
@@ -7242,7 +7255,10 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '503':
-          description: No share host configured in this environment (`SHARE_LINKS_UNAVAILABLE`)
+          description: >
+            SHARE_LINKS_UNAVAILABLE (retryable false) when no share host is configured;
+            INVITE_TTL_SETTING_UNAVAILABLE for ROOM_INVITE (retryable false for missing/invalid
+            setting, true for database/lock failure); SERVICE_UNAVAILABLE for session lookup.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -23075,6 +23091,16 @@ components:
         pool or query timeout/unavailability. Retry with backoff; cached state
         cannot authorize access. SQL/schema/permission/configuration errors
         retain existing error handling. Standard error envelope.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+    InviteIssuanceUnavailable:
+      description: >
+        INVITE_TTL_SETTING_UNAVAILABLE — issuance is rolled back, with no partial invite/share.
+        Missing or invalid singleton setting is non-retryable (repair data/migration);
+        database connectivity/query/lock timeout is retryable. No runtime 24h fallback.
+        SERVICE_UNAVAILABLE (retryable true) is also possible for authoritative session lookup.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorEnvelope' }

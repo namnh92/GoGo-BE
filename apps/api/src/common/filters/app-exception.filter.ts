@@ -2,7 +2,11 @@ import type { ArgumentsHost, ExceptionFilter } from '@nestjs/common';
 import { Catch, HttpException } from '@nestjs/common';
 import * as Sentry from '@sentry/node';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { publicErrorDetails, type AssistantInsufficientCreditDetails } from '@gogo/modules';
+import {
+  InviteTtlSettingUnavailable,
+  publicErrorDetails,
+  type AssistantInsufficientCreditDetails,
+} from '@gogo/modules';
 import { AppError, type FieldError } from '../errors/app-error';
 
 type ErrorEnvelope = {
@@ -76,7 +80,12 @@ export class AppExceptionFilter implements ExceptionFilter {
       };
     }
 
-    if (status >= 500) {
+    if (exception instanceof InviteTtlSettingUnavailable) {
+      request.log.error(
+        { operation: 'room_invite_issue', reason: exception.reason, request_id: requestId },
+        'invite setting unavailable',
+      );
+    } else if (status >= 500) {
       request.log.error({ err: exception, request_id: requestId }, 'unhandled error');
       // No-op unless Sentry.init ran (SENTRY_DSN set).
       Sentry.captureException(exception, { extra: { request_id: requestId } });

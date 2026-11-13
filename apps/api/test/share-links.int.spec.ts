@@ -129,6 +129,88 @@ afterAll(async () => {
 });
 
 describe('ROOM_INVITE share link — the slug is the invite code', () => {
+  it('#906 copies the configured 5-minute deadline exactly; old shares keep their expiry', async () => {
+    const host = await register('link-ttl-906@gogo.id.vn');
+    const room = await roomHostedBy(host.userId);
+    const first = await mint(host.token, { type: 'ROOM_INVITE', entityId: room.id });
+    expect(first.statusCode).toBe(201);
+    const old = first.json();
+    slugOf(old.url);
+    try {
+      await db.update(schema.roomInviteSettings).set({ ttlSeconds: 300 });
+      const response = await mint(host.token, { type: 'ROOM_INVITE', entityId: room.id });
+      expect(response.statusCode).toBe(201);
+      const body = response.json();
+      slugOf(body.url);
+      const [link] = await db
+        .select()
+        .from(schema.shareLinks)
+        .where(eq(schema.shareLinks.id, body.id));
+      const [invite] = await db
+        .select()
+        .from(schema.roomInvites)
+        .where(eq(schema.roomInvites.id, link!.inviteId!));
+      expect(invite!.expiresAt.getTime() - invite!.createdAt.getTime()).toBe(300000);
+      expect(link!.expiresAt).toEqual(invite!.expiresAt);
+      expect(body.expiresAt).toBe(invite!.expiresAt.toISOString());
+      expect(
+        (
+          await db.select().from(schema.shareLinks).where(eq(schema.shareLinks.id, old.id))
+        )[0]!.expiresAt!.toISOString(),
+      ).toBe(old.expiresAt);
+    } finally {
+      await db.update(schema.roomInviteSettings).set({ ttlSeconds: 86400 });
+    }
+  });
+
+  it('#906 missing setting returns typed non-retryable 503 and leaves no invite or share', async () => {
+    const host = await register('link-ttl-missing-906@gogo.id.vn');
+    const room = await roomHostedBy(host.userId);
+    const [setting] = await db.select().from(schema.roomInviteSettings);
+    await db.delete(schema.roomInviteSettings);
+    try {
+      const response = await mint(host.token, { type: 'ROOM_INVITE', entityId: room.id });
+      expect(response.statusCode).toBe(503);
+      expect(response.json()).toMatchObject({
+        code: 'INVITE_TTL_SETTING_UNAVAILABLE',
+        retryable: false,
+        field_errors: [],
+      });
+      expect(
+        await db.select().from(schema.roomInvites).where(eq(schema.roomInvites.roomId, room.id)),
+      ).toHaveLength(0);
+      expect(
+        await db.select().from(schema.shareLinks).where(eq(schema.shareLinks.targetId, room.id)),
+      ).toHaveLength(0);
+    } finally {
+      await db.insert(schema.roomInviteSettings).values(setting!);
+    }
+  });
+
+  it('#906 a share insert failure rolls back its already inserted invite', async () => {
+    const host = await register('link-ttl-rollback-906@gogo.id.vn');
+    const room = await roomHostedBy(host.userId);
+    // Fault only the share persistence boundary; PostgreSQL rolls the outer tx back.
+    await pool.query(`create function fail_ttl_test_share() returns trigger language plpgsql as $$
+      begin raise exception 'share test fault'; end $$;
+      create trigger fail_ttl_test_share before insert on share_links
+      for each row execute function fail_ttl_test_share()`);
+    try {
+      const response = await mint(host.token, { type: 'ROOM_INVITE', entityId: room.id });
+      expect(response.statusCode).toBe(500);
+      expect(
+        await db.select().from(schema.roomInvites).where(eq(schema.roomInvites.roomId, room.id)),
+      ).toHaveLength(0);
+      expect(
+        await db.select().from(schema.shareLinks).where(eq(schema.shareLinks.targetId, room.id)),
+      ).toHaveLength(0);
+    } finally {
+      await pool.query(
+        'drop trigger fail_ttl_test_share on share_links; drop function fail_ttl_test_share()',
+      );
+    }
+  });
+
   it('host mints a canonical URL; the slug resolves to itself as invite code and joins the room', async () => {
     const host = await register('link-host@gogo.id.vn');
     const room = await roomHostedBy(host.userId);

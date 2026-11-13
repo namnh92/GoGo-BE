@@ -120,7 +120,7 @@ describe('PrometheusBackfillService (epic §25)', () => {
       ['2026-09-02', 'google.routeMatrix', 'calls', 4, BACKFILL_SOURCE, 'LOW'],
     ]);
     const audits = await db.execute(
-      sql`select action, resource_id, diff from audit_logs order by created_at`,
+      sql`select action, resource_id, diff from audit_logs where action = 'cost.backfill' and resource_type = 'cost_backfill' order by created_at`,
     );
     expect(audits.rows).toHaveLength(2);
     expect(audits.rows[0]).toMatchObject({

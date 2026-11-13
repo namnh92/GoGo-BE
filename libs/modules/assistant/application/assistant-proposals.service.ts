@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { Db } from '@gogo/database';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { AppError, type FieldError } from '../../shared/app-error';
+import { InviteTtlReadUnavailable } from '../../shared/invite-ttl';
 import { writeAudit } from '../../shared/audit';
 import { DB } from '../../shared/tokens';
 import type { Actor } from '../../identity/domain/actor';
@@ -83,7 +84,13 @@ export class AssistantProposalsService {
     try {
       execution = await this.execute(actor, kind, merged.values);
     } catch (err) {
-      if (isRefusalBeforeWrite(err)) {
+      // A setting-reader failure reaches here only after the invite transaction
+      // rejects; its typed subtype proves execution never reached the insert.
+      // Other TTL-setting errors may wrap an uncertain transaction outcome.
+      if (
+        isRefusalBeforeWrite(err) ||
+        (kind === 'create_invite' && err instanceof InviteTtlReadUnavailable)
+      ) {
         await this.repo.releaseProposal(proposalId);
         this.metrics.increment('assistant_proposals_total', { outcome: 'refused' });
         throw err;

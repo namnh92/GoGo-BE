@@ -43,7 +43,6 @@ import {
 } from '../infrastructure/rooms.repository';
 
 // GoGo-BE#882: applies only at issuance; existing invites keep their stored expiry.
-const INVITE_TTL_24H_MS = 24 * 60 * 60 * 1000;
 
 export type ConstraintInput = {
   administrativeArea?: AdministrativeAreaInput | null | undefined;
@@ -585,7 +584,6 @@ export class RoomsService {
         roomId,
         codeHash: this.tokens.hashOpaqueToken(code),
         createdByMemberId: member.id,
-        expiresAt: new Date(Date.now() + INVITE_TTL_24H_MS),
         ...(maxUses ? { maxUses } : {}),
       },
       hostAuthority(actor, room, member),

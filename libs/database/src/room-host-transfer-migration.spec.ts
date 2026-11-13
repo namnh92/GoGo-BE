@@ -35,6 +35,6 @@ it('applies host transfer above the installed invite-foundation watermark', asyn
   expect(queries.join('\n')).not.toMatch(/CREATE TABLE.*room_invite_codes/i);
   expect(
     queries.filter((q) => q.startsWith('insert into "drizzle"."__drizzle_migrations"')),
-  ).toHaveLength(2);
+  ).toHaveLength(journal.entries.filter((e) => e.when > prior.when).length);
   expect(queries.at(-1)).toBe('commit');
 });

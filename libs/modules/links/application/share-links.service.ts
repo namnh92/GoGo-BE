@@ -1,3 +1,4 @@
+import { observeInviteIssuance } from '../../shared/invite-ttl';
 import type { Tx } from '../../shared/outbox';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
@@ -153,7 +154,9 @@ export class ShareLinksService {
     };
     const row =
       input.type === 'ROOM_INVITE'
-        ? await this.repo.transaction((tx) => persist(tx))
+        ? await observeInviteIssuance(this.metrics, 'token', () =>
+            this.repo.transaction((tx) => persist(tx)),
+          )
         : await persist();
     this.metrics.increment('share_link_created_total', { type: input.type });
     return {

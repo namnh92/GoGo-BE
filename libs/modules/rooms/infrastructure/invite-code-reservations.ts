@@ -1,3 +1,8 @@
+import {
+  InviteTtlSettingUnavailable,
+  isTransientInviteStorageError,
+  readInviteTtlWithin,
+} from '../../shared/invite-ttl';
 import { randomUUID } from 'node:crypto';
 import type { Db } from '@gogo/database';
 import { schema } from '@gogo/database';
@@ -43,15 +48,6 @@ export class InviteCodeReservations {
         from rooms where id=${input.roomId} for update`);
       const r = room.rows[0];
       if (!r || !r.eligible) throw new InviteFoundationError('ROOM_NOT_ELIGIBLE');
-      // Do not use transaction_timestamp(): the caller may have waited for this lock.
-      const time = await tx.execute<{ now: string }>(sql`select clock_timestamp() as now`);
-      // Raw Drizzle execute() returns timestamptz text without schema Date decoding.
-      const issuedAt = new Date(time.rows[0]!.now);
-      const roomExpiresAt = r.expires_at ? new Date(r.expires_at) : null;
-      const expiresAt = new Date(
-        Math.min(issuedAt.getTime() + 48 * 60 * 60 * 1000, roomExpiresAt?.getTime() ?? Infinity),
-      );
-      if (expiresAt <= issuedAt) throw new InviteFoundationError('ROOM_NOT_ELIGIBLE');
       const host = await tx.execute<{
         id: string;
       }>(sql`select id from room_members where room_id=${input.roomId}
@@ -63,6 +59,16 @@ export class InviteCodeReservations {
         throw new InviteFoundationError('AUTOMATIC_ISSUANCE_SUPPRESSED');
       if (r.automatic_invites_suppressed && !input.reissueAfterRevocation)
         throw new InviteFoundationError('INVITATIONS_REISSUE_REQUIRED');
+      const { ttlSeconds, issuedAt } = await readInviteTtlWithin(tx, 'code6', this.metrics);
+      const roomExpiresAt = r.expires_at ? new Date(r.expires_at) : null;
+      const expiresAt = new Date(
+        Math.min(
+          issuedAt.getTime() + ttlSeconds * 1000,
+          issuedAt.getTime() + 172800 * 1000,
+          roomExpiresAt?.getTime() ?? Infinity,
+        ),
+      );
+      if (expiresAt <= issuedAt) throw new InviteFoundationError('ROOM_NOT_ELIGIBLE');
       const history = await tx.execute<{ reservation_state: string }>(
         sql`select reservation_state from room_invite_codes where room_id=${input.roomId}`,
       );
@@ -120,6 +126,7 @@ export class InviteCodeReservations {
       });
       throw new InviteFoundationError('COLLISIONS_EXHAUSTED');
     } catch (error) {
+      if (isTransientInviteStorageError(error)) throw new InviteTtlSettingUnavailable('db_error');
       throw safeStorageError(error);
     }
   }
@@ -166,8 +173,8 @@ export class InviteCodeReservations {
     }
   }
 }
-function safeStorageError(error: unknown): InviteFoundationError {
-  return error instanceof InviteFoundationError
+function safeStorageError(error: unknown): InviteFoundationError | InviteTtlSettingUnavailable {
+  return error instanceof InviteFoundationError || error instanceof InviteTtlSettingUnavailable
     ? error
     : new InviteFoundationError('STORAGE_UNAVAILABLE');
 }

@@ -119,7 +119,12 @@ describe('cms:sync-super-admin (#687 D-3)', () => {
     const first = await syncSuperAdmin(db, { email: 'boss@example.com', ssoOnly: false });
     const second = await syncSuperAdmin(db, { email: 'BOSS@example.com', ssoOnly: false });
     expect([first.action, second.action]).toEqual(['unchanged', 'unchanged']);
-    expect(await db.select().from(schema.auditLogs)).toHaveLength(0);
+    expect(
+      await db
+        .select()
+        .from(schema.auditLogs)
+        .where(eq(schema.auditLogs.resourceType, 'admin_user')),
+    ).toHaveLength(0);
     expect((await superAdmin())!.passwordHash).toBe(row.passwordHash);
   });
 
@@ -161,7 +166,12 @@ describe('cms:sync-super-admin (#687 D-3)', () => {
       syncSuperAdmin(db, { email: 'Staff@example.com', ssoOnly: false }),
     ).rejects.toBeInstanceOf(SuperAdminSyncConflict);
     expect((await superAdmin())!.email).toBe(row.email);
-    expect(await db.select().from(schema.auditLogs)).toHaveLength(0);
+    expect(
+      await db
+        .select()
+        .from(schema.auditLogs)
+        .where(eq(schema.auditLogs.resourceType, 'admin_user')),
+    ).toHaveLength(0);
   });
 
   it('refuses when there is no super admin yet and the address is a staff row', async () => {

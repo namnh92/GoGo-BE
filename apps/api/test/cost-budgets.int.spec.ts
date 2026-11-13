@@ -116,7 +116,9 @@ describe('BudgetService (epic §32–§33)', () => {
       ['SERVICE', 'google.places', 20_000_000],
       ['TOTAL', null, 60_000_000],
     ]);
-    const audits = await db.execute(sql`select action, diff from audit_logs order by created_at`);
+    const audits = await db.execute(
+      sql`select action, diff from audit_logs where action = 'cost.budget.set' and resource_type = 'cost_budget' order by created_at`,
+    );
     expect(audits.rows.map((r) => (r as { action: string }).action)).toEqual([
       'cost.budget.set',
       'cost.budget.set',

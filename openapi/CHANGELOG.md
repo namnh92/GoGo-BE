@@ -8,6 +8,18 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 12.2.0-alpha.1 — Configured room invite TTL reader (#906 BE-A)
+
+New TOKEN128 invites read the singleton TTL from the primary DB inside the issuing
+transaction, seeded at 86400 seconds. Existing credentials retain stored expiry.
+Direct invite creation, ROOM_INVITE share mint and assistant `create_invite`
+confirmation can return `503 INVITE_TTL_SETTING_UNAVAILABLE`: non-retryable for
+missing/invalid data, retryable for database/lock failures, with no partial grant.
+Share expiry exactly copies the invite. No CMS settings API or public CODE6 flow
+is added. Internal CODE6 generations use min(configured TTL, 48h, room expiry).
+Invite-attempt contexts, preview tickets, replay retention and risk windows keep
+their independent lifetimes. See ADR-0060 for deployment order and rollback floor.
+
 ## 12.1.0-alpha.1 — Browser CSRF recovery (I05 F-01, #891)
 
 Additive MINOR: public `POST /invite-attempt-contexts/csrf` accepts explicit `{}`

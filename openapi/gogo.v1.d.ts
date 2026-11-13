@@ -642,7 +642,10 @@ export interface paths {
         /** Host-only: invite metadata (never codes) */
         get: operations["listRoomInvites"];
         put?: never;
-        /** Host-only: create a high-entropy expiring invite (code shown once) */
+        /**
+         * Host-only: create a high-entropy expiring invite (code shown once)
+         * @description New invites use the primary database room invite TTL setting (seeded at 86400 seconds). Existing credentials retain their stored expiry. There is no runtime default on setting failure.
+         */
         post: operations["createRoomInvite"];
         delete?: never;
         options?: never;
@@ -3357,7 +3360,7 @@ export interface paths {
         put?: never;
         /**
          * Mint a canonical share link for a room invite, plan or place (LNK-BE-002)
-         * @description Returns `https://<share-host>/l/{slug}` — a random 128-bit slug and nothing else in the URL (FR-LINK-001). The sharer's right to point at the entity is checked here: room host for `ROOM_INVITE` (the slug then doubles as the invite code, joined with `POST /rooms/join`), room member for `PLAN`, any signed-in user for a published `PLACE`. `COLLECTION` and `REFERRAL` are reserved and answer 400 `SHARE_LINK_TYPE_UNSUPPORTED`. Guests cannot mint. 503 `SHARE_LINKS_UNAVAILABLE` (not retryable) when the environment has no share host configured.
+         * @description Returns `https://<share-host>/l/{slug}` — a random 128-bit slug and nothing else in the URL (FR-LINK-001). The sharer's right to point at the entity is checked here: room host for `ROOM_INVITE` (the slug then doubles as the invite code, joined with `POST /rooms/join`), room member for `PLAN`, any signed-in user for a published `PLACE`. `COLLECTION` and `REFERRAL` are reserved and answer 400 `SHARE_LINK_TYPE_UNSUPPORTED`. Guests cannot mint. 503 `SHARE_LINKS_UNAVAILABLE` (not retryable) when the environment has no share host configured. ROOM_INVITE mint also fails closed with `INVITE_TTL_SETTING_UNAVAILABLE`: retryable false for a missing/invalid setting, true for a database or lock timeout. Its expiry exactly copies the invite in the same transaction.
          */
         post: operations["createShareLink"];
         delete?: never;
@@ -12208,6 +12211,15 @@ export interface components {
                 "application/json": components["schemas"]["ErrorEnvelope"];
             };
         };
+        /** @description INVITE_TTL_SETTING_UNAVAILABLE — issuance is rolled back, with no partial invite/share. Missing or invalid singleton setting is non-retryable (repair data/migration); database connectivity/query/lock timeout is retryable. No runtime 24h fallback. SERVICE_UNAVAILABLE (retryable true) is also possible for authoritative session lookup. */
+        InviteIssuanceUnavailable: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
         /** @description SERVICE_UNAVAILABLE (retryable true) — the authoritative consumer session lookup encountered an operational database connection, pool or query timeout/unavailability. Retry with backoff; cached state cannot authorize access. SQL/schema/permission/configuration errors retain existing error handling. */
         SessionLookupUnavailable: {
             headers: {
@@ -13710,7 +13722,7 @@ export interface operations {
                     };
                 };
             };
-            503: components["responses"]["SessionLookupUnavailable"];
+            503: components["responses"]["InviteIssuanceUnavailable"];
         };
     };
     revokeRoomInvite: {
@@ -14654,7 +14666,15 @@ export interface operations {
                 };
             };
             429: components["responses"]["RateLimited"];
-            503: components["responses"]["AssistantDisabled"];
+            /** @description ASSISTANT_DISABLED when the assistant is unavailable. For create_invite, INVITE_TTL_SETTING_UNAVAILABLE (retryable false for missing/invalid setting, true for database/lock failure) rolls back issuance without a grant. SERVICE_UNAVAILABLE (retryable true) is also possible for session lookup. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     dismissAssistantProposal: {
@@ -18823,7 +18843,7 @@ export interface operations {
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             429: components["responses"]["RateLimited"];
-            /** @description No share host configured in this environment (`SHARE_LINKS_UNAVAILABLE`) */
+            /** @description SHARE_LINKS_UNAVAILABLE (retryable false) when no share host is configured; INVITE_TTL_SETTING_UNAVAILABLE for ROOM_INVITE (retryable false for missing/invalid setting, true for database/lock failure); SERVICE_UNAVAILABLE for session lookup. */
             503: {
                 headers: {
                     [name: string]: unknown;

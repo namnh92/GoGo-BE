@@ -22,6 +22,8 @@ export const ALERTED_METRICS = [
   'place_submission_publish_latency_hours',
   'cms_emergency_takedown_total',
   'cms_super_admin_bypass_total',
+  'room_invite_ttl_read_total',
+  'room_invite_issue_total',
 ] as const;
 
 export type AlertedMetric = (typeof ALERTED_METRICS)[number];

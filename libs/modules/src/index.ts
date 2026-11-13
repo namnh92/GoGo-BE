@@ -1,3 +1,4 @@
+export { InviteTtlSettingUnavailable } from '../shared/invite-ttl';
 // Shared
 export { AppError, type FieldError } from '../shared/app-error';
 export { APP_CONFIG, type IdentityConfig } from '../shared/config';

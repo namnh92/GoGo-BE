@@ -736,6 +736,13 @@
       "when": 1794441600106,
       "tag": "0106_invite-attempt-contexts",
       "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1794441600107,
+      "tag": "0107_room-invite-settings",
+      "breakpoints": true
     }
   ]
 }

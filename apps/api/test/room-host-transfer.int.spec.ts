@@ -629,7 +629,6 @@ describe('controlled PostgreSQL races and rollback (#879)', () => {
             roomId: f.roomId,
             codeHash: randomUUID(),
             createdByMemberId: f.aMember,
-            expiresAt: new Date(Date.now() + 10000),
           },
           authority,
         ),
