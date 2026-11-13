@@ -129,6 +129,8 @@ export async function createApp(
     if (/^\/v1\/me\/credits(?:\/ledger)?\/?$/.test(req.url.split('?')[0]!)) {
       reply.header('Cache-Control', 'private, no-store');
     }
+    if (/^\/v1\/invite-attempt-contexts(?:\/csrf)?\/?$/.test(req.url.split('?')[0]!))
+      reply.header('Cache-Control', 'no-store');
     done();
   });
   fastify.addHook('onSend', async (req, reply) => {
@@ -171,12 +173,14 @@ export async function createApp(
       'content-type',
       'authorization',
       'idempotency-key',
+      'x-gogo-invite-context',
+      'x-gogo-invite-csrf',
       'x-request-id',
       'if-none-match',
       'cache-control',
       CSRF_HEADER,
     ],
-    exposedHeaders: ['x-request-id', 'etag'],
+    exposedHeaders: ['x-request-id', 'etag', 'retry-after'],
     maxAge: 600,
   });
   app.setGlobalPrefix('v1');

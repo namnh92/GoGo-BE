@@ -8,6 +8,26 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 12.1.0-alpha.1 — Browser CSRF recovery (I05 F-01, #891)
+
+Additive MINOR: public `POST /invite-attempt-contexts/csrf` accepts explicit `{}`
+JSON and browser cookie proof with exact HTTPS Origin/Fetch Metadata checks.
+Returns `200 { expiresAt, csrfToken }` without renewal, replay writes or success
+cookies. Shares bootstrap flood limits. Errors are standard no-store envelopes
+(400/401/403/415/429/503); 429 includes Retry-After. Existing bootstrap, mobile
+and legacy/TOKEN128 contracts remain compatible. The host-only CSRF cookie is
+retained but deprecated; use response-body recovery across Web/API subdomains.
+
+### Invite-attempt bootstrap (I05, #891 / #861)
+
+Additive MINOR: public `POST /invite-attempt-contexts`, mobile header and browser
+cookie/CSRF transport, fixed 48h context TTL and encrypted UUID-keyed replay.
+Generated declarations include the new operation and request/result schemas.
+Legacy preview/join/session operations and their required fields are unchanged;
+no proof is required for TOKEN128/omitted discriminator. CODE6 remains off.
+Browser policy is HTTPS same-site, exact Origin allowlist plus Fetch Metadata;
+Retry-After is CORS exposed. See `docs/invite-attempt-contexts.md` and ADR-0059.
+
 ## 12.0.0-alpha.1 — Atomic room host transfer (#879)
 
 MAJOR: `RoomEvent.event_type` is a closed response enum and now includes

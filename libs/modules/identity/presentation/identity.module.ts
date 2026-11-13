@@ -1,3 +1,7 @@
+import { InviteAttemptController } from './invite-attempt.controller';
+import { InviteAttemptService } from '../application/invite-attempt.service';
+import { InviteAttemptCrypto } from '../application/invite-attempt-crypto';
+import { InviteAttemptRepository } from '../infrastructure/invite-attempt.repository';
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import IORedis from 'ioredis';
@@ -70,9 +74,22 @@ export function recoveryMailSenderFor(config: IdentityConfig): RecoveryMailSende
  * every route in the app is authenticated deny-by-default unless @Public().
  */
 @Module({
-  controllers: [AuthController, SessionsController, PasswordRecoveryController],
+  controllers: [
+    AuthController,
+    SessionsController,
+    PasswordRecoveryController,
+    InviteAttemptController,
+  ],
   providers: [
     PasswordService,
+    InviteAttemptRepository,
+    InviteAttemptService,
+    {
+      provide: InviteAttemptCrypto,
+      useFactory: (config: { INVITE_ATTEMPT_KEY?: string }) =>
+        new InviteAttemptCrypto(config.INVITE_ATTEMPT_KEY ?? ''),
+      inject: [APP_CONFIG],
+    },
     IdentityRepository,
     RecoveryRepository,
     PasswordRecoveryService,
@@ -174,6 +191,7 @@ export function recoveryMailSenderFor(config: IdentityConfig): RecoveryMailSende
     { provide: APP_GUARD, useClass: RateLimitGuard },
   ],
   exports: [
+    InviteAttemptService,
     AuthService,
     TokenService,
     PasswordService,

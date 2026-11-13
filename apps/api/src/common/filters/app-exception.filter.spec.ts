@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { HttpException } from '@nestjs/common';
 import { AppError } from '@gogo/modules';
 import { AppExceptionFilter } from './app-exception.filter';
 const details = {
@@ -105,3 +106,51 @@ describe('error backoff transport (#879)', () => {
     expect(r.removeHeader).not.toHaveBeenCalled();
   });
 });
+it('#891 carries 409 in-flight Retry-After through the app filter', () => {
+  const header = vi.fn(),
+    removeHeader = vi.fn(),
+    send = vi.fn();
+  const reply = { header, removeHeader, status: vi.fn().mockReturnValue({ send }) };
+  new AppExceptionFilter().catch(
+    new AppError('IDEMPOTENCY_IN_PROGRESS', 'Bootstrap in progress', 409, {
+      retryable: true,
+      retryAfterSeconds: 1,
+    }),
+    {
+      switchToHttp: () => ({
+        getResponse: () => reply,
+        getRequest: () => ({ id: 'i05', log: { info: vi.fn(), error: vi.fn() } }),
+      }),
+    } as never,
+  );
+  expect(header).toHaveBeenCalledWith('Retry-After', '1');
+  expect(reply.status).toHaveBeenCalledWith(409);
+  expect(send).toHaveBeenCalledWith(
+    expect.objectContaining({ code: 'IDEMPOTENCY_IN_PROGRESS', retryable: true }),
+  );
+});
+
+it.each([400, 415])(
+  '#891 normalizes recovery parser error %s without credential echo',
+  (statusCode) => {
+    const send = vi.fn();
+    const status = vi.fn().mockReturnValue({ send });
+    for (const url of ['/v1/invite-attempt-contexts/csrf', '/v1/invite-attempt-contexts/csrf/']) {
+      new AppExceptionFilter().catch(new HttpException('private-parser-body-marker', statusCode), {
+        switchToHttp: () => ({
+          getResponse: () => ({ status }),
+          getRequest: () => ({ url, id: 'i05', log: { info: vi.fn(), error: vi.fn() } }),
+        }),
+      } as never);
+      expect(status).toHaveBeenCalledWith(statusCode);
+      expect(send).toHaveBeenLastCalledWith({
+        code: statusCode === 415 ? 'UNSUPPORTED_MEDIA_TYPE' : 'VALIDATION_FAILED',
+        message: expect.any(String),
+        field_errors: [],
+        request_id: 'i05',
+        retryable: false,
+      });
+      expect(JSON.stringify(send.mock.calls)).not.toContain('private-parser-body-marker');
+    }
+  },
+);

@@ -94,6 +94,13 @@ const envSchema = z
     AWS_CONTAINER_CREDENTIALS_FULL_URI: z.string().default(''),
     AWS_CONTAINER_AUTHORIZATION_TOKEN: z.string().default(''),
     AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: z.string().default(''),
+    INVITE_ATTEMPT_KEY: z
+      .string()
+      .refine(
+        (key) => key === '' || key.length >= 32,
+        'Invite attempt key must be at least 32 characters',
+      )
+      .default(''),
     AUTH_RECOVERY_KEY: z
       .string()
       .refine(

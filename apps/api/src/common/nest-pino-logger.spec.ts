@@ -20,6 +20,60 @@ function capture(level = 'info') {
 }
 
 describe('NestPinoLogger', () => {
+  it('redacts Fastify request logs even when onRequest rejects before validation', async () => {
+    const { default: fastify } = await import('fastify');
+    const lines: string[] = [];
+    const logger = createLogger({
+      level: 'info',
+      name: 'rejected',
+      destination: {
+        write: (line: string) => {
+          lines.push(line);
+        },
+      },
+    });
+    const app = fastify({ loggerInstance: logger });
+    let validated = false;
+    app.addHook('onRequest', async (_req, reply) => {
+      await reply.code(400).send();
+    });
+    app.addHook('preValidation', async () => {
+      validated = true;
+    });
+    app.get('/v1/invite-attempt-contexts', async () => ({}));
+    try {
+      const response = await app.inject(
+        '/v1/invite-attempt-contexts?%63ontextToken=private-rejected-proof&locale=vi',
+      );
+      expect(response.statusCode).toBe(400);
+      expect(validated).toBe(false);
+      expect(lines.join('')).toContain('incoming request');
+      expect(lines.join('')).not.toContain('private-rejected-proof');
+      expect(lines.join('')).toContain('locale=vi');
+    } finally {
+      await app.close();
+    }
+  });
+  it('redacts actual serialized invite-proof messages and Error messages', () => {
+    const { lines, nest } = capture();
+    const proof = 'private-nest-invite-proof';
+    nest.log(`contextToken=${proof}`, 'InviteService');
+    nest.warn(
+      `GET /v1/invite-attempt-contexts?%63ontextToken=${proof}&locale=vi rejected`,
+      'InviteService',
+    );
+    nest.error(new Error(`csrfToken=${proof}`), 'InviteService');
+    nest.log({ msg: `headerProof=${proof}` }, 'InviteService');
+    expect(lines).toHaveLength(4);
+    expect(JSON.stringify(lines)).not.toContain(proof);
+    for (const line of lines) {
+      expect(line.context).toBe('InviteService');
+      expect(line.msg).toContain('[redacted]');
+    }
+    nest.log('q=public&notcontextToken=public', 'InviteService');
+    expect(lines.at(-1)?.msg).toBe('q=public&notcontextToken=public');
+  });
+
   it('writes a warning as a structured warn record with the Nest context', () => {
     const { lines, nest } = capture();
     nest.warn('cms.login refused: password door closed', 'AdminAuthService');

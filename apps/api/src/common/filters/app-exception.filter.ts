@@ -35,7 +35,27 @@ export class AppExceptionFilter implements ExceptionFilter {
       retryable: true,
     };
 
-    if (exception instanceof AppError) {
+    // Nest maps Fastify/parser errors to HttpException before this filter.
+    const parserStatus =
+      exception instanceof HttpException
+        ? exception.getStatus()
+        : exception instanceof Error && 'statusCode' in exception
+          ? exception.statusCode
+          : undefined;
+    const recoveryParserError =
+      /^\/v1\/invite-attempt-contexts\/csrf\/?$/.test((request.url ?? '').split('?')[0]!) &&
+      (parserStatus === 400 || parserStatus === 415);
+    if (recoveryParserError) {
+      status = Number(parserStatus);
+      envelope = {
+        code: status === 415 ? 'UNSUPPORTED_MEDIA_TYPE' : 'VALIDATION_FAILED',
+        message:
+          status === 415 ? 'Content-Type must be application/json' : 'Request validation failed',
+        field_errors: [],
+        request_id: requestId,
+        retryable: false,
+      };
+    } else if (exception instanceof AppError) {
       status = exception.httpStatus;
       envelope = {
         ...(publicErrorDetails(exception) ? { details: publicErrorDetails(exception)! } : {}),
@@ -75,7 +95,7 @@ export class AppExceptionFilter implements ExceptionFilter {
      *
      * So the wait comes from the window that refused, and the other limiter's
      * numbers are removed from this one response rather than left to mislead.
-     * No limit changes, and every other response keeps its headers.
+     * #891: an in-flight 409 also carries its explicit retry hint.
      */
     // Explicit backoff also applies to bounded in-flight conflicts (#879).
     if (exception instanceof AppError) {
