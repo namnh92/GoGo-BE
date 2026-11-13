@@ -17,7 +17,10 @@ function build(options: { status: string; moved: boolean; forbidden?: boolean })
   const policy = {
     requireHost: options.forbidden
       ? vi.fn().mockRejectedValue(AppError.forbidden('HOST_ONLY', 'Host only'))
-      : vi.fn().mockResolvedValue({ room: { id: roomId, status: options.status } }),
+      : vi.fn().mockResolvedValue({
+          room: { id: roomId, status: options.status, hostVersion: 1 },
+          member: { id: 'host-member' },
+        }),
   };
   const events = { publish: vi.fn().mockResolvedValue(undefined) };
   const service = new RoomsService(
@@ -44,6 +47,7 @@ describe('RoomsService.transition (#600)', () => {
       'active',
       expect.objectContaining({ eventType: 'room.status_active' }),
       false,
+      expect.objectContaining({ memberId: 'host-member', hostVersion: 1 }),
     );
     expect(events.publish).toHaveBeenCalledTimes(1);
     expect(events.publish).toHaveBeenCalledWith({

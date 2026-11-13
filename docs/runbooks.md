@@ -14,6 +14,34 @@ acceptance for this doc.
 6. Post-deploy checks: `GET /v1/health`; smoke: guest join + search + suggestion on seeded room; `GET /v1/cms/ops/kpis` baseline; error rate + p95 dashboards **[infra]**.
 7. Record release manifest: backend version ↔ api contract version ↔ FE versions (repo rule: no shared version).
 
+### #879 — Global idempotency cutover
+
+The shared idempotency change (`20100c5f`) is effective globally **at API deploy**,
+even with room host transfer disabled. On routes using the shared idempotency
+scope, legacy body-only request hashes stop replaying; records are retained until
+their 24-hour TTL from claim creation expires (`KEY_TTL_HOURS = 24` in
+`libs/modules/shared/idempotency.interceptor.ts`). An identical retry after deploy
+of a mutation committed before deploy whose response was lost returns
+non-retryable `422 IDEMPOTENCY_KEY_REUSED` (`retryable: false`).
+
+Before API deploy, verify client recovery: on that error, refetch the affected
+resource and reconcile the original operation before issuing a new key. A new
+key could duplicate the committed mutation. Do not automatically rotate keys or
+blindly resubmit after expiry; neither the error nor expiry proves failure. This
+readiness gate is separate from client SSE/notification readiness and the
+`clients_ready` attestation required before transfer activation.
+
+Old and new API instances must not serve the same keys concurrently. Deploy as a
+single cutover, draining/stopping old requests before new instances serve traffic.
+GoGo-Infra's `.github/workflows/deploy-dev.yml` and `deploy-production.yml` both
+invoke `scripts/deploy/deploy-vps.sh`; its `docker compose up -d` replaces the
+single API container by stopping the old container before starting the new one.
+Preserve that boundary: no rolling/canary overlap or additional old replicas
+sharing the same keys. Record deployed revisions and confirm no old API instance
+remains before admitting traffic to the new fleet. Apply the same no-overlap rule
+to rollback. See [the transfer runbook](room-host-transfer.md#rollout) for the
+separate schema, worker and activation gates.
+
 ## 2. Rollback
 
 - **Code:** redeploy previous tag. Safe because migrations are expand-only within a release (ADR-0002); never `migrate down` in production.

@@ -1,3 +1,4 @@
+import { fixtureMembers, hostedRoom } from './support/hosted-room';
 import { grantLockedSubmissionCredits as grantSubmissionCredits } from './support/credit-events';
 import { SubmissionPhotosService } from '../../../libs/modules/ingestion/application/submission-photos.service';
 import { PlaceSubmissionService } from '../../../libs/modules/ingestion/application/place-submission.service';
@@ -312,21 +313,21 @@ describe('#774 Home selects across all memberships before limit', () => {
       endAt: Date | null,
       removed = false,
     ) => {
-      const [room] = await db
-        .insert(schema.rooms)
-        .values({
-          code: randomUUID().slice(0, 10),
-          hostUserId: userId,
-          type: 'group',
-          decisionMode: 'vote',
-          participantCount: 3,
-          status,
-        })
-        .returning();
-      await db.insert(schema.roomMembers).values({
+      const [otherHost] = removed
+        ? await db.insert(schema.users).values({ displayName: 'Current host' }).returning()
+        : [];
+      const [room] = await hostedRoom(db, {
+        code: randomUUID().slice(0, 10),
+        hostUserId: otherHost?.id ?? userId,
+        type: 'group',
+        decisionMode: 'vote',
+        participantCount: 3,
+        status,
+      });
+      await fixtureMembers(db, {
         roomId: room!.id,
         userId,
-        role: 'host',
+        role: removed ? 'member' : 'host',
         displayName: 'Host',
         ...(removed ? { removedAt: now } : {}),
       });

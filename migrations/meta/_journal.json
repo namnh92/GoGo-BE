@@ -722,6 +722,13 @@
       "when": 1794441600104,
       "tag": "0104_invite-foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1794441600105,
+      "tag": "0105_room-host-transfer",
+      "breakpoints": true
     }
   ]
 }

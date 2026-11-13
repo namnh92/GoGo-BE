@@ -1,3 +1,4 @@
+import { fixtureMembers, hostedRoom } from './support/hosted-room';
 import { grantLockedSubmissionCredits as grantSubmissionCredits } from './support/credit-events';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
@@ -2524,7 +2525,7 @@ describe('CMS app users, rooms and plans (BE-CMS-G7 #246)', () => {
   it('never returns a room invite code', async () => {
     const ops = await createAdmin('g7-rooms@gogo.id.vn', 'ops_admin');
     const host = await createUser('g7-host@example.com');
-    await db.insert(schema.rooms).values({
+    await hostedRoom(db, {
       code: 'SECRETCODE1',
       type: 'couple',
       decisionMode: 'match',
@@ -2535,7 +2536,7 @@ describe('CMS app users, rooms and plans (BE-CMS-G7 #246)', () => {
     expect(res.statusCode).toBe(200);
     expect(JSON.stringify(res.json())).not.toContain('SECRETCODE1');
     const room = res.json().items.find((r: { hostUserId: string }) => r.hostUserId === host.id);
-    expect(room).toMatchObject({ type: 'couple', memberCount: 0, planCount: 0 });
+    expect(room).toMatchObject({ type: 'couple', memberCount: 1, planCount: 0 });
   });
 
   it('lists plans read-only', async () => {
@@ -2583,17 +2584,14 @@ describe('CMS guest console (BE-CMS-G11 #254)', () => {
         passwordHash: 'x',
       })
       .returning();
-    const [room] = await db
-      .insert(schema.rooms)
-      .values({
-        code: `G11${tag.toUpperCase()}XYZ`,
-        type: 'group',
-        status: 'collecting',
-        decisionMode: 'vote',
-        hostUserId: host!.id,
-        participantCount: 4,
-      })
-      .returning();
+    const [room] = await hostedRoom(db, {
+      code: `G11${tag.toUpperCase()}XYZ`,
+      type: 'group',
+      status: 'collecting',
+      decisionMode: 'vote',
+      hostUserId: host!.id,
+      participantCount: 4,
+    });
     const join = await api().inject({
       method: 'POST',
       url: '/v1/sessions/guest',
@@ -2702,12 +2700,14 @@ describe('CMS guest console (BE-CMS-G11 #254)', () => {
   it('refuses to remove a registered member through the guest path', async () => {
     const ops = await createAdmin('g11-notguest@gogo.id.vn', 'ops_admin');
     const { room } = await roomWithGuest('ng');
-    // The host is a registered member of nothing yet — add them as a member row.
+    // Reuse the registered host fixture for the guest-only moderation refusal.
     const [host] = await db.select().from(schema.rooms).where(eq(schema.rooms.id, room.id));
-    const [memberRow] = await db
-      .insert(schema.roomMembers)
-      .values({ roomId: room.id, userId: host!.hostUserId, role: 'host', displayName: 'Chủ phòng' })
-      .returning();
+    const [memberRow] = await fixtureMembers(db, {
+      roomId: room.id,
+      userId: host!.hostUserId,
+      role: 'host',
+      displayName: 'Chủ phòng',
+    });
 
     const res = await post(ops.token, `/v1/cms/rooms/${room.id}/guests/${memberRow!.id}/remove`);
     expect(res.statusCode).toBe(409);
@@ -3536,19 +3536,18 @@ describe('moderation queues: filter, count, cursor paging (BE-CMS-G1 #219)', () 
       .insert(schema.users)
       .values({ email: 'queue-host@gogo.id.vn', displayName: 'Host' })
       .returning();
-    const [room] = await db
-      .insert(schema.rooms)
-      .values({
-        code: 'QUEUE01',
-        type: 'couple',
-        decisionMode: 'match',
-        hostUserId: host!.id,
-      })
-      .returning();
-    const [member] = await db
-      .insert(schema.roomMembers)
-      .values({ roomId: room!.id, userId: host!.id, role: 'host', displayName: 'Host' })
-      .returning();
+    const [room] = await hostedRoom(db, {
+      code: 'QUEUE01',
+      type: 'couple',
+      decisionMode: 'match',
+      hostUserId: host!.id,
+    });
+    const [member] = await fixtureMembers(db, {
+      roomId: room!.id,
+      userId: host!.id,
+      role: 'host',
+      displayName: 'Host',
+    });
     const [plan] = await db
       .insert(schema.plans)
       .values({
@@ -4394,15 +4393,12 @@ describe('plan templates (BE-CMS-G4b #223)', () => {
       .insert(schema.users)
       .values({ email: `tpl-host-${suffix()}@gogo.id.vn`, displayName: 'Host' })
       .returning();
-    const [room] = await db
-      .insert(schema.rooms)
-      .values({
-        code: `TPL${suffix().toUpperCase()}`,
-        type: 'couple',
-        decisionMode: 'match',
-        hostUserId: host!.id,
-      })
-      .returning();
+    const [room] = await hostedRoom(db, {
+      code: `TPL${suffix().toUpperCase()}`,
+      type: 'couple',
+      decisionMode: 'match',
+      hostUserId: host!.id,
+    });
     const [plan] = await db
       .insert(schema.plans)
       .values({
@@ -8449,17 +8445,14 @@ describe('CMS assistant credit balance and history (#778)', () => {
       },
     });
     expect(registration.statusCode).toBe(201);
-    const [room] = await db
-      .insert(schema.rooms)
-      .values({
-        code: randomUUID().slice(0, 10),
-        type: 'group',
-        status: 'collecting',
-        decisionMode: 'vote',
-        hostUserId: user.id,
-        participantCount: 4,
-      })
-      .returning();
+    const [room] = await hostedRoom(db, {
+      code: randomUUID().slice(0, 10),
+      type: 'group',
+      status: 'collecting',
+      decisionMode: 'vote',
+      hostUserId: user.id,
+      participantCount: 4,
+    });
     const guest = await api().inject({
       method: 'POST',
       url: '/v1/sessions/guest',

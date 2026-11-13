@@ -1,3 +1,4 @@
+import { hostedRoom } from './support/hosted-room';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { drizzle } from 'drizzle-orm/node-postgres';
@@ -38,17 +39,14 @@ async function place(status: 'published' | 'community_submitted' | 'draft' = 'pu
 }
 
 async function room(type: 'couple' | 'group' = 'group') {
-  const [row] = await db
-    .insert(schema.rooms)
-    .values({
-      code: randomUUID(),
-      type,
-      decisionMode: 'host',
-      hostUserId: userId,
-      status: 'completed',
-      participantCount: 3,
-    })
-    .returning();
+  const [row] = await hostedRoom(db, {
+    code: randomUUID(),
+    type,
+    decisionMode: 'host',
+    hostUserId: userId,
+    status: 'completed',
+    participantCount: 3,
+  });
   return row!.id;
 }
 

@@ -1,3 +1,4 @@
+import { hostedRoom } from './support/hosted-room';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
@@ -51,16 +52,13 @@ async function finishedRoomWithOrigin(): Promise<string> {
     'insert into users (email, display_name) values ($1, $2) returning id',
     [`${tag}@retention.gogo.test`, tag],
   );
-  const [room] = await db
-    .insert(schema.rooms)
-    .values({
-      code: `RT${tag.toUpperCase()}`,
-      type: 'group',
-      decisionMode: 'vote',
-      status: 'completed',
-      hostUserId: user.rows[0].id as string,
-    })
-    .returning();
+  const [room] = await hostedRoom(db, {
+    code: `RT${tag.toUpperCase()}`,
+    type: 'group',
+    decisionMode: 'vote',
+    status: 'completed',
+    hostUserId: user.rows[0].id as string,
+  });
   await pool.query(`update rooms set updated_at = now() - interval '31 days' where id = $1`, [
     room!.id,
   ]);

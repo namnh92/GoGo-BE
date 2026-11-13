@@ -51,14 +51,23 @@ function fixture(gainAccount = false, failOutbox = false) {
       return { rows: [] };
     },
     select: () => {
+      let table: unknown;
       const query = {
-        from: () => query,
+        from: (t: unknown) => {
+          table = t;
+          return query;
+        },
         where: () => query,
         for: (mode: string) => {
           trace.push(`${attempt}:room:${mode}`);
           return query;
         },
-        then: (resolve: (v: unknown) => void) => resolve([{ id: 'r', type: 'group', status }]),
+        then: (resolve: (v: unknown) => void) =>
+          resolve(
+            table === schema.roomMembers
+              ? [{ id: 'mb', userId: 'b', guestSessionId: null, role: 'host' }]
+              : [{ id: 'r', type: 'group', status, hostUserId: 'b', hostVersion: 1 }],
+          ),
       };
       return query;
     },
@@ -97,7 +106,12 @@ const event = {
 describe('room completion cohort (#829 CE-F-05/08/13)', () => {
   it('emits one v2 snapshot of active registered members and DB facts, after ordered account locks', async () => {
     const f = fixture();
-    await f.repo.updateStatus('r', 'completed', event);
+    await f.repo.updateStatus('r', 'completed', event, false, {
+      kind: 'host',
+      actor: { type: 'user', id: 'b', sessionId: 's' },
+      memberId: 'mb',
+      hostVersion: 1,
+    });
     expect(f.writes.find((w) => w.eventType === 'room.completed')).toMatchObject({
       payloadSchemaVersion: 2,
       payload: {
@@ -122,7 +136,12 @@ describe('room completion cohort (#829 CE-F-05/08/13)', () => {
   });
   it('rolls back and discovers again when a new account joins before the room lock', async () => {
     const f = fixture(true);
-    await f.repo.updateStatus('r', 'completed', event);
+    await f.repo.updateStatus('r', 'completed', event, false, {
+      kind: 'host',
+      actor: { type: 'user', id: 'b', sessionId: 's' },
+      memberId: 'mb',
+      hostVersion: 1,
+    });
     expect(f.attempts()).toBe(2);
     expect(f.writes.filter((w) => w.eventType === 'room.completed')).toHaveLength(1);
     expect(
@@ -133,9 +152,14 @@ describe('room completion cohort (#829 CE-F-05/08/13)', () => {
   });
   it('rolls completion and both events back on event failure', async () => {
     const f = fixture(false, true);
-    await expect(f.repo.updateStatus('r', 'completed', event)).rejects.toThrow(
-      'outbox unavailable',
-    );
+    await expect(
+      f.repo.updateStatus('r', 'completed', event, false, {
+        kind: 'host',
+        actor: { type: 'user', id: 'b', sessionId: 's' },
+        memberId: 'mb',
+        hostVersion: 1,
+      }),
+    ).rejects.toThrow('outbox unavailable');
     expect(f.status()).toBe('active');
     expect(f.writes).toEqual([]);
   });

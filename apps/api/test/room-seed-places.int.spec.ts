@@ -20,6 +20,7 @@ import {
   type RoomEventBus,
 } from '../../../libs/modules/realtime/application/room-event-bus';
 import { RoomsRepository } from '../../../libs/modules/rooms/infrastructure/rooms.repository';
+import { hostAuthority } from '../../../libs/modules/rooms/domain/host-authority';
 import { mutateSeedPlaces } from '../../../libs/modules/rooms/infrastructure/seed-mutation';
 import { SuggestionsRepository } from '../../../libs/modules/suggestions/infrastructure/suggestions.repository';
 import { seedScopes } from '../../../libs/modules/rooms/infrastructure/seed-idempotency';
@@ -94,6 +95,11 @@ async function fixture(
     other: other!,
     members,
     invite: invite.code as string,
+    authority: hostAuthority(
+      host!.actor,
+      room,
+      members.find((m) => m.userId === host!.actor.id)!,
+    ),
     hostId: members.find((m) => m.userId === host!.actor.id)!.id,
     memberId: members.find((m) => m.userId === member!.actor.id)!.id,
   };
@@ -962,6 +968,7 @@ describe('#878 competing production writers under database barriers', () => {
             payload: {},
           },
           true,
+          f.authority,
         ),
     );
     const room = await summary(f);
@@ -1018,6 +1025,8 @@ describe('#878 competing production writers under database barriers', () => {
         new RoomsRepository(otherdb()).removeMember({
           memberId: f.memberId,
           removedByMemberId: f.hostId,
+          roomId: f.roomId,
+          authority: f.authority,
           event: {
             eventType: 'member.removed',
             resourceType: 'room',
@@ -1068,6 +1077,7 @@ describe('#878 constraint and claim boundaries', () => {
         new RoomsRepository(otherdb()).applyConstraintVersion({
           roomId: f.roomId,
           expectedVersion: 1,
+          authority: f.authority,
           memberId: f.hostId,
           constraint: {
             budgetMode: 'per_person',

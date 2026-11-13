@@ -1,3 +1,4 @@
+import { hostedRoom } from './support/hosted-room';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
@@ -73,15 +74,12 @@ let hostId: string;
 
 /** One room per plan: a room holds a single current plan (plans_room_current_unique). */
 async function insertPlan(stops: string[]) {
-  const [room] = await db
-    .insert(schema.rooms)
-    .values({
-      code: `SAVEDAREAS${++roomCounter}`,
-      type: 'group',
-      decisionMode: 'vote',
-      hostUserId: hostId,
-    })
-    .returning();
+  const [room] = await hostedRoom(db, {
+    code: `SAVEDAREAS${++roomCounter}`,
+    type: 'group',
+    decisionMode: 'vote',
+    hostUserId: hostId,
+  });
   const [row] = await db
     .insert(schema.plans)
     .values({

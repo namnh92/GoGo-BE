@@ -77,12 +77,15 @@ export class AppExceptionFilter implements ExceptionFilter {
      * numbers are removed from this one response rather than left to mislead.
      * No limit changes, and every other response keeps its headers.
      */
-    if (status === 429 && exception instanceof AppError) {
+    // Explicit backoff also applies to bounded in-flight conflicts (#879).
+    if (exception instanceof AppError) {
       const wait = exception.options.retryAfterSeconds;
       if (wait !== undefined) {
         void reply.header('Retry-After', String(Math.max(1, Math.ceil(wait))));
-        for (const stale of ['x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset']) {
-          void reply.removeHeader(stale);
+        if (status === 429) {
+          for (const stale of ['x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset']) {
+            void reply.removeHeader(stale);
+          }
         }
       }
     }

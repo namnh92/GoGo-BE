@@ -6,6 +6,7 @@ export type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
 
 export type DomainEventInput = {
   eventType: string;
+  occurredAt?: Date | undefined;
   resourceType: string;
   resourceId: string;
   /** Pseudonymous actor id — users.analytics_id or hashed guest id. Never a raw user id. */
@@ -26,6 +27,7 @@ export async function writeOutbox(db: Db | Tx, event: DomainEventInput): Promise
   await db.insert(schema.outboxEvents).values({
     id,
     eventType: event.eventType,
+    ...(event.occurredAt ? { occurredAt: event.occurredAt } : {}),
     eventVersion: event.eventVersion ?? 1,
     actorId: event.actorId,
     resourceType: event.resourceType,

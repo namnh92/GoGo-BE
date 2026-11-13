@@ -16,9 +16,15 @@ type Registration = {
   category: NotificationCategory | 'other';
   channels: readonly ('in_app' | 'push')[];
   producer: string | null;
-  audience?: 'host' | 'members';
+  audience?: 'host' | 'members' | 'transferred_member';
 };
 export const NOTIFICATION_REGISTRY = {
+  host_transferred: {
+    category: 'other',
+    channels: ['in_app', 'push'],
+    producer: 'room.host_transferred',
+    audience: 'transferred_member',
+  },
   invite: {
     category: 'invite',
     channels: ['in_app', 'push'],

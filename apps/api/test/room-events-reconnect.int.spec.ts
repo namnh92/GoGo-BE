@@ -410,3 +410,47 @@ describe('#878 seed event SSE reconnect', () => {
     }
   });
 });
+
+describe('host transfer SSE contract (#879)', () => {
+  it('delivers a transfer on an existing member stream under 8 seconds and replays its opaque cursor', async () => {
+    const roomId = randomUUID(),
+      stream = await open(roomId);
+    await settle();
+    try {
+      const baseline = await publisher.publish({ roomId, type: 'participant.joined' });
+      expect(await stream.until((f) => domain(f).length >= 1, 5000)).toBe(true);
+      const cursor = domain(stream.frames)[0]!.id!;
+      const at = Date.now(),
+        payload = {
+          transferId: randomUUID(),
+          previousHostMemberId: randomUUID(),
+          newHostMemberId: randomUUID(),
+          hostVersion: 2,
+        };
+      const sent = await publisher.publish({ roomId, type: 'room.host_transferred', payload });
+      expect(
+        await stream.until(
+          (f) => domain(f).some((e) => eventIdOf(e) === sent.event.event_id),
+          8000,
+        ),
+      ).toBe(true);
+      expect(Date.now() - at).toBeLessThan(8000);
+      expect(sent.event.payload).toEqual(payload);
+      expect(sent.event.event_id).not.toBe(baseline.event.event_id);
+      stream.close();
+      const resumed = await open(roomId, cursor);
+      try {
+        expect(
+          await resumed.until(
+            (f) => domain(f).some((e) => eventIdOf(e) === sent.event.event_id),
+            8000,
+          ),
+        ).toBe(true);
+      } finally {
+        resumed.close();
+      }
+    } finally {
+      stream.close();
+    }
+  });
+});

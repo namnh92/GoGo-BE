@@ -1,3 +1,4 @@
+import type { HostAuthority, RoomWriteAuthority } from '../../rooms/domain/host-authority';
 import { Inject, Injectable } from '@nestjs/common';
 import { AppError } from '../../shared/app-error';
 import { rankWithFairness } from '../../suggestions/domain/fairness';
@@ -81,6 +82,7 @@ export class PlanBuilderService {
     winnerPlaceId: string,
     runId?: string,
     reason = 'finalized',
+    authority?: RoomWriteAuthority,
   ) {
     const snapshot = await this.suggestions.buildSnapshot(roomId);
     const candidates = await this.suggestions.retrieveCandidates(snapshot);
@@ -139,6 +141,7 @@ export class PlanBuilderService {
       // happen together or not at all. The separate write that used to follow
       // let a second finalize slip in between and add another plan version
       // (GoGo-BE#629).
+      ...(authority ? { authority } : {}),
       claimRoom: { from: 'matching', to: 'ready' },
     });
     await this.announceDecision(roomId, result.plan, reason);
@@ -162,6 +165,7 @@ export class PlanBuilderService {
       radiusM?: number | undefined;
       maxStops?: number | undefined;
     } = {},
+    authority?: HostAuthority,
   ) {
     const plan = await this.plans.getPlan(planId);
     if (plan.status !== 'current') {
@@ -249,6 +253,7 @@ export class PlanBuilderService {
       // current version, its lock/optional flags unchanged, the room on the
       // constraint version the snapshot was built from and not yet started.
       // Regenerate is how a stale plan is refreshed, so staleness is allowed.
+      ...(authority ? { authority } : {}),
       guard: {
         sourcePlanId: plan.id,
         sourceVersion: plan.version,

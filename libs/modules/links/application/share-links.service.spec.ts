@@ -18,6 +18,7 @@ function build(acquisition: FakeAcquisitionLinkProvider | NoAcquisitionLinkProvi
   const inserted: Record<string, unknown>[] = [];
   const rows = new Map<string, Record<string, unknown>>();
   const repo = {
+    transaction: async (work: (tx: unknown) => Promise<unknown>) => work({}),
     insert: async (input: Record<string, unknown>) => {
       const row: Record<string, unknown> = {
         id: `link-${inserted.length + 1}`,
@@ -56,7 +57,7 @@ function build(acquisition: FakeAcquisitionLinkProvider | NoAcquisitionLinkProvi
   const service = new ShareLinksService(
     repo as never,
     rooms as never,
-    {} as never,
+    { requireHost: async () => ({}) } as never,
     tokens as never,
     { SHARE_LINK_BASE_URL: BASE },
     undefined,

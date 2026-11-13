@@ -76,6 +76,7 @@ function serviceWith(opts: {
             id: 'host-member',
             roomId: ROOM_ID,
             userId: 'host-user',
+            guestSessionId: null,
             displayName: 'Lan',
             removedAt: null,
             ...opts.inviter,
@@ -141,7 +142,7 @@ describe('RoomsService invite lifetime (GoGo-BE#882, FR-ROOM-009)', () => {
         { createInvite } as unknown as RoomsRepository,
         {
           requireHost: vi.fn(async () => ({
-            room: { status: 'collecting' },
+            room: { status: 'collecting', hostVersion: 1 },
             member: { id: 'host-member' },
           })),
         } as unknown as RoomPolicy,
@@ -156,13 +157,22 @@ describe('RoomsService invite lifetime (GoGo-BE#882, FR-ROOM-009)', () => {
         3,
       );
       const expiresAt = new Date('2026-11-13T12:00:00.000Z');
-      expect(createInvite).toHaveBeenCalledWith({
-        roomId: ROOM_ID,
-        codeHash: `hash:${result.code}`,
-        createdByMemberId: 'host-member',
-        expiresAt,
-        maxUses: 3,
-      });
+      expect(createInvite).toHaveBeenCalledWith(
+        {
+          roomId: ROOM_ID,
+          codeHash: `hash:${result.code}`,
+          createdByMemberId: 'host-member',
+          expiresAt,
+          maxUses: 3,
+        },
+        {
+          kind: 'host',
+          actor: { type: 'user', id: 'host-user', sessionId: 'host-session' },
+          memberId: 'host-member',
+          hostVersion: 1,
+        },
+        undefined,
+      );
       expect(result.expiresAt).toBe(expiresAt.toISOString());
     } finally {
       vi.useRealTimers();

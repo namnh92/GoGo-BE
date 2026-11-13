@@ -117,7 +117,7 @@ export class CmsUsersService {
                (u.password_hash is not null) as has_password,
                (select max(s.last_used_at) from auth_sessions s where s.user_id = u.id)
                  as last_active_at,
-               (select count(*) from rooms r where r.host_user_id = u.id)::int as rooms_created,
+               (select count(*) from rooms r where coalesce(r.created_by_user_id, r.host_user_id) = u.id)::int as rooms_created,
                (select count(*) from room_members m where m.user_id = u.id)::int as rooms_joined,
                (select count(*) from reviews rv where rv.user_id = u.id)::int as reviews,
                (select count(*) from saved_items si
@@ -157,7 +157,7 @@ export class CmsUsersService {
              (u.password_hash is not null) as has_password,
              (select max(s.last_used_at) from auth_sessions s where s.user_id = u.id)
                as last_active_at,
-             (select count(*) from rooms r where r.host_user_id = u.id)::int as rooms_created,
+             (select count(*) from rooms r where coalesce(r.created_by_user_id, r.host_user_id) = u.id)::int as rooms_created,
              (select count(*) from room_members m where m.user_id = u.id)::int as rooms_joined,
              (select count(*) from reviews rv where rv.user_id = u.id)::int as reviews,
              (select count(*) from saved_items si

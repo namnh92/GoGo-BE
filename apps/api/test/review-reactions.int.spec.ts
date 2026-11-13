@@ -1,3 +1,4 @@
+import { hostedRoom } from './support/hosted-room';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { drizzle } from 'drizzle-orm/node-postgres';
@@ -162,7 +163,7 @@ beforeAll(async () => {
     .insert(schema.users)
     .values({ displayName: 'Host', email: 'reaction-host@gogo.id.vn' })
     .returning();
-  await db.insert(schema.rooms).values({
+  await hostedRoom(db, {
     code: 'REACTROOM7',
     type: 'group',
     status: 'collecting',

@@ -1,3 +1,4 @@
+import { HostOnlyReplay } from '../../shared/idempotency.interceptor';
 import { Body, Controller, Delete, Get, Param, Post } from '@nestjs/common';
 import type { Actor } from '../../identity/domain/actor';
 import { CurrentActor, Public, RateLimit } from '../../identity/presentation/decorators';
@@ -12,6 +13,7 @@ export class ShareLinksController {
   constructor(private readonly links: ShareLinksService) {}
 
   @RateLimit({ action: 'share_links.create', limit: 30, windowSeconds: 60, keyBy: 'actor' })
+  @HostOnlyReplay('share-body')
   @Post()
   create(
     @CurrentActor() actor: Actor,

@@ -1,3 +1,4 @@
+import { hostedRoom } from './support/hosted-room';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
@@ -52,17 +53,14 @@ beforeAll(async () => {
     .values({ displayName: 'Host', email: 'host@gogo.id.vn' })
     .returning();
   hostUserId = host!.id;
-  const [room] = await db
-    .insert(schema.rooms)
-    .values({
-      code: 'ROOMCODE42',
-      type: 'group',
-      status: 'collecting',
-      decisionMode: 'vote',
-      hostUserId,
-      participantCount: 4,
-    })
-    .returning();
+  const [room] = await hostedRoom(db, {
+    code: 'ROOMCODE42',
+    type: 'group',
+    status: 'collecting',
+    decisionMode: 'vote',
+    hostUserId,
+    participantCount: 4,
+  });
   roomCode = room!.code;
   roomId = room!.id;
 

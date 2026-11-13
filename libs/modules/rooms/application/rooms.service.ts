@@ -2,6 +2,9 @@ import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import { currentRequestContext } from '../../shared/request-context';
 import { normalizeSeedIds } from '../domain/seed-contribution';
 import type { SeedMutationInput } from '../infrastructure/seed-mutation';
+import { hostAuthority } from '../domain/host-authority';
+import type { TransferRoomHostRequest } from '../infrastructure/host-transfer';
+import type { IdempotencyScope } from '../../shared/idempotency.interceptor';
 import type { AdministrativeAreaInput } from '../../administrative/application/area-selection';
 import { matchingReadiness } from '../domain/matching-readiness';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
@@ -223,28 +226,92 @@ export class RoomsService {
     };
   }
 
+  async transferHost(
+    actor: Actor,
+    roomId: string,
+    input: TransferRoomHostRequest,
+    scope: IdempotencyScope,
+  ) {
+    const started = Date.now();
+    try {
+      const result = await this.repo.transferHost(actor, roomId, input, scope);
+      if (result.replay) this.metrics.increment('room_host_transfer_replay_total');
+      else {
+        this.metrics.increment('room_host_transfer_total', {
+          result: 'success',
+          reason: 'transferred',
+        });
+        try {
+          await this.events.publish({
+            roomId,
+            type: 'room.host_transferred',
+            payload: {
+              transferId: result.body.transferId,
+              previousHostMemberId: result.body.previousHostMemberId,
+              newHostMemberId: result.body.hostMemberId,
+              hostVersion: result.body.hostVersion,
+            },
+          });
+        } catch {
+          this.metrics.increment('room_host_transfer_sse_failure_total');
+        }
+      }
+      return result;
+    } catch (error) {
+      const reasons = new Set([
+        'HOST_ONLY',
+        'NOT_A_MEMBER',
+        'HOST_VERSION_CONFLICT',
+        'ROOM_NOT_EDITABLE',
+        'ROOM_EXPIRED',
+        'MEMBER_NOT_FOUND',
+        'CANNOT_TRANSFER_TO_SELF',
+        'HOST_TRANSFER_TARGET_INELIGIBLE',
+        'ROOM_HOST_TRANSFER_UNAVAILABLE',
+        'IDEMPOTENCY_KEY_REUSED',
+        'IDEMPOTENT_REQUEST_IN_FLIGHT',
+        'ROOM_SCOPE_VIOLATION',
+        'ROOM_NOT_FOUND',
+      ]);
+      this.metrics.increment('room_host_transfer_total', {
+        result: 'error',
+        reason: error instanceof AppError && reasons.has(error.code) ? error.code : 'internal',
+      });
+      throw error;
+    } finally {
+      this.metrics.observe('room_host_transfer_duration_seconds', (Date.now() - started) / 1000);
+    }
+  }
+
   async getRoomSummary(actor: Actor, roomId: string) {
-    const { room, member } = await this.policy.requireMember(actor, roomId);
+    return this.repo.readSummary((repo, policy) => this.summaryWithin(actor, roomId, repo, policy));
+  }
+
+  private async summaryWithin(
+    actor: Actor,
+    roomId: string,
+    repo: RoomsRepository,
+    policy: RoomPolicy,
+  ) {
+    const { room, member } = await policy.requireMember(actor, roomId);
     const [constraint, members, seedPlaces] = await Promise.all([
-      this.repo.getCurrentConstraint(roomId, room.constraintVersion),
-      this.repo.listMembers(roomId),
-      this.repo.listSeedPlaces(roomId),
+      repo.getCurrentConstraint(roomId, room.constraintVersion),
+      repo.listMembers(roomId),
+      repo.listSeedPlaces(roomId),
     ]);
     // ADR-0022, GoGo-BE#552: the same avatar the members endpoint returns. The
     // room screen reads `members` from this summary and nothing else, so
     // omitting it here meant every co-member rendered as initials no matter
     // what they had uploaded — while `RoomMember` in the contract promised the
     // field either way.
-    const avatarKeys = await this.repo.avatarKeysByUserId(
+    const avatarKeys = await repo.avatarKeysByUserId(
       members.flatMap((m) => (m.userId ? [m.userId] : [])),
     );
     // ADM-020: a stored area names the dataset that produced it. When that is
     // no longer the published one the client is told to reselect; the saved
     // labels stay readable and nothing is re-mapped behind the host's back.
     const storedArea = constraint?.administrativeArea ?? null;
-    const publishedVersion = storedArea
-      ? await this.repo.publishedAdministrativeDatasetVersion()
-      : null;
+    const publishedVersion = storedArea ? await repo.publishedAdministrativeDatasetVersion() : null;
     // Facts only — audience copy is composed client-side (api-contract rule).
     return {
       id: room.id,
@@ -254,6 +321,8 @@ export class RoomsService {
       decisionMode: room.decisionMode,
       participantCount: room.participantCount,
       constraintVersion: room.constraintVersion,
+      hostVersion: room.hostVersion,
+      hostMemberId: members.find((m) => m.role === 'host' && m.userId === room.hostUserId)!.id,
       title: room.title ?? undefined,
       scheduledDate: (constraint?.startAt ?? room.scheduledDate)?.toISOString(),
       expiresAt: room.expiresAt?.toISOString(),
@@ -327,6 +396,7 @@ export class RoomsService {
     const version = await this.repo.applyConstraintVersion({
       roomId,
       expectedVersion: input.expectedConstraintVersion,
+      authority: hostAuthority(actor, room, member),
       // Merged under the room lock in the repository (#576): `undefined`
       // keeps what is stored, `null` clears it.
       constraint: {
@@ -372,16 +442,21 @@ export class RoomsService {
    * required: last write wins, the same as creation.
    */
   async renameRoom(actor: Actor, roomId: string, title: string | null) {
-    const { room } = await this.policy.requireHost(actor, roomId);
+    const { room, member } = await this.policy.requireHost(actor, roomId);
     assertRoomDetailsEditable(room.status as RoomStatus);
     const next = title && title.length > 0 ? title : null;
-    await this.repo.renameRoom(roomId, next, {
-      eventType: 'room.renamed',
-      resourceType: 'room',
-      resourceId: roomId,
-      // Whether a name exists, never the name itself.
-      payload: { cleared: next === null },
-    });
+    await this.repo.renameRoom(
+      roomId,
+      next,
+      {
+        eventType: 'room.renamed',
+        resourceType: 'room',
+        resourceId: roomId,
+        // Whether a name exists, never the name itself.
+        payload: { cleared: next === null },
+      },
+      hostAuthority(actor, room, member),
+    );
     return this.getRoomSummary(actor, roomId);
   }
 
@@ -391,7 +466,7 @@ export class RoomsService {
     to: RoomStatus,
     allowIncompletePreferences = false,
   ) {
-    const { room } = await this.policy.requireHost(actor, roomId);
+    const { room, member } = await this.policy.requireHost(actor, roomId);
     assertTransition(room.status as RoomStatus, to);
     const moved = await this.repo.updateStatus(
       roomId,
@@ -403,6 +478,7 @@ export class RoomsService {
         payload: { from: room.status, to, allowIncompletePreferences },
       },
       allowIncompletePreferences,
+      hostAuthority(actor, room, member),
     );
     // Realtime is a courtesy on top of a committed write: publishing after the
     // repository call means a dropped event costs a client one refetch, never
@@ -454,7 +530,7 @@ export class RoomsService {
   }
 
   async removeMember(actor: Actor, roomId: string, memberId: string) {
-    const { member: me } = await this.policy.requireHost(actor, roomId);
+    const { room, member: me } = await this.policy.requireHost(actor, roomId);
     const target = await this.repo.getMemberById(memberId);
     if (!target || target.roomId !== roomId || target.removedAt) {
       throw AppError.notFound('MEMBER_NOT_FOUND', 'Member not found');
@@ -465,6 +541,8 @@ export class RoomsService {
     const { guestSessionId } = await this.repo.removeMember({
       memberId,
       removedByMemberId: me.id,
+      roomId,
+      authority: hostAuthority(actor, room, me),
       event: {
         eventType: 'member.removed',
         resourceType: 'room',
@@ -495,20 +573,24 @@ export class RoomsService {
      * code, so the link service supplies it. Same entropy contract as ours —
      * 128 bits, base64url — and it is hashed here exactly like a generated one.
      */
-    options: { code?: string } = {},
+    options: { code?: string; tx?: Tx } = {},
   ) {
     const { room, member } = await this.policy.requireHost(actor, roomId);
     if (!['draft', 'collecting'].includes(room.status)) {
       throw AppError.conflict('ROOM_NOT_JOINABLE', 'Room is not accepting new members');
     }
     const code = options.code ?? randomBytes(16).toString('base64url'); // 128-bit, no PII
-    const invite = await this.repo.createInvite({
-      roomId,
-      codeHash: this.tokens.hashOpaqueToken(code),
-      createdByMemberId: member.id,
-      expiresAt: new Date(Date.now() + INVITE_TTL_24H_MS),
-      ...(maxUses ? { maxUses } : {}),
-    });
+    const invite = await this.repo.createInvite(
+      {
+        roomId,
+        codeHash: this.tokens.hashOpaqueToken(code),
+        createdByMemberId: member.id,
+        expiresAt: new Date(Date.now() + INVITE_TTL_24H_MS),
+        ...(maxUses ? { maxUses } : {}),
+      },
+      hostAuthority(actor, room, member),
+      options.tx,
+    );
     // Plaintext code is returned exactly once and never stored or logged.
     return {
       inviteId: invite.id,
@@ -531,12 +613,8 @@ export class RoomsService {
   }
 
   async revokeInvite(actor: Actor, roomId: string, inviteId: string) {
-    await this.policy.requireHost(actor, roomId);
-    const invites = await this.repo.listInvites(roomId);
-    if (!invites.some((i) => i.id === inviteId)) {
-      throw AppError.notFound('INVITE_NOT_FOUND', 'Invite not found');
-    }
-    await this.repo.revokeInvite(inviteId);
+    const { room, member } = await this.policy.requireHost(actor, roomId);
+    await this.repo.revokeInvite(roomId, inviteId, hostAuthority(actor, room, member));
     return { revoked: true };
   }
 
@@ -549,19 +627,20 @@ export class RoomsService {
   async previewInvite(code: string) {
     const invite = await this.resolveInvite(code);
     const room = await this.precheckInvite(invite, { enforceRoomExpiry: true });
-    const [constraint, inviter, user] = await Promise.all([
+    const [constraint, inviter] = await Promise.all([
       this.repo.getCurrentConstraint(room.id, room.constraintVersion),
       this.repo.getMemberById(invite.createdByMemberId),
-      this.identity.findUserById(room.hostUserId),
     ]);
 
-    // Invites are host-only, so the creator is always this room's user host.
+    const user = inviter?.userId ? await this.identity.findUserById(inviter.userId) : undefined;
+    // The issuer stays the issuer across host transfers.
     // Treat a broken relation as an unusable invitation instead of widening
     // the response with a fallback identity from elsewhere.
     if (
       !inviter ||
       inviter.roomId !== room.id ||
-      inviter.userId !== room.hostUserId ||
+      !inviter.userId ||
+      inviter.guestSessionId !== null ||
       inviter.removedAt !== null ||
       !user ||
       user.status !== 'active'

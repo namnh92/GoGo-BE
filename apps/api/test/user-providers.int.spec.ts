@@ -1,3 +1,4 @@
+import { fixtureMembers, hostedRoom } from './support/hosted-room';
 import { recipientPushKey } from '../../../libs/modules/notifications/application/outbox-dispatcher';
 import { finishNotificationInboxRollout } from '@gogo/database';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
@@ -345,17 +346,14 @@ describe('saved/review/profile/privacy (BE-BFF-009)', () => {
 describe('outbox dispatcher (BE-BFF-010)', () => {
   it('fans out plan.published to member notifications and push, idempotently', async () => {
     const { userId } = await register('notif@gogo.id.vn');
-    const [room] = await db
-      .insert(schema.rooms)
-      .values({
-        code: `nf-${Date.now()}`,
-        type: 'group',
-        decisionMode: 'vote',
-        hostUserId: userId,
-        status: 'ready',
-      })
-      .returning();
-    await db.insert(schema.roomMembers).values({
+    const [room] = await hostedRoom(db, {
+      code: `nf-${Date.now()}`,
+      type: 'group',
+      decisionMode: 'vote',
+      hostUserId: userId,
+      status: 'ready',
+    });
+    await fixtureMembers(db, {
       roomId: room!.id,
       userId,
       role: 'host',
@@ -423,17 +421,14 @@ describe('outbox dispatcher (BE-BFF-010)', () => {
       headers: auth(token),
       payload: { channel: 'push', kind: 'plan_ready', enabled: false },
     });
-    const [room] = await db
-      .insert(schema.rooms)
-      .values({
-        code: `oo-${Date.now()}`,
-        type: 'group',
-        decisionMode: 'vote',
-        hostUserId: userId,
-        status: 'ready',
-      })
-      .returning();
-    await db.insert(schema.roomMembers).values({
+    const [room] = await hostedRoom(db, {
+      code: `oo-${Date.now()}`,
+      type: 'group',
+      decisionMode: 'vote',
+      hostUserId: userId,
+      status: 'ready',
+    });
+    await fixtureMembers(db, {
       roomId: room!.id,
       userId,
       role: 'host',
@@ -504,7 +499,7 @@ describe('push identity token (NTF-BE-008, #199)', () => {
   it('a guest has no push identity', async () => {
     const { userId } = await register('identity-host@gogo.id.vn');
     const roomCode = `ID${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-    await db.insert(schema.rooms).values({
+    await hostedRoom(db, {
       code: roomCode,
       type: 'group',
       decisionMode: 'vote',
@@ -547,16 +542,13 @@ describe('privacy retention jobs (DB-010)', () => {
       createdAt: new Date(Date.now() - 40 * 24 * 3600 * 1000),
     });
     const { userId } = await register('privacy@gogo.id.vn');
-    const [room] = await db
-      .insert(schema.rooms)
-      .values({
-        code: `pv-${Date.now()}`,
-        type: 'couple',
-        decisionMode: 'match',
-        hostUserId: userId,
-        status: 'completed',
-      })
-      .returning();
+    const [room] = await hostedRoom(db, {
+      code: `pv-${Date.now()}`,
+      type: 'couple',
+      decisionMode: 'match',
+      hostUserId: userId,
+      status: 'completed',
+    });
     await db.execute(
       sql`update rooms set updated_at = now() - interval '60 days' where id = ${room!.id}`,
     );
@@ -615,18 +607,15 @@ async function loginAgain(email: string) {
 describe('outbox delivery: retry, dead-letter, dedupe', () => {
   async function roomWithHost(email: string) {
     const { token, userId } = await register(email);
-    const [room] = await db
-      .insert(schema.rooms)
-      .values({
-        code: `OB${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
-        type: 'group',
-        decisionMode: 'vote',
-        participantCount: 3,
-        status: 'collecting',
-        hostUserId: userId,
-      })
-      .returning();
-    await db.insert(schema.roomMembers).values({
+    const [room] = await hostedRoom(db, {
+      code: `OB${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
+      type: 'group',
+      decisionMode: 'vote',
+      participantCount: 3,
+      status: 'collecting',
+      hostUserId: userId,
+    });
+    await fixtureMembers(db, {
       roomId: room!.id,
       userId,
       role: 'host',

@@ -463,6 +463,26 @@ export interface paths {
         patch: operations["transitionRoom"];
         trace?: never;
     };
+    "/rooms/{id}/host-transfer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Host-only: transfer room ownership to an active user member
+         * @description GoGo-BE#879. Allowed in draft/collecting/matching/ready before room expiry. Target is a RoomMember ID, never a User ID. Guests, removed members, inactive accounts and self are ineligible; pending preference selection is eligible. Preserves membership IDs, preferences, votes, constraints, stale flags and plans. Atomically demotes the caller, promotes the target and increments hostVersion. All host-only powers move on commit. Existing invites keep their expiry/revocation and issuer; creators may still revoke links they issued (ADR-0018). No revoke-all. Idempotency scope is actor + operation + concrete room ID + key; normalized request includes roomId, memberId and expectedHostVersion. A valid receipt replays before current host/state/version checks for 24 hours, with no repeated side effects. Authentication is always required. After retention this is a new mutation. This response is an operation receipt, never a current room snapshot. Clients refetch on success/replay/403/conflict and never overwrite a newer hostVersion with a receipt or SSE event. Member/guest/non-member authorization precedes state and target checks. Transfer stays unavailable until schema, workers, all API guards and client compatibility are ready. Business errors are not automatically retryable. Bounded lock/in-flight failures are retryable with backoff.
+         */
+        post: operations["transferRoomHost"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/rooms/{id}/title": {
         parameters: {
             query?: never;
@@ -496,7 +516,7 @@ export interface paths {
          *
          *     SSE rather than a WebSocket because every event here is server → client; nothing needs a bidirectional channel, and this keeps the same bearer auth as the rest of the API.
          *
-         *     Event types: `room.status_changed`, `participant.joined`, `participant.left`, `participant.selection_changed`, `matching.started`, `matching.completed`, `matching.failed`, `suggestions.generated`, `suggestions.updated`, `vote.changed`, `plan.updated`, plus one stream-level type — `resync`, which says the client's resume point cannot be honoured exactly and it must refetch. `resync` exists so a gap is reported rather than silently skipped: a client that is wrong without knowing it is the failure this endpoint is meant to prevent.
+         *     Event types: `room.host_transferred`, `room.status_changed`, `participant.joined`, `participant.left`, `participant.selection_changed`, `matching.started`, `matching.completed`, `matching.failed`, `suggestions.generated`, `suggestions.updated`, `vote.changed`, `plan.updated`, plus one stream-level type — `resync`, which says the client's resume point cannot be honoured exactly and it must refetch. `resync` exists so a gap is reported rather than silently skipped: a client that is wrong without knowing it is the failure this endpoint is meant to prevent.
          *
          *     Keep-alive is an SSE **comment frame** (`: ping`) sent while the stream is idle so proxies do not close it. It has no `event:` name, no `id:` and no `data:`; `EventSource` and conforming parsers never surface it as an event and it never changes the resume point. There is no `heartbeat` event any more (ADR-0027) — a client must not rely on receiving one.
          *
@@ -7169,6 +7189,37 @@ export interface components {
                 currency: string;
             };
         };
+        RoomHostTransferredPayload: {
+            /** Format: uuid */
+            previousHostMemberId: string;
+            /** Format: uuid */
+            newHostMemberId: string;
+            hostVersion: number;
+        };
+        TransferRoomHostRequest: {
+            /**
+             * Format: uuid
+             * @description Active user RoomMember ID in this room.
+             */
+            memberId: string;
+            expectedHostVersion: number;
+        };
+        TransferRoomHostResult: {
+            /**
+             * Format: uuid
+             * @description Transactional domain event ID.
+             */
+            transferId: string;
+            /** Format: uuid */
+            roomId: string;
+            /** Format: uuid */
+            previousHostMemberId: string;
+            /** Format: uuid */
+            hostMemberId: string;
+            hostVersion: number;
+            /** Format: date-time */
+            transferredAt: string;
+        };
         /** @description Facts only — audience copy is composed client-side from type/participantCount/budgetMode. */
         RoomSummary: {
             /** Format: uuid */
@@ -7183,6 +7234,10 @@ export interface components {
             decisionMode: "match" | "vote" | "host";
             participantCount: number;
             constraintVersion: number;
+            /** Format: uuid */
+            hostMemberId: string;
+            /** @description Independent ownership version; changes only on transfer. */
+            hostVersion: number;
             title?: string;
             /** Format: date-time */
             scheduledDate?: string;
@@ -8535,7 +8590,7 @@ export interface components {
             plan_changed?: boolean;
             date_reminder: boolean;
         };
-        /** @description Declared extensible (alpha.69): a client treats a kind it does not know as an opaque notification it cannot render specially — never as a malformed item — so a new kind is not a breaking change on the inbox or the preference list. `privacy_export_ready` (GoGo-BE#256) is in-app only: its payload is `{ exportId, expiresAt }` and is never pushed. */
+        /** @description Declared extensible (alpha.69): a client treats a kind it does not know as an opaque notification it cannot render specially — never as a malformed item — so a new kind is not a breaking change on the inbox or the preference list. `privacy_export_ready` (GoGo-BE#256) is in-app only: its payload is `{ exportId, expiresAt }` and is never pushed. `host_transferred` opens the room and belongs to category other; master push permission and quiet hours still apply. Its recipient is the membership named in the event, even if ownership changed again. */
         NotificationKind: string;
         /**
          * @description The kinds a legacy client may opt in or out of on `PUT /me/notification-preferences` — closed, exactly what the route accepts. `privacy_export_ready` is not among them: it is in-app only and has no channel to switch.
@@ -11155,7 +11210,7 @@ export interface components {
             /** Format: uuid */
             event_id: string;
             /** @enum {string} */
-            event_type: "room.status_changed" | "room.seed_places_changed" | "participant.joined" | "participant.left" | "participant.selection_changed" | "matching.started" | "matching.completed" | "matching.failed" | "suggestions.generated" | "suggestions.updated" | "vote.changed" | "plan.updated";
+            event_type: "room.host_transferred" | "room.status_changed" | "room.seed_places_changed" | "participant.joined" | "participant.left" | "participant.selection_changed" | "matching.started" | "matching.completed" | "matching.failed" | "suggestions.generated" | "suggestions.updated" | "vote.changed" | "plan.updated";
             event_version: number;
             /** Format: date-time */
             occurred_at: string;
@@ -13101,6 +13156,112 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
             503: components["responses"]["SessionLookupUnavailable"];
+        };
+    };
+    transferRoomHost: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferRoomHostRequest"];
+            };
+        };
+        responses: {
+            /** @description Original immutable transfer receipt (also after caller loses host role). */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    /** @description Present and true on a completed receipt replay. */
+                    "x-idempotent-replay"?: "true";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransferRoomHostResult"];
+                };
+            };
+            /** @description VALIDATION_ERROR, IDEMPOTENCY_KEY_REQUIRED or INVALID_IDEMPOTENCY_KEY. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description ROOM_SCOPE_VIOLATION, NOT_A_MEMBER or HOST_ONLY. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description ROOM_NOT_FOUND or MEMBER_NOT_FOUND (also cross-room/removed target). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description CANNOT_TRANSFER_TO_SELF, HOST_TRANSFER_TARGET_INELIGIBLE, ROOM_NOT_EDITABLE, HOST_VERSION_CONFLICT, or IDEMPOTENT_REQUEST_IN_FLIGHT (retryable true; Retry-After seconds). */
+            409: {
+                headers: {
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description ROOM_EXPIRED (planning room past expiresAt after lock). */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description IDEMPOTENCY_KEY_REUSED with a different normalized request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description RATE_LIMITED by the transfer limiter. */
+            429: {
+                headers: {
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description ROOM_HOST_TRANSFER_UNAVAILABLE or existing session-lookup unavailability. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     renameRoom: {

@@ -1,3 +1,5 @@
+import { fixtureHostAuthority } from './support/hosted-room';
+import { fixtureMembers, hostedRoom } from './support/hosted-room';
 import { creditIndexes, assistantSpendIndexes } from './support/credit-events';
 import { PlaceSubmissionService } from '../../../libs/modules/ingestion/application/place-submission.service';
 import { PlaceDedupService } from '../../../libs/modules/ingestion/application/place-dedup.service';
@@ -188,29 +190,34 @@ async function review(userId: string, placeId: string) {
 }
 async function room() {
   const u = await user();
-  const [r] = await db
-    .insert(schema.rooms)
-    .values({
-      code: randomUUID(),
-      type: 'group',
-      decisionMode: 'vote',
-      hostUserId: u.id,
-      status: 'active',
-    })
-    .returning();
-  const [m] = await db
-    .insert(schema.roomMembers)
-    .values({ roomId: r!.id, userId: u.id, role: 'host', displayName: 'Host' })
-    .returning();
+  const [r] = await hostedRoom(db, {
+    code: randomUUID(),
+    type: 'group',
+    decisionMode: 'vote',
+    hostUserId: u.id,
+    status: 'active',
+  });
+  const [m] = await fixtureMembers(db, {
+    roomId: r!.id,
+    userId: u.id,
+    role: 'host',
+    displayName: 'Host',
+  });
   return { user: u, room: r!, member: m! };
 }
-const complete = (repo: RoomsRepository, id: string) =>
-  repo.updateStatus(id, 'completed', {
-    eventType: 'room.status_completed',
-    resourceType: 'room',
-    resourceId: id,
-    payload: {},
-  });
+const complete = async (repo: RoomsRepository, id: string) =>
+  repo.updateStatus(
+    id,
+    'completed',
+    {
+      eventType: 'room.status_completed',
+      resourceType: 'room',
+      resourceId: id,
+      payload: {},
+    },
+    false,
+    await fixtureHostAuthority(db, id),
+  );
 async function event(type: string, id: string) {
   const result = await pool.query(
     'select payload, payload_schema_version from outbox_events where event_type=$1 and resource_id=$2 order by occurred_at desc',
@@ -811,6 +818,8 @@ describe('#829 S1 cohort / erasure interleavings', () => {
         drizzle(hostClient, { schema }) as unknown as Db,
       ).removeMember({
         memberId: g.member.id,
+        roomId: f.room.id,
+        authority: await fixtureHostAuthority(db, f.room.id),
         removedByMemberId: f.member.id,
         event: {
           eventType: 'member.removed',
@@ -827,14 +836,15 @@ describe('#829 S1 cohort / erasure interleavings', () => {
         (await pool.query('select removed_at from room_members where id=$1', [g.member.id])).rows,
       ).toEqual([{ removed_at: null }]);
       gate.release();
-      await Promise.all(operations);
+      await cmsRemoval;
+      await expect(hostRemoval).rejects.toMatchObject({ code: 'MEMBER_NOT_FOUND' });
       expect(
         (
           await pool.query('select removed_by_member_id from room_members where id=$1', [
             g.member.id,
           ])
         ).rows,
-      ).toEqual([{ removed_by_member_id: f.member.id }]);
+      ).toEqual([{ removed_by_member_id: null }]);
     } finally {
       gate.release();
       await Promise.allSettled(operations);
@@ -846,9 +856,16 @@ describe('#829 S1 cohort / erasure interleavings', () => {
     for (const before of [true, false]) {
       const f = await room();
       const repo = new RoomsRepository(db);
-      const removal = () =>
+      const subject = await user();
+      const [target] = await db
+        .insert(schema.roomMembers)
+        .values({ roomId: f.room.id, userId: subject.id, role: 'member', displayName: 'Subject' })
+        .returning();
+      const removal = async () =>
         repo.removeMember({
-          memberId: f.member.id,
+          memberId: target!.id,
+          roomId: f.room.id,
+          authority: await fixtureHostAuthority(db, f.room.id),
           removedByMemberId: f.member.id,
           event: {
             eventType: 'member.removed',
@@ -878,7 +895,7 @@ describe('#829 S1 cohort / erasure interleavings', () => {
         await completing;
       }
       const subjects = (await event('room.completed', f.room.id)).payload.subjects as unknown[];
-      expect(subjects).toHaveLength(before ? 0 : 1);
+      expect(subjects).toHaveLength(before ? 1 : 2);
     }
   });
 });

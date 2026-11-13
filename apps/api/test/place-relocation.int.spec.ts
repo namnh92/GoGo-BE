@@ -1,3 +1,4 @@
+import { hostedRoom } from './support/hosted-room';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
@@ -70,15 +71,12 @@ async function planContaining(placeId: string, status: 'current' | 'archived'): 
     .insert(schema.users)
     .values({ email: `reloc-${seq}@gogo.id.vn`, displayName: 'Reloc' })
     .returning();
-  const [room] = await db
-    .insert(schema.rooms)
-    .values({
-      hostUserId: user!.id,
-      type: 'couple',
-      decisionMode: 'match',
-      code: `RELOC${seq}${Date.now() % 100000}`,
-    })
-    .returning();
+  const [room] = await hostedRoom(db, {
+    hostUserId: user!.id,
+    type: 'couple',
+    decisionMode: 'match',
+    code: `RELOC${seq}${Date.now() % 100000}`,
+  });
   const [plan] = await db
     .insert(schema.plans)
     .values({

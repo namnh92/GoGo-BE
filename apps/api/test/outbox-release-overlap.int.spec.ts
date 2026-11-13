@@ -1,3 +1,4 @@
+import { fixtureMembers, hostedRoom } from './support/hosted-room';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
@@ -61,19 +62,16 @@ async function roomOf(recipients: number) {
     );
     userIds.push(inserted.rows[0].id as string);
   }
-  const [room] = await db
-    .insert(schema.rooms)
-    .values({
-      code: `OV${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
-      type: 'group',
-      decisionMode: 'vote',
-      participantCount: recipients,
-      status: 'collecting',
-      hostUserId: userIds[0]!,
-    })
-    .returning();
+  const [room] = await hostedRoom(db, {
+    code: `OV${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
+    type: 'group',
+    decisionMode: 'vote',
+    participantCount: recipients,
+    status: 'collecting',
+    hostUserId: userIds[0]!,
+  });
   for (const [i, userId] of userIds.entries()) {
-    await db.insert(schema.roomMembers).values({
+    await fixtureMembers(db, {
       roomId: room!.id,
       userId,
       role: i === 0 ? 'host' : 'member',

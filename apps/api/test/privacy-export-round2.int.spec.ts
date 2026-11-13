@@ -22,6 +22,8 @@ import {
 } from '@gogo/modules';
 import { PRIVACY_EXPORT_STORAGE, STORAGE_PROVIDER, type FakeStorage } from '@gogo/providers';
 import { cmsAccessHeaders } from './support/cms-access';
+import { idempotencyScope } from '../../../libs/modules/shared/idempotency.interceptor';
+import type { FastifyRequest } from 'fastify';
 
 /**
  * PR #677 — regression tests for the second review round (Astra A-F-02/04/06/
@@ -233,34 +235,46 @@ afterAll(async () => {
 });
 
 describe('A-F-09: legacy CMS replay records', () => {
-  /** What the generic interceptor stored for these routes before alpha.69. */
+  /** Legacy response format with current request binding. Pre-F-01 body-only
+   * identities are rejected before response-format migration (tested in #879). */
   async function seedLegacyRecord(input: {
     adminId: string;
+    resourceId: string;
     endpoint: string;
     clientKey: string;
     body: unknown;
     stored: unknown;
   }) {
-    const actorScope = `admin:${input.adminId}`;
+    const scope = idempotencyScope(
+      {
+        actor: { type: 'admin', id: input.adminId, sessionId: 'seed' },
+        method: 'POST',
+        routeOptions: { url: input.endpoint.slice(5) },
+        params: { id: input.resourceId },
+        body: input.body,
+      } as unknown as FastifyRequest,
+      input.clientKey,
+    );
     await db.insert(schema.idempotencyKeys).values({
-      key: sha256(`${actorScope}|${input.endpoint}|${input.clientKey}`),
-      actorId: actorScope,
-      endpoint: input.endpoint,
-      requestHash: sha256(JSON.stringify(input.body)),
+      key: scope.storedKey,
+      actorId: scope.actorScope,
+      endpoint: scope.endpoint,
+      requestHash: scope.requestHash,
       responseStatus: 201,
       responseBody: input.stored,
       expiresAt: new Date(Date.now() + 23 * 3_600_000),
     });
-    return sha256(`${actorScope}|${input.endpoint}|${input.clientKey}`);
+    return scope.storedKey;
   }
 
-  it('a pre-deploy record on the direct user export is purged, never replayed; the new record is versioned metadata', async () => {
+  it('an old response format on the bound user export is purged; the new record is versioned metadata', async () => {
     const ops = await createAdmin('af09a');
     const user = await register('af09a');
     const clientKey = `legacy-${randomUUID()}`;
     const body = { reason: 'legacy replay' };
     const storedKey = await seedLegacyRecord({
       adminId: ops.id,
+      resourceId: user.userId,
       endpoint: 'POST /v1/cms/users/:id/export',
       clientKey,
       body,
@@ -297,18 +311,33 @@ describe('A-F-09: legacy CMS replay records', () => {
     expect(replay.statusCode).toBe(202);
     expect(replay.headers['x-idempotent-replay']).toBe('true');
     expect(replay.json()).toEqual(first.json());
+    // Same admin, template, key and body, different subject: never replay the
+    // first user's export metadata or execute a second export.
+    const other = await register('af09a-other');
+    const cross = await api().inject({
+      method: 'POST',
+      url: `/v1/cms/users/${other.userId}/export`,
+      remoteAddress: ip(),
+      headers: { ...auth(ops.token), 'idempotency-key': clientKey },
+      payload: body,
+    });
+    expect(cross.statusCode).toBe(422);
+    expect(cross.json().code).toBe('IDEMPOTENCY_KEY_REUSED');
+    expect(cross.headers['x-idempotent-replay']).toBeUndefined();
+    expect(cross.body).not.toContain(first.json().export.id);
   });
 
-  it('a pre-deploy record on execute is purged, never replayed', async () => {
+  it('an old response format on bound execute is purged, never replayed', async () => {
     const ops = await createAdmin('af09b');
     const user = await register('af09b');
     const requestId = await createExportRequest(ops, user.userId);
     const clientKey = `legacy-${randomUUID()}`;
     const storedKey = await seedLegacyRecord({
       adminId: ops.id,
+      resourceId: requestId,
       endpoint: 'POST /v1/cms/privacy-requests/:id/execute',
       clientKey,
-      body: null, // execute carries no body; the interceptor hashes `null`
+      body: null, // execute carries no body
       stored: { request: { id: requestId }, data: { profile: { email: user.email } } },
     });
     const res = await execute(ops, requestId, { 'idempotency-key': clientKey });
@@ -324,7 +353,7 @@ describe('A-F-09: legacy CMS replay records', () => {
     expect(JSON.stringify(record!.responseBody)).not.toContain(user.email);
   });
 
-  it('S-F-18: a pre-deploy deletion replay (`{ request }`) on execute is adopted as v1 and still replays', async () => {
+  it('S-F-18: a resource-bound deletion replay with old response format is adopted as v1', async () => {
     const ops = await createAdmin('sf18');
     const user = await register('sf18');
     const created = await api().inject({
@@ -344,6 +373,7 @@ describe('A-F-09: legacy CMS replay records', () => {
     const clientKey = `legacy-${randomUUID()}`;
     const storedKey = await seedLegacyRecord({
       adminId: ops.id,
+      resourceId: requestId,
       endpoint: 'POST /v1/cms/privacy-requests/:id/execute',
       clientKey,
       body: null,

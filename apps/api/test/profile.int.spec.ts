@@ -1,3 +1,4 @@
+import { fixtureMembers, hostedRoom } from './support/hosted-room';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
@@ -112,17 +113,14 @@ beforeAll(async () => {
     .insert(schema.users)
     .values({ displayName: 'Host', email: 'host-profile@gogo.id.vn' })
     .returning();
-  const [room] = await db
-    .insert(schema.rooms)
-    .values({
-      code: 'PROFILEROOM1',
-      type: 'group',
-      status: 'collecting',
-      decisionMode: 'vote',
-      hostUserId: host!.id,
-      participantCount: 4,
-    })
-    .returning();
+  const [room] = await hostedRoom(db, {
+    code: 'PROFILEROOM1',
+    type: 'group',
+    status: 'collecting',
+    decisionMode: 'vote',
+    hostUserId: host!.id,
+    participantCount: 4,
+  });
   roomCode = room!.code;
 
   const { createApp } = await import('../src/main.js');
@@ -663,18 +661,15 @@ describe('what co-members see, and the curated areas (PROF-BE-005)', () => {
     expect(set.statusCode).toBe(200);
     const avatarUrl = set.json().avatarUrl as string;
 
-    const [room] = await db
-      .insert(schema.rooms)
-      .values({
-        code: 'MEMBERSROOM1',
-        type: 'group',
-        status: 'collecting',
-        decisionMode: 'vote',
-        hostUserId: hostId,
-        participantCount: 3,
-      })
-      .returning();
-    await db.insert(schema.roomMembers).values([
+    const [room] = await hostedRoom(db, {
+      code: 'MEMBERSROOM1',
+      type: 'group',
+      status: 'collecting',
+      decisionMode: 'vote',
+      hostUserId: hostId,
+      participantCount: 3,
+    });
+    await fixtureMembers(db, [
       { roomId: room!.id, userId: hostId, role: 'host', displayName: 'members-host' },
       { roomId: room!.id, userId: memberId, role: 'member', displayName: 'members-with-avatar' },
     ]);
@@ -741,18 +736,15 @@ describe('what co-members see, and the curated areas (PROF-BE-005)', () => {
     expect(set.statusCode).toBe(200);
     const avatarUrl = set.json().avatarUrl as string;
 
-    const [room] = await db
-      .insert(schema.rooms)
-      .values({
-        code: 'SUMMARYROOM1',
-        type: 'group',
-        status: 'collecting',
-        decisionMode: 'vote',
-        hostUserId: hostId,
-        participantCount: 3,
-      })
-      .returning();
-    await db.insert(schema.roomMembers).values([
+    const [room] = await hostedRoom(db, {
+      code: 'SUMMARYROOM1',
+      type: 'group',
+      status: 'collecting',
+      decisionMode: 'vote',
+      hostUserId: hostId,
+      participantCount: 3,
+    });
+    await fixtureMembers(db, [
       { roomId: room!.id, userId: hostId, role: 'host', displayName: 'summary-host' },
       { roomId: room!.id, userId: memberId, role: 'member', displayName: 'summary-with-avatar' },
     ]);
@@ -1428,18 +1420,15 @@ describe('date of birth (PROF-BE-013)', () => {
     const { token: hostToken, userId: hostId } = await register('dob-host@gogo.id.vn');
     const { token: memberToken, userId: memberId } = await register('dob-member@gogo.id.vn');
     expect((await patchMe(memberToken, { dateOfBirth: '1985-11-03' })).statusCode).toBe(200);
-    const [room] = await db
-      .insert(schema.rooms)
-      .values({
-        code: 'DOBROOM00001',
-        type: 'group',
-        status: 'collecting',
-        decisionMode: 'vote',
-        hostUserId: hostId,
-        participantCount: 3,
-      })
-      .returning();
-    await db.insert(schema.roomMembers).values([
+    const [room] = await hostedRoom(db, {
+      code: 'DOBROOM00001',
+      type: 'group',
+      status: 'collecting',
+      decisionMode: 'vote',
+      hostUserId: hostId,
+      participantCount: 3,
+    });
+    await fixtureMembers(db, [
       { roomId: room!.id, userId: hostId, role: 'host', displayName: 'dob-host' },
       { roomId: room!.id, userId: memberId, role: 'member', displayName: 'dob-member' },
     ]);

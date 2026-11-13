@@ -1,3 +1,4 @@
+import { fixtureMembers, hostedRoom } from './support/hosted-room';
 import { randomUUID } from 'node:crypto';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import {
@@ -573,17 +574,15 @@ describe('rollback to the previous release keeps every opt-out (ADR-0025)', () =
 });
 
 async function roomWith(userIds: string[]): Promise<string> {
-  const [room] = await db
-    .insert(schema.rooms)
-    .values({
-      code: `ns-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      type: 'group',
-      decisionMode: 'vote',
-      hostUserId: userIds[0]!,
-      status: 'ready',
-    })
-    .returning();
-  await db.insert(schema.roomMembers).values(
+  const [room] = await hostedRoom(db, {
+    code: `ns-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type: 'group',
+    decisionMode: 'vote',
+    hostUserId: userIds[0]!,
+    status: 'ready',
+  });
+  await fixtureMembers(
+    db,
     userIds.map((userId, index) => ({
       roomId: room!.id,
       userId,
@@ -1128,7 +1127,7 @@ describe('ADR-0050 delivery and rollback safeguards', () => {
         )
       ).rows,
     ).toEqual([{ status: 'pending' }]);
-    await pool.query('update room_members set removed_at=now() where room_id=$1', [roomId]);
+    await pool.query('delete from rooms where id=$1', [roomId]);
     push.unavailable = false;
     await pool.query('update outbox_events set next_attempt_at=null where id=$1', [event!.id]);
     await worker.dispatchBatch();
