@@ -1,3 +1,4 @@
+import { MAX_HAIKU_REQUEST_BYTES, utf8Bytes } from './request-bytes';
 import {
   parseBillingJson,
   openRouterReceipt,
@@ -67,6 +68,10 @@ export class OpenRouterAssistantLlmAdapter implements AssistantLlmPort {
     }
     if (request.signal.aborted) throw new AssistantLlmError('aborted', 'before request');
 
+    const body = JSON.stringify(buildChatBody(this.model, request, this.options.temperature));
+    if (utf8Bytes(body) > MAX_HAIKU_REQUEST_BYTES) {
+      throw new AssistantLlmError('request_bytes', 'REQUEST_BYTES');
+    }
     const call = await request.billing?.start('haiku', this.model);
     request.signal.throwIfAborted();
     let res: Response;
@@ -78,7 +83,7 @@ export class OpenRouterAssistantLlmAdapter implements AssistantLlmPort {
           'Content-Type': 'application/json',
           ...(call ? { 'X-Request-Id': call.requestId } : {}),
         },
-        body: JSON.stringify(buildChatBody(this.model, request, this.options.temperature)),
+        body,
         signal: request.signal,
       });
     } catch (err) {

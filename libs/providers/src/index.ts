@@ -196,6 +196,7 @@ export {
   OPENROUTER_DECISIONS_URL,
   OpenRouterDecisionProvider,
   parseDecisionResponse,
+  serializeDecisionBody,
   type DecisionAnswer,
   type DecisionCallOptions,
   type DecisionCriterion,
@@ -248,3 +249,5 @@ export {
   type AssistantBillingObserver,
   type AssistantReceiptReader,
 } from './assistant-billing';
+
+export * from './request-bytes';

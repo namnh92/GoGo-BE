@@ -916,3 +916,15 @@ Hours retain `HH:mm`. OpenAPI stays at 10.2.0-alpha.1 with option label
 The shared reader also bounds singleton confirmation labels using numbered
 labels, while preserving full confirmation text for typed continuation.
 See [877-validation.md](plans/877-validation.md) for regression cells and runs.
+
+### Whole-request input caps (#905)
+
+Each serialized provider JSON body is checked before dispatch: Jev decisions
+32,768 UTF-8 bytes (at most two per turn), Jev relevance 16,384 (at most one),
+Haiku 49,152 (at most one). Ordered truncation preserves ordinary request bytes;
+remaining overflow skips the adapter and takes the existing deterministic fallback.
+`assistant_fallbacks_total{reason="request_bytes"}` and the closed-label
+`trace.requestBytes` identify this outcome without prompt text or PII. The real
+adapters recheck their exact body before billing starts. All caps and topology are
+fingerprinted by `billingConfiguration`, revision `assistant-905-request-bytes-v2`.
+See [measurements and conditional billing formula](plans/905-request-caps.md).

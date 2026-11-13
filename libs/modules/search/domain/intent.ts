@@ -1,3 +1,4 @@
+import { codepointSlice, lexical, utf8Bytes } from '@gogo/providers';
 import type { DecisionAnswer, DecisionQuestion } from '@gogo/providers';
 import { normalizeVietnamese } from './normalize';
 
@@ -106,6 +107,8 @@ export const INTENT_THRESHOLDS = {
 
 /** Longest request sent to the model; longer text is cut, not summarised. */
 export const MAX_REQUEST_CHARS = 500;
+/** Leaves room for assistant routing, pending text and resolved state. */
+export const MAX_INTENT_REQUEST_BYTES = 24_576;
 const NONE = 'none';
 const NOT_STATED = 'not_stated';
 
@@ -358,7 +361,34 @@ export type IntentStateTaxonomy = Record<
   Record<string, string>
 >;
 
-export function buildIntentRequest(
+/** Only overflow changes ordering. Preserve category/occasion before optional
+ * mood/setting; lexical key order breaks ties, dropping the lowest priority tail.
+ * Whole terms are removed from state AND questions, never shortened keys. */
+export function buildIntentRequest(text: string, taxonomy: IntentTaxonomy) {
+  const original = rawIntentRequest(text, taxonomy);
+  if (utf8Bytes(JSON.stringify(original)) <= MAX_INTENT_REQUEST_BYTES) return original;
+  const kinds = ['category', 'suitability', 'mood', 'setting'] as const;
+  const ordered = kinds.flatMap((kind) =>
+    [...taxonomy[kind]]
+      .sort((a, b) => lexical(a.key, b.key) || lexical(a.label, b.label))
+      .map((term) => ({ kind, term })),
+  );
+  const build = (count: number) => {
+    const kept: IntentTaxonomy = { category: [], suitability: [], mood: [], setting: [] };
+    for (const { kind, term } of ordered.slice(0, count)) kept[kind].push(term);
+    return rawIntentRequest(text, kept);
+  };
+  let lo = 0;
+  let hi = ordered.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (utf8Bytes(JSON.stringify(build(mid))) <= MAX_INTENT_REQUEST_BYTES) lo = mid;
+    else hi = mid - 1;
+  }
+  return build(lo);
+}
+
+function rawIntentRequest(
   text: string,
   taxonomy: IntentTaxonomy,
 ): {
@@ -437,7 +467,7 @@ export function buildIntentRequest(
     };
   }
   return {
-    state: { request: text.slice(0, MAX_REQUEST_CHARS), taxonomy: stateTaxonomy },
+    state: { request: codepointSlice(text, MAX_REQUEST_CHARS), taxonomy: stateTaxonomy },
     questions,
   };
 }

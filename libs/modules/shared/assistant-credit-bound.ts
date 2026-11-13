@@ -1,9 +1,22 @@
+import {
+  MAX_JEV_DECISION_BYTES,
+  MAX_JEV_RELEVANCE_BYTES,
+  MAX_HAIKU_REQUEST_BYTES,
+  MAX_JEV_DECISION_CALLS,
+  MAX_JEV_RELEVANCE_CALLS,
+  MAX_HAIKU_CALLS,
+} from '@gogo/providers';
+import { MAX_RESOLVED_BYTES } from '../assistant/domain/request-caps';
 import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import type { CreditExec } from './credit-catalogue';
 import type { AssistantConfig } from '../assistant/application/assistant.config';
-import { MAX_REQUEST_CHARS } from '../search/domain/intent';
+import { MAX_REQUEST_CHARS, MAX_INTENT_REQUEST_BYTES } from '../search/domain/intent';
 import {
+  MAX_GROUNDING_CONSTRAINT_BYTES,
+  MAX_GROUNDING_LABEL_BYTES,
+  MAX_GROUNDING_PLACES,
+  MAX_GROUNDING_GUIDE_SECTIONS,
   MAX_HISTORY_CHARS,
   MAX_HISTORY_TURNS,
   MAX_MESSAGE_CHARS,
@@ -11,6 +24,8 @@ import {
   MAX_GUIDE_EXCERPT_CHARS,
 } from '../assistant/domain/grounding';
 import {
+  MAX_RELEVANCE_CANDIDATES,
+  MAX_RELEVANCE_DESCRIPTION_BYTES,
   MAX_LATEST_MESSAGE_CHARS,
   MAX_PENDING_QUESTION_CHARS,
   MAX_PREVIOUS_REQUEST_CHARS,
@@ -18,7 +33,7 @@ import {
 
 /** Bump whenever call topology, request construction, routing, retry or caps change.
  * This fingerprint describes configuration; it is not itself a billing proof. */
-export const BILLING_CONFIG_REVISION = 'assistant-D2-single-attempt-v1';
+export const BILLING_CONFIG_REVISION = 'assistant-905-request-bytes-v2';
 export function billingConfiguration(config: AssistantConfig) {
   return {
     revision: BILLING_CONFIG_REVISION,
@@ -31,6 +46,20 @@ export function billingConfiguration(config: AssistantConfig) {
     replyMaxMs: config.ASSISTANT_REPLY_MAX_MS,
     firstTextTimeoutMs: config.ASSISTANT_FIRST_TEXT_TIMEOUT_MS,
     retries: 0,
+    maxJevDecisionBytes: MAX_JEV_DECISION_BYTES,
+    maxJevRelevanceBytes: MAX_JEV_RELEVANCE_BYTES,
+    maxHaikuRequestBytes: MAX_HAIKU_REQUEST_BYTES,
+    maxJevDecisionCallsPerTurn: MAX_JEV_DECISION_CALLS,
+    maxJevRelevanceCallsPerTurn: MAX_JEV_RELEVANCE_CALLS,
+    maxHaikuCallsPerTurn: MAX_HAIKU_CALLS,
+    maxIntentRequestBytes: MAX_INTENT_REQUEST_BYTES,
+    maxResolvedBytes: MAX_RESOLVED_BYTES,
+    maxRelevanceCandidates: MAX_RELEVANCE_CANDIDATES,
+    maxRelevanceDescriptionBytes: MAX_RELEVANCE_DESCRIPTION_BYTES,
+    maxGroundingConstraintBytes: MAX_GROUNDING_CONSTRAINT_BYTES,
+    maxGroundingLabelBytes: MAX_GROUNDING_LABEL_BYTES,
+    maxGroundingPlaces: MAX_GROUNDING_PLACES,
+    maxGroundingGuideSections: MAX_GROUNDING_GUIDE_SECTIONS,
     maxRequestChars: MAX_REQUEST_CHARS,
     maxHistoryChars: MAX_HISTORY_CHARS,
     maxHistoryTurns: MAX_HISTORY_TURNS,

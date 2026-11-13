@@ -62,7 +62,8 @@ export type AssistantLlmErrorKind =
   | 'quota'
   | 'configuration'
   | 'unavailable'
-  | 'invalid_output';
+  | 'invalid_output'
+  | 'request_bytes';
 
 /** Typed failure of one composition call; no message text or credential in it. */
 export class AssistantLlmError extends Error {
