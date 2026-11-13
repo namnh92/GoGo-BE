@@ -1,3 +1,4 @@
+import { isInviteProofKey, redactInviteProofText } from './invite-proof-redaction';
 /**
  * #588 — an exact position never leaves the process in telemetry text.
  *
@@ -328,13 +329,17 @@ export function redactCoordinatesDeep<T>(value: T): T {
 }
 
 function walk(value: unknown, seen: WeakSet<object>, depth: number): unknown {
-  if (typeof value === 'string') return redactCoordinateText(value);
+  if (typeof value === 'string') return redactInviteProofText(redactCoordinateText(value));
   if (value === null || typeof value !== 'object') return value;
   if (depth >= MAX_DEPTH || seen.has(value)) return value;
   seen.add(value);
 
   if (Array.isArray(value)) {
-    if (value.length === 2 && typeof value[0] === 'string' && isRedactedName(value[0])) {
+    if (
+      value.length === 2 &&
+      typeof value[0] === 'string' &&
+      (isRedactedName(value[0]) || isInviteProofKey(value[0]))
+    ) {
       return [value[0], REDACTED];
     }
     return value.map((item) => walk(item, seen, depth + 1));
@@ -343,6 +348,7 @@ function walk(value: unknown, seen: WeakSet<object>, depth: number): unknown {
   const out: Record<string, unknown> = {};
   for (const [key, inner] of Object.entries(value)) {
     if (OPAQUE_KEYS.has(key)) out[key] = inner;
+    else if (isInviteProofKey(key)) out[key] = REDACTED;
     else if (isCoordinateContainerKey(key)) {
       out[key] = inner === null || inner === undefined ? inner : REDACTED;
     } else if (isCoordinateKey(key) && (inner === null || typeof inner !== 'object')) {

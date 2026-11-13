@@ -729,6 +729,13 @@
       "when": 1794441600105,
       "tag": "0105_room-host-transfer",
       "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1794441600106,
+      "tag": "0106_invite-attempt-contexts",
+      "breakpoints": true
     }
   ]
 }

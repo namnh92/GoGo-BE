@@ -1,3 +1,8 @@
+import {
+  isInviteProofKey,
+  redactInviteProofsDeep,
+  redactInviteProofText,
+} from './invite-proof-redaction';
 import pino, { type DestinationStream } from 'pino';
 import { REDACTED, redactCoordinateText, redactCoordinatesDeep } from './telemetry-redaction';
 
@@ -55,7 +60,7 @@ const CREDENTIAL_PATH_SEGMENTS: readonly RegExp[] = [/(\/share-links\/)[^/?#]+/g
 export function redactUrl(url: string): string {
   let out = url;
   for (const pattern of CREDENTIAL_PATH_SEGMENTS) out = out.replace(pattern, '$1[redacted]');
-  return redactCoordinateText(out);
+  return redactInviteProofText(redactCoordinateText(out));
 }
 
 type RequestLike = {
@@ -94,7 +99,7 @@ export function errorSerializer(err: unknown): unknown {
   if (!(err instanceof Error)) return err;
   const serialized = pino.stdSerializers.err(err) as unknown as Record<string, unknown>;
   const withoutParams = 'params' in serialized ? { ...serialized, params: REDACTED } : serialized;
-  return redactCoordinatesDeep(withoutParams);
+  return redactInviteProofsDeep(redactCoordinatesDeep(withoutParams));
 }
 
 export function createLogger(opts: {
@@ -110,9 +115,28 @@ export function createLogger(opts: {
     redact: { paths: REDACT_PATHS, censor: '[redacted]' },
     timestamp: pino.stdTimeFunctions.isoTime,
     formatters: {
+      // Preserve live request/response objects for their serializers; their getters
+      // are not enumerable. Arbitrary structured fields still need deep proof redaction.
+      log: (value) =>
+        Object.fromEntries(
+          Object.entries(value).map(([key, inner]) => [
+            key,
+            isInviteProofKey(key)
+              ? REDACTED
+              : ['req', 'res', 'err'].includes(key)
+                ? inner
+                : redactInviteProofsDeep(inner),
+          ]),
+        ),
       level: (label) => ({ level: label }),
     },
-    serializers: { req: requestSerializer, err: errorSerializer },
+    // Pino serializes the separate message after interpolation, outside formatters.log.
+    serializers: {
+      req: requestSerializer,
+      err: errorSerializer,
+      msg: (message: unknown) =>
+        typeof message === 'string' ? redactInviteProofText(message) : message,
+    },
     ...(opts.pretty
       ? { transport: { target: 'pino-pretty', options: { colorize: true, singleLine: true } } }
       : {}),

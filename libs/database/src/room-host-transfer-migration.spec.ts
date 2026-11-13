@@ -31,9 +31,10 @@ it('applies host transfer above the installed invite-foundation watermark', asyn
     migrationsFolder: path.join(root, 'migrations'),
   });
   expect(queries.join('\n')).toContain('room_host_transfer_rollout');
+  expect(queries.join('\n')).toContain('CREATE TABLE invite_attempt_contexts');
   expect(queries.join('\n')).not.toMatch(/CREATE TABLE.*room_invite_codes/i);
   expect(
     queries.filter((q) => q.startsWith('insert into "drizzle"."__drizzle_migrations"')),
-  ).toHaveLength(1);
+  ).toHaveLength(2);
   expect(queries.at(-1)).toBe('commit');
 });

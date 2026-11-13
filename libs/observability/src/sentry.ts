@@ -1,6 +1,11 @@
 import * as Sentry from '@sentry/node';
 import type { Breadcrumb, ErrorEvent, NodeOptions } from '@sentry/node';
 import {
+  redactInviteProofQuery,
+  redactInviteProofQueryPairs,
+  redactInviteProofText,
+} from './invite-proof-redaction';
+import {
   redactCoordinatesDeep,
   redactPrivateQueryPairs,
   redactPrivateQueryString,
@@ -116,17 +121,23 @@ export function sanitizeRequest<T extends WithRequest>(event: T): T {
   return {
     ...event,
     request: {
-      ...(request.url !== undefined ? { url: request.url } : {}),
+      ...(request.url !== undefined ? { url: redactInviteProofText(request.url) } : {}),
       ...(request.method !== undefined ? { method: request.method } : {}),
       ...(request.query_string !== undefined
         ? {
             query_string:
               typeof request.query_string === 'string'
-                ? redactPrivateQueryString(request.url, request.query_string)
+                ? redactInviteProofQuery(
+                    redactPrivateQueryString(request.url, request.query_string),
+                  )
                 : Array.isArray(request.query_string)
-                  ? redactPrivateQueryPairs(request.url, request.query_string)
+                  ? redactInviteProofQueryPairs(
+                      redactPrivateQueryPairs(request.url, request.query_string),
+                    )
                   : Object.fromEntries(
-                      redactPrivateQueryPairs(request.url, Object.entries(request.query_string)),
+                      redactInviteProofQueryPairs(
+                        redactPrivateQueryPairs(request.url, Object.entries(request.query_string)),
+                      ),
                     ),
           }
         : {}),

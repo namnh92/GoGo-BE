@@ -47,6 +47,11 @@ export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   assistant_place_qa_total: ['class', 'topic', 'outcome', 'tier'],
   assistant_place_resolution_total: ['row'],
 
+  // I05: fixed operation/result enums only; no proof, digest, IP or context ID.
+  invite_context_bootstrap_total: ['operation', 'result'],
+  invite_context_recovery_total: ['result'], // recovered only; errors use bounded rejection codes.
+  invite_context_rejection_total: ['operation', 'result'],
+
   // Consumer recovery: action is request | verify | complete (failed also permits send).
   // adapter is sink | ses. No identity, proof, digest or free-text values.
   password_recovery_requested: [],

@@ -226,6 +226,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/invite-attempt-contexts/csrf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Recover the existing browser context CSRF token
+         * @description Credentialed HTTPS same-site browser POST with an explicit empty JSON object. Exact HTTPS CORS_ORIGINS allowlist and Sec-Fetch-Site same-origin/same-site are mandatory. Cookie-only proof: any X-GoGo-Invite-Context header is rejected, including mixed transport. No authentication, previous CSRF or Idempotency-Key is required; incidental CSRF is ignored and no generic replay is stored. Returns the deterministic context-bound token and original deadline without creation, rotation, renewal, issuance audit or success Set-Cookie. Shares bootstrap flood buckets (10/IP/min, 30/prefix/min, 1000/global/min). After accepted origin checks, missing/unusable cookie proof expires both invite cookies on 401. Header/mixed rejection does not clear cookies; 403/429/503 never clear cookies. Every response is no-store. Never cache in service workers/persisted query caches or log/send credentials to Tenjin. Proof-bearing bootstrap and every CODE6 POST still require X-GoGo-Invite-CSRF.
+         */
+        post: operations["recoverInviteAttemptCsrf"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/invite-attempt-contexts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Bootstrap or reuse an invite-attempt device context
+         * @description I05 / #891. Random 256-bit bearer proof with purpose invite_attempts; fixed 48-hour TTL, no sliding renewal or room/user authority. This operation does not enable CODE6. Proof is mandatory only for future CODE6 operations; legacy/TOKEN128 callers need no new fields, headers, cookies, tickets or bootstrap. Never send proof or invite credentials to Tenjin, logs, analytics, URLs or persisted query caches. MOBILE_HEADER stores contextToken in Keychain/Keystore and sends X-GoGo-Invite-Context, independently of user Authorization. BROWSER_COOKIE uses HTTPS same-site BFF; exact CORS allowlisted Origin and Sec-Fetch-Site same-origin/same-site are required, including first bootstrap (JSON + required UUID key force preflight). Browser receives only csrfToken (also in a deprecated Secure host-only Lax cookie __Host-gogo_invite_csrf retained for compatibility; reload recovery uses POST /invite-attempt-contexts/csrf response-body delivery); proof is Secure, HttpOnly, host-only, Path=/, SameSite=Lax cookie __Host-gogo_invite_ctx. Cookie-proof bootstrap and future CODE6 POSTs require X-GoGo-Invite-CSRF. Mobile transport rejects Origin; mixed/mismatched transports reject. No cross-site cookie downgrade. Valid existing proof reuses context and original expiry. Invalid, expired or revoked supplied proof is never silently replaced. Browser 401 expires both context cookies so the client can explicitly bootstrap again. First bootstrap replay is IP + UUID scoped, encrypted and atomically committed with the concrete context. Existing proof binds that context. Replay revalidates expiry/revocation. Quotas are independent per IP, prefix (IPv4 /24, IPv6 /64), and global; storage failure fails closed.
+         */
+        post: operations["bootstrapInviteAttemptContext"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/sessions/guest": {
         parameters: {
             query?: never;
@@ -6164,6 +6204,24 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        InviteAttemptCsrfResult: {
+            /** Format: date-time */
+            expiresAt: string;
+            csrfToken: string;
+        };
+        InviteAttemptBootstrap: {
+            /** @enum {string} */
+            transport: "MOBILE_HEADER" | "BROWSER_COOKIE";
+        };
+        InviteAttemptBootstrapResult: {
+            /** Format: date-time */
+            expiresAt: string;
+            contextToken: string;
+        } | {
+            /** Format: date-time */
+            expiresAt: string;
+            csrfToken: string;
+        };
         MyCredits: {
             balance: number;
             earned: number;
@@ -12259,6 +12317,12 @@ export interface components {
         };
     };
     parameters: {
+        /** @description Browser-managed HttpOnly proof. Optional for initial browser bootstrap; proof-bearing bootstrap requires X-GoGo-Invite-CSRF. Never read or write this bearer from JavaScript. */
+        InviteContextCookie: string;
+        /** @description Opaque mobile proof; optional at bootstrap, mandatory only for future CODE6. Independent of user Authorization and push Device credentials. */
+        InviteContextHeader: string;
+        /** @description Required with browser proof cookie on bootstrap and future CODE6 POSTs. Independent of user-session CSRF. */
+        InviteCSRFHeader: string;
         /** @description ADM-003 / ADR-0019 §8. The ETag a client already holds. The tag is derived from the active datasetVersion plus the resolved request, so it carries no clock and no process-local state: two instances serving the same version answer with the same tag, and a restart does not invalidate anyone's cache. */
         IfNoneMatch: string;
         /** @description District-level units were dissolved on 2025-07-01 and are excluded from every response unless this is `true`. A form offering "Quận Ba Đình" would be offering something that no longer exists. */
@@ -12687,6 +12751,172 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             429: components["responses"]["RateLimited"];
+        };
+    };
+    recoverInviteAttemptCsrf: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Exact configured HTTPS Web origin. */
+                Origin: string;
+                "Sec-Fetch-Site": "same-origin" | "same-site";
+            };
+            path?: never;
+            cookie?: {
+                /** @description Browser-managed HttpOnly proof. Optional for initial browser bootstrap; proof-bearing bootstrap requires X-GoGo-Invite-CSRF. Never read or write this bearer from JavaScript. */
+                "__Host-gogo_invite_ctx"?: components["parameters"]["InviteContextCookie"];
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Existing CSRF and original expiry; no Set-Cookie. */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InviteAttemptCsrfResult"];
+                };
+            };
+            /** @description VALIDATION_FAILED for missing/malformed JSON, non-object or extra fields. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description INVITE_CONTEXT_REQUIRED for missing/malformed/forged/expired/revoked/wrong-purpose/wrong-transport proof or forbidden proof header. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description CSRF_FAILED for rejected Origin or Fetch Metadata. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description UNSUPPORTED_MEDIA_TYPE; requires application/json (optional charset). */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            /** @description INVITE_LOOKUP_UNAVAILABLE; secret, database or security dependency unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    bootstrapInviteAttemptContext: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                /** @description Opaque mobile proof; optional at bootstrap, mandatory only for future CODE6. Independent of user Authorization and push Device credentials. */
+                "X-GoGo-Invite-Context"?: components["parameters"]["InviteContextHeader"];
+                /** @description Required with browser proof cookie on bootstrap and future CODE6 POSTs. Independent of user-session CSRF. */
+                "X-GoGo-Invite-CSRF"?: components["parameters"]["InviteCSRFHeader"];
+                /** @description Required exact allowlisted HTTPS origin for BROWSER_COOKIE. */
+                Origin?: string;
+                /** @description Browser bootstrap requires same-origin or same-site. */
+                "Sec-Fetch-Site"?: "same-origin" | "same-site";
+            };
+            path?: never;
+            cookie?: {
+                /** @description Browser-managed HttpOnly proof. Optional for initial browser bootstrap; proof-bearing bootstrap requires X-GoGo-Invite-CSRF. Never read or write this bearer from JavaScript. */
+                "__Host-gogo_invite_ctx"?: components["parameters"]["InviteContextCookie"];
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InviteAttemptBootstrap"];
+            };
+        };
+        responses: {
+            /** @description Context created, replayed or reused; original expiry retained. */
+            201: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    /** @description BROWSER_COOKIE only; __Host-gogo_invite_ctx with Secure, HttpOnly, Path=/, SameSite=Lax, fixed Expires and remaining Max-Age. A separate __Host-gogo_invite_csrf cookie has the same scope/expiry and is readable by JavaScript. No Domain. */
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InviteAttemptBootstrapResult"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            /** @description INVITE_CONTEXT_REQUIRED for missing (CODE6 only), malformed, forged, expired, revoked, wrong-purpose or wrong-transport proof. No invite lookup. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description CSRF_FAILED for missing/mismatched CSRF or rejected browser Origin/fetch site. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description IDEMPOTENCY_IN_PROGRESS; retry same request and key. */
+            409: {
+                headers: {
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description IDEMPOTENCY_KEY_REUSED for different transport on the same initial IP/key. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
+            /** @description INVITE_LOOKUP_UNAVAILABLE; no key, schema or security storage available. No anonymous fallback. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     createGuestSession: {
