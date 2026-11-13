@@ -71,3 +71,29 @@ describe('#853 D08 billing artifact readiness', () => {
     expect(q.params).toEqual(['fixture-proof-v1', 'dev', '0.0002']);
   });
 });
+
+it('#905 fingerprints every byte/subfield cap and per-turn topology', () => {
+  const configuration = billingConfiguration(config);
+  expect(configuration.revision).toBe('assistant-905-request-bytes-v2');
+  expect(configuration).toMatchObject({
+    maxJevDecisionBytes: 32768,
+    maxJevRelevanceBytes: 16384,
+    maxHaikuRequestBytes: 49152,
+    maxJevDecisionCallsPerTurn: 2,
+    maxJevRelevanceCallsPerTurn: 1,
+    maxHaikuCallsPerTurn: 1,
+    maxIntentRequestBytes: 24576,
+    maxResolvedBytes: 4096,
+    maxRelevanceCandidates: 6,
+    maxRelevanceDescriptionBytes: 1024,
+    maxGroundingConstraintBytes: 4096,
+    maxGroundingLabelBytes: 1024,
+    maxGroundingPlaces: 3,
+    maxGroundingGuideSections: 3,
+  });
+  const description = testBoundDescription(config);
+  for (const key of Object.keys(configuration).filter((k) => k.startsWith('max'))) {
+    const changed = { ...description, configuration: { ...description.configuration, [key]: -1 } };
+    expect(validBoundDescription(changed, config), key).toBe(false);
+  }
+});

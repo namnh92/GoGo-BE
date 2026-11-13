@@ -1,0 +1,9 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`#905 realistic request shapes and measurements 1`] = `
+{
+  "decision": "f10d09979e91e7aebcbd0fc8f821198da44597bfa71478683c05ae9a2a105af0",
+  "haiku": "403495106fd6832a82c0bfff78d481ad31ec82c9db8d082be5de1de9fd803905",
+  "relevance": "ea127835ac63e9118c537b6f99bc5d18872b62600a58f6d623b1000d11d4231c",
+}
+`;

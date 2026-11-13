@@ -1,3 +1,4 @@
+import { boundedItems, codepointSlice, lexical } from '@gogo/providers';
 import type { AssistantLlmMessage } from '@gogo/providers';
 import type { IntentFacts } from '../../search/domain/intent';
 import { normalizeVietnamese } from '../../search/domain/normalize';
@@ -81,6 +82,61 @@ export const MAX_GUIDE_EXCERPT_CHARS = 1200;
 export const MAX_CONTEXT_NAME_CHARS = 200;
 /** The send contract's cap on a message (`sendMessageBody`). */
 export const MAX_MESSAGE_CHARS = 2000;
+export const MAX_GROUNDING_CONSTRAINT_BYTES = 4096;
+export const MAX_GROUNDING_LABEL_BYTES = 1024;
+export const MAX_GROUNDING_PLACES = 3;
+export const MAX_GROUNDING_GUIDE_SECTIONS = 3;
+
+/** Preserve ordinary ordering; on overflow sort labels lexically and drop tail. */
+export function boundedLabels(labels: readonly string[]): string[] {
+  return boundedItems(labels, MAX_GROUNDING_LABEL_BYTES, lexical);
+}
+
+function boundedContext(ctx: GroundedAnswerContext): GroundedAnswerContext {
+  const priority = { explicit: 0, assumed: 1, unknown: 2 };
+  return {
+    ...ctx,
+    constraints: boundedItems(
+      ctx.constraints,
+      MAX_GROUNDING_CONSTRAINT_BYTES,
+      (a, b) =>
+        priority[a.origin] - priority[b.origin] ||
+        lexical(a.name, b.name) ||
+        lexical(a.value, b.value),
+    ),
+    preferences: {
+      occasion:
+        ctx.preferences.occasion === null
+          ? null
+          : codepointSlice(ctx.preferences.occasion, MAX_CONTEXT_NAME_CHARS),
+      moods: boundedLabels(ctx.preferences.moods),
+      settings: boundedLabels(ctx.preferences.settings),
+    },
+    places: ctx.places.slice(0, MAX_GROUNDING_PLACES).map((p) => ({
+      ...p,
+      categories: boundedLabels(p.categories),
+      moods: boundedLabels(p.moods),
+    })),
+    guide: ctx.guide.slice(0, MAX_GROUNDING_GUIDE_SECTIONS),
+    plan: ctx.plan
+      ? {
+          ...ctx.plan,
+          roomTitle:
+            ctx.plan.roomTitle === null
+              ? null
+              : codepointSlice(ctx.plan.roomTitle, MAX_CONTEXT_NAME_CHARS),
+          roomType:
+            ctx.plan.roomType === null
+              ? null
+              : codepointSlice(ctx.plan.roomType, MAX_CONTEXT_NAME_CHARS),
+          status:
+            ctx.plan.status === null
+              ? null
+              : codepointSlice(ctx.plan.status, MAX_CONTEXT_NAME_CHARS),
+        }
+      : null,
+  };
+}
 
 const SYSTEM_PROMPT_EN = `You are GoGo AI, the assistant inside GoGo, an app for planning dates and group outings in Vietnam.
 
@@ -120,6 +176,7 @@ function oneLine(text: string): string {
 }
 
 export function renderContext(ctx: GroundedAnswerContext): string {
+  ctx = boundedContext(ctx);
   const lines: string[] = ['<gogo_context>', `route: ${ctx.route}`];
   if (ctx.constraints.length > 0) {
     lines.push('user_constraints:');
@@ -140,7 +197,7 @@ export function renderContext(ctx: GroundedAnswerContext): string {
     for (const p of ctx.places) {
       const tags = [...p.categories, ...p.moods].map(oneLine);
       lines.push(
-        `  [P${p.position}] ${oneLine(p.name).slice(0, MAX_CONTEXT_NAME_CHARS)}${tags.length > 0 ? ` — ${tags.join(', ')}` : ''}`,
+        `  [P${p.position}] ${codepointSlice(oneLine(p.name), MAX_CONTEXT_NAME_CHARS)}${tags.length > 0 ? ` — ${tags.join(', ')}` : ''}`,
       );
     }
   } else if (ctx.route === 'recommend_places') {
@@ -149,11 +206,11 @@ export function renderContext(ctx: GroundedAnswerContext): string {
   if (ctx.guide.length > 0) {
     lines.push('guide:');
     for (const g of ctx.guide) {
-      const title = fence(g.title).slice(0, MAX_CONTEXT_NAME_CHARS);
-      const heading = g.heading ? fence(g.heading).slice(0, MAX_CONTEXT_NAME_CHARS) : null;
+      const title = codepointSlice(fence(g.title), MAX_CONTEXT_NAME_CHARS);
+      const heading = g.heading ? codepointSlice(fence(g.heading), MAX_CONTEXT_NAME_CHARS) : null;
       lines.push(`  [${g.index}] ${title}${heading ? ` — ${heading}` : ''}`);
       lines.push(
-        `      ${fence(g.excerpt).slice(0, MAX_GUIDE_EXCERPT_CHARS).replace(/\s+/g, ' ')}`,
+        `      ${codepointSlice(fence(g.excerpt), MAX_GUIDE_EXCERPT_CHARS).replace(/\s+/g, ' ')}`,
       );
     }
   }
@@ -192,14 +249,19 @@ export function buildComposerMessages(
       '<conversation>',
       ...recent.map(
         (t) =>
-          `${t.role}: ${fence(renderPlaceTokens(t.text, new Map(), 'a place'))
-            .slice(0, MAX_HISTORY_CHARS)
-            .replace(/\s+/g, ' ')}`,
+          `${t.role}: ${codepointSlice(
+            fence(renderPlaceTokens(t.text, new Map(), 'a place')),
+            MAX_HISTORY_CHARS,
+          ).replace(/\s+/g, ' ')}`,
       ),
       '</conversation>',
     );
   }
-  parts.push('<user_message>', fence(question).slice(0, MAX_MESSAGE_CHARS), '</user_message>');
+  parts.push(
+    '<user_message>',
+    codepointSlice(fence(question), MAX_MESSAGE_CHARS),
+    '</user_message>',
+  );
   return [
     { role: 'system', content: systemPrompt(ctx.locale) },
     { role: 'user', content: parts.join('\n') },

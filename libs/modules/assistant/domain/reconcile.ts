@@ -1,3 +1,4 @@
+import { boundedResolved } from './request-caps';
 import type { DecisionCriterion } from '@gogo/providers';
 import type { DayPart, IntentFacts, TimeHint } from '../../search/domain/intent';
 import { normalizeVietnamese } from '../../search/domain/normalize';
@@ -843,7 +844,7 @@ export function resolvedPayload(
     target[field] = c.value as DecisionCriterion;
     if (field === 'category' || field === 'occasion') label(c.value as string);
   }
-  return payload;
+  return boundedResolved(payload) as ResolvedPayload;
 }
 
 /** Every stored value's source request is gone from the old side: chained refs stay bounded. */

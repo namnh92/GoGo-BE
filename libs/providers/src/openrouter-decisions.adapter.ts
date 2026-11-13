@@ -1,3 +1,4 @@
+import { MAX_JEV_DECISION_BYTES, utf8Bytes } from './request-bytes';
 import {
   parseBillingJson,
   openRouterReceipt,
@@ -80,6 +81,8 @@ export type DecisionResponse = {
 };
 
 export type DecisionCallOptions = {
+  /** Caller may tighten, never enlarge the adapter envelope. */
+  maxInputBytes?: number;
   billing?: AssistantBillingObserver | undefined;
   /**
    * GoGo-BE#713 — the caller's own cancellation (a user pressing Stop). It
@@ -158,6 +161,7 @@ export class OpenRouterDecisionProvider implements DecisionProviderPort {
             request,
             caller ? AbortSignal.any([signal, caller]) : signal,
             options.billing,
+            options.maxInputBytes,
           );
         } catch (err) {
           // The caller's abort teaches nothing about the provider.
@@ -172,8 +176,17 @@ export class OpenRouterDecisionProvider implements DecisionProviderPort {
     request: DecisionRequest,
     signal: AbortSignal,
     billing?: AssistantBillingObserver,
+    maxInputBytes = MAX_JEV_DECISION_BYTES,
   ): Promise<DecisionResponse> {
     signal.throwIfAborted();
+    const body = serializeDecisionBody(this.options.model, request);
+    if (
+      !Number.isInteger(maxInputBytes) ||
+      maxInputBytes < 1 ||
+      utf8Bytes(body) > Math.min(maxInputBytes, MAX_JEV_DECISION_BYTES)
+    ) {
+      throw new ProviderInvalidRequestError('openrouter', 'REQUEST_BYTES');
+    }
     const call: AssistantCallRecorder | undefined = await billing?.start('jev', this.options.model);
     signal.throwIfAborted();
     const res = await this.fetchImpl(OPENROUTER_DECISIONS_URL, {
@@ -183,11 +196,7 @@ export class OpenRouterDecisionProvider implements DecisionProviderPort {
         'Content-Type': 'application/json',
         ...(call ? { 'X-Request-Id': call.requestId } : {}),
       },
-      body: JSON.stringify({
-        model: this.options.model,
-        state: request.state,
-        questions: request.questions,
-      }),
+      body,
       signal,
     });
     if (!res.ok) {
@@ -339,4 +348,9 @@ export class FakeDecisionProvider implements DecisionProviderPort {
       usage: {},
     });
   }
+}
+
+/** Shared by preflight and dispatch: no separate size estimate. */
+export function serializeDecisionBody(model: string, request: DecisionRequest): string {
+  return JSON.stringify({ model, state: request.state, questions: request.questions });
 }

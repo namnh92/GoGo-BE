@@ -1,3 +1,12 @@
+import {
+  buildChatBody,
+  serializeDecisionBody,
+  utf8Bytes,
+  MAX_JEV_DECISION_BYTES,
+  MAX_JEV_RELEVANCE_BYTES,
+  MAX_HAIKU_REQUEST_BYTES,
+  codepointSlice,
+} from '@gogo/providers';
 import { firstTextGuard, FirstTextDeadlineError, type FirstTextGuard } from './first-text-guard';
 export { firstTextGuard, FirstTextDeadlineError, type FirstTextGuard } from './first-text-guard';
 import { PlaceQaService } from './place-qa.service';
@@ -11,6 +20,7 @@ import {
   AssistantLlmError,
   ProviderCallAbortedError,
   ProviderConfigurationError,
+  ProviderInvalidRequestError,
   ProviderQuotaExceededError,
   ProviderUnavailableError,
   type AssistantLlmPort,
@@ -49,6 +59,7 @@ import {
   StreamSanitizer,
   MAX_CONTEXT_NAME_CHARS,
   buildComposerMessages,
+  boundedLabels,
   constraintsFrom,
   deterministicReply,
   followUpsFor,
@@ -326,7 +337,7 @@ function relationOptionsOf(
  * Jev decides semantic relevance, the backend executes and validates, Haiku
  * explains. Every id on a card or a proposal comes from a backend read made
  * for this caller; a model never returns an id, a price, an hour or a source.
- * At most one Jev intent call, one Jev relevance call and one Haiku call per
+ * At most two Jev intent calls, one Jev relevance call and one Haiku call per
  * turn; no retries; the first-text deadline covers all of them together.
  */
 @Injectable()
@@ -1797,6 +1808,22 @@ export class AssistantOrchestrator {
     return fits;
   }
 
+  private requestFits(
+    state: TurnState,
+    step: 'decision' | 'relevance' | 'haiku',
+    body: string,
+    maxBytes: number,
+  ): boolean {
+    if (utf8Bytes(body) <= maxBytes) return true;
+    this.recordRequestBytes(state, step);
+    return false;
+  }
+
+  private recordRequestBytes(state: TurnState, step: 'decision' | 'relevance' | 'haiku'): void {
+    state.trace.requestBytes = { step, reason: 'request_bytes' };
+    this.metrics.increment('assistant_fallbacks_total', { reason: 'request_bytes' });
+  }
+
   private async decide(
     input: TurnInput,
     text: string,
@@ -1819,16 +1846,27 @@ export class AssistantOrchestrator {
       { previousRequest, openedFrom, pending, resolved },
       taxonomy,
     );
+    if (
+      !this.requestFits(
+        state,
+        'decision',
+        serializeDecisionBody(this.config.ASSISTANT_JEV_MODEL ?? '', request),
+        MAX_JEV_DECISION_BYTES,
+      )
+    )
+      return fallback('invalid_response');
     const started = Date.now();
     // The adapter has its own timeout; the turn's remaining budget caps it too.
     const budget = AbortSignal.timeout(
       Math.max(1, Math.min(budgetMs, this.config.ASSISTANT_JEV_TIMEOUT_MS)),
     );
+    const previousCost = state.costs.jevCostUsd;
     beginJevCall(state, signal);
     try {
       const response = await this.decisions.decide(request, {
         signal: AbortSignal.any([signal, budget]),
         billing: state.billing,
+        maxInputBytes: MAX_JEV_DECISION_BYTES,
       });
       this.recordJevUsage(state, response.model, response.usage, 'decision');
       this.metrics.observe('assistant_provider_duration_seconds', secondsSince(started), {
@@ -1839,6 +1877,12 @@ export class AssistantOrchestrator {
         expectRelation: pending !== null,
       });
     } catch (err) {
+      if (err instanceof ProviderInvalidRequestError && err.canonicalStatus === 'REQUEST_BYTES') {
+        undoUndispatchedJev(state, previousCost);
+        if (signal.aborted) throw err;
+        this.recordRequestBytes(state, 'decision');
+        return fallback('invalid_response');
+      }
       markJevTokensUnknown(state);
       endJevCall(state, null, this.worstCaseUsd('decision'));
       if (signal.aborted) throw err;
@@ -2000,7 +2044,7 @@ export class AssistantOrchestrator {
     for (const id of ids) {
       names.set(
         id,
-        (await this.hydrator.placeCard(id)).facts.name.slice(0, MAX_CONTEXT_NAME_CHARS),
+        codepointSlice((await this.hydrator.placeCard(id)).facts.name, MAX_CONTEXT_NAME_CHARS),
       );
     }
     // Server-generated keys; the key → id map never leaves this process.
@@ -2009,7 +2053,9 @@ export class AssistantOrchestrator {
       text,
       keyed.map(({ key, id }) => {
         const t = tags.get(id) ?? { categories: [], moods: [], settings: [] };
-        const words = [...t.categories, ...t.moods, ...t.settings].map((k) => labels.get(k) ?? k);
+        const words = boundedLabels(
+          [...t.categories, ...t.moods, ...t.settings].map((k) => labels.get(k) ?? k),
+        );
         return {
           key,
           description: `${names.get(id) ?? ''}${words.length ? ` (${words.join(', ')})` : ''}`,
@@ -2017,6 +2063,17 @@ export class AssistantOrchestrator {
       }),
       resolved,
     );
+    if (
+      !this.requestFits(
+        state,
+        'relevance',
+        serializeDecisionBody(this.config.ASSISTANT_JEV_MODEL ?? '', request),
+        MAX_JEV_RELEVANCE_BYTES,
+      )
+    ) {
+      state.trace.relevance = { asked: keyed.length, fallback: true };
+      return ids;
+    }
     // A-R2-06: an abandoned stage (deadline passed, turn ended) starts no
     // paid call; the budget is re-read now, not when the stage began.
     const budget = AbortSignal.timeout(
@@ -2028,9 +2085,11 @@ export class AssistantOrchestrator {
         ),
       ),
     );
+    const previousCost = state.costs.jevCostUsd;
     beginJevCall(state, signal);
     try {
       const response = await this.decisions!.decide(request, {
+        maxInputBytes: MAX_JEV_RELEVANCE_BYTES,
         signal: AbortSignal.any([signal, budget]),
         billing: state.billing,
       });
@@ -2047,6 +2106,13 @@ export class AssistantOrchestrator {
       // Nothing relevant enough: keep the deterministic order rather than nothing.
       return scored.length > 0 ? scored.map((s) => s.id) : ids;
     } catch (err) {
+      if (err instanceof ProviderInvalidRequestError && err.canonicalStatus === 'REQUEST_BYTES') {
+        undoUndispatchedJev(state, previousCost);
+        if (signal.aborted) throw err;
+        this.recordRequestBytes(state, 'relevance');
+        state.trace.relevance = { asked: keyed.length, fallback: true };
+        return ids;
+      }
       markJevTokensUnknown(state);
       endJevCall(state, null, this.worstCaseUsd('relevance'));
       if (signal.aborted) throw err;
@@ -2214,6 +2280,15 @@ export class AssistantOrchestrator {
         maxOutputTokens: this.config.ASSISTANT_MAX_OUTPUT_TOKENS,
         signal: AbortSignal.any([signal, local.signal]),
       };
+      if (
+        !this.requestFits(
+          state,
+          'haiku',
+          JSON.stringify(buildChatBody(llm.model, request)),
+          MAX_HAIKU_REQUEST_BYTES,
+        )
+      )
+        return { kind: 'fallback', reason: 'invalid_output' };
       state.costs.haikuCalls += 1;
       state.costs.haikuModel = llm.model;
       const started = Date.now();
@@ -2256,6 +2331,13 @@ export class AssistantOrchestrator {
         if (!state.textStarted) return { kind: 'fallback', reason: 'invalid_output' };
         return finish === 'length' ? { kind: 'truncated' } : { kind: 'ok' };
       } catch (err) {
+        if (err instanceof AssistantLlmError && err.kind === 'request_bytes') {
+          state.costs.haikuCalls -= 1;
+          state.costs.haikuModel = null;
+          if (signal.aborted) throw err;
+          this.recordRequestBytes(state, 'haiku');
+          return { kind: 'fallback', reason: 'invalid_output' };
+        }
         if (signal.aborted) throw err;
         const reason: 'timeout' | 'provider_unavailable' | 'invalid_output' =
           (local.signal.aborted || err instanceof FirstTextDeadlineError) && !state.textStarted
@@ -2298,6 +2380,13 @@ function beginJevCall(state: TurnState, signal: AbortSignal): void {
   state.costs.jevCalls += 1;
   state.jevInFlight += 1;
   state.costs.jevCostUsd = null;
+}
+
+/** The adapter refused before billing/start/HTTP; no unknown paid attempt exists. */
+function undoUndispatchedJev(state: TurnState, previousCost: number | null): void {
+  state.costs.jevCalls -= 1;
+  state.jevInFlight -= 1;
+  state.costs.jevCostUsd = previousCost;
 }
 
 function endJevCall(state: TurnState, costUsd: number | null, worstCaseUsd: number): void {

@@ -1,3 +1,5 @@
+import { boundedJsonText, codepointSlice } from '@gogo/providers';
+import { boundedResolved } from './request-caps';
 import type { DecisionAnswer, DecisionCriterion, DecisionQuestion } from '@gogo/providers';
 import {
   buildIntentRequest,
@@ -62,6 +64,8 @@ export const ASSISTANT_THRESHOLDS = {
 export const MAX_PREVIOUS_REQUEST_CHARS = 300;
 export const MAX_PENDING_QUESTION_CHARS = 300;
 export const MAX_LATEST_MESSAGE_CHARS = 500;
+export const MAX_RELEVANCE_CANDIDATES = 6;
+export const MAX_RELEVANCE_DESCRIPTION_BYTES = 1024;
 
 /** #738: the question GoGo asked and the reply typed under it, sent apart. */
 export type PendingClarification = { question: string; latest: string };
@@ -89,14 +93,14 @@ export function buildAssistantDecisionRequest(
   const base = buildIntentRequest(text, taxonomy);
   const state: Record<string, DecisionCriterion> = { ...base.state };
   if (options.previousRequest) {
-    state.previous_request = options.previousRequest.slice(0, MAX_PREVIOUS_REQUEST_CHARS);
+    state.previous_request = codepointSlice(options.previousRequest, MAX_PREVIOUS_REQUEST_CHARS);
   }
   if (options.openedFrom) state.opened_from = options.openedFrom;
   if (options.pending) {
-    state.pending_question = options.pending.question.slice(0, MAX_PENDING_QUESTION_CHARS);
-    state.latest_message = options.pending.latest.slice(0, MAX_LATEST_MESSAGE_CHARS);
+    state.pending_question = codepointSlice(options.pending.question, MAX_PENDING_QUESTION_CHARS);
+    state.latest_message = codepointSlice(options.pending.latest, MAX_LATEST_MESSAGE_CHARS);
   }
-  if (options.resolved) state.resolved = options.resolved;
+  if (options.resolved) state.resolved = boundedResolved(options.resolved);
   const questions: Record<string, DecisionQuestion> = {
     ...base.questions,
     assistant_intent: {
@@ -372,6 +376,7 @@ export function buildRelevanceRequest(
   candidates: readonly { key: string; description: string }[],
   resolved: DecisionCriterion | null = null,
 ): { state: Record<string, DecisionCriterion>; questions: Record<string, DecisionQuestion> } {
+  candidates = candidates.slice(0, MAX_RELEVANCE_CANDIDATES);
   const questions: Record<string, DecisionQuestion> = {};
   for (const c of candidates) {
     questions[c.key] = {
@@ -381,9 +386,14 @@ export function buildRelevanceRequest(
   }
   return {
     state: {
-      request: text.slice(0, 500),
-      candidates: Object.fromEntries(candidates.map((c) => [c.key, c.description])),
-      ...(resolved ? { resolved } : {}),
+      request: codepointSlice(text, 500),
+      candidates: Object.fromEntries(
+        candidates.map((c) => [
+          c.key,
+          boundedJsonText(c.description, MAX_RELEVANCE_DESCRIPTION_BYTES),
+        ]),
+      ),
+      ...(resolved ? { resolved: boundedResolved(resolved) } : {}),
     },
     questions,
   };
