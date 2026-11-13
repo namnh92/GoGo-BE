@@ -8,7 +8,7 @@ import { sendMessageBody } from './dtos';
 const spec = parse(readFileSync(resolve(__dirname, '../../../../openapi/gogo.v1.yaml'), 'utf8'));
 describe('S1 contract 10.1 follow-up compatibility floor', () => {
   it('reserves both-or-neither source binding without adding required fields for existing clients', () => {
-    expect(spec.info.version).toBe('11.0.0-alpha.1');
+    expect(spec.info.version).toBe('12.0.0-alpha.1');
     const send = spec.components.schemas.AssistantMessageSend;
     expect(send.required).toEqual(['text']);
     // A MINOR adds no request constraint: oasdiff reports a dependency keyword

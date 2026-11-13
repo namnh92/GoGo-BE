@@ -49,17 +49,26 @@ beforeAll(async () => {
     .insert(schema.users)
     .values({ displayName: 'Host', email: 'restore-host@gogo.id.vn' })
     .returning();
-  const [room] = await db
-    .insert(schema.rooms)
-    .values({
-      hostUserId: host!.id,
-      code: 'RESTORE1',
-      type: 'group',
-      decisionMode: 'vote',
-      participantCount: 3,
-      status: 'collecting',
-    })
-    .returning();
+  const room = await db.transaction(async (tx) => {
+    const [room] = await tx
+      .insert(schema.rooms)
+      .values({
+        hostUserId: host!.id,
+        code: 'RESTORE1',
+        type: 'group',
+        decisionMode: 'vote',
+        participantCount: 3,
+        status: 'collecting',
+      })
+      .returning();
+    await tx.insert(schema.roomMembers).values({
+      roomId: room!.id,
+      userId: host!.id,
+      role: 'host',
+      displayName: host!.displayName,
+    });
+    return room!;
+  });
   await db.insert(schema.places).values({
     name: 'Cà Phê Đà Lạt',
     nameNormalized: 'set-by-trigger',
