@@ -186,3 +186,17 @@ Alerts/activation evidence require the later serving slices. Local logs and comm
 exit codes live in the requested external `dev/test-evidence/be-889` directory.
 Independent review, CI, masked-snapshot lock measurements, fleet-floor evidence
 and DEV integration remain separate gates; a passing unit suite is none of those.
+
+### Configured generation lifetime — #906 BE-A (2026-11-13)
+
+ADR-0060 changes only new credential lifetimes: after room authority/state/epoch/
+suppression checks under FOR UPDATE, take the singleton setting FOR SHARE, then
+clock_timestamp(). CODE6 expires at min(t + configured seconds, t + 172800 seconds,
+room expiry), with null room expiry imposing no additional cap. The DB 48h CHECK
+and exposure/risk/cooldown/reuse windows remain unchanged. TOKEN128 has no 48h cap.
+Missing/invalid setting fails closed with typed non-retryable 503; DB/lock failure
+is retryable. Existing generations and all context/preview/replay lifetimes stay
+unchanged. The allocator remains internal and cannot report an outer commit: the
+future I08 composition root must wrap its entire transaction (including completion
+and audit) in `observeInviteIssuance(metrics, 'code6', ...)`. Do not count allocation
+as committed issuance or add a caller before exposure and activation gates pass.

@@ -26,7 +26,9 @@ import {
   isNoOpTransition,
 } from '../domain/room-state';
 import { assertMatchingReady } from '../domain/matching-readiness';
-import { Inject, Injectable } from '@nestjs/common';
+import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
+import { observeInviteIssuance, readInviteTtlWithin } from '../../shared/invite-ttl';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
 import { pgArray } from '../../search/infrastructure/search.repository';
@@ -122,7 +124,10 @@ export type RoomListRow = {
 
 @Injectable()
 export class RoomsRepository {
-  constructor(@Inject(DB) readonly db: Db) {}
+  constructor(
+    @Inject(DB) readonly db: Db,
+    @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
+  ) {}
 
   /**
    * #152 — rooms the actor belongs to, newest activity first.
@@ -742,17 +747,29 @@ export class RoomsRepository {
       roomId: string;
       codeHash: string;
       createdByMemberId: string;
-      expiresAt: Date;
       maxUses?: number;
     },
     authority: HostAuthority,
     tx?: Tx,
   ): Promise<InviteRow> {
-    if (!tx) return this.db.transaction((own) => this.createInvite(input, authority, own));
+    if (!tx)
+      return observeInviteIssuance(this.metrics, 'token', () =>
+        this.db.transaction((own) => this.createInvite(input, authority, own), {
+          isolationLevel: 'read committed',
+        }),
+      );
     const room = await lockHostRoom(tx, input.roomId, authority);
     if (!['draft', 'collecting'].includes(room.status))
       throw AppError.conflict('ROOM_NOT_JOINABLE', 'Room is not accepting new members');
-    const [row] = await tx.insert(schema.roomInvites).values(input).returning();
+    const { ttlSeconds, issuedAt } = await readInviteTtlWithin(tx, 'token', this.metrics);
+    const [row] = await tx
+      .insert(schema.roomInvites)
+      .values({
+        ...input,
+        createdAt: issuedAt,
+        expiresAt: new Date(issuedAt.getTime() + ttlSeconds * 1000),
+      })
+      .returning();
     return row!;
   }
 

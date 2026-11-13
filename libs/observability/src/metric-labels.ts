@@ -28,6 +28,9 @@
  */
 export const METRIC_LABELS: Readonly<Record<string, readonly string[]>> = {
   // #889: fixed operations/results only; no code, hash, alias, key version or identity.
+  // #906 finite consumers/results; no setting value, version or identity labels.
+  room_invite_ttl_read_total: ['consumer', 'result'],
+  room_invite_issue_total: ['kind', 'result'],
   room_invite_allocation_total: ['operation', 'result'],
   room_invite_collision_total: ['operation', 'result'],
   room_invite_foundation_readiness_total: ['operation', 'result'],

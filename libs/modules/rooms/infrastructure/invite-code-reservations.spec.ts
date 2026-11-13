@@ -5,7 +5,7 @@ import { InviteCodeCrypto } from '../application/invite-code-crypto';
 import { InviteCodeReservations, type InviteTransaction } from './invite-code-reservations';
 
 vi.mock('./invite-foundation-readiness', () => ({ assertInviteFoundationReady: vi.fn() }));
-function fixture(overrides: Record<string, unknown> = {}) {
+function fixture(overrides: Record<string, unknown> = {}, ttlSeconds = 86400) {
   const now = new Date();
   const room = {
     invitation_epoch: '0',
@@ -19,8 +19,9 @@ function fixture(overrides: Record<string, unknown> = {}) {
   const execute = vi
     .fn()
     .mockResolvedValueOnce({ rows: [room] })
-    .mockResolvedValueOnce({ rows: [{ now: now.toISOString() }] })
     .mockResolvedValueOnce({ rows: [{ id: randomUUID() }] })
+    .mockResolvedValueOnce({ rows: [{ ttl_seconds: ttlSeconds }] })
+    .mockResolvedValueOnce({ rows: [{ now: now.toISOString() }] })
     .mockResolvedValueOnce({ rows: [] });
   const values = vi
     .fn<
@@ -57,6 +58,45 @@ function fixture(overrides: Record<string, unknown> = {}) {
   };
 }
 describe('I03 internal allocation', () => {
+  it('maps CODE6 lock failures to TTL 503 while preserving independent host-alias errors', async () => {
+    const f = fixture();
+    f.execute.mockReset().mockRejectedValue({ code: '55P03' });
+    await expect(f.service.allocate(f.tx, f.input)).rejects.toMatchObject({
+      code: 'INVITE_TTL_SETTING_UNAVAILABLE',
+      options: { retryable: true },
+    });
+    await expect(f.service.allocateHostAlias(f.tx, f.input.actorUserId)).rejects.toThrow(
+      'STORAGE_UNAVAILABLE',
+    );
+  });
+  it.each([1, 300, 86400, 172800, 172801, 2147483647])(
+    'uses configured %i seconds, capped independently at 48h',
+    async (ttl) => {
+      const f = fixture({}, ttl);
+      const result = await f.service.allocate(f.tx, f.input);
+      expect(result.expiresAt.getTime() - result.issuedAt.getTime()).toBe(
+        Math.min(ttl, 172800) * 1000,
+      );
+      expect(f.emit).not.toHaveBeenCalledWith('room_invite_issue_total', expect.anything());
+    },
+  );
+  it.each([undefined, 0, -1, 1.5, '300', null, 2147483648])(
+    'preserves typed setting failure for %s without a partial generation',
+    async (ttl) => {
+      const f = fixture();
+      f.execute
+        .mockReset()
+        .mockResolvedValueOnce({ rows: [{ eligible: true, invitation_epoch: '0' }] })
+        .mockResolvedValueOnce({ rows: [{ id: randomUUID() }] })
+        .mockResolvedValueOnce({ rows: ttl === undefined ? [] : [{ ttl_seconds: ttl }] });
+      await expect(f.service.allocate(f.tx, f.input)).rejects.toMatchObject({
+        code: 'INVITE_TTL_SETTING_UNAVAILABLE',
+        httpStatus: 503,
+        options: { retryable: false },
+      });
+      expect(f.values).not.toHaveBeenCalled();
+    },
+  );
   it('caps lifetime at room expiry and encrypts instead of persisting plaintext', async () => {
     const expiry = new Date(Date.now() + 60_000);
     const f = fixture({ expires_at: expiry.toISOString() });
@@ -73,7 +113,7 @@ describe('I03 internal allocation', () => {
   it.each([null, '2099-01-01 07:00:00.000000+07'])(
     'caps lifetime at 48 hours from the post-lock clock when room expiry is %s',
     async (expires_at) => {
-      const f = fixture({ expires_at });
+      const f = fixture({ expires_at }, 2147483647);
       const result = await f.service.allocate(f.tx, f.input);
       expect(result.issuedAt).toEqual(f.now);
       expect(result.expiresAt.getTime()).toBe(f.now.getTime() + 48 * 60 * 60 * 1000);
@@ -88,8 +128,9 @@ describe('I03 internal allocation', () => {
           { eligible: true, invitation_epoch: '0', expires_at: '2026-11-13 07:00:00.123456+07' },
         ],
       })
-      .mockResolvedValueOnce({ rows: [{ now: '2026-11-12 07:00:00.123456+07' }] })
       .mockResolvedValueOnce({ rows: [{ id: randomUUID() }] })
+      .mockResolvedValueOnce({ rows: [{ ttl_seconds: 172800 }] })
+      .mockResolvedValueOnce({ rows: [{ now: '2026-11-12 07:00:00.123456+07' }] })
       .mockResolvedValueOnce({ rows: [] });
     const result = await f.service.allocate(f.tx, f.input);
     expect(result.issuedAt).toEqual(new Date('2026-11-12T00:00:00.123Z'));
@@ -107,7 +148,7 @@ describe('I03 internal allocation', () => {
       f.emit.mock.calls.filter(([name]) => name === 'room_invite_collision_total'),
     ).toHaveLength(20);
     // Only our room and grants are read; no attempt to clean up/lock another room.
-    expect(f.execute).toHaveBeenCalledTimes(4);
+    expect(f.execute).toHaveBeenCalledTimes(5);
   });
   it('retries a unique lookup collision in a savepoint, but never retries an unrelated unique failure', async () => {
     const f = fixture();
@@ -147,8 +188,9 @@ describe('I03 internal allocation', () => {
     f.execute
       .mockReset()
       .mockResolvedValueOnce({ rows: [{ eligible: true, invitation_epoch: '0' }] })
-      .mockResolvedValueOnce({ rows: [{ now: f.now.toISOString() }] })
       .mockResolvedValueOnce({ rows: [{ id: randomUUID() }] })
+      .mockResolvedValueOnce({ rows: [{ ttl_seconds: 86400 }] })
+      .mockResolvedValueOnce({ rows: [{ now: f.now.toISOString() }] })
       .mockResolvedValueOnce({ rows: [{ reservation_state: 'OPEN' }] });
     await expect(f.service.allocate(f.tx, f.input)).rejects.toThrow('OPEN_GENERATION_EXISTS');
     expect(f.values).not.toHaveBeenCalled();
@@ -158,7 +200,6 @@ describe('I03 internal allocation', () => {
     f.execute
       .mockReset()
       .mockResolvedValueOnce({ rows: [{ eligible: true, invitation_epoch: '0' }] })
-      .mockResolvedValueOnce({ rows: [{ now: f.now.toISOString() }] })
       .mockResolvedValueOnce({ rows: [] });
     await expect(f.service.allocate(f.tx, f.input)).rejects.toThrow('HOST_REQUIRED');
   });

@@ -97,7 +97,7 @@ export class ShareLinksRepository {
    * lets people in.
    */
   transaction<T>(work: (tx: Tx) => Promise<T>): Promise<T> {
-    return this.db.transaction(work);
+    return this.db.transaction(work, { isolationLevel: 'read committed' });
   }
 
   async revoke(link: ShareLinkRow, actor: Actor): Promise<void> {

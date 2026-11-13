@@ -11,7 +11,7 @@ it('applies I05 once above the installed 0105 watermark without replaying prior 
     readFileSync(path.join(root, 'migrations/meta/_journal.json'), 'utf8'),
   ) as { entries: { idx: number; when: number; tag: string }[] };
   const prior = journal.entries.find((e) => e.tag === '0105_room-host-transfer')!;
-  const entry = journal.entries.at(-1)!;
+  const entry = journal.entries.find((e) => e.tag === '0106_invite-attempt-contexts')!;
   expect(entry.tag).toBe('0106_invite-attempt-contexts');
   expect(entry.idx).toBe(106);
   expect(entry.when).toBeGreaterThan(prior.when);
@@ -36,7 +36,7 @@ it('applies I05 once above the installed 0105 watermark without replaying prior 
   expect(queries.join('\n')).not.toMatch(
     /room_host_transfer_rollout|CREATE TABLE room_invite_codes/,
   );
-  expect(watermark).toBe(entry.when);
+  expect(watermark).toBe(journal.entries.at(-1)!.when);
   expect(queries.at(-1)).toBe('commit');
   queries.length = 0;
   await migrate(db, options);

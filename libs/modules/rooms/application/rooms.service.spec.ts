@@ -129,14 +129,15 @@ async function codeOf(run: Promise<unknown>): Promise<string> {
 }
 
 describe('RoomsService invite lifetime (GoGo-BE#882, FR-ROOM-009)', () => {
-  it('creates an invite expiring exactly 24 hours after issuance', async () => {
+  it('returns the repository deadline without providing a runtime TTL', async () => {
     const now = new Date('2026-11-12T12:00:00.000Z');
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(now);
     try {
-      const createInvite = vi.fn(async (input: { expiresAt: Date; maxUses?: number }) => ({
+      const createInvite = vi.fn(async (input: { maxUses?: number }) => ({
         id: 'invite-24h',
         ...input,
+        expiresAt: new Date('2026-11-13T12:00:00.000Z'),
       }));
       const service = new RoomsService(
         { createInvite } as unknown as RoomsRepository,
@@ -162,7 +163,6 @@ describe('RoomsService invite lifetime (GoGo-BE#882, FR-ROOM-009)', () => {
           roomId: ROOM_ID,
           codeHash: `hash:${result.code}`,
           createdByMemberId: 'host-member',
-          expiresAt,
           maxUses: 3,
         },
         {

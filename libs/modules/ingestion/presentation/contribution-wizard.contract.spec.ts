@@ -24,7 +24,7 @@ describe('contribution wizard additive contract (#796)', () => {
     >();
   });
   it('keeps legacy submission valid and pins additive version', () => {
-    expect(doc.info.version).toBe('12.1.0-alpha.1');
+    expect(doc.info.version).toBe('12.2.0-alpha.1');
     const submit =
       doc.paths['/place-submissions'].post.requestBody.content['application/json'].schema;
     expect(submit.required).toEqual(['googlePlaceId']);

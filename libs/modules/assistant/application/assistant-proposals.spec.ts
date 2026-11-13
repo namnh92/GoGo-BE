@@ -1,4 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import {
+  InviteTtlReadUnavailable,
+  InviteTtlSettingUnavailable,
+  observeInviteIssuance,
+  readInviteTtlWithin,
+} from '../../shared/invite-ttl';
+import { NoopMetrics } from '@gogo/observability';
 import { AppError } from '../../shared/app-error';
 import { AssistantProposalsService } from './assistant-proposals.service';
 import type { ProposalRow } from '../infrastructure/assistant.repository';
@@ -41,7 +48,10 @@ function service(createInvite: () => Promise<unknown>) {
     releaseProposal: async () => {
       if (status === 'confirming') status = 'pending';
     },
-    confirmProposal: async () => ({ ...row, status: 'confirmed' }),
+    confirmProposal: async () => {
+      status = 'confirmed';
+      return { ...row, status };
+    },
   };
   const rooms = {
     createInvite: async () => {
@@ -50,7 +60,7 @@ function service(createInvite: () => Promise<unknown>) {
     },
   };
   const svc = new AssistantProposalsService(
-    { execute: async () => ({ rows: [] }) } as never,
+    { insert: () => ({ values: async () => undefined }) } as never,
     repo as never,
     { killSwitchOn: async () => true } as never,
     rooms as never,
@@ -67,6 +77,52 @@ describe('proposal confirm after an ambiguous failure (A-R-07)', () => {
       throw new Error('summary read failed after commit');
     });
     await expect(h.svc.confirm(actor, 'p1', undefined)).rejects.toThrow();
+    expect(h.status()).toBe('confirming');
+    await expect(h.svc.confirm(actor, 'p1', undefined)).rejects.toMatchObject({
+      code: 'IDEMPOTENT_REQUEST_IN_FLIGHT',
+    });
+    expect(h.writes()).toBe(1);
+  });
+
+  it('releases a rolled-back setting-read failure so recovery and retry succeed', async () => {
+    let available = false;
+    const h = service(async () => {
+      if (!available) {
+        return observeInviteIssuance(new NoopMetrics(), 'token', () =>
+          readInviteTtlWithin(
+            {
+              execute: async () => {
+                throw { code: '55P03' };
+              },
+            } as never,
+            'token',
+            new NoopMetrics(),
+          ),
+        );
+      }
+      return { inviteId: 'i1', expiresAt: '2026-11-14T00:00:00Z' };
+    });
+    await expect(h.svc.confirm(actor, 'p1', undefined)).rejects.toBeInstanceOf(
+      InviteTtlReadUnavailable,
+    );
+    expect(h.status()).toBe('pending');
+    available = true;
+    await expect(h.svc.confirm(actor, 'p1', undefined)).resolves.toMatchObject({
+      resource: { type: 'invite', id: 'i1' },
+    });
+    expect(h.status()).toBe('confirmed');
+    expect(h.writes()).toBe(2);
+  });
+
+  it.each([
+    new InviteTtlSettingUnavailable('db_error'),
+    AppError.serviceUnavailable('INVITE_TTL_SETTING_UNAVAILABLE', 'same code without proof', true),
+    { code: '08006' },
+  ])('keeps uncertain storage failures claimed: %s', async (error) => {
+    const h = service(async () => {
+      throw error;
+    });
+    await expect(h.svc.confirm(actor, 'p1', undefined)).rejects.toBe(error);
     expect(h.status()).toBe('confirming');
     await expect(h.svc.confirm(actor, 'p1', undefined)).rejects.toMatchObject({
       code: 'IDEMPOTENT_REQUEST_IN_FLIGHT',

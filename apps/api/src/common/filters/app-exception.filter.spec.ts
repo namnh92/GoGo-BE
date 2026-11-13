@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { HttpException } from '@nestjs/common';
-import { AppError } from '@gogo/modules';
+import { AppError, InviteTtlSettingUnavailable } from '@gogo/modules';
 import { AppExceptionFilter } from './app-exception.filter';
 const details = {
   creditBalance: 20,
@@ -18,15 +18,32 @@ function renderError(error: AppError) {
     status = vi.fn().mockReturnValue({ send }),
     header = vi.fn(),
     removeHeader = vi.fn();
+  const log = { info: vi.fn(), error: vi.fn() };
   const host = {
     switchToHttp: () => ({
       getResponse: () => ({ status, header, removeHeader }),
-      getRequest: () => ({ id: 'r', log: { info: vi.fn(), error: vi.fn() } }),
+      getRequest: () => ({ id: 'r', log }),
     }),
   };
   new AppExceptionFilter().catch(error, host as never);
-  return { status, body: send.mock.calls[0]![0], header, removeHeader };
+  return { status, body: send.mock.calls[0]![0], header, removeHeader, log };
 }
+it.each(['missing', 'invalid', 'db_error'] as const)(
+  '#906 transports %s with fixed log fields only',
+  (reason) => {
+    const r = renderError(new InviteTtlSettingUnavailable(reason));
+    expect(r.status).toHaveBeenCalledWith(503);
+    expect(r.body).toMatchObject({
+      code: 'INVITE_TTL_SETTING_UNAVAILABLE',
+      retryable: reason === 'db_error',
+      request_id: 'r',
+    });
+    expect(r.log.error).toHaveBeenCalledExactlyOnceWith(
+      { operation: 'room_invite_issue', reason, request_id: 'r' },
+      'invite setting unavailable',
+    );
+  },
+);
 describe('#851 typed credit refusal transport', () => {
   it('forwards exactly the allowlisted fields with 409 and retryable false', () => {
     const r = render('ASSISTANT_INSUFFICIENT_CREDIT', {

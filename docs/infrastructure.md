@@ -373,6 +373,14 @@ Metric đang phát — danh sách đầy đủ, đối chiếu với `METRIC_LAB
 | `assistant_place_qa_total` | `class`, `topic`, `outcome`, `tier` | #864/S3: closed classifier/control classes, answer topics, producer outcomes and S2 eligibility tiers; no text, names or IDs. Default-off route, zero model attempts. |
 | `assistant_place_resolution_total` | `row` | #857/S2: rev3 resolver truth-table row 1–6; no query/name/id labels. |
 
+#906 BE-A adds `room_invite_ttl_read_total` with finite `consumer=token/code6`
+and `result=ok/missing/invalid/db_error`, and `room_invite_issue_total` with
+`kind=token/code6`, `result=committed/rolled_back`. Count outer transaction outcomes,
+including share writes; CODE6 allocation alone is not commit evidence (I08 must
+wrap its eventual transaction owner). No TTL/version gauge, identity, credential,
+URL or request ID labels. Known setting failure logs contain only operation,
+fixed reason and request ID. Initialization/change data belongs in audit.
+
 Alert đề xuất (ngưỡng chỉnh sau khi có baseline thật):
 
 | Alert            | Điều kiện                                                                 | Vì sao                                                                                                                                    |
@@ -385,6 +393,13 @@ Alert đề xuất (ngưỡng chỉnh sau khi có baseline thật):
 | Chất lượng match | tỉ lệ bucket `0-0.5` > 30% trong một job                                  | dữ liệu nguồn kém hoặc mapping sai, không phải lỗi resolver                                                                               |
 | Submission tồn   | p95 `place_submission_publish_latency_hours` > 72h                        | hàng chờ moderation bị bỏ quên                                                                                                            |
 | Break-glass      | **bất kỳ** `cms_emergency_takedown_total`                                 | gỡ nội dung khẩn cấp phải **page ngay**, không để tới kỳ audit sau. Nhiều lần liên tiếp từ một actor = dấu hiệu tài khoản bị chiếm        |
+
+#906 alert rules: page immediately when
+`increase(room_invite_ttl_read_total{result=~"missing|invalid"}[5m]) > 0`.
+Monitor `rate(room_invite_ttl_read_total{result="db_error"}[5m])` for DB/lock
+failures and the rolled_back/total ratio from `room_invite_issue_total`;
+thresholds follow the environment baseline. These rules are deployment guidance;
+BE-A does not create remote alert resources. CMS update failures are added by BE-B.
 
 **Nhãn phải hữu hạn (#313).** `duration_ms` từng là _nhãn_ của
 `places_provider_requests_total`: mỗi mili-giây khác nhau sinh một series mới,

@@ -120,9 +120,13 @@ describe('GoGo AI contract (GoGo-BE#713)', () => {
     ['/assistant/conversations/{id}/messages/{messageId}/stream', 'get'],
     ['/assistant/proposals/{proposalId}/confirm', 'post'],
   ])('%s %s declares the kill switch as 503 ASSISTANT_DISABLED', (route, method) => {
-    expect(op(route, method).responses['503']?.$ref).toBe(
-      '#/components/responses/AssistantDisabled',
-    );
+    const response = op(route, method).responses['503'];
+    if (route === '/assistant/proposals/{proposalId}/confirm') {
+      expect(response?.description).toContain('ASSISTANT_DISABLED');
+      expect(response?.description).toContain('INVITE_TTL_SETTING_UNAVAILABLE');
+    } else {
+      expect(response?.$ref).toBe('#/components/responses/AssistantDisabled');
+    }
     expect(doc.components.responses.AssistantDisabled!.description).toContain('ASSISTANT_DISABLED');
   });
 

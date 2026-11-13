@@ -4,7 +4,7 @@ import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
-import { eq, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { Pool } from 'pg';
@@ -146,7 +146,11 @@ it('rolls back taxonomy, generation and audit on label or audit failure', async 
       .select()
       .from(schema.taxonomyLabels)
       .orderBy(schema.taxonomyLabels.taxonomyId, schema.taxonomyLabels.locale),
-    audits: await db.select().from(schema.auditLogs).orderBy(schema.auditLogs.id),
+    audits: await db
+      .select()
+      .from(schema.auditLogs)
+      .where(inArray(schema.auditLogs.resourceType, ['taxonomy', 'taxonomy_synonym']))
+      .orderBy(schema.auditLogs.id),
   });
   const before = await snapshot();
   await expect(
