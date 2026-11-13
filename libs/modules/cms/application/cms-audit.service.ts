@@ -91,9 +91,10 @@ export class CmsAuditService {
    */
   async list(
     query: AuditQuery,
-    options: { includeIp: boolean },
+    options: { includeIp: boolean; includeRoomInviteTtl?: boolean },
   ): Promise<{ items: AuditEntry[]; nextCursor: string | null }> {
     const where = [sql`true`];
+    if (!options.includeRoomInviteTtl) where.push(sql`a.resource_type <> 'room_invite_ttl'`);
 
     if (query.resourceType) where.push(sql`a.resource_type = ${query.resourceType}`);
     if (query.resourceId) where.push(sql`a.resource_id = ${query.resourceId}`);

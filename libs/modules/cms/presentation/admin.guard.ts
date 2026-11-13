@@ -41,7 +41,10 @@ export const EXACT_ROLE_READ_KEY = 'gogo:exact_role_read';
  */
 export const ExactRoleRead = (): CustomDecorator => SetMetadata(EXACT_ROLE_READ_KEY, true);
 
-export type AdminActor = Actor & { role: AdminRole };
+export const ACCESS_SSO_KEY = 'gogo:require_access_sso';
+export const RequireAccessSso = (): CustomDecorator => SetMetadata(ACCESS_SSO_KEY, true);
+
+export type AdminActor = Actor & { role: AdminRole; authMethod?: string | null };
 
 /**
  * BE-IMP-008 — read is hierarchical, write is not.
@@ -99,6 +102,7 @@ export class AdminGuard implements CanActivate {
         .select({
           adminId: schema.adminSessions.adminId,
           revokedAt: schema.adminSessions.revokedAt,
+          authMethod: schema.adminSessions.authMethod,
         })
         .from(schema.adminSessions)
         .where(eq(schema.adminSessions.id, early.actor.sessionId))
@@ -106,6 +110,7 @@ export class AdminGuard implements CanActivate {
       if (!session || session.revokedAt || session.adminId !== early.actor.id) {
         throw AppError.unauthorized('SESSION_REVOKED', 'Session is no longer valid');
       }
+      early.actor.authMethod = session.authMethod;
     }
 
     if (!roles) return true; // not a CMS route
@@ -157,6 +162,15 @@ export class AdminGuard implements CanActivate {
 
     if (!byExactRole && !byRankRead && admin.role !== 'super_admin') {
       throw AppError.forbidden('ROLE_DENIED', 'Your role cannot perform this action');
+    }
+    if (
+      this.reflector.getAllAndOverride<boolean | undefined>(ACCESS_SSO_KEY, [
+        context.getHandler(),
+        context.getClass(),
+      ]) &&
+      actor.authMethod !== 'access_sso'
+    ) {
+      throw AppError.forbidden('SUPER_ADMIN_SSO_ONLY', 'Cloudflare Access SSO is required');
     }
     // SEC-002: record which rule let this through. `super_admin_bypass` means
     // the request would have been refused for every other role — that is the

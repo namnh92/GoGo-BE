@@ -281,6 +281,7 @@ Metric đang phát — danh sách đầy đủ, đối chiếu với `METRIC_LAB
 | `submission_photo_processing_duration_ms` | — | histogram thời lượng xử lý ảnh đóng góp (#793), mili giây; không label |
 | `mobile_place_submissions_total` | `status` | submit / dedupe / decide |
 | `place_submission_publish_latency_hours` | `decision` | khi editor quyết định |
+| `cms_room_invite_ttl_update_total` | `result` | #906 CMS settings outcome: changed/noop/replayed/conflict/error; changed/noop only after commit. No TTL/version/identity labels. |
 | `cms_emergency_takedown_total` | `resource_type`, `role` | break-glass gỡ nội dung |
 | `cms_super_admin_bypass_total` | `action`, `resource_type` | ghi mà chỉ super_admin mới qua được (SEC-002) |
 | `experiment_assignment_total` | `experiment`, `variant` | gán subject vào variant |
@@ -664,3 +665,18 @@ examining scrubbed receipt/incident evidence through authorized billing tooling,
 and resolving through the audited billing correction path; never release a hold
 or reset attempts to silence the alert. Full provider amounts remain in call and
 receipt evidence, separate from the capped billable amount.
+
+### CMS invite TTL updates (#906 BE-B)
+
+`cms_room_invite_ttl_update_total` uses only finite result labels:
+`changed`, `noop`, `replayed`, `conflict`, `error`. Changed/noop are emitted after
+the transaction commits; rollback emits no changed outcome. No TTL/version/actor
+gauge or labels are published. Audit records hold old/new TTL and actor and are
+readable only by super_admin with a current Access SSO session.
+
+Monitor `rate(cms_room_invite_ttl_update_total{result="error"}[5m])` and investigate
+sustained failures, alongside reader DB errors. Missing/invalid singleton logs
+(`cms_room_invite_ttl_read` or `cms_room_invite_ttl_update`, fixed reason, request ID)
+require immediate repair/page even if no issuer has read it yet. Logs contain no
+SQL parameters or request payload. Keep BE-A across the fleet before enabling
+this API; restore the business value through PUT 86400 with fresh ETag and key.

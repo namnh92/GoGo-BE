@@ -126,6 +126,8 @@ export async function createApp(
   });
   // Before guards and validation: private credit errors must not be cached either.
   fastify.addHook('onRequest', (req, reply, done) => {
+    if (/^\/v1\/cms\/settings\/room-invites\/?$/.test(req.url.split('?')[0]!))
+      reply.header('Cache-Control', 'private, no-store, no-transform');
     if (/^\/v1\/me\/credits(?:\/ledger)?\/?$/.test(req.url.split('?')[0]!)) {
       reply.header('Cache-Control', 'private, no-store');
     }
@@ -177,6 +179,7 @@ export async function createApp(
       'x-gogo-invite-csrf',
       'x-request-id',
       'if-none-match',
+      'if-match',
       'cache-control',
       CSRF_HEADER,
     ],

@@ -1,3 +1,5 @@
+import { CmsRoomInviteSettingsController } from './cms-room-invite-settings.controller';
+import { CmsRoomInviteSettingsService } from '../application/cms-room-invite-settings.service';
 import { NotificationsModule } from '../../notifications/presentation/notifications.module';
 import { CmsSystemNotificationsController } from './cms-system-notifications.controller';
 import { Module } from '@nestjs/common';
@@ -77,6 +79,7 @@ import {
     AdministrativeModule,
   ],
   controllers: [
+    CmsRoomInviteSettingsController,
     CmsSystemNotificationsController,
     CmsAreasController,
     CmsAuditController,
@@ -98,6 +101,7 @@ import {
     EmergencyController,
   ],
   providers: [
+    CmsRoomInviteSettingsService,
     AdminAuthService,
     CloudflareAccessService,
     CmsAuditService,

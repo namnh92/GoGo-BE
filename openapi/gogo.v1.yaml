@@ -2,7 +2,7 @@ openapi: 3.1.0
 x-gogo-notification-preference-semantics: master-and-five-categories-v1
 info:
   title: GoGo API
-  version: 12.2.0-alpha.1
+  version: 12.3.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -7541,6 +7541,100 @@ paths:
             text/html:
               schema: { type: string }
 
+  /cms/settings/room-invites:
+    get:
+      operationId: getCmsRoomInviteSettings
+      tags: [cms]
+      summary: 'Super admin SSO: read the lifetime for new room invites'
+      description: Reads the primary database every time. Requires active super_admin and a current access_sso session. No conditional cache or 304 response.
+      responses:
+        '200':
+          description: Current setting; ETag in body and header is identical
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string, const: 'private, no-store, no-transform' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsRoomInviteSettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503':
+          description: INVITE_TTL_SETTING_UNAVAILABLE; missing/invalid non-retryable, database/lock failure retryable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    put:
+      operationId: updateCmsRoomInviteSettings
+      tags: [cms]
+      summary: 'Super admin SSO: update the lifetime for new room invites'
+      description: >
+        Requires active super_admin, access_sso session and existing cookie CSRF protection.
+        Only new invites use the value; existing stored deadlines remain unchanged.
+        CODE6 retains its independent 172800-second and room-expiry caps.
+        Claims idempotency before locking the singleton FOR UPDATE. Checks If-Match
+        even for a no-op. Actual changes increment the decimal-string version and
+        append room_invite_ttl.updated audit with before/after TTL and version.
+        No-op keeps version, actor and timestamp and writes no change audit.
+        Replay completion is atomic with update and audit. Same key/body/If-Match
+        replays the original DTO and ETag before checking current revision; changing
+        body or If-Match with that key returns 422. Replay retention remains 24h.
+      parameters:
+        - name: If-Match
+          in: header
+          required: true
+          description: One opaque strong ETag from GET; no wildcard, weak tag or list.
+          schema: { type: string }
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, minLength: 8, maxLength: 128, pattern: '^[A-Za-z0-9_-]{8,128}$' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateCmsRoomInviteSettings' }
+      responses:
+        '200':
+          description: Current setting; ETag in body and header is identical
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string, const: 'private, no-store, no-transform' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CmsRoomInviteSettings' }
+        '400':
+          description: VALIDATION_FAILED (ttlSeconds field_errors), IDEMPOTENCY_KEY_REQUIRED, INVALID_IDEMPOTENCY_KEY or INVALID_IF_MATCH; retryable false
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503':
+          description: INVITE_TTL_SETTING_UNAVAILABLE; missing/invalid non-retryable, database/lock failure retryable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '409':
+          description: IDEMPOTENT_REQUEST_IN_FLIGHT; retryable true, retry the same key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '412':
+          description: PRECONDITION_FAILED; retryable false, reload and retain draft
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          description: IDEMPOTENCY_KEY_REUSED; retryable false
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '428':
+          description: PRECONDITION_REQUIRED; missing If-Match, retryable false
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
   /cms/audit:
     get:
       operationId: cmsListAudit
@@ -7550,7 +7644,9 @@ paths:
         Audit is a feature, not a log — ops must be able to answer "who
         suspended this place and why" without database access. Read-only:
         FR-CMS-008 makes the log immutable, so there is no update or delete
-        path here by design.
+        path here by design. Rows for resourceType room_invite_ttl are included
+        only for an active super_admin with an access_sso session; every other
+        caller has these rows excluded before filters, limit and cursor pagination.
 
         `breakGlass=true` is the incident-review query: it returns emergency
         takedowns on their own, with actor, role, reason and request id.
@@ -15318,6 +15414,47 @@ components:
       properties:
         status: { type: string, enum: [unverified, verified] }
         verifiedAt: { type: string, format: date-time }
+    UpdateCmsRoomInviteSettings:
+      type: object
+      additionalProperties: false
+      required: [ttlSeconds]
+      properties:
+        ttlSeconds:
+          {
+            type: integer,
+            minimum: 1,
+            maximum: 2147483647,
+            description: JSON number only; no coercion. Applies to new invites.,
+          }
+    CmsRoomInviteSettings:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          ttlSeconds,
+          version,
+          etag,
+          updatedAt,
+          updatedByAdminId,
+          minTtlSeconds,
+          maxTtlSeconds,
+          codeMaxTtlSeconds,
+        ]
+      properties:
+        ttlSeconds: { type: integer, minimum: 1, maximum: 2147483647, readOnly: true }
+        version:
+          {
+            type: string,
+            pattern: '^[1-9][0-9]*$',
+            readOnly: true,
+            description: PostgreSQL bigint revision serialized losslessly as a decimal string,
+          }
+        etag: { type: string, readOnly: true, example: '"room-invite-ttl-v1-r1"' }
+        updatedAt: { type: string, format: date-time, readOnly: true }
+        updatedByAdminId: { type: [string, 'null'], format: uuid, readOnly: true }
+        minTtlSeconds: { type: integer, const: 1, readOnly: true }
+        maxTtlSeconds: { type: integer, const: 2147483647, readOnly: true }
+        codeMaxTtlSeconds: { type: integer, const: 172800, readOnly: true }
     CmsVenueVerification:
       allOf:
         - $ref: '#/components/schemas/VenueVerification'

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Reflector } from '@nestjs/core';
 import type { MetricLabels, MetricsPort } from '@gogo/observability';
-import { AdminGuard, RequireRole } from './admin.guard';
+import { AdminGuard, RequireRole, RequireAccessSso } from './admin.guard';
 import type { AdminRole } from '../application/admin-auth.service';
 
 type Emitted = { name: string; labels: MetricLabels };
@@ -199,4 +199,39 @@ describe('AdminGuard on a route without role metadata (review of PR #690, Sol F-
       guardWith({ adminId: 'admin-1', revokedAt: null }).canActivate(unroledContext as never),
     ).resolves.toBe(true);
   });
+});
+
+describe('#906 scoped SSO requirement', () => {
+  class Settings {}
+  RequireRole('super_admin')(Settings);
+  RequireAccessSso()(Settings);
+  it.each(['password', null, 'access_sso'] as const)(
+    'checks DB auth_method=%s rather than actor claims',
+    async (authMethod) => {
+      let call = 0;
+      const db = {
+        select: () => ({
+          from: () => ({
+            where: () => ({
+              limit: async () =>
+                call++ === 0
+                  ? [{ adminId: 'admin-1', revokedAt: null, authMethod }]
+                  : [{ id: 'admin-1', role: 'super_admin', status: 'active' }],
+            }),
+          }),
+        }),
+      };
+      const guard = new AdminGuard(new Reflector(), db as never, new RecordingMetrics());
+      const ctx = contextFor('PUT', '/v1/cms/settings/room-invites');
+      const context = { ...ctx, getClass: () => Settings };
+      Object.assign(context.switchToHttp().getRequest().actor, { authMethod: 'access_sso' });
+      const result = guard.canActivate(context as never);
+      if (authMethod === 'access_sso') await expect(result).resolves.toBe(true);
+      else
+        await expect(result).rejects.toMatchObject({
+          code: 'SUPER_ADMIN_SSO_ONLY',
+          httpStatus: 403,
+        });
+    },
+  );
 });

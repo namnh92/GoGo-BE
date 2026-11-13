@@ -3462,6 +3462,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cms/settings/room-invites": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Super admin SSO: read the lifetime for new room invites
+         * @description Reads the primary database every time. Requires active super_admin and a current access_sso session. No conditional cache or 304 response.
+         */
+        get: operations["getCmsRoomInviteSettings"];
+        /**
+         * Super admin SSO: update the lifetime for new room invites
+         * @description Requires active super_admin, access_sso session and existing cookie CSRF protection. Only new invites use the value; existing stored deadlines remain unchanged. CODE6 retains its independent 172800-second and room-expiry caps. Claims idempotency before locking the singleton FOR UPDATE. Checks If-Match even for a no-op. Actual changes increment the decimal-string version and append room_invite_ttl.updated audit with before/after TTL and version. No-op keeps version, actor and timestamp and writes no change audit. Replay completion is atomic with update and audit. Same key/body/If-Match replays the original DTO and ETag before checking current revision; changing body or If-Match with that key returns 422. Replay retention remains 24h.
+         */
+        put: operations["updateCmsRoomInviteSettings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cms/audit": {
         parameters: {
             query?: never;
@@ -3471,7 +3495,7 @@ export interface paths {
         };
         /**
          * Admin: read the audit log (filterable, cursor-paged)
-         * @description Audit is a feature, not a log — ops must be able to answer "who suspended this place and why" without database access. Read-only: FR-CMS-008 makes the log immutable, so there is no update or delete path here by design.
+         * @description Audit is a feature, not a log — ops must be able to answer "who suspended this place and why" without database access. Read-only: FR-CMS-008 makes the log immutable, so there is no update or delete path here by design. Rows for resourceType room_invite_ttl are included only for an active super_admin with an access_sso session; every other caller has these rows excluded before filters, limit and cursor pagination.
          *     `breakGlass=true` is the incident-review query: it returns emergency takedowns on their own, with actor, role, reason and request id.
          */
         get: operations["cmsListAudit"];
@@ -7341,6 +7365,27 @@ export interface components {
             status: "unverified" | "verified";
             /** Format: date-time */
             verifiedAt?: string;
+        };
+        UpdateCmsRoomInviteSettings: {
+            /** @description JSON number only; no coercion. Applies to new invites. */
+            ttlSeconds: number;
+        };
+        CmsRoomInviteSettings: {
+            readonly ttlSeconds: number;
+            /** @description PostgreSQL bigint revision serialized losslessly as a decimal string */
+            readonly version: string;
+            /** @example "room-invite-ttl-v1-r1" */
+            readonly etag: string;
+            /** Format: date-time */
+            readonly updatedAt: string;
+            /** Format: uuid */
+            readonly updatedByAdminId: string | null;
+            /** @constant */
+            readonly minTtlSeconds: 1;
+            /** @constant */
+            readonly maxTtlSeconds: 2147483647;
+            /** @constant */
+            readonly codeMaxTtlSeconds: 172800;
         };
         CmsVenueVerification: components["schemas"]["VenueVerification"] & {
             identityRevision: number;
@@ -19144,6 +19189,125 @@ export interface operations {
                 };
                 content: {
                     "text/html": string;
+                };
+            };
+        };
+    };
+    getCmsRoomInviteSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current setting; ETag in body and header is identical */
+            200: {
+                headers: {
+                    ETag?: string;
+                    "Cache-Control"?: "private, no-store, no-transform";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsRoomInviteSettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description INVITE_TTL_SETTING_UNAVAILABLE; missing/invalid non-retryable, database/lock failure retryable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    updateCmsRoomInviteSettings: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description One opaque strong ETag from GET; no wildcard, weak tag or list. */
+                "If-Match": string;
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateCmsRoomInviteSettings"];
+            };
+        };
+        responses: {
+            /** @description Current setting; ETag in body and header is identical */
+            200: {
+                headers: {
+                    ETag?: string;
+                    "Cache-Control"?: "private, no-store, no-transform";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CmsRoomInviteSettings"];
+                };
+            };
+            /** @description VALIDATION_FAILED (ttlSeconds field_errors), IDEMPOTENCY_KEY_REQUIRED, INVALID_IDEMPOTENCY_KEY or INVALID_IF_MATCH; retryable false */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description IDEMPOTENT_REQUEST_IN_FLIGHT; retryable true, retry the same key */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description PRECONDITION_FAILED; retryable false, reload and retain draft */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description IDEMPOTENCY_KEY_REUSED; retryable false */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description PRECONDITION_REQUIRED; missing If-Match, retryable false */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description INVITE_TTL_SETTING_UNAVAILABLE; missing/invalid non-retryable, database/lock failure retryable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
         };

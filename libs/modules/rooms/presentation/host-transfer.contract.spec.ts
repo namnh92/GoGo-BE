@@ -61,7 +61,7 @@ describe('host transfer contract (#879)', () => {
     expect(spec.components.schemas.RoomSummary.required).toEqual(
       expect.arrayContaining(['hostMemberId', 'hostVersion']),
     );
-    expect(spec.info.version).toBe('12.2.0-alpha.1');
+    expect(spec.info.version).toBe('12.3.0-alpha.1');
     expect(spec.components.schemas.RoomEvent.properties.event_type.enum).toEqual(
       expect.arrayContaining([...ROOM_EVENT_TYPES]),
     );
