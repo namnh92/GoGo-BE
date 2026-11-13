@@ -437,7 +437,7 @@ describe('host transfer SSE contract (#879)', () => {
       expect(Date.now() - at).toBeLessThan(8000);
       expect(sent.event.payload).toEqual(payload);
       expect(sent.event.event_id).not.toBe(baseline.event.event_id);
-      stream.close();
+      await stream.close();
       const resumed = await open(roomId, cursor);
       try {
         expect(
@@ -447,10 +447,10 @@ describe('host transfer SSE contract (#879)', () => {
           ),
         ).toBe(true);
       } finally {
-        resumed.close();
+        await resumed.close();
       }
     } finally {
-      stream.close();
+      await stream.close();
     }
   });
 });

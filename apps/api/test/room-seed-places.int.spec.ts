@@ -242,7 +242,7 @@ describe('#878 HTTP policy, ownership and compatibility', () => {
         }
     },
   );
-  it('guest is forbidden even if corrupt role says host, and cross-room scope wins', async () => {
+  it('guest is forbidden in collecting/matching, and cross-room scope wins', async () => {
     const f = await fixture();
     const joined = await send('POST', null, '/v1/rooms/join/guest', {
       inviteCode: f.invite,
@@ -250,27 +250,19 @@ describe('#878 HTTP policy, ownership and compatibility', () => {
     });
     expect(joined.statusCode, joined.body).toBe(201);
     const token = joined.json().accessToken;
-    const [guest] = await db
-      .select()
-      .from(schema.roomMembers)
-      .where(eq(schema.roomMembers.guestSessionId, joined.json().guestSessionId));
+    // 0105's room_members_host_user CHECK and single-host triggers make a
+    // guest host unreachable. Exercise the valid guest membership in both states.
     for (const status of ['collecting', 'matching'] as const) {
       await db.update(schema.rooms).set({ status }).where(eq(schema.rooms.id, f.roomId));
-      for (const role of ['member', 'host'] as const) {
-        await db
-          .update(schema.roomMembers)
-          .set({ role })
-          .where(eq(schema.roomMembers.id, guest!.id));
-        for (const method of ['POST', 'DELETE'] as const) {
-          const res = await send(
-            method,
-            token,
-            `/v1/rooms/${f.roomId}/seed-places${method === 'DELETE' ? `/${places[0]}` : ''}`,
-            method === 'POST' ? { placeIds: [places[0]] } : undefined,
-          );
-          expect(res.statusCode).toBe(403);
-          expect(res.json().code).toBe('SEED_PLACES_FORBIDDEN');
-        }
+      for (const method of ['POST', 'DELETE'] as const) {
+        const res = await send(
+          method,
+          token,
+          `/v1/rooms/${f.roomId}/seed-places${method === 'DELETE' ? `/${places[0]}` : ''}`,
+          method === 'POST' ? { placeIds: [places[0]] } : undefined,
+        );
+        expect(res.statusCode).toBe(403);
+        expect(res.json().code).toBe('SEED_PLACES_FORBIDDEN');
       }
     }
     const other = await fixture();
@@ -749,6 +741,7 @@ describe('#878 geographic and derived data invariants', () => {
           payload: {},
         },
         snapshot,
+        f.authority,
       ),
     ).rejects.toMatchObject({ code: 'STALE_SUGGESTIONS' });
     const state = await effects(f);

@@ -68,16 +68,20 @@ async function seed(db: ReturnType<typeof createDb>['db']) {
     memberId = randomUUID(),
     inviteId = randomUUID(),
     linkId = randomUUID();
-  await db.execute(sql`insert into users(id,display_name) values(${userId},'synthetic host')`);
-  await db.execute(sql`insert into rooms(id,code,type,decision_mode,host_user_id,expires_at)
-    values(${roomId},${randomBytes(9).toString('base64url')},'group','host',${userId},now()+interval '1 day')`);
-  await db.execute(
-    sql`insert into room_members(id,room_id,user_id,role,display_name) values(${memberId},${roomId},${userId},'host','synthetic host')`,
-  );
-  await db.execute(sql`insert into room_invites(id,room_id,code_hash,created_by_member_id,expires_at,max_uses,use_count,revoked_at)
-    values(${inviteId},${roomId},${key()},${memberId},now()-interval '1 hour',1,1,now()-interval '2 hours')`);
-  await db.execute(sql`insert into share_links(id,slug_hash,type,target_id,invite_id,created_by_user_id,expires_at,revoked_at)
-    select ${linkId},${key()},'ROOM_INVITE',${roomId},${inviteId},${userId},expires_at,revoked_at from room_invites where id=${inviteId}`);
+  // Keep the historical INSERT shape, but commit room + host together for 0105.
+  // Transactions also work on the populated 0103 snapshot before that trigger exists.
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`insert into users(id,display_name) values(${userId},'synthetic host')`);
+    await tx.execute(sql`insert into rooms(id,code,type,decision_mode,host_user_id,expires_at)
+      values(${roomId},${randomBytes(9).toString('base64url')},'group','host',${userId},now()+interval '1 day')`);
+    await tx.execute(
+      sql`insert into room_members(id,room_id,user_id,role,display_name) values(${memberId},${roomId},${userId},'host','synthetic host')`,
+    );
+    await tx.execute(sql`insert into room_invites(id,room_id,code_hash,created_by_member_id,expires_at,max_uses,use_count,revoked_at)
+      values(${inviteId},${roomId},${key()},${memberId},now()-interval '1 hour',1,1,now()-interval '2 hours')`);
+    await tx.execute(sql`insert into share_links(id,slug_hash,type,target_id,invite_id,created_by_user_id,expires_at,revoked_at)
+      select ${linkId},${key()},'ROOM_INVITE',${roomId},${inviteId},${userId},expires_at,revoked_at from room_invites where id=${inviteId}`);
+  });
   return { userId, roomId, memberId, inviteId, linkId };
 }
 async function legacyRows(db: ReturnType<typeof createDb>['db']) {

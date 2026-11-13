@@ -267,8 +267,8 @@ export class SuggestionsRepository {
           .where(eq(schema.rooms.id, roomId))
           .for('update');
         if (!room) throw AppError.notFound('ROOM_NOT_FOUND', 'Room not found');
-        if (!authority)
-          throw AppError.forbidden('HOST_ONLY', 'Explicit host authority is required');
+        if (!authority || room.hostVersion !== authority.hostVersion)
+          throw AppError.forbidden('HOST_ONLY', 'Only the current host can perform this action');
         await requireHostWithin(tx, room, authority);
         const members = await tx
           .select({
