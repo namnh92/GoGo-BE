@@ -8,6 +8,19 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 12.3.0-alpha.1 — CMS room invite TTL API (#906 BE-B)
+
+Adds GET/PUT `/cms/settings/room-invites`, restricted to active super_admin with
+DB-verified Access SSO. Strict integer `ttlSeconds` in 1..2147483647; bigint version
+is a decimal string. Body/header share the strong ETag and no-store/no-transform.
+PUT requires If-Match (428 missing, 400 invalid, 412 stale) and Idempotency-Key.
+Replay binds body and ETag, completes atomically with mutation/audit, and returns
+the original receipt; changed requests under the same key return 422. No-op
+preserves metadata and writes no change audit. TTL audit rows are excluded from
+all other sessions before audit query pagination. CORS permits If-Match.
+New invites only; BE-A reader and existing credential deadlines are unchanged.
+Deploy only after all issuers run BE-A. See ADR-0060.
+
 ## 12.2.0-alpha.1 — Configured room invite TTL reader (#906 BE-A)
 
 New TOKEN128 invites read the singleton TTL from the primary DB inside the issuing

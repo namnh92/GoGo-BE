@@ -1,6 +1,6 @@
 # ADR-0060: Room invite TTL setting
 
-- **Status:** accepted (BE-A data and issuer reader; BE-B/CMS follow separately)
+- **Status:** accepted (BE-A reader and BE-B CMS API; CMS UI follows separately)
 - **Date:** 2026-11-13
 - **Deciders:** owner; #906 authoritative shape
 
@@ -48,8 +48,8 @@ lock may therefore use a newer setting than at request start.
 ## Consequences
 
 BE-A must be deployed across the fleet before BE-B exposes mutations; CMS-C follows
-the BE-B contract. This change adds no CMS endpoint, permissions or mutation path.
-The additive contract is 12.2.0-alpha.1, stacked on #891 / #907 (12.1.0-alpha.1).
+the BE-B contract. BE-A contract 12.2.0-alpha.1 is stacked on #891 / #907
+(12.1.0-alpha.1); BE-B adds contract 12.3.0-alpha.1.
 
 Telemetry: room_invite_ttl_read_total{consumer=token/code6,result=ok/missing/invalid/db_error}
 and room_invite_issue_total{kind=token/code6,result=committed/rolled_back}. Outcome
@@ -72,10 +72,40 @@ all credential deadlines, and rehearse the physical down guard in test environme
 Before activation, the old app may be restored while the value remains default;
 the table can stay. After activation, BE-A is the minimum binary floor. Never
 restore a hard-coded 24h binary while the setting differs. Business rollback uses
-the future CMS PUT 86400 with current ETag, new version and audit. Do not edit history.
+CMS PUT 86400 with current ETag, new version and audit. Do not edit history.
 `scripts/rollback/0107-room-invite-settings.sql` is rehearsal/pre-activation only:
 stop readers/writers and verify no admin update; it refuses modified state, keeps
 initialization audit and never rewinds the journal. Activated deployments roll forward.
 
 Unit and integration specifications are distinct from external DEV execution,
 fleet verification and owner acceptance; none of those is implied by local checks.
+
+## BE-B CMS API
+
+GET/PUT `/v1/cms/settings/room-invites` use a separate controller requiring
+`super_admin` and `RequireAccessSso`. AdminGuard reuses its session read for
+auth_method, revalidates current role/status and rejects password/null sessions.
+Existing cookie CSRF and revocation checks remain. TTL is a strict JSON integer
+1..2147483647. Version is a decimal string; strong ETag is in body and header
+with `private, no-store, no-transform`. GET always reads the primary database.
+
+PUT requires one strong If-Match (428 absent, 400 malformed, 412 stale) and a
+valid Idempotency-Key. The route fingerprints the existing request hash together
+with normalized If-Match, leaving other routes unchanged. It claims idempotency,
+locks the singleton FOR UPDATE, checks ETag, updates only on a real TTL change,
+writes `room_invite_ttl.updated` with before/after TTL and version, then completes
+replay within that same transaction. Failure rolls back and releases only its
+own claim. Audit and setting share one DB timestamp taken after lock acquisition.
+No-op still checks ETag and completes replay, preserving version/actor/time without
+a change audit. Completed replay precedes current revision comparison and returns
+the original DTO/ETag. Different body or ETag under the same key returns 422.
+
+Audit queries exclude resource_type `room_invite_ttl` before filters/pagination
+unless the current admin is super_admin with a DB-verified SSO session, including
+initialization rows. No separate history endpoint is needed. CORS permits If-Match.
+
+`cms_room_invite_ttl_update_total{result=changed/noop/replayed/conflict/error}`
+records the final outcome; changed/noop are emitted after transaction commit.
+No identity, TTL or revision labels. Setting API error logs contain operation,
+fixed reason and request ID only. Monitor error outcomes and database failures;
+page on missing/invalid singleton data. This API changes no BE-A issuer semantics.

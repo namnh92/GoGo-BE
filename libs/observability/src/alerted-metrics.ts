@@ -23,6 +23,7 @@ export const ALERTED_METRICS = [
   'cms_emergency_takedown_total',
   'cms_super_admin_bypass_total',
   'room_invite_ttl_read_total',
+  'cms_room_invite_ttl_update_total',
   'room_invite_issue_total',
 ] as const;
 

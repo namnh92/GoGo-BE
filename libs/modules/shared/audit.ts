@@ -22,6 +22,7 @@ export type AuditInput = {
   resourceType: string;
   resourceId: string;
   diff?: unknown;
+  occurredAt?: Date;
 };
 
 /** Accepts a transaction as well as the pool, so audits stay inside their tx. */
@@ -30,6 +31,7 @@ type AuditWriter = Pick<Db, 'insert'>;
 export async function writeAudit(db: AuditWriter, input: AuditInput): Promise<void> {
   const context = currentRequestContext();
   await db.insert(schema.auditLogs).values({
+    ...(input.occurredAt ? { createdAt: input.occurredAt } : {}),
     actorType: input.actorType,
     actorId: input.actorId ?? null,
     action: input.action,

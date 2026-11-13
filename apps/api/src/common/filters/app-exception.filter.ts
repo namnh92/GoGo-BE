@@ -80,7 +80,21 @@ export class AppExceptionFilter implements ExceptionFilter {
       };
     }
 
-    if (exception instanceof InviteTtlSettingUnavailable) {
+    if (
+      /^\/v1\/cms\/settings\/room-invites\/?$/.test((request.url ?? '').split('?')[0]!) &&
+      status >= 500
+    ) {
+      request.log.error(
+        {
+          operation:
+            request.method === 'PUT' ? 'cms_room_invite_ttl_update' : 'cms_room_invite_ttl_read',
+          reason:
+            exception instanceof InviteTtlSettingUnavailable ? exception.reason : 'storage_error',
+          request_id: requestId,
+        },
+        'invite setting operation failed',
+      );
+    } else if (exception instanceof InviteTtlSettingUnavailable) {
       request.log.error(
         { operation: 'room_invite_issue', reason: exception.reason, request_id: requestId },
         'invite setting unavailable',

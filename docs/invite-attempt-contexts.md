@@ -1,6 +1,6 @@
 # Invite-attempt context lifecycle and client guide
 
-Refs #891 / #861 I05. OpenAPI `12.2.0-alpha.1` is the source contract.
+Refs #891 / #861 I05. OpenAPI `12.3.0-alpha.1` is the source contract.
 `POST /v1/invite-attempt-contexts` is public and does not enable CODE6.
 
 Mobile sends `{ "transport": "MOBILE_HEADER" }`, a fresh UUID Idempotency-Key,

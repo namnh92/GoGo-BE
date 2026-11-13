@@ -2285,7 +2285,11 @@ export class CmsAuditController {
     @Query(new ZodValidationPipe(auditListQuery)) query: z.infer<typeof auditListQuery>,
   ) {
     const role = (actor as AdminActor).role;
-    return this.audit.list(query, { includeIp: role === 'ops_admin' || role === 'super_admin' });
+    return this.audit.list(query, {
+      includeIp: role === 'ops_admin' || role === 'super_admin',
+      includeRoomInviteTtl:
+        role === 'super_admin' && (actor as AdminActor).authMethod === 'access_sso',
+    });
   }
 
   /** The place editor's history drawer; same query, scoped for it. */

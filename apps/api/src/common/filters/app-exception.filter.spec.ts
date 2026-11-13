@@ -13,7 +13,7 @@ const details = {
 function render(code: string, d: unknown = details) {
   return renderError(new AppError(code, 'Refused', 409, { retryable: false, details: d as never }));
 }
-function renderError(error: AppError) {
+function renderError(error: unknown, request: { url?: string; method?: string } = {}) {
   const send = vi.fn(),
     status = vi.fn().mockReturnValue({ send }),
     header = vi.fn(),
@@ -22,7 +22,7 @@ function renderError(error: AppError) {
   const host = {
     switchToHttp: () => ({
       getResponse: () => ({ status, header, removeHeader }),
-      getRequest: () => ({ id: 'r', log }),
+      getRequest: () => ({ id: 'r', log, ...request }),
     }),
   };
   new AppExceptionFilter().catch(error, host as never);
@@ -168,6 +168,27 @@ it.each([400, 415])(
         retryable: false,
       });
       expect(JSON.stringify(send.mock.calls)).not.toContain('private-parser-body-marker');
+    }
+  },
+);
+
+it.each(['GET', 'PUT'])(
+  '#906 %s settings storage errors log no SQL or native parameters',
+  (method) => {
+    for (const error of [
+      new InviteTtlSettingUnavailable('missing'),
+      new Error('private SQL params ttl actor'),
+    ]) {
+      const result = renderError(error, { method, url: '/v1/cms/settings/room-invites' });
+      expect(result.log.error).toHaveBeenCalledExactlyOnceWith(
+        {
+          operation: method === 'PUT' ? 'cms_room_invite_ttl_update' : 'cms_room_invite_ttl_read',
+          reason: error instanceof InviteTtlSettingUnavailable ? 'missing' : 'storage_error',
+          request_id: 'r',
+        },
+        'invite setting operation failed',
+      );
+      expect(JSON.stringify(result.body)).not.toContain('private SQL');
     }
   },
 );
