@@ -1621,3 +1621,48 @@ describe('plan cost scope (GoGo-BE#593)', () => {
     expect([item.costMin, item.costMax, item.costScope]).toEqual([null, null, 'per_person']);
   });
 });
+
+describe('#878 seed edits invalidate plans without losing locks', () => {
+  it('advances the ranking fence once, keeps votes/preferences and preserves a locked stop through regeneration', async () => {
+    const { hostToken, roomId } = await matchingRoom('group', 'vote');
+    const ranked = await post(hostToken, `/v1/rooms/${roomId}/suggestions`);
+    const candidate = ranked.json().candidates[0].placeId;
+    await put(hostToken, `/v1/rooms/${roomId}/votes/${candidate}`, { value: 'yes' });
+    const finalized = await post(hostToken, `/v1/rooms/${roomId}/votes/finalize`);
+    const planId = finalized.json().planId;
+    const plan = (await get(hostToken, `/v1/plans/${planId}`)).json();
+    const stop = plan.stops[0];
+    await patch(hostToken, `/v1/plans/${planId}/stops/${stop.id}/lock`, { locked: true });
+    // Existing state machine explicitly allows reopening collecting.
+    await patch(hostToken, `/v1/rooms/${roomId}/status`, { status: 'matching' });
+    expect(
+      (await patch(hostToken, `/v1/rooms/${roomId}/status`, { status: 'collecting' })).statusCode,
+    ).toBe(200);
+    const before = (await get(hostToken, `/v1/rooms/${roomId}`)).json();
+    const seeded = await post(hostToken, `/v1/rooms/${roomId}/seed-places`, {
+      placeIds: [candidate],
+    });
+    expect(seeded.statusCode, seeded.body).toBe(200);
+    expect(seeded.json().constraintVersion).toBe(before.constraintVersion + 1);
+    const stale = (await get(hostToken, `/v1/plans/${planId}`)).json();
+    expect(stale.isStale).toBe(true);
+    expect(stale.stops.find((s: { id: string }) => s.id === stop.id)).toMatchObject({
+      isLocked: true,
+      placeId: stop.placeId,
+      durationMinutes: stop.durationMinutes,
+    });
+    expect((await get(hostToken, `/v1/rooms/${roomId}/suggestions/current`)).json().run.stale).toBe(
+      true,
+    );
+    await patch(hostToken, `/v1/rooms/${roomId}/status`, { status: 'matching' });
+    const regenerated = await post(hostToken, `/v1/plans/${planId}/regenerate`, {});
+    expect(regenerated.statusCode, regenerated.body).toBe(201);
+    expect(
+      regenerated.json().stops.find((s: { placeId: string }) => s.placeId === stop.placeId),
+    ).toMatchObject({
+      isLocked: true,
+      position: stop.position,
+      durationMinutes: stop.durationMinutes,
+    });
+  });
+});

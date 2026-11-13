@@ -383,3 +383,44 @@ describe('RedisRoomEventBus on real Redis (ADR-0027)', () => {
     expect(again.events[0]!.event.event_id).toBe(published.event.event_id);
   });
 });
+
+describe('#878 seed refresh event over Redis', () => {
+  it('keeps room scope, membership-only payload, version and opaque replay position', async () => {
+    const roomId = randomUUID();
+    const otherRoom = randomUUID();
+    const writer = instance();
+    const reader = instance();
+    const s = sink();
+    const outside = sink();
+    const one = await reader.bus.subscribe(roomId, { kind: 'fresh' }, s.value);
+    const two = await reader.bus.subscribe(otherRoom, { kind: 'fresh' }, outside.value);
+    emit(one, s);
+    emit(two, outside);
+    const published = await writer.bus.publish({
+      roomId,
+      type: 'room.seed_places_changed',
+      actorId: randomUUID(),
+      payload: {
+        operation: 'add',
+        addedPlaceIds: [randomUUID()],
+        removedPlaceIds: [],
+        constraintVersion: 2,
+      },
+    });
+    expect(await until(() => s.events.length === 1)).toBe(true);
+    expect(outside.events).toEqual([]);
+    expect(s.events[0]!.event).toEqual(published.event);
+    expect(JSON.stringify(published.event)).not.toMatch(
+      /userId|guestSessionId|email|token|originLat|originLng/,
+    );
+    const replay = await reader.bus.subscribe(
+      roomId,
+      at(published.generation, published.seq - 1),
+      sink().value,
+    );
+    expect(replay.replay).toEqual([published]);
+    replay.unsubscribe();
+    one.unsubscribe();
+    two.unsubscribe();
+  });
+});

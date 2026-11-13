@@ -650,7 +650,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Host-only: attach verified places to the room (FR-ROOM-010) */
+        /**
+         * Host and account members add verified seed places before matching (FR-ROOM-010)
+         * @description Requires active account membership; guests always receive 403 SEED_PLACES_FORBIDDEN (ROOM_SCOPE_VIOLATION for a different room). Only draft/collecting, before room expiry. New places must be published and satisfy both the current administrative area and origin/radius. At most 10 distinct seeds per room across all contributors; existing over-quota rooms are retained. Duplicates preserve attribution and are no-ops. A changed set increments constraintVersion once and marks dependent scores/plans stale. Client must refetch on room.seed_places_changed, focus/reconnect/resync and use polling fallback: post-commit SSE is best-effort. Optional Idempotency-Key binds actor, method, concrete resource and normalized body for 24 hours. Replay rechecks membership and editability; legacy unbound keys require a reload and new key. No key promises only current-state no-op behavior, not exact replay across intervening mutations.
+         */
         post: operations["addRoomSeedPlaces"];
         delete?: never;
         options?: never;
@@ -668,7 +671,10 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** Host-only: remove a seed place */
+        /**
+         * Host removes any seed; account members remove their own membership contribution
+         * @description Guests always receive 403; outsiders/removed members receive NOT_A_MEMBER. Active host/member must be in draft/collecting before room expiry, otherwise ROOM_NOT_EDITABLE (even for replay). State is checked before ownership. Member removing another contribution receives SEED_PLACE_NOT_OWNED. Missing seed is a no-op after authorization/state checks; deletion never validates current catalog/area. Idempotency-Key is optional, retained 24 hours and bound to actor/method/room/place. A completed replay returns the old response without deleting a later re-added contribution. Legacy records without resource binding return IDEMPOTENCY_CONTEXT_CHANGED; reload and use a new key.
+         */
         delete: operations["removeRoomSeedPlace"];
         options?: never;
         head?: never;
@@ -7196,11 +7202,22 @@ export interface components {
             };
             constraints?: components["schemas"]["RoomConstraints"];
             members?: components["schemas"]["RoomMember"][];
-            seedPlaces?: {
-                /** Format: uuid */
-                placeId?: string;
-                name?: string;
-            }[];
+            seedPlaces?: components["schemas"]["RoomSeedPlace"][];
+        };
+        RoomSeedPlace: {
+            /** Format: uuid */
+            placeId: string;
+            name: string;
+            position: number;
+            /**
+             * Format: uuid
+             * @description Immutable room membership attribution, retained after creator removal. Never an account ID. Guests may read but cannot mutate.
+             */
+            addedByMemberId: string;
+        };
+        RoomSeedPlacesResponse: {
+            seedPlaces: components["schemas"]["RoomSeedPlace"][];
+            constraintVersion: number;
         };
         /** @description Venue identity and location independently checked by a CMS admin; never certifies quality or safety. Revoked on material name/address/location change; requires re-verification. No evidence or actor exposed publicly. */
         VenueVerification: {
@@ -11138,7 +11155,7 @@ export interface components {
             /** Format: uuid */
             event_id: string;
             /** @enum {string} */
-            event_type: "room.status_changed" | "participant.joined" | "participant.left" | "participant.selection_changed" | "matching.started" | "matching.completed" | "matching.failed" | "suggestions.generated" | "suggestions.updated" | "vote.changed" | "plan.updated";
+            event_type: "room.status_changed" | "room.seed_places_changed" | "participant.joined" | "participant.left" | "participant.selection_changed" | "matching.started" | "matching.completed" | "matching.failed" | "suggestions.generated" | "suggestions.updated" | "vote.changed" | "plan.updated";
             event_version: number;
             /** Format: date-time */
             occurred_at: string;
@@ -13433,7 +13450,10 @@ export interface operations {
     addRoomSeedPlaces: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
             };
@@ -13447,21 +13467,71 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Updated seed list */
+            /** @description Updated seed list and current constraint version (including no-op or replay). */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["RoomSeedPlacesResponse"];
+                };
             };
-            400: components["responses"]["BadRequest"];
+            /** @description Validation error, INVALID_IDEMPOTENCY_KEY, INVALID_SEED_PLACE or SEED_PLACE_OUT_OF_AREA. field_errors identifies placeIds. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description ROOM_SCOPE_VIOLATION, NOT_A_MEMBER, SEED_PLACES_FORBIDDEN or SEED_PLACE_NOT_OWNED. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description ROOM_NOT_FOUND. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description ROOM_NOT_EDITABLE, SEED_PLACE_LIMIT_REACHED, ADMINISTRATIVE_VERSION_CHANGED, ROOM_AREA_UNRESOLVED, IDEMPOTENT_REQUEST_IN_FLIGHT or IDEMPOTENCY_CONTEXT_CHANGED. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description IDEMPOTENCY_KEY_REUSED with different normalized body or resource. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             503: components["responses"]["SessionLookupUnavailable"];
         };
     };
     removeRoomSeedPlace: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Client-generated key for retryable mutations. Repeating a request with the same key returns the original result instead of re-applying it. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: string;
                 placeId: string;
@@ -13470,12 +13540,60 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Updated seed list */
+            /** @description Updated seed list and current constraint version (including no-op or replay). */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["RoomSeedPlacesResponse"];
+                };
+            };
+            /** @description Validation error, INVALID_IDEMPOTENCY_KEY, INVALID_SEED_PLACE or SEED_PLACE_OUT_OF_AREA. field_errors identifies placeIds. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description ROOM_SCOPE_VIOLATION, NOT_A_MEMBER, SEED_PLACES_FORBIDDEN or SEED_PLACE_NOT_OWNED. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description ROOM_NOT_FOUND. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description ROOM_NOT_EDITABLE, SEED_PLACE_LIMIT_REACHED, ADMINISTRATIVE_VERSION_CHANGED, ROOM_AREA_UNRESOLVED, IDEMPOTENT_REQUEST_IN_FLIGHT or IDEMPOTENCY_CONTEXT_CHANGED. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description IDEMPOTENCY_KEY_REUSED with different normalized body or resource. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
             };
             503: components["responses"]["SessionLookupUnavailable"];
         };

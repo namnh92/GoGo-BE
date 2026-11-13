@@ -5,7 +5,7 @@ import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import IORedis from 'ioredis';
 import { GenericContainer, type StartedTestContainer } from 'testcontainers';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { ROOM_EVENT_BUS } from '../../../libs/modules/realtime/application/room-event-bus';
 import { RoomEventsService } from '../../../libs/modules/realtime/application/room-events.service';
 import { RedisRoomEventBus } from '../../../libs/modules/realtime/infrastructure/redis-room-event-bus';
@@ -40,6 +40,11 @@ let publisher: RedisRoomEventBus;
 /** The SSE instance's subscriber connection — SA-F-03 kills it. */
 let streamingSubscriber: IORedis;
 const clients: IORedis[] = [];
+const pendingAttaches = new Map<
+  string,
+  { resolve: () => void; reject: (error: unknown) => void }
+>();
+const openStreams = new Set<() => Promise<void>>();
 /** Runs once, right after the SSE instance's next attach read resolves. */
 let afterAttachRead: (() => Promise<void>) | null = null;
 
@@ -82,17 +87,43 @@ type Frame = { type: string; id: string | null; data: Record<string, unknown> | 
 /** An open SSE stream whose frames accumulate as they arrive. */
 async function open(roomId: string, lastEventId?: string) {
   const controller = new AbortController();
-  const response = await fetch(`${baseUrl}/v1/rooms/${roomId}/events`, {
-    headers: {
-      accept: 'text/event-stream',
-      ...(lastEventId ? { 'last-event-id': lastEventId } : {}),
-    },
-    signal: controller.signal,
+  let finished = Promise.resolve();
+  const close = () => {
+    controller.abort();
+    return finished;
+  };
+  openStreams.add(close);
+  // HTTP headers precede bus attachment. A fresh stream starts at the
+  // snapshot's high-water mark (ADR-0027), so publishing after headers alone
+  // can put the event before that boundary and legitimately omit it.
+  const attached = new Promise<void>((resolve, reject) => {
+    pendingAttaches.set(roomId, { resolve, reject });
   });
-  expect(response.status).toBe(200);
+  let response: Response;
+  try {
+    [response] = await Promise.all([
+      fetch(`${baseUrl}/v1/rooms/${roomId}/events`, {
+        headers: {
+          accept: 'text/event-stream',
+          ...(lastEventId ? { 'last-event-id': lastEventId } : {}),
+        },
+        signal: controller.signal,
+      }).then((response) => {
+        expect(response.status).toBe(200);
+        return response;
+      }),
+      attached,
+    ]);
+  } catch (error) {
+    await close();
+    openStreams.delete(close);
+    throw error;
+  } finally {
+    pendingAttaches.delete(roomId);
+  }
   const frames: Frame[] = [];
   let ended = false;
-  void (async () => {
+  finished = (async () => {
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -119,8 +150,11 @@ async function open(roomId: string, lastEventId?: string) {
       }
     } catch {
       /* aborted */
+    } finally {
+      reader.releaseLock();
+      ended = true;
+      openStreams.delete(close);
     }
-    ended = true;
   })();
   return {
     frames,
@@ -134,9 +168,7 @@ async function open(roomId: string, lastEventId?: string) {
       }
       return predicate(frames);
     },
-    close() {
-      controller.abort();
-    },
+    close,
   };
 }
 
@@ -171,7 +203,24 @@ beforeAll(async () => {
       RoomEventsService,
       RoomMemberGuard,
       { provide: RoomPolicy, useValue: { requireMember: async () => ({}) } },
-      { provide: ROOM_EVENT_BUS, useValue: streaming },
+      {
+        provide: ROOM_EVENT_BUS,
+        useValue: {
+          publish: streaming.publish.bind(streaming),
+          async subscribe(...args: Parameters<RedisRoomEventBus['subscribe']>) {
+            const pending = pendingAttaches.get(args[0]);
+            try {
+              // Observe the real ACK + snapshot, without changing bus behavior.
+              const subscription = await streaming.subscribe(...args);
+              pending?.resolve();
+              return subscription;
+            } catch (error) {
+              pending?.reject(error);
+              throw error;
+            }
+          },
+        },
+      },
       { provide: REALTIME_ENABLED, useValue: true },
     ],
   })
@@ -195,6 +244,13 @@ beforeAll(async () => {
   baseUrl = `http://127.0.0.1:${address.port}`;
 }, 180_000);
 
+afterEach(async () => {
+  afterAttachRead = null;
+  // Assertions can fail before a test reaches close(). Abort every reader
+  // before app.close(), which otherwise waits forever on its SSE requests.
+  await Promise.all([...openStreams].map((close) => close()));
+});
+
 afterAll(async () => {
   await app?.close();
   for (const client of clients) client.disconnect();
@@ -205,13 +261,11 @@ describe('room event stream reconnect over Redis (GoGo-BE#638, ADR-0027)', () =>
   it('#638: a mutation during the reconnect attach arrives once, in order, under 8 s on the open stream', async () => {
     const roomId = randomUUID();
     const first = await open(roomId);
-    await settle();
     const before = await publisher.publish({ roomId, type: 'participant.joined' });
     expect(await first.until((f) => domain(f).length >= 1, 5_000)).toBe(true);
     const cursor = domain(first.frames)[0]!.id!;
     expect(eventIdOf(domain(first.frames)[0]!)).toBe(before.event.event_id);
-    first.close();
-    await settle();
+    await first.close();
 
     let mutationAt = 0;
     let mutationId = '';
@@ -243,19 +297,17 @@ describe('room event stream reconnect over Redis (GoGo-BE#638, ADR-0027)', () =>
     const ids = domain(resumed.frames).map(eventIdOf);
     expect(ids).toEqual([mutationId, later.event.event_id]);
     expect(resumed.frames.some((f) => f.type === 'resync')).toBe(false);
-    resumed.close();
+    await resumed.close();
   });
 
   it('F-04: resume at old seq 2, room sequence reset, new seq 1 published during attach → resync, never silently filtered', async () => {
     const roomId = randomUUID();
     const first = await open(roomId);
-    await settle();
     await publisher.publish({ roomId, type: 'participant.joined' });
     await publisher.publish({ roomId, type: 'participant.joined' });
     expect(await first.until((f) => domain(f).length >= 2, 5_000)).toBe(true);
     const cursor = domain(first.frames)[1]!.id!;
-    first.close();
-    await settle();
+    await first.close();
 
     let newId = '';
     afterAttachRead = async () => {
@@ -268,19 +320,17 @@ describe('room event stream reconnect over Redis (GoGo-BE#638, ADR-0027)', () =>
     // Nothing from the new sequence may be delivered ahead of the resync.
     expect(resumed.frames[0]!.type).toBe('resync');
     expect(newId).not.toBe('');
-    resumed.close();
+    await resumed.close();
   });
 
   it('F-04 (counter already past the cursor): reset, three new events, resume at old seq 2 → resync first', async () => {
     const roomId = randomUUID();
     const first = await open(roomId);
-    await settle();
     await publisher.publish({ roomId, type: 'participant.joined' });
     await publisher.publish({ roomId, type: 'participant.joined' });
     expect(await first.until((f) => domain(f).length >= 2, 5_000)).toBe(true);
     const cursor = domain(first.frames)[1]!.id!;
-    first.close();
-    await settle();
+    await first.close();
 
     await resetRoom(roomId);
     for (let i = 0; i < 3; i++) await publisher.publish({ roomId, type: 'vote.changed' });
@@ -288,13 +338,12 @@ describe('room event stream reconnect over Redis (GoGo-BE#638, ADR-0027)', () =>
     const resumed = await open(roomId, cursor);
     expect(await resumed.until((f) => f.length >= 1, 8_000)).toBe(true);
     expect(resumed.frames[0]!.type).toBe('resync');
-    resumed.close();
+    await resumed.close();
   });
 
   it('SA-F-03: losing the subscriber connection ends the HTTP stream; a reopen with the last cursor loses nothing', async () => {
     const roomId = randomUUID();
     const first = await open(roomId);
-    await settle();
     const seen = await publisher.publish({ roomId, type: 'participant.joined' });
     expect(await first.until((f) => domain(f).length >= 1, 5_000)).toBe(true);
     const cursor = domain(first.frames)[0]!.id!;
@@ -322,6 +371,42 @@ describe('room event stream reconnect over Redis (GoGo-BE#638, ADR-0027)', () =>
     await settle(300);
     expect(domain(reopened.frames).map(eventIdOf)).toEqual([missed.event.event_id]);
     expect(reopened.frames.some((f) => f.type === 'resync')).toBe(false);
-    reopened.close();
+    await reopened.close();
+  });
+});
+
+describe('#878 seed event SSE reconnect', () => {
+  it('replays the seed refresh signal after an opaque cursor so clients can refetch ownership', async () => {
+    const roomId = randomUUID();
+    const stream = await open(roomId);
+    const before = await publisher.publish({ roomId, type: 'participant.joined' });
+    expect(
+      await stream.until((f) => f.some((e) => eventIdOf(e) === before.event.event_id), 5000),
+    ).toBe(true);
+    const cursor = stream.frames.find((e) => eventIdOf(e) === before.event.event_id)!.id!;
+    await stream.close();
+    const event = await publisher.publish({
+      roomId,
+      type: 'room.seed_places_changed',
+      actorId: randomUUID(),
+      payload: {
+        operation: 'remove',
+        addedPlaceIds: [],
+        removedPlaceIds: [randomUUID()],
+        constraintVersion: 3,
+      },
+    });
+    const resumed = await open(roomId, cursor);
+    try {
+      expect(
+        await resumed.until((f) => f.some((e) => eventIdOf(e) === event.event.event_id), 5000),
+      ).toBe(true);
+      const frame = resumed.frames.find((e) => eventIdOf(e) === event.event.event_id)!;
+      expect(frame.type).toBe('room.seed_places_changed');
+      expect(frame.data?.payload).toEqual(event.event.payload);
+      expect(frame.id).toBeTruthy();
+    } finally {
+      await resumed.close();
+    }
   });
 });

@@ -1,7 +1,18 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Headers,
+  Param,
+  Patch,
+  Post,
+  Query,
+} from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
-import { NoIdempotencyReplay } from '../../shared/idempotency.interceptor';
+import { ManualIdempotency, NoIdempotencyReplay } from '../../shared/idempotency.interceptor';
 import type { Actor } from '../../identity/domain/actor';
 import { AuthService } from '../../identity/application/auth.service';
 import { CurrentActor, Public, RateLimit } from '../../identity/presentation/decorators';
@@ -223,21 +234,26 @@ export class RoomsController {
   }
 
   @Post(':id/seed-places')
+  @HttpCode(200)
+  @ManualIdempotency()
   addSeeds(
     @CurrentActor() actor: Actor,
     @Param('id', UuidPipe) id: string,
     @Body(new ZodValidationPipe(seedPlacesSchema)) body: SeedPlacesDto,
+    @Headers('idempotency-key') key?: string,
   ) {
-    return this.rooms.addSeedPlaces(actor, id, body.placeIds);
+    return this.rooms.addSeedPlaces(actor, id, body.placeIds, key);
   }
 
   @Delete(':id/seed-places/:placeId')
+  @ManualIdempotency()
   removeSeed(
     @CurrentActor() actor: Actor,
     @Param('id', UuidPipe) id: string,
     @Param('placeId', UuidPipe) placeId: string,
+    @Headers('idempotency-key') key?: string,
   ) {
-    return this.rooms.removeSeedPlace(actor, id, placeId);
+    return this.rooms.removeSeedPlace(actor, id, placeId, key);
   }
 }
 

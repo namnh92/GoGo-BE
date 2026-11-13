@@ -1,6 +1,10 @@
+import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
+import { currentRequestContext } from '../../shared/request-context';
+import { normalizeSeedIds } from '../domain/seed-contribution';
+import type { SeedMutationInput } from '../infrastructure/seed-mutation';
 import type { AdministrativeAreaInput } from '../../administrative/application/area-selection';
 import { matchingReadiness } from '../domain/matching-readiness';
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
 import { AppError } from '../../shared/app-error';
 import { APP_CONFIG, type MediaConfig } from '../../shared/config';
@@ -97,6 +101,7 @@ export class RoomsService {
     // Optional so the unit tests that build this service by hand keep working;
     // without it every member's avatarUrl is null, which is also honest.
     @Optional() @Inject(APP_CONFIG) private readonly config?: MediaConfig,
+    @Optional() @Inject(METRICS) private readonly metrics: MetricsPort = new NoopMetrics(),
   ) {}
 
   async createRoom(
@@ -123,14 +128,7 @@ export class RoomsService {
     }
 
     // FR-ROOM-010: only verified (published) catalog places can be seeded.
-    const seedIds = input.seedPlaceIds ?? [];
-    const publishedIds = await this.repo.listPublishedPlaces(seedIds);
-    if (publishedIds.length !== seedIds.length) {
-      throw AppError.badRequest('INVALID_SEED_PLACE', 'Seed places must be verified places', [
-        { field: 'seedPlaceIds', code: 'invalid', message: 'contains unknown/unpublished places' },
-      ]);
-    }
-
+    const seedIds = normalizeSeedIds(input.seedPlaceIds ?? []);
     const user = await this.identity.findUserById(actor.id);
     const { room } = await this.repo.createRoom({
       code: randomBytes(9).toString('base64url'), // 72-bit share code, no PII
@@ -300,7 +298,12 @@ export class RoomsService {
           ? publicMediaUrl(this.config?.MEDIA_PUBLIC_BASE_URL, avatarKeys.get(m.userId))
           : null,
       })),
-      seedPlaces: seedPlaces.map((s) => ({ placeId: s.placeId, name: s.name })),
+      seedPlaces: seedPlaces.map((s) => ({
+        placeId: s.placeId,
+        name: s.name,
+        position: s.position,
+        addedByMemberId: s.addedByMemberId,
+      })),
     };
   }
 
@@ -743,23 +746,50 @@ export class RoomsService {
 
   // --- seed places (FR-ROOM-010/011, BE-BFF-015) ---------------------------
 
-  async addSeedPlaces(actor: Actor, roomId: string, placeIds: string[]) {
-    const { room, member } = await this.policy.requireHost(actor, roomId);
-    if (!['draft', 'collecting'].includes(room.status)) {
-      throw AppError.conflict('ROOM_NOT_EDITABLE', 'Seed places can only change before matching');
-    }
-    const published = await this.repo.listPublishedPlaces(placeIds);
-    if (published.length !== placeIds.length) {
-      throw AppError.badRequest('INVALID_SEED_PLACE', 'Seed places must be verified places');
-    }
-    await this.repo.addSeedPlaces(roomId, placeIds, member.id);
-    return { seedPlaces: await this.repo.listSeedPlaces(roomId) };
+  async addSeedPlaces(actor: Actor, roomId: string, placeIds: string[], key?: string) {
+    return this.mutateSeeds({ actor, roomId, placeIds, operation: 'add', key });
   }
 
-  async removeSeedPlace(actor: Actor, roomId: string, placeId: string) {
-    await this.policy.requireHost(actor, roomId);
-    await this.repo.removeSeedPlace(roomId, placeId);
-    return { seedPlaces: await this.repo.listSeedPlaces(roomId) };
+  async removeSeedPlace(actor: Actor, roomId: string, placeId: string, key?: string) {
+    return this.mutateSeeds({ actor, roomId, placeIds: [placeId], operation: 'remove', key });
+  }
+
+  private async mutateSeeds(input: SeedMutationInput) {
+    const started = Date.now();
+    let outcome = 'error';
+    let role = 'none';
+    try {
+      const result = await this.repo.mutateSeedPlaces(input);
+      outcome = result.outcome;
+      role = result.role;
+      if (result.event) {
+        try {
+          await this.events.publish(result.event);
+        } catch {
+          this.metrics.increment('room_seed_sse_publish_failed_total');
+        }
+      }
+      return result.body;
+    } catch (error) {
+      if (error instanceof AppError) {
+        outcome = seedErrorOutcome(error);
+        if (outcome === 'forbidden')
+          new Logger(RoomsService.name).warn({
+            event: 'room_seed_authorization_failed',
+            reason: error.code,
+            requestId: currentRequestContext().requestId,
+          });
+      }
+      throw error;
+    } finally {
+      const labels = { operation: input.operation, actor_kind: input.actor.type, role, outcome };
+      this.metrics.increment('room_seed_mutation_total', labels);
+      this.metrics.observe(
+        'room_seed_mutation_duration_seconds',
+        (Date.now() - started) / 1000,
+        labels,
+      );
+    }
   }
 }
 
@@ -798,5 +828,21 @@ export function decodeRoomCursor(cursor: string): { updatedAt: string; id: strin
     return { updatedAt, id };
   } catch {
     throw AppError.badRequest('INVALID_CURSOR', 'Cursor is not valid');
+  }
+}
+
+function seedErrorOutcome(error: AppError): string {
+  if (error.httpStatus === 403) return 'forbidden';
+  switch (error.code) {
+    case 'ROOM_NOT_EDITABLE':
+      return 'not_editable';
+    case 'INVALID_SEED_PLACE':
+      return 'invalid_place';
+    case 'SEED_PLACE_OUT_OF_AREA':
+      return 'out_of_area';
+    case 'SEED_PLACE_LIMIT_REACHED':
+      return 'limit_reached';
+    default:
+      return [409, 422].includes(error.httpStatus) ? 'conflict' : 'error';
   }
 }

@@ -529,3 +529,115 @@ describe('ADM-020 room administrative area', () => {
     expect(current.json().run.stale).toBe(true);
   });
 });
+
+describe('#878 seeds use candidate administrative scope', () => {
+  it('enforces province/commune VERIFIED mapping and both geographic filters; creation shares validator', async () => {
+    const host = await register('seed-area-878@gogo.test');
+    const area = { datasetVersion, provinceCode, communeCode };
+    const room = (
+      await createRoom(host, {
+        administrativeArea: area,
+        originLat: 10.776,
+        originLng: 106.7,
+        radiusM: 100,
+      })
+    ).json();
+    const add = (ids: string[]) =>
+      send('POST', host, `/v1/rooms/${room.id}/seed-places`, { placeIds: ids });
+    expect((await add([placeIds.inCommune!])).statusCode).toBe(200);
+    for (const key of [
+      'siblingCommune',
+      'autoMatched',
+      'otherProvince',
+      'staleMapping',
+      'underReview',
+      'unmapped',
+    ]) {
+      const refused = await add([placeIds[key]!]);
+      expect(refused.statusCode, refused.body).toBe(400);
+      expect(refused.json().code).toBe('SEED_PLACE_OUT_OF_AREA');
+    }
+    const wrongRadius = (
+      await createRoom(host, { administrativeArea: area, originLat: 0, originLng: 0, radiusM: 100 })
+    ).json();
+    expect(
+      (
+        await send('POST', host, `/v1/rooms/${wrongRadius.id}/seed-places`, {
+          placeIds: [placeIds.inCommune],
+        })
+      ).json().code,
+    ).toBe('SEED_PLACE_OUT_OF_AREA');
+    const province = (
+      await createRoom(host, { administrativeArea: { ...area, communeCode: null } })
+    ).json();
+    expect(
+      (
+        await send('POST', host, `/v1/rooms/${province.id}/seed-places`, {
+          placeIds: [placeIds.siblingCommune],
+        })
+      ).statusCode,
+    ).toBe(200);
+    const invalidCreate = await send('POST', host, '/v1/rooms', {
+      type: 'group',
+      decisionMode: 'vote',
+      participantCount: 4,
+      constraint: { ...budget, administrativeArea: area },
+      seedPlaceIds: [placeIds.inCommune, placeIds.otherProvince],
+    });
+    expect(invalidCreate.statusCode).toBe(400);
+    expect(invalidCreate.json().code).toBe('SEED_PLACE_OUT_OF_AREA');
+  });
+  it('dataset publication wins validation without partial writes', async () => {
+    const host = await register('seed-dataset-878@gogo.test');
+    const room = (
+      await createRoom(host, { administrativeArea: { datasetVersion, provinceCode, communeCode } })
+    ).json();
+    const c = await pool.connect();
+    await c.query('begin');
+    await c.query(
+      "select id from administrative_dataset_versions where status='PUBLISHED' for update",
+    );
+    const pending = send('POST', host, `/v1/rooms/${room.id}/seed-places`, {
+      placeIds: [placeIds.inCommune],
+    });
+    // Start injection before observing pg locks (Fastify inject is thenable).
+    const running = Promise.resolve(pending);
+    try {
+      let blocked = false;
+      for (let i = 0; i < 1000; i++) {
+        // pg_stat_activity otherwise keeps its first snapshot for this entire
+        // transaction, even after the seed request reaches the dataset lock.
+        await c.query('select pg_stat_clear_snapshot()');
+        const result = await c.query(
+          "select 1 from pg_stat_activity where query like '%administrative_dataset_versions%' and pid <> pg_backend_pid() and pg_backend_pid() = any(pg_blocking_pids(pid))",
+        );
+        if (result.rowCount) {
+          blocked = true;
+          break;
+        }
+      }
+      expect(blocked).toBe(true);
+      await c.query(
+        "update administrative_dataset_versions set combined_dataset_version='seed-878-new-version' where status='PUBLISHED'",
+      );
+      await c.query('commit');
+      const response = await running;
+      expect(response.statusCode, response.body).toBe(409);
+      expect(response.json().code).toBe('ADMINISTRATIVE_VERSION_CHANGED');
+      expect(await readRoom(host, room.id)).toMatchObject({
+        seedPlaces: [],
+        constraintVersion: 1,
+      });
+    } finally {
+      await c.query('rollback');
+      c.release();
+      // Drain the request after releasing the barrier, including on assertion
+      // failure, before restoring the published version for subsequent tests.
+      await Promise.allSettled([running]);
+      await db
+        .update(schema.administrativeDatasetVersions)
+        .set({ combinedDatasetVersion: datasetVersion })
+        .where(eq(schema.administrativeDatasetVersions.status, 'PUBLISHED'));
+    }
+  });
+});

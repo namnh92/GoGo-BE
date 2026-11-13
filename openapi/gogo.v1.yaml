@@ -2,7 +2,7 @@ openapi: 3.1.0
 x-gogo-notification-preference-semantics: master-and-five-categories-v1
 info:
   title: GoGo API
-  version: 10.3.0-alpha.1
+  version: 11.0.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -1368,8 +1368,20 @@ paths:
     post:
       operationId: addRoomSeedPlaces
       tags: [rooms]
-      summary: 'Host-only: attach verified places to the room (FR-ROOM-010)'
+      summary: 'Host and account members add verified seed places before matching (FR-ROOM-010)'
+      description: >-
+        Requires active account membership; guests always receive 403 SEED_PLACES_FORBIDDEN
+        (ROOM_SCOPE_VIOLATION for a different room). Only draft/collecting, before room expiry.
+        New places must be published and satisfy both the current administrative area and origin/radius.
+        At most 10 distinct seeds per room across all contributors; existing over-quota rooms are retained.
+        Duplicates preserve attribution and are no-ops. A changed set increments constraintVersion once
+        and marks dependent scores/plans stale. Client must refetch on room.seed_places_changed,
+        focus/reconnect/resync and use polling fallback: post-commit SSE is best-effort.
+        Optional Idempotency-Key binds actor, method, concrete resource and normalized body for 24 hours.
+        Replay rechecks membership and editability; legacy unbound keys require a reload and new key.
+        No key promises only current-state no-op behavior, not exact replay across intervening mutations.
       parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       requestBody:
         required: true
@@ -1385,21 +1397,89 @@ paths:
                   maxItems: 10
                   items: { type: string, format: uuid }
       responses:
+        '400':
+          description: Validation error, INVALID_IDEMPOTENCY_KEY, INVALID_SEED_PLACE or SEED_PLACE_OUT_OF_AREA. field_errors identifies placeIds.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: ROOM_SCOPE_VIOLATION, NOT_A_MEMBER, SEED_PLACES_FORBIDDEN or SEED_PLACE_NOT_OWNED.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404':
+          description: ROOM_NOT_FOUND.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '409':
+          description: ROOM_NOT_EDITABLE, SEED_PLACE_LIMIT_REACHED, ADMINISTRATIVE_VERSION_CHANGED, ROOM_AREA_UNRESOLVED, IDEMPOTENT_REQUEST_IN_FLIGHT or IDEMPOTENCY_CONTEXT_CHANGED.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          description: IDEMPOTENCY_KEY_REUSED with different normalized body or resource.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
-        '200': { description: Updated seed list }
-        '400': { $ref: '#/components/responses/BadRequest' }
+        '200':
+          description: Updated seed list and current constraint version (including no-op or replay).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomSeedPlacesResponse' }
 
   /rooms/{id}/seed-places/{placeId}:
     delete:
       operationId: removeRoomSeedPlace
       tags: [rooms]
-      summary: 'Host-only: remove a seed place'
+      summary: 'Host removes any seed; account members remove their own membership contribution'
+      description: >-
+        Guests always receive 403; outsiders/removed members receive NOT_A_MEMBER. Active host/member
+        must be in draft/collecting before room expiry, otherwise ROOM_NOT_EDITABLE (even for replay).
+        State is checked before ownership. Member removing another contribution receives SEED_PLACE_NOT_OWNED.
+        Missing seed is a no-op after authorization/state checks; deletion never validates current catalog/area.
+        Idempotency-Key is optional, retained 24 hours and bound to actor/method/room/place.
+        A completed replay returns the old response without deleting a later re-added contribution.
+        Legacy records without resource binding return IDEMPOTENCY_CONTEXT_CHANGED; reload and use a new key.
       parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
         - { name: placeId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        '400':
+          description: Validation error, INVALID_IDEMPOTENCY_KEY, INVALID_SEED_PLACE or SEED_PLACE_OUT_OF_AREA. field_errors identifies placeIds.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: ROOM_SCOPE_VIOLATION, NOT_A_MEMBER, SEED_PLACES_FORBIDDEN or SEED_PLACE_NOT_OWNED.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404':
+          description: ROOM_NOT_FOUND.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '409':
+          description: ROOM_NOT_EDITABLE, SEED_PLACE_LIMIT_REACHED, ADMINISTRATIVE_VERSION_CHANGED, ROOM_AREA_UNRESOLVED, IDEMPOTENT_REQUEST_IN_FLIGHT or IDEMPOTENCY_CONTEXT_CHANGED.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          description: IDEMPOTENCY_KEY_REUSED with different normalized body or resource.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '503': { $ref: '#/components/responses/SessionLookupUnavailable' }
-        '200': { description: Updated seed list }
+        '200':
+          description: Updated seed list and current constraint version (including no-op or replay).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomSeedPlacesResponse' }
 
   /rooms/{roomId}/preferences/me:
     get:
@@ -14842,11 +14922,26 @@ components:
           items: { $ref: '#/components/schemas/RoomMember' }
         seedPlaces:
           type: array
-          items:
-            type: object
-            properties:
-              placeId: { type: string, format: uuid }
-              name: { type: string }
+          items: { $ref: '#/components/schemas/RoomSeedPlace' }
+    RoomSeedPlace:
+      type: object
+      required: [placeId, name, position, addedByMemberId]
+      properties:
+        placeId: { type: string, format: uuid }
+        name: { type: string }
+        position: { type: integer, minimum: 0 }
+        addedByMemberId:
+          type: string
+          format: uuid
+          description: Immutable room membership attribution, retained after creator removal. Never an account ID. Guests may read but cannot mutate.
+    RoomSeedPlacesResponse:
+      type: object
+      required: [seedPlaces, constraintVersion]
+      properties:
+        seedPlaces:
+          type: array
+          items: { $ref: '#/components/schemas/RoomSeedPlace' }
+        constraintVersion: { type: integer, minimum: 1 }
     VenueVerification:
       type: object
       description: Venue identity and location independently checked by a CMS admin; never certifies quality or safety. Revoked on material name/address/location change; requires re-verification. No evidence or actor exposed publicly.
@@ -21263,6 +21358,7 @@ components:
           type: string
           enum:
             - room.status_changed
+            - room.seed_places_changed
             - participant.joined
             - participant.left
             - participant.selection_changed

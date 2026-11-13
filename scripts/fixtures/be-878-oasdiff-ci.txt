@@ -1,0 +1,5 @@
+1 changes: 1 error, 0 warning, 0 info
+error	[response-property-enum-value-added] at openapi/gogo.v1.yaml
+	in API GET /rooms/{id}/events
+		added the new `room.seed_places_changed` enum value to the `oneOf[#/components/schemas/RoomEvent]/event_type` response property for the response status `200`
+		The server may now return a value the previous contract excluded, so a client written against it may not handle the response. If the value set is meant to grow, declare it with x-extensible-enum.
