@@ -1,3 +1,4 @@
+import { requireHostWithin, type HostAuthority } from '../../rooms/domain/host-authority';
 import { activeDataset } from '../../administrative/application/unit-lookup';
 import { preferenceRevision } from '../domain/preference-revision';
 import { Inject, Injectable } from '@nestjs/common';
@@ -254,14 +255,21 @@ export class SuggestionsRepository {
     }[],
     event: DomainEventInput,
     snapshot?: RoomSnapshot,
+    authority?: HostAuthority,
   ): Promise<void> {
     await this.db.transaction(async (tx) => {
+      if (!snapshot || !authority)
+        throw AppError.forbidden('HOST_ONLY', 'Ranking requires snapshot and host authority');
       if (snapshot) {
         const [room] = await tx
           .select()
           .from(schema.rooms)
           .where(eq(schema.rooms.id, roomId))
           .for('update');
+        if (!room) throw AppError.notFound('ROOM_NOT_FOUND', 'Room not found');
+        if (!authority || room.hostVersion !== authority.hostVersion)
+          throw AppError.forbidden('HOST_ONLY', 'Only the current host can perform this action');
+        await requireHostWithin(tx, room, authority);
         const members = await tx
           .select({
             memberId: schema.roomMembers.id,

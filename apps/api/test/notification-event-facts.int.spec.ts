@@ -1,3 +1,6 @@
+import { fixtureTransferHost } from './support/hosted-room';
+import { fixtureHostAuthority } from './support/hosted-room';
+import { fixtureMembers, hostedRoom } from './support/hosted-room';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
@@ -74,27 +77,21 @@ async function fixture(confirmedStart: string | null = start) {
       { displayName: 'Recipient' },
     ])
     .returning();
-  const [room] = await db
-    .insert(schema.rooms)
-    .values({
-      code: randomUUID(),
-      type: 'group',
-      decisionMode: 'host',
-      hostUserId: host!.id,
-      participantCount: 3,
-      status: 'ready',
-      constraintVersion: 2,
-      // A date-only display field must never become the schedule authority.
-      scheduledDate: new Date('2026-11-09T00:00:00Z'),
-    })
-    .returning();
-  const [inviter, recipient] = await db
-    .insert(schema.roomMembers)
-    .values([
-      { roomId: room!.id, userId: host!.id, role: 'host', displayName: host!.displayName },
-      { roomId: room!.id, userId: member!.id, role: 'member', displayName: member!.displayName },
-    ])
-    .returning();
+  const [room] = await hostedRoom(db, {
+    code: randomUUID(),
+    type: 'group',
+    decisionMode: 'host',
+    hostUserId: host!.id,
+    participantCount: 3,
+    status: 'ready',
+    constraintVersion: 2,
+    // A date-only display field must never become the schedule authority.
+    scheduledDate: new Date('2026-11-09T00:00:00Z'),
+  });
+  const [inviter, recipient] = await fixtureMembers(db, [
+    { roomId: room!.id, userId: host!.id, role: 'host', displayName: host!.displayName },
+    { roomId: room!.id, userId: member!.id, role: 'member', displayName: member!.displayName },
+  ]);
   await db.insert(schema.roomConstraints).values([
     {
       roomId: room!.id,
@@ -228,6 +225,7 @@ async function publish(f: Awaited<ReturnType<typeof fixture>>, changed = false) 
   return plans.createPlanVersion({
     roomId: f.room.id,
     constraintVersion: 2,
+    authority: await fixtureHostAuthority(db, f.room.id),
     stops: f.stops,
     totals: f.totals,
     events: [
@@ -329,8 +327,24 @@ describe('producer → outbox → inbox sourced facts (#811 PR3)', () => {
         resourceId: f.room.id,
         payload: { from: 'ready', to: 'active' },
       };
-      expect(await rooms.updateStatus(f.room.id, 'active', event)).toBe(true);
-      expect(await rooms.updateStatus(f.room.id, 'active', event)).toBe(false);
+      expect(
+        await rooms.updateStatus(
+          f.room.id,
+          'active',
+          event,
+          false,
+          await fixtureHostAuthority(db, f.room.id),
+        ),
+      ).toBe(true);
+      expect(
+        await rooms.updateStatus(
+          f.room.id,
+          'active',
+          event,
+          false,
+          await fixtureHostAuthority(db, f.room.id),
+        ),
+      ).toBe(false);
       await dispatch();
       // The producer still captures honest room_started facts, but PR4 retires
       // that notification: no start means no reminder, and start cannot send twice.
@@ -381,6 +395,7 @@ describe('producer → outbox → inbox sourced facts (#811 PR3)', () => {
     expect(facts).not.toHaveProperty('_inviterMemberId');
     await pool.query('update users set avatar_key=null where id=$1', [f.host.id]);
     expect((await payloads(f.host.id))[0]!.payload).not.toHaveProperty('inviterAvatar');
+    await fixtureTransferHost(db, f.room.id, f.recipient.id);
     await pool.query('update room_members set removed_at=now() where id=$1', [f.inviter.id]);
     expect((await payloads(f.host.id))[0]!.payload).not.toHaveProperty('inviterName');
   });
@@ -412,6 +427,7 @@ describe('producer → outbox → inbox sourced facts (#811 PR3)', () => {
       plans.createPlanVersion({
         roomId: f.room.id,
         constraintVersion: 2,
+        authority: await fixtureHostAuthority(db, f.room.id),
         stops: f.stops,
         totals: f.totals,
         events: [
@@ -444,9 +460,7 @@ function deferred() {
 async function invitationFixture() {
   const f = await fixture();
   // The inviter is a member; the live recipient is the host targeted by invite.
-  await pool.query("update room_members set role='member' where id=$1", [f.inviter.id]);
-  await pool.query("update room_members set role='host' where id=$1", [f.recipient.id]);
-  await pool.query('update rooms set host_user_id=$1 where id=$2', [f.member.id, f.room.id]);
+  await fixtureTransferHost(db, f.room.id, f.recipient.id);
   return f;
 }
 

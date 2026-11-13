@@ -1,3 +1,4 @@
+import { fixtureMembers, hostedRoom } from './support/hosted-room';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
@@ -61,19 +62,16 @@ async function roomOf(recipients: number) {
     );
     userIds.push(inserted.rows[0].id as string);
   }
-  const [room] = await db
-    .insert(schema.rooms)
-    .values({
-      code: `OV${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
-      type: 'group',
-      decisionMode: 'vote',
-      participantCount: recipients,
-      status: 'collecting',
-      hostUserId: userIds[0]!,
-    })
-    .returning();
+  const [room] = await hostedRoom(db, {
+    code: `OV${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
+    type: 'group',
+    decisionMode: 'vote',
+    participantCount: recipients,
+    status: 'collecting',
+    hostUserId: userIds[0]!,
+  });
   for (const [i, userId] of userIds.entries()) {
-    await db.insert(schema.roomMembers).values({
+    await fixtureMembers(db, {
       roomId: room!.id,
       userId,
       role: i === 0 ? 'host' : 'member',
@@ -335,11 +333,18 @@ describe('previous release and this release on one outbox event (#584)', () => {
   });
   it('(f) the bare-key owner leaves the room before a retry: nobody gets a second row', async () => {
     const { roomId, userIds, event } = await roomOf(3);
+    // A previous-release worker gives the bare key to a non-host before dying.
+    await previousReleaseKilledBeforeMark(event, roomId, userIds, {
+      order: [userIds[1]!, userIds[0]!, userIds[2]!],
+      stopAfter: 1,
+    });
     await new OutboxDispatcher(db as never, new FakePush()).dispatchBatch();
     const [owner] = await db
       .select({ userId: schema.notifications.userId })
       .from(schema.notifications)
       .where(eq(schema.notifications.dedupeKey, event.id));
+    expect(owner!.userId).toBe(userIds[1]);
+    expect(await inbox(event.id, roomId, userIds)).toEqual([1, 1, 1]);
     // A removed member whose inbox row was erased. Real soft-deletion (which
     // retains membership) is covered in notification-inbox.int.spec.ts.
     await db.delete(schema.notifications).where(eq(schema.notifications.userId, owner!.userId));

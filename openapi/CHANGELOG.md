@@ -8,6 +8,43 @@ adds optional fields or new paths does not need one.
 Version numbers follow `git.md` SemVer: MAJOR when a published guarantee is
 withdrawn, MINOR for backward-compatible additions, PATCH for fixes.
 
+## 12.0.0-alpha.1 — Atomic room host transfer (#879)
+
+MAJOR: `RoomEvent.event_type` is a closed response enum and now includes
+`room.host_transferred`. Consumers must tolerate that event before activation;
+unknown notification kind `host_transferred` uses the existing extensible-kind
+fallback. New endpoint `POST /rooms/{id}/host-transfer` requires a concrete
+RoomMember ID, `expectedHostVersion` and `Idempotency-Key`; its immutable receipt
+replays for 24 hours even after the issuing actor is demoted. `RoomSummary` adds
+`hostMemberId` and independent `hostVersion`, from the same snapshot as roles.
+
+All host-only writes reauthorize after the room lock; in-progress host computations
+cannot persist across ownership changes (including A→B→A). Existing invites stay
+valid to expiry/revoke and creators retain their ADR-0018 revoke right. Transfer
+never resets selections, votes, plans, constraints, stale flags or invite usage.
+Deploy schema/backfill, workers, and all guarded APIs before enabling; validate
+mobile unknown-event/kind handling first. MAJOR is not CODEOWNER approval or DEV
+acceptance. See ADR-0058 and `docs/room-host-transfer.md` for rollout/rollback.
+
+The shared idempotency change (`20100c5f`) takes effect globally on API deploy,
+even while host transfer is disabled. Legacy body-only request hashes no longer
+replay on routes using the shared idempotency scope; their records remain until
+the 24-hour TTL from claim creation expires. An identical retry of a mutation
+committed before deploy whose response was lost returns non-retryable
+`422 IDEMPOTENCY_KEY_REUSED` (`retryable: false`). Clients must reconcile the
+original operation by refetching the resource before issuing a new key: a new
+key could duplicate an already committed mutation. Expiry does not prove that
+the original mutation failed.
+
+Client recovery handling must be ready **before API deploy**, independently of
+transfer activation. Old and new API instances must not serve the same keys
+concurrently: use a single cutover, with old requests drained/stopped before new
+instances serve traffic. DEV and production both use GoGo-Infra's
+`scripts/deploy/deploy-vps.sh` and `docker compose up -d` to replace the single
+API container (stop old, then start new); do not introduce rolling/canary overlap.
+See [the release runbook](../docs/runbooks.md#879--global-idempotency-cutover)
+for deployment and client recovery requirements.
+
 ## 11.0.0-alpha.1 — Account member seed contributions (#878)
 
 MAJOR behavioral change: both seed routes now enforce draft/collecting and room

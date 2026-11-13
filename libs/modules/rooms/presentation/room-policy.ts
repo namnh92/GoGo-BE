@@ -39,18 +39,25 @@ export class RoomPolicy {
     if (actor.type === 'guest' && actor.roomId !== roomId) {
       throw AppError.forbidden('ROOM_SCOPE_VIOLATION', 'Guest session is bound to another room');
     }
-    const room = await this.getRoom(roomId);
     const identity =
       actor.type === 'user'
         ? eq(schema.roomMembers.userId, actor.id)
         : eq(schema.roomMembers.guestSessionId, actor.id);
-    const [member] = await this.db
-      .select()
-      .from(schema.roomMembers)
-      .where(
-        and(eq(schema.roomMembers.roomId, roomId), identity, isNull(schema.roomMembers.removedAt)),
+    const [ctx] = await this.db
+      .select({ room: schema.rooms, member: schema.roomMembers })
+      .from(schema.rooms)
+      .leftJoin(
+        schema.roomMembers,
+        and(
+          eq(schema.roomMembers.roomId, schema.rooms.id),
+          identity,
+          isNull(schema.roomMembers.removedAt),
+        ),
       )
+      .where(eq(schema.rooms.id, roomId))
       .limit(1);
+    if (!ctx) throw AppError.notFound('ROOM_NOT_FOUND', 'Room not found');
+    const { room, member } = ctx;
     if (!member) throw AppError.forbidden('NOT_A_MEMBER', 'You are not a member of this room');
     return { room, member };
   }
@@ -58,7 +65,12 @@ export class RoomPolicy {
   /** Host-only actions (FR-ROOM-007/008). */
   async requireHost(actor: Actor, roomId: string): Promise<{ room: RoomRow; member: Membership }> {
     const ctx = await this.requireMember(actor, roomId);
-    if (ctx.member.role !== 'host') {
+    if (
+      actor.type !== 'user' ||
+      ctx.member.role !== 'host' ||
+      ctx.member.userId !== ctx.room.hostUserId ||
+      ctx.member.guestSessionId !== null
+    ) {
       throw AppError.forbidden('HOST_ONLY', 'Only the host can perform this action');
     }
     return ctx;

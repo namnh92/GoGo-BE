@@ -27,6 +27,7 @@ describe('push copy', () => {
   it('covers every kind the outbox pushes', () => {
     expect(KINDS).toEqual([
       'date_reminder',
+      'host_transferred',
       'invite',
       'plan_changed',
       'plan_ready',
@@ -60,6 +61,26 @@ describe('push copy', () => {
             "headings": {
               "en": "Buổi đi chơi đã bắt đầu",
               "vi": "Buổi đi chơi đã bắt đầu",
+            },
+          },
+        },
+        "host_transferred": {
+          "en": {
+            "contents": {
+              "en": "Open the room to coordinate its plan.",
+            },
+            "headings": {
+              "en": "You are the new host",
+            },
+          },
+          "vi": {
+            "contents": {
+              "en": "Mở phòng để điều phối kế hoạch.",
+              "vi": "Mở phòng để điều phối kế hoạch.",
+            },
+            "headings": {
+              "en": "Bạn là chủ phòng mới",
+              "vi": "Bạn là chủ phòng mới",
             },
           },
         },

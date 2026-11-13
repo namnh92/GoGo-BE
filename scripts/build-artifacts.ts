@@ -224,6 +224,19 @@ function goldenScenarios(): string {
       $comment: 'Minimum E2E flows (quality-gates rule). A release gate, not a suggestion.',
       scenarios: [
         {
+          id: 'room-host-transfer',
+          audience: 'group-host',
+          steps: [
+            'read ownership version',
+            'transfer with stable idempotency key',
+            'new host writes',
+            'old host refused',
+            'retry replays original receipt',
+            'old invite still joins',
+          ],
+          invariant: 'one active user host; historical creator and room inputs preserved',
+        },
+        {
           id: 'couple-match-plan',
           audience: 'couple',
           steps: ['create room', 'both members pick', 'match', 'plan appears'],
@@ -289,6 +302,25 @@ function main(): void {
     write('openapi/gogo.v1.d.ts', read('openapi/gogo.v1.d.ts')),
     write('events/domain-event.schema.json', `${eventEnvelopeSchema()}\n`),
     write('events/room-event.schema.json', `${roomEventSchema()}\n`),
+    write(
+      'events/room-host-transferred.schema.json',
+      `${JSON.stringify(
+        {
+          $schema: 'https://json-schema.org/draft/2020-12/schema',
+          $id: 'https://gogo.id.vn/schemas/room-host-transferred.json',
+          title: 'Room host transferred domain event v1',
+          allOf: [{ $ref: 'https://gogo.id.vn/schemas/domain-event.json' }],
+          properties: {
+            event_type: { const: 'room.host_transferred' },
+            event_version: { const: 1 },
+            payload_schema_version: { const: 1 },
+            payload: spec.components.schemas.RoomHostTransferredPayload,
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    ),
     write(
       'events/room-event-resync.schema.json',
       `${roomEventResyncSchema(spec.components.schemas)}\n`,

@@ -16,7 +16,13 @@ import { schema, type Db } from '@gogo/database';
 import { AppError } from './app-error';
 import { DB } from './tokens';
 import type { Tx } from './outbox';
+import { RoomPolicy } from '../rooms/presentation/room-policy';
 import type { Actor } from '../identity/domain/actor';
+
+export const HOST_REPLAY_KEY = 'gogo:host_replay';
+type HostReplaySource = 'room-param' | 'share-body' | 'created-room';
+export const HostOnlyReplay = (source: HostReplaySource): CustomDecorator =>
+  SetMetadata(HOST_REPLAY_KEY, source);
 
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const KEY_TTL_HOURS = 24;
@@ -92,7 +98,7 @@ function versionedRecord(stored: unknown, version: number): VersionedRecord | nu
   return record.v === version && 'body' in record ? (record as VersionedRecord) : null;
 }
 
-/** One replay record's identity: scoped per actor + method + route + client key. */
+/** One claim per actor + method + route template + key; concrete params bind the request. */
 export type IdempotencyScope = {
   storedKey: string;
   actorScope: string;
@@ -111,12 +117,29 @@ export function idempotencyScope(
   }
   const actorScope = req.actor ? `${req.actor.type}:${req.actor.id}` : `ip:${req.ip}`;
   const endpoint = `${req.method} ${req.routeOptions?.url ?? req.url}`;
+  const params = Object.entries((req.params ?? {}) as Record<string, unknown>).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
   return {
+    // Keep the old claim namespace: a different resource must conflict on the
+    // same key, not claim a new row and perform another mutation.
     storedKey: sha256(`${actorScope}|${endpoint}|${clientKey}`),
     actorScope,
     endpoint,
-    requestHash: sha256(JSON.stringify(req.body ?? null)),
+    // Versioned, unambiguous tuple. All resolved path params (including nested
+    // IDs) participate, independently of parameter enumeration order.
+    // Legacy body-only hashes deliberately mismatch. Do not purge/adopt them:
+    // their resource cannot be proven, and re-executing could duplicate a write.
+    requestHash: `v2:${sha256(JSON.stringify([actorScope, endpoint, params, req.body ?? null]))}`,
   };
+}
+
+function idempotencyMismatch(): AppError {
+  return new AppError(
+    'IDEMPOTENCY_KEY_REUSED',
+    'Idempotency-Key was already used with a different request path or body',
+    422,
+  );
 }
 
 /**
@@ -133,7 +156,7 @@ const CLAIM_ATTEMPTS = 3;
 
 /**
  * Claims the key, or answers with what the first execution stored. A changed
- * body is a 422 and a first execution still running is a 409.
+ * concrete path or body is a 422 and a first execution still running is a 409.
  *
  * GoGo-BE#440 F-03 — the claim is one statement: insert, or take over a row
  * whose 24 hours have passed. The old shape (insert-or-nothing, then select)
@@ -196,11 +219,7 @@ export async function beginIdempotent(
       .limit(1);
     if (!existing) continue; // released or purged since the claim — claim again
     if (existing.requestHash !== scope.requestHash) {
-      throw new AppError(
-        'IDEMPOTENCY_KEY_REUSED',
-        'Idempotency-Key was already used with a different request body',
-        422,
-      );
+      throw idempotencyMismatch();
     }
     if (existing.responseStatus === null) {
       // Original request still in flight — client should retry shortly.
@@ -281,11 +300,12 @@ export async function completeIdempotentWithin(
 /**
  * api-contract rule: retryable mutations accept `Idempotency-Key`. Repeating
  * a request with the same key replays the original response instead of
- * re-applying the mutation; the same key with a different body is a 422.
+ * re-applying the mutation; the same key with a different path or body is a 422.
  *
  * Scope: key is namespaced per actor + method+route, so keys can never
- * collide across users or endpoints. Rows expire after 24h (purged by the
- * privacy/retention job).
+ * collide across users or endpoints; resolved path params bind each request.
+ * Legacy body-only records fail closed with 422 until expiry. Rows expire after
+ * 24h (purged by the privacy/retention job).
  */
 @Injectable()
 export class IdempotencyInterceptor implements NestInterceptor {
@@ -319,6 +339,26 @@ export class IdempotencyInterceptor implements NestInterceptor {
       beginIdempotent(this.db, scope, { replayVersion, adoptLegacy: versioning?.adoptLegacy }),
     ).pipe(
       switchMap((begun) => {
+        const hostReplay = this.reflector.get<HostReplaySource | undefined>(
+          HOST_REPLAY_KEY,
+          context.getHandler(),
+        );
+        if (begun.kind === 'replay' && hostReplay && !req.actor) throw AppError.unauthorized();
+        if (begun.kind === 'replay' && hostReplay && req.actor) {
+          const actor = req.actor;
+          return from(this.cachedRoomId(hostReplay, begun.body)).pipe(
+            switchMap((roomId) =>
+              roomId !== undefined
+                ? from(new RoomPolicy(this.db).requireHost(actor, roomId))
+                : of(undefined),
+            ),
+            switchMap(() => {
+              void reply.status(begun.status);
+              reply.header('x-idempotent-replay', 'true');
+              return of(begun.body);
+            }),
+          );
+        }
         if (begun.kind === 'replay') {
           void reply.status(begun.status);
           reply.header('x-idempotent-replay', 'true');
@@ -347,6 +387,35 @@ export class IdempotencyInterceptor implements NestInterceptor {
         );
       }),
     );
+  }
+
+  /** Resolve authority from the answer being returned, never from a different requested room. */
+  private async cachedRoomId(source: HostReplaySource, body: unknown): Promise<string | undefined> {
+    if (typeof body !== 'object' || body === null || Array.isArray(body))
+      throw idempotencyMismatch();
+    const cached = body as { id?: string; inviteId?: string; type?: string };
+    if (source === 'share-body') {
+      if (typeof cached.id !== 'string') throw idempotencyMismatch();
+      const [link] = await this.db
+        .select({ roomId: schema.shareLinks.targetId, type: schema.shareLinks.type })
+        .from(schema.shareLinks)
+        .where(eq(schema.shareLinks.id, cached.id))
+        .limit(1);
+      if (!link || link.type !== cached.type) throw idempotencyMismatch();
+      return link.type === 'ROOM_INVITE' ? link.roomId : undefined;
+    }
+    if (source === 'room-param' && typeof cached.inviteId === 'string') {
+      const [invite] = await this.db
+        .select({ roomId: schema.roomInvites.roomId })
+        .from(schema.roomInvites)
+        .where(eq(schema.roomInvites.id, cached.inviteId))
+        .limit(1);
+      if (!invite) throw idempotencyMismatch();
+      return invite.roomId;
+    }
+    // Creation and room mutations return a summary with the room's own ID.
+    if (typeof cached.id !== 'string') throw idempotencyMismatch();
+    return cached.id;
   }
 
   /**

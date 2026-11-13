@@ -1,3 +1,9 @@
+import {
+  lockHostRoom,
+  requireHostWithin,
+  type HostAuthority,
+  type RoomWriteAuthority,
+} from '../../rooms/domain/host-authority';
 import { syncReminderSchedule } from '../../shared/reminder-schedule';
 import { Inject, Injectable } from '@nestjs/common';
 import { and, asc, eq, sql } from 'drizzle-orm';
@@ -146,6 +152,7 @@ export class PlansRepository {
      */
     claimRoom?: { from: RoomStatus; to: RoomStatus };
     guard?: PlanWriteGuard;
+    authority?: RoomWriteAuthority;
   }): Promise<{ plan: PlanRow; stops: StopRow[] }> {
     /*
      * The version is read and then written, so two writers for one room both
@@ -178,6 +185,7 @@ export class PlansRepository {
     events: DomainEventInput[];
     claimRoom?: { from: RoomStatus; to: RoomStatus };
     guard?: PlanWriteGuard;
+    authority?: RoomWriteAuthority;
   }): Promise<{ plan: PlanRow; stops: StopRow[] }> {
     return this.db.transaction(async (tx) => {
       /*
@@ -191,6 +199,22 @@ export class PlansRepository {
        * first commits reads the new plan as `prev`, picks the next version up,
        * and both succeed — two plans for one decision (GoGo-BE#629).
        */
+      if (!input.authority)
+        throw AppError.forbidden('HOST_ONLY', 'Explicit write authority is required');
+      const [lockedRoom] = await tx
+        .select()
+        .from(schema.rooms)
+        .where(eq(schema.rooms.id, input.roomId))
+        .for('update');
+      if (!lockedRoom) throw AppError.notFound('ROOM_NOT_FOUND', 'Room not found');
+      if (input.authority.kind === 'host') await requireHostWithin(tx, lockedRoom, input.authority);
+      else if (
+        input.authority.reason !== 'automatic_match' ||
+        lockedRoom.decisionMode !== 'match' ||
+        input.claimRoom?.from !== 'matching' ||
+        input.claimRoom.to !== 'ready'
+      )
+        throw AppError.forbidden('HOST_ONLY', 'Invalid internal write authority');
       if (input.claimRoom) {
         const claimed = await tx
           .update(schema.rooms)
@@ -338,13 +362,10 @@ export class PlansRepository {
     stopId: string,
     locked: boolean,
     memberId: string,
+    authority: HostAuthority,
   ): Promise<void> {
     await this.db.transaction(async (tx) => {
-      await tx
-        .select({ id: schema.rooms.id })
-        .from(schema.rooms)
-        .where(eq(schema.rooms.id, roomId))
-        .for('update');
+      await lockHostRoom(tx, roomId, authority);
       const [plan] = await tx
         .select({ status: schema.plans.status })
         .from(schema.plans)

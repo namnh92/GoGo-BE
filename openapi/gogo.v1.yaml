@@ -2,7 +2,7 @@ openapi: 3.1.0
 x-gogo-notification-preference-semantics: master-and-five-categories-v1
 info:
   title: GoGo API
-  version: 11.0.0-alpha.1
+  version: 12.0.0-alpha.1
   description: |
     Public contract for GoGo clients (Mobile, Web, Mini App). This page is the
     integration guide — every rule below is enforced by the API, not advisory.
@@ -68,11 +68,14 @@ info:
 
     ## Idempotency
 
-    Any retryable mutation accepts `Idempotency-Key: <8–128 chars>`. Replaying
-    the same key returns the original response with `x-idempotent-replay: true`
-    instead of acting twice. Same key + a different body → `422
-    IDEMPOTENCY_KEY_REUSED`. Use it on room creation, votes, plan edits and
-    check-ins — anything you might retry after a flaky network.
+    Any retryable mutation accepts `Idempotency-Key: <8–128 chars>`. For the same
+    actor, method and route, replay requires the same resolved path parameters
+    and body, returning the original response with `x-idempotent-replay: true`
+    instead of acting twice. Same key + different path parameters or body →
+    `422 IDEMPOTENCY_KEY_REUSED`. Legacy records with body-only request hashes
+    are non-replayable and return this mismatch until their 24-hour expiry;
+    they are retained to prevent duplicate mutations. Use it on room creation,
+    votes, plan edits and check-ins — anything you might retry after a flaky network.
 
     ## Rate limits
 
@@ -997,6 +1000,105 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /rooms/{id}/host-transfer:
+    post:
+      operationId: transferRoomHost
+      tags: [rooms]
+      summary: 'Host-only: transfer room ownership to an active user member'
+      description: >
+        GoGo-BE#879. Allowed in draft/collecting/matching/ready before room expiry.
+        Target is a RoomMember ID, never a User ID. Guests, removed members,
+        inactive accounts and self are ineligible; pending preference selection
+        is eligible. Preserves membership IDs, preferences, votes, constraints,
+        stale flags and plans. Atomically demotes the caller, promotes the target
+        and increments hostVersion. All host-only powers move on commit.
+        Existing invites keep their expiry/revocation and issuer; creators may
+        still revoke links they issued (ADR-0018). No revoke-all.
+        Idempotency scope is actor + operation + concrete room ID + key; normalized
+        request includes roomId, memberId and expectedHostVersion. A valid receipt
+        replays before current host/state/version checks for 24 hours, with no
+        repeated side effects. Authentication is always required. After retention
+        this is a new mutation. This response is an operation receipt, never a
+        current room snapshot. Clients refetch on success/replay/403/conflict and
+        never overwrite a newer hostVersion with a receipt or SSE event.
+        Member/guest/non-member authorization precedes state and target checks.
+        Transfer stays unavailable until schema, workers, all API guards and
+        client compatibility are ready. Business errors are not automatically
+        retryable. Bounded lock/in-flight failures are retryable with backoff.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, minLength: 8, maxLength: 128, pattern: '^[A-Za-z0-9_-]+$' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TransferRoomHostRequest' }
+      responses:
+        '200':
+          description: Original immutable transfer receipt (also after caller loses host role).
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: [no-store] }
+            x-idempotent-replay:
+              description: Present and true on a completed receipt replay.
+              schema: { type: string, enum: ['true'] }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TransferRoomHostResult' }
+        '400':
+          description: VALIDATION_ERROR, IDEMPOTENCY_KEY_REQUIRED or INVALID_IDEMPOTENCY_KEY.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: ROOM_SCOPE_VIOLATION, NOT_A_MEMBER or HOST_ONLY.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404':
+          description: ROOM_NOT_FOUND or MEMBER_NOT_FOUND (also cross-room/removed target).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '409':
+          description: >
+            CANNOT_TRANSFER_TO_SELF, HOST_TRANSFER_TARGET_INELIGIBLE,
+            ROOM_NOT_EDITABLE, HOST_VERSION_CONFLICT, or
+            IDEMPOTENT_REQUEST_IN_FLIGHT (retryable true; Retry-After seconds).
+          headers:
+            Retry-After: { schema: { type: integer, minimum: 1 } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '410':
+          description: ROOM_EXPIRED (planning room past expiresAt after lock).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          description: IDEMPOTENCY_KEY_REUSED with a different normalized request.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429':
+          description: RATE_LIMITED by the transfer limiter.
+          headers:
+            Retry-After: { schema: { type: integer, minimum: 1 } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503':
+          description: ROOM_HOST_TRANSFER_UNAVAILABLE or existing session-lookup unavailability.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
   /rooms/{id}/title:
     patch:
       operationId: renameRoom
@@ -1050,7 +1152,7 @@ paths:
         bearer auth as the rest of the API.
 
 
-        Event types: `room.status_changed`, `participant.joined`,
+        Event types: `room.host_transferred`, `room.status_changed`, `participant.joined`,
         `participant.left`, `participant.selection_changed`,
         `matching.started`, `matching.completed`, `matching.failed`,
         `suggestions.generated`, `suggestions.updated`, `vote.changed`,
@@ -14881,10 +14983,47 @@ components:
               minimum: 0
               description: Integer minor units.
             currency: { type: string, minLength: 3, maxLength: 3 }
+    RoomHostTransferredPayload:
+      type: object
+      additionalProperties: false
+      required: [previousHostMemberId, newHostMemberId, hostVersion]
+      properties:
+        previousHostMemberId: { type: string, format: uuid }
+        newHostMemberId: { type: string, format: uuid }
+        hostVersion: { type: integer, minimum: 2 }
+    TransferRoomHostRequest:
+      type: object
+      additionalProperties: false
+      required: [memberId, expectedHostVersion]
+      properties:
+        memberId:
+          { type: string, format: uuid, description: Active user RoomMember ID in this room. }
+        expectedHostVersion: { type: integer, minimum: 1, maximum: 2147483646 }
+    TransferRoomHostResult:
+      type: object
+      additionalProperties: false
+      required: [transferId, roomId, previousHostMemberId, hostMemberId, hostVersion, transferredAt]
+      properties:
+        transferId: { type: string, format: uuid, description: Transactional domain event ID. }
+        roomId: { type: string, format: uuid }
+        previousHostMemberId: { type: string, format: uuid }
+        hostMemberId: { type: string, format: uuid }
+        hostVersion: { type: integer, minimum: 2 }
+        transferredAt: { type: string, format: date-time }
     RoomSummary:
       type: object
       description: Facts only — audience copy is composed client-side from type/participantCount/budgetMode.
-      required: [id, type, status, decisionMode, participantCount, constraintVersion]
+      required:
+        [
+          id,
+          type,
+          status,
+          decisionMode,
+          participantCount,
+          constraintVersion,
+          hostMemberId,
+          hostVersion,
+        ]
       properties:
         id: { type: string, format: uuid }
         code:
@@ -14897,6 +15036,13 @@ components:
         decisionMode: { type: string, enum: [match, vote, host] }
         participantCount: { type: integer }
         constraintVersion: { type: integer }
+        hostMemberId: { type: string, format: uuid }
+        hostVersion:
+          {
+            type: integer,
+            minimum: 1,
+            description: Independent ownership version; changes only on transfer.,
+          }
         title: { type: string }
         scheduledDate: { type: string, format: date-time }
         expiresAt: { type: string, format: date-time }
@@ -17142,6 +17288,9 @@ components:
         malformed item — so a new kind is not a breaking change on the inbox or
         the preference list. `privacy_export_ready` (GoGo-BE#256) is in-app
         only: its payload is `{ exportId, expiresAt }` and is never pushed.
+        `host_transferred` opens the room and belongs to category other; master
+        push permission and quiet hours still apply. Its recipient is the
+        membership named in the event, even if ownership changed again.
       x-extensible-enum:
         [
           invite,
@@ -17152,6 +17301,7 @@ components:
           moderation_update,
           campaign,
           privacy_export_ready,
+          host_transferred,
         ]
     NotificationPreferenceKind:
       type: string
@@ -21357,6 +21507,7 @@ components:
         event_type:
           type: string
           enum:
+            - room.host_transferred
             - room.status_changed
             - room.seed_places_changed
             - participant.joined

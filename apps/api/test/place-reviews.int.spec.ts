@@ -1,3 +1,4 @@
+import { hostedRoom } from './support/hosted-room';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { drizzle } from 'drizzle-orm/node-postgres';
@@ -68,17 +69,14 @@ async function account(displayName = 'Lan') {
 async function privatePlan(hostUserId: string) {
   const scheduledDate = new Date('2026-11-08T12:30:00.000Z');
   const title = `Phòng riêng ${++seq}`;
-  const [room] = await db
-    .insert(schema.rooms)
-    .values({
-      code: `REVIEW-ROOM-${seq}`,
-      type: 'group',
-      decisionMode: 'vote',
-      hostUserId,
-      title,
-      scheduledDate,
-    })
-    .returning();
+  const [room] = await hostedRoom(db, {
+    code: `REVIEW-ROOM-${seq}`,
+    type: 'group',
+    decisionMode: 'vote',
+    hostUserId,
+    title,
+    scheduledDate,
+  });
   const [plan] = await db
     .insert(schema.plans)
     .values({

@@ -25,7 +25,12 @@ type NotificationKind = (typeof schema.notifications.$inferSelect)['kind'];
 /** The kinds the outbox pushes. Campaigns carry CMS-authored copy of their own. */
 export type PushKind = Extract<
   NotificationKind,
-  'invite' | 'preference_reminder' | 'plan_ready' | 'plan_changed' | 'date_reminder'
+  | 'invite'
+  | 'preference_reminder'
+  | 'plan_ready'
+  | 'plan_changed'
+  | 'date_reminder'
+  | 'host_transferred'
 >;
 
 export const PUSH_PAYLOAD_VERSION = '1';
@@ -43,6 +48,10 @@ type Copy = { heading: string; content: string };
  * "both of you", and nothing names the person or the room.
  */
 const COPY: Record<PushKind, Record<PushLocale, Copy>> = {
+  host_transferred: {
+    vi: { heading: 'Bạn là chủ phòng mới', content: 'Mở phòng để điều phối kế hoạch.' },
+    en: { heading: 'You are the new host', content: 'Open the room to coordinate its plan.' },
+  },
   invite: {
     vi: { heading: 'Có thành viên mới', content: 'Một người vừa vào phòng của bạn.' },
     en: { heading: 'New member', content: 'Someone just joined your room.' },

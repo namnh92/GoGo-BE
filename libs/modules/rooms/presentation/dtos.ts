@@ -132,3 +132,10 @@ export const seedPlacesSchema = z.object({
   placeIds: z.array(uuidSchema).min(1).max(10),
 });
 export type SeedPlacesDto = z.infer<typeof seedPlacesSchema>;
+
+export const transferRoomHostSchema = z
+  .object({
+    memberId: uuidSchema.transform((v) => v.toLowerCase()),
+    expectedHostVersion: z.number().int().positive().max(2147483646),
+  })
+  .strict();

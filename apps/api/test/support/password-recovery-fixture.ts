@@ -1,3 +1,4 @@
+import { hostedRoom } from './hosted-room';
 import { createHash, randomUUID } from 'node:crypto';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -212,17 +213,14 @@ export async function recoveryFixture(
   }
   async function guest(app = a) {
     const host = await register(app);
-    const [room] = await db
-      .insert(schema.rooms)
-      .values({
-        code: `REC-${randomUUID()}`,
-        type: 'group',
-        status: 'collecting',
-        decisionMode: 'vote',
-        hostUserId: host.userId,
-        participantCount: 4,
-      })
-      .returning();
+    const [room] = await hostedRoom(db, {
+      code: `REC-${randomUUID()}`,
+      type: 'group',
+      status: 'collecting',
+      decisionMode: 'vote',
+      hostUserId: host.userId,
+      participantCount: 4,
+    });
     const response = await post(app, '/v1/sessions/guest', {
       roomCode: room!.code,
       displayName: 'Recovery guest',

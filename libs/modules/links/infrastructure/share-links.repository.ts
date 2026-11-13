@@ -1,6 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { schema, type Db } from '@gogo/database';
+import { lockHostRoom, hostAuthority } from '../../rooms/domain/host-authority';
+import { RoomPolicy } from '../../rooms/presentation/room-policy';
+import type { Actor } from '../../identity/domain/actor';
+import type { Tx } from '../../shared/outbox';
 import { DB } from '../../shared/tokens';
 import type { ShareLinkProvider, ShareLinkType } from '../domain/share-link';
 
@@ -10,19 +14,22 @@ export type ShareLinkRow = typeof schema.shareLinks.$inferSelect;
 export class ShareLinksRepository {
   constructor(@Inject(DB) private readonly db: Db) {}
 
-  async insert(input: {
-    slugHash: string;
-    type: ShareLinkType;
-    targetId: string;
-    inviteId?: string;
-    createdByUserId: string;
-    provider: ShareLinkProvider;
-    source?: string;
-    medium?: string;
-    campaign?: string;
-    expiresAt: Date | null;
-  }): Promise<ShareLinkRow> {
-    const [row] = await this.db
+  async insert(
+    input: {
+      slugHash: string;
+      type: ShareLinkType;
+      targetId: string;
+      inviteId?: string;
+      createdByUserId: string;
+      provider: ShareLinkProvider;
+      source?: string;
+      medium?: string;
+      campaign?: string;
+      expiresAt: Date | null;
+    },
+    tx?: Tx,
+  ): Promise<ShareLinkRow> {
+    const [row] = await (tx ?? this.db)
       .insert(schema.shareLinks)
       .values({
         slugHash: input.slugHash,
@@ -89,8 +96,26 @@ export class ShareLinksRepository {
    * one transaction, so a link that says "gone" cannot leave a code that still
    * lets people in.
    */
-  async revoke(link: ShareLinkRow): Promise<void> {
+  transaction<T>(work: (tx: Tx) => Promise<T>): Promise<T> {
+    return this.db.transaction(work);
+  }
+
+  async revoke(link: ShareLinkRow, actor: Actor): Promise<void> {
     await this.db.transaction(async (tx) => {
+      const roomId =
+        link.type === 'ROOM_INVITE'
+          ? link.targetId
+          : link.type === 'PLAN'
+            ? await this.planRoomId(link.targetId)
+            : undefined;
+      // Creator's independent ADR-0018 right remains. Non-creators are checked again after locking.
+      if (link.createdByUserId !== actor.id && roomId) {
+        const policy = new RoomPolicy(tx as unknown as Db);
+        const ctx = await policy.requireHost(actor, roomId);
+        await lockHostRoom(tx, roomId, hostAuthority(actor, ctx.room, ctx.member));
+      } else if (roomId) {
+        await tx.select().from(schema.rooms).where(eq(schema.rooms.id, roomId)).for('update');
+      }
       await tx
         .update(schema.shareLinks)
         .set({ revokedAt: sql`now()`, updatedAt: sql`now()` })

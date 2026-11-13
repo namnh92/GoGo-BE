@@ -9,7 +9,7 @@ const spec = parse(readFileSync(resolve(__dirname, '../../../../openapi/gogo.v1.
 
 describe('S5 alias additive contract and privacy boundary', () => {
   it('adds aliases to CMS read/update only, with independent evidence and no new requirements on existing PATCH callers', () => {
-    expect(spec.info.version).toBe('11.0.0-alpha.1');
+    expect(spec.info.version).toBe('12.0.0-alpha.1');
     const body =
       spec.paths['/cms/places/{id}'].patch.requestBody.content['application/json'].schema;
     expect(body.required).toBeUndefined();

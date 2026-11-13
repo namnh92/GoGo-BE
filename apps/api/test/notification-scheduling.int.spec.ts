@@ -1,3 +1,6 @@
+import { fixtureTransferHost } from './support/hosted-room';
+import { fixtureHostAuthority } from './support/hosted-room';
+import { fixtureMembers, hostedRoom } from './support/hosted-room';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
@@ -64,22 +67,21 @@ afterAll(async () => {
 
 async function fixture(minutes: number | null = 60) {
   const [user] = await db.insert(schema.users).values({ displayName: 'Schedule test' }).returning();
-  const [room] = await db
-    .insert(schema.rooms)
-    .values({
-      code: randomUUID(),
-      type: 'group',
-      decisionMode: 'host',
-      hostUserId: user!.id,
-      participantCount: 3,
-      status: 'ready',
-      scheduledDate: new Date(),
-    })
-    .returning();
-  const [member] = await db
-    .insert(schema.roomMembers)
-    .values({ roomId: room!.id, userId: user!.id, role: 'host', displayName: 'Host' })
-    .returning();
+  const [room] = await hostedRoom(db, {
+    code: randomUUID(),
+    type: 'group',
+    decisionMode: 'host',
+    hostUserId: user!.id,
+    participantCount: 3,
+    status: 'ready',
+    scheduledDate: new Date(),
+  });
+  const [member] = await fixtureMembers(db, {
+    roomId: room!.id,
+    userId: user!.id,
+    role: 'host',
+    displayName: 'Host',
+  });
   const start = minutes === null ? null : new Date(Date.now() + minutes * 60_000);
   await db
     .insert(schema.roomConstraints)
@@ -92,6 +94,7 @@ async function change(f: Fixture, startAt: Date | null) {
   f.version = await rooms.applyConstraintVersion({
     roomId: f.roomId,
     expectedVersion: f.version,
+    authority: await fixtureHostAuthority(db, f.roomId),
     memberId: f.memberId,
     constraint: { startAt, budgetMode: 'total', budgetAmount: 0 },
     event: event(f.roomId),
@@ -269,10 +272,16 @@ describe('durable advance reminders and send-time quiet hours', () => {
     const push = new FakePush();
     await new OutboxDispatcher(db, push).dispatchBatch(1000);
     await new OutboxDispatcher(db, push).dispatchBatch(1000);
-    await rooms.updateStatus(f.roomId, 'active', {
-      ...event(f.roomId),
-      eventType: 'room.status_active',
-    });
+    await rooms.updateStatus(
+      f.roomId,
+      'active',
+      {
+        ...event(f.roomId),
+        eventType: 'room.status_active',
+      },
+      false,
+      await fixtureHostAuthority(db, f.roomId),
+    );
     await new OutboxDispatcher(db, push).dispatchBatch(1000);
     expect(push.sent.filter((s) => s.userIds.includes(f.userId))).toHaveLength(1);
     expect((await ledger(f))[0].status).toBe('sent');
@@ -294,6 +303,7 @@ describe('durable advance reminders and send-time quiet hours', () => {
       await plans.createPlanVersion({
         roomId: f.roomId,
         constraintVersion: 1,
+        authority: await fixtureHostAuthority(db, f.roomId),
         stops: [],
         totals,
         events: [],
@@ -303,10 +313,16 @@ describe('durable advance reminders and send-time quiet hours', () => {
   });
   it('cancels pending jobs when the room starts and skips overdue jobs', async () => {
     const f = await fixture(240);
-    await rooms.updateStatus(f.roomId, 'active', {
-      ...event(f.roomId),
-      eventType: 'room.status_active',
-    });
+    await rooms.updateStatus(
+      f.roomId,
+      'active',
+      {
+        ...event(f.roomId),
+        eventType: 'room.status_active',
+      },
+      false,
+      await fixtureHostAuthority(db, f.roomId),
+    );
     expect((await jobs(f))[0].status).toBe('cancelled');
     // An already-staged room-started delivery from PR3 must be suppressed,
     // rather than creating a second reminder at start time.
@@ -422,6 +438,7 @@ describe('durable advance reminders and send-time quiet hours', () => {
         );
       if (reason === 'opt_out')
         await mutateNotificationSettings(db, f.userId, { categories: { date_reminder: false } });
+      if (reason === 'removed') await fixtureTransferHost(db, f.roomId);
       if (reason === 'removed')
         await pool.query('update room_members set removed_at=now() where id=$1', [f.memberId]);
       await mutateNotificationSettings(db, f.userId, { quietHours: { enabled: false } });

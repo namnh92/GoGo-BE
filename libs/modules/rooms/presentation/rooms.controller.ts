@@ -1,10 +1,13 @@
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import {
+  Headers,
+  Req,
+  Res,
   Body,
   Controller,
   Delete,
   Get,
   HttpCode,
-  Headers,
   Param,
   Patch,
   Post,
@@ -12,13 +15,20 @@ import {
 } from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
-import { ManualIdempotency, NoIdempotencyReplay } from '../../shared/idempotency.interceptor';
+import {
+  HostOnlyReplay,
+  ManualIdempotency,
+  idempotencyScope,
+  NoIdempotencyReplay,
+} from '../../shared/idempotency.interceptor';
 import type { Actor } from '../../identity/domain/actor';
 import { AuthService } from '../../identity/application/auth.service';
 import { CurrentActor, Public, RateLimit } from '../../identity/presentation/decorators';
+import { AppError } from '../../shared/app-error';
 import { RoomsService } from '../application/rooms.service';
 import type { RoomStatus } from '../domain/room-state';
 import {
+  transferRoomHostSchema,
   createInviteSchema,
   createRoomSchema,
   guestJoinSchema,
@@ -81,6 +91,7 @@ export class RoomsController {
   ) {}
 
   @RateLimit({ action: 'rooms.create', limit: 10, windowSeconds: 60, keyBy: 'actor' })
+  @HostOnlyReplay('created-room')
   @Post()
   create(
     @CurrentActor() actor: Actor,
@@ -116,6 +127,7 @@ export class RoomsController {
     return this.rooms.getRoomSummary(actor, id);
   }
 
+  @HostOnlyReplay('room-param')
   @Patch(':id/constraints')
   updateConstraints(
     @CurrentActor() actor: Actor,
@@ -125,6 +137,7 @@ export class RoomsController {
     return this.rooms.updateConstraints(actor, id, stripUndefined(body));
   }
 
+  @HostOnlyReplay('room-param')
   @Patch(':id/status')
   transition(
     @CurrentActor() actor: Actor,
@@ -139,6 +152,7 @@ export class RoomsController {
     );
   }
 
+  @HostOnlyReplay('room-param')
   @Patch(':id/title')
   rename(
     @CurrentActor() actor: Actor,
@@ -146,6 +160,46 @@ export class RoomsController {
     @Body(new ZodValidationPipe(renameRoomSchema)) body: RenameRoomDto,
   ) {
     return this.rooms.renameRoom(actor, id, body.title);
+  }
+
+  @ManualIdempotency()
+  @HttpCode(200)
+  @RateLimit({ action: 'rooms.host_transfer', limit: 10, windowSeconds: 60, keyBy: 'actor' })
+  @Post(':id/host-transfer')
+  async transferHost(
+    @CurrentActor() actor: Actor,
+    @Param(
+      'id',
+      new ZodValidationPipe(
+        uuidSchema.transform((v) => v.toLowerCase()),
+        'VALIDATION_ERROR',
+      ),
+    )
+    id: string,
+    @Body(new ZodValidationPipe(transferRoomHostSchema, 'VALIDATION_ERROR'))
+    body: z.infer<typeof transferRoomHostSchema>,
+    @Headers('idempotency-key') key: string | undefined,
+    @Req() req: FastifyRequest,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ) {
+    reply.header('cache-control', 'no-store');
+    if (typeof key !== 'string')
+      throw AppError.badRequest('IDEMPOTENCY_KEY_REQUIRED', 'Idempotency-Key is required');
+    // Concrete room path and normalized body, never the interceptor route template.
+    const scope = idempotencyScope(
+      {
+        ...req,
+        actor,
+        method: 'POST',
+        routeOptions: { url: `/v1/rooms/${id}/host-transfer` },
+        params: { id }, // Keep the route's UUID normalization in the request binding too.
+        body: { roomId: id, ...body },
+      } as FastifyRequest & { actor: Actor },
+      key,
+    );
+    const result = await this.rooms.transferHost(actor, id, body, scope);
+    if (result.replay) reply.header('x-idempotent-replay', 'true');
+    return result.body;
   }
 
   @Get(':id/members')
@@ -163,6 +217,7 @@ export class RoomsController {
   }
 
   @RateLimit({ action: 'rooms.invite', limit: 20, windowSeconds: 60, keyBy: 'actor' })
+  @HostOnlyReplay('room-param')
   @Post(':id/invites')
   createInvite(
     @CurrentActor() actor: Actor,

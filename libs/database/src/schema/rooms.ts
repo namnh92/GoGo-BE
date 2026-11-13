@@ -56,6 +56,10 @@ export const rooms = pgTable(
     hostUserId: uuid('host_user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
+    hostVersion: integer('host_version').notNull().default(1),
+    createdByUserId: uuid('created_by_user_id').references(() => users.id, {
+      onDelete: 'restrict',
+    }),
     participantCount: integer('participant_count').notNull().default(2),
     // Bumped on every constraint edit; scores/plans referencing an older
     // version are stale by definition.
@@ -69,7 +73,9 @@ export const rooms = pgTable(
   (t) => [
     uniqueIndex('rooms_code_unique').on(t.code),
     index('rooms_host_idx').on(t.hostUserId),
+    index('rooms_creator_idx').on(sql`coalesce(${t.createdByUserId}, ${t.hostUserId})`),
     index('rooms_status_idx').on(t.status),
+    check('rooms_host_version_positive', sql`${t.hostVersion} > 0`),
     check('rooms_participant_count_min', sql`${t.participantCount} >= 2`),
     check('rooms_invitation_epoch_nonnegative', sql`${t.invitationEpoch} >= 0`),
   ],
@@ -182,6 +188,13 @@ export const roomMembers = pgTable(
       .on(t.roomId, t.guestSessionId)
       .where(sql`${t.guestSessionId} is not null and ${t.removedAt} is null`),
     index('room_members_room_idx').on(t.roomId),
+    uniqueIndex('room_members_active_host_unique')
+      .on(t.roomId)
+      .where(sql`${t.role} = 'host' and ${t.removedAt} is null`),
+    check(
+      'room_members_host_user',
+      sql`${t.role} <> 'host' or (${t.userId} is not null and ${t.guestSessionId} is null)`,
+    ),
   ],
 );
 

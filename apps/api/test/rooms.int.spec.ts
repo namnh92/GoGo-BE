@@ -1,3 +1,4 @@
+import { fixtureHostAuthority } from './support/hosted-room';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
@@ -2062,6 +2063,7 @@ describe('BE-BFF-017 partial preference matching', () => {
           payload: {},
         },
         beforeLateCompletion,
+        await fixtureHostAuthority(db, room.id),
       ),
     ).rejects.toThrow('Room inputs changed');
     const current = await api().inject({

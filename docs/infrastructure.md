@@ -282,6 +282,10 @@ Metric đang phát — danh sách đầy đủ, đối chiếu với `METRIC_LAB
 | `cms_super_admin_bypass_total` | `action`, `resource_type` | ghi mà chỉ super_admin mới qua được (SEC-002) |
 | `experiment_assignment_total` | `experiment`, `variant` | gán subject vào variant |
 | `ai_feedback_runs_total` | `outcome` | mỗi lần chạy refinement |
+| `room_host_transfer_total` | `result`, `reason` | committed transfer success or bounded refusal (#879) |
+| `room_host_transfer_duration_seconds` | none | transfer/replay latency (#879) |
+| `room_host_transfer_replay_total` | none | completed receipt replay (#879) |
+| `room_host_transfer_sse_failure_total` | none | best-effort post-commit publish failed (#879) |
 | `suggestion_run_latency_seconds` | `variant`, `weights_version` | mỗi suggestion run (SG-010) |
 | `suggestion_run_over_budget_total` | `variant` | run vượt ngân sách latency |
 | `suggestion_route_budget_exhausted_total` | `scope` | Routes matrix bị từ chối bởi ngân sách dùng chung; `scope` = `room`/`actor`/`both`. Redis không khả dụng dùng estimate và được ghi ở runtime telemetry, không giả thành hết ngân sách |

@@ -1,3 +1,4 @@
+import { fixtureMembers, hostedRoom } from './support/hosted-room';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
@@ -635,18 +636,15 @@ describe.sequential('shared inbox upgrade and concurrency', () => {
   it('real self-service erasure retains memberships but fences outbox retries and every raw producer', async () => {
     const { userId: erasedId, headers } = await registeredUser();
     const liveId = await user();
-    const [room] = await db
-      .insert(schema.rooms)
-      .values({
-        code: randomUUID().slice(0, 8).toUpperCase(),
-        type: 'group',
-        decisionMode: 'vote',
-        participantCount: 2,
-        status: 'collecting',
-        hostUserId: liveId,
-      })
-      .returning();
-    await db.insert(schema.roomMembers).values([
+    const [room] = await hostedRoom(db, {
+      code: randomUUID().slice(0, 8).toUpperCase(),
+      type: 'group',
+      decisionMode: 'vote',
+      participantCount: 2,
+      status: 'collecting',
+      hostUserId: liveId,
+    });
+    await fixtureMembers(db, [
       { roomId: room!.id, userId: liveId, role: 'host', displayName: 'Live' },
       { roomId: room!.id, userId: erasedId, role: 'member', displayName: 'Erased' },
     ]);

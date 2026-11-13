@@ -1,3 +1,4 @@
+import { hostAuthority } from '../../rooms/domain/host-authority';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { type Db } from '@gogo/database';
@@ -159,7 +160,7 @@ export class SuggestionService {
 
   /** SG-002..005 — run the deterministic pipeline and persist ranked scores. */
   async generate(actor: Actor, roomId: string) {
-    const { room } = await this.policy.requireHost(actor, roomId);
+    const { room, member } = await this.policy.requireHost(actor, roomId);
     if (!['matching', 'collecting'].includes(room.status)) {
       throw AppError.conflict('ROOM_NOT_MATCHING', 'Room is not ready for suggestions');
     }
@@ -230,6 +231,7 @@ export class SuggestionService {
           },
         },
         snapshot,
+        hostAuthority(actor, room, member),
       );
       const latencyMs = Date.now() - startedAt;
       await this.repo.finishRun(run.id, 'succeeded', undefined, latencyMs);
@@ -428,7 +430,10 @@ export class SuggestionService {
         )[0]!;
         // The builder announces both the plan and the `matching -> ready`
         // move, since it is what performs them (#608).
-        const plan = await this.planBuilder.buildAroundWinner(roomId, best, run.id, 'matched');
+        const plan = await this.planBuilder.buildAroundWinner(roomId, best, run.id, 'matched', {
+          kind: 'internal',
+          reason: 'automatic_match',
+        });
         return { voted: true, matched: true, planId: plan.plan.id };
       }
     }
@@ -437,7 +442,7 @@ export class SuggestionService {
 
   /** Host finalizes a vote/host decision; tie resolved by candidate rank. */
   async finalize(actor: Actor, roomId: string, explicitPlaceId?: string) {
-    const { room } = await this.policy.requireHost(actor, roomId);
+    const { room, member } = await this.policy.requireHost(actor, roomId);
     if (room.status !== 'matching') {
       throw AppError.conflict('ROOM_NOT_MATCHING', 'Room is not in matching state');
     }
@@ -515,7 +520,13 @@ export class SuggestionService {
      * matching, the conflict is surfaced as itself rather than mislabelled.
      */
     try {
-      const plan = await this.planBuilder.buildAroundWinner(roomId, winner, run.id);
+      const plan = await this.planBuilder.buildAroundWinner(
+        roomId,
+        winner,
+        run.id,
+        'finalized',
+        hostAuthority(actor, room, member),
+      );
       return { finalized: true, tie, winnerPlaceId: winner, planId: plan.plan.id };
     } catch (error) {
       if (error instanceof AppError && error.code === 'PLAN_VERSION_CONFLICT') {

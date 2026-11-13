@@ -19,6 +19,18 @@ import { kindPushAllowed } from './push-preference';
 import { notificationFacts } from './notification-payload';
 import { deferPushDuringQuiet } from './quiet-hours';
 
+/** Invalid/missing event identity reaches nobody and never falls back to current host. */
+function transferredMemberId(payload: unknown): string | null {
+  const id =
+    payload && typeof payload === 'object'
+      ? (payload as Record<string, unknown>).newHostMemberId
+      : null;
+  return typeof id === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
+    ? id.toLowerCase()
+    : null;
+}
+
 /** Which domain events fan out to which member notifications (BE-BFF-010). */
 export const EVENT_TO_NOTIFICATION = {
   ...Object.fromEntries(
@@ -31,7 +43,7 @@ export const EVENT_TO_NOTIFICATION = {
   // Drain already-staged legacy work to suppression, without new inbox or push.
   // Historical room_started facts remain readable; only the advance job reminds.
   'room.status_active': { kind: 'date_reminder', audience: 'members' },
-} as Record<string, { kind: PushKind; audience: 'host' | 'members' }>;
+} as Record<string, { kind: PushKind; audience: 'host' | 'members' | 'transferred_member' }>;
 
 /** Stable UUID provider key, independent of locale and changing recipient cohorts. */
 export function recipientPushKey(eventId: string, userId: string): string {
@@ -241,6 +253,8 @@ export class OutboxDispatcher {
       .where(and(eq(schema.roomMembers.roomId, roomId), isNull(schema.roomMembers.removedAt)));
     const targets = members.filter((m) => {
       if (m.userId === null) return false; // guests have no push/in-app inbox
+      if (mapping.audience === 'transferred_member')
+        return m.id === transferredMemberId(event.payload);
       return mapping.audience === 'host' ? m.role === 'host' : true;
     });
     if (targets.length === 0) return null;
@@ -397,6 +411,14 @@ export class OutboxDispatcher {
         }
         await writeInbox(tx);
       });
+    } else if (mapping.audience === 'transferred_member') {
+      await this.db.transaction(async (tx) => {
+        const live =
+          await tx.execute(sql`select u.id from users u join room_members rm on rm.user_id = u.id
+          where rm.id = ${transferredMemberId(event.payload)}::uuid
+            and rm.room_id = ${roomId}::uuid and rm.removed_at is null and u.status <> 'deleted' for share of u, rm`);
+        if (live.rows.length) await writeInbox(tx);
+      });
     } else {
       await writeInbox(this.db);
     }
@@ -409,6 +431,12 @@ export class OutboxDispatcher {
           sql`select id from users where id = ${userId}::uuid and status <> 'deleted' for share`,
         );
         if (!live.rows[0]) return;
+        if (mapping.audience === 'transferred_member') {
+          const member =
+            await tx.execute(sql`select id from room_members where id = ${transferredMemberId(event.payload)}::uuid
+            and room_id = ${roomId}::uuid and user_id = ${userId}::uuid and removed_at is null for share`);
+          if (!member.rows.length) return;
+        }
         const inserted = await tx.execute<{
           status: string;
         }>(sql`insert into notification_push_deliveries(event_id, user_id, status)
@@ -487,7 +515,7 @@ export class OutboxDispatcher {
             }
             and exists (select 1 from room_members rm where rm.user_id = u.id
               and rm.room_id = ${roomId}::uuid and rm.removed_at is null
-              ${mapping.audience === 'host' ? sql`and rm.role = 'host'` : sql``})`)
+              ${mapping.audience === 'host' ? sql`and rm.role = 'host'` : mapping.audience === 'transferred_member' ? sql`and rm.id = ${transferredMemberId(event.payload)}::uuid` : sql``})`)
         : { rows: [] as { id: string; locale: string | null }[] };
       let status = 'suppressed';
       try {

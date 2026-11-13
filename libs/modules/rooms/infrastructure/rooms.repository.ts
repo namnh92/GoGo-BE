@@ -8,6 +8,9 @@ import {
   retryCreditDiscovery,
 } from '../../shared/credit-event-protocol';
 import { discoverRoomCreditAccounts, captureRoomCreditSnapshot } from './room-credit-snapshot';
+import { lockHostRoom, requireHostWithin, type HostAuthority } from '../domain/host-authority';
+import { RoomPolicy } from '../presentation/room-policy';
+import { transferRoomHost } from './host-transfer';
 import { syncReminderSchedule } from '../../shared/reminder-schedule';
 import { AppError } from '../../shared/app-error';
 import {
@@ -214,6 +217,7 @@ export class RoomsRepository {
           type: input.type,
           decisionMode: input.decisionMode,
           hostUserId: input.hostUserId,
+          createdByUserId: input.hostUserId,
           participantCount: input.participantCount,
           title: input.title,
           scheduledDate: input.scheduledDate,
@@ -304,6 +308,7 @@ export class RoomsRepository {
   async applyConstraintVersion(input: {
     roomId: string;
     expectedVersion: number;
+    authority: HostAuthority;
     constraint: ConstraintPatch;
     memberId: string;
     participantCount?: number;
@@ -317,6 +322,7 @@ export class RoomsRepository {
         .for('update');
       if (!room) throw AppError.notFound('ROOM_NOT_FOUND', 'Room not found');
       if (room.constraintVersion !== input.expectedVersion) return -1;
+      await requireHostWithin(tx, room, input.authority);
       assertConstraintsEditable(room.status);
       const [member] = await tx
         .select()
@@ -418,7 +424,12 @@ export class RoomsRepository {
     });
   }
 
-  async renameRoom(roomId: string, title: string | null, event: DomainEventInput) {
+  async renameRoom(
+    roomId: string,
+    title: string | null,
+    event: DomainEventInput,
+    authority: HostAuthority,
+  ) {
     await this.db.transaction(async (tx) => {
       const [room] = await tx
         .select()
@@ -428,6 +439,7 @@ export class RoomsRepository {
       if (!room) throw AppError.notFound('ROOM_NOT_FOUND', 'Room not found');
       // Re-checked under the lock: a transition that commits between the
       // policy read and this write wins, and the rename is refused.
+      await requireHostWithin(tx, room, authority);
       assertRoomDetailsEditable(room.status);
       await tx
         .update(schema.rooms)
@@ -443,6 +455,7 @@ export class RoomsRepository {
     status: RoomRow['status'],
     event: DomainEventInput,
     allowIncomplete = false,
+    authority: HostAuthority,
   ): Promise<boolean> {
     return retryCreditDiscovery(() =>
       this.db.transaction(async (tx) => {
@@ -456,6 +469,7 @@ export class RoomsRepository {
           .where(eq(schema.rooms.id, roomId))
           .for('update');
         if (!room) throw AppError.notFound('ROOM_NOT_FOUND', 'Room not found');
+        await requireHostWithin(tx, room, authority);
         assertTransition(room.status, status);
         // Under the lock, so of two starts racing from `ready` exactly one writes
         // `room.status_active` and its member push.
@@ -552,9 +566,12 @@ export class RoomsRepository {
   async removeMember(input: {
     memberId: string;
     removedByMemberId: string;
+    roomId: string;
+    authority: HostAuthority;
     event: DomainEventInput;
   }): Promise<{ guestSessionId: string | null }> {
     return this.db.transaction(async (tx) => {
+      await lockHostRoom(tx, input.roomId, input.authority);
       const [candidate] = await tx
         .select({
           roomId: schema.roomMembers.roomId,
@@ -563,12 +580,19 @@ export class RoomsRepository {
         .from(schema.roomMembers)
         .where(eq(schema.roomMembers.id, input.memberId))
         .limit(1);
-      if (candidate)
-        await tx
-          .select({ id: schema.rooms.id })
-          .from(schema.rooms)
-          .where(eq(schema.rooms.id, candidate.roomId))
-          .for('share');
+      const [target] = await tx
+        .select()
+        .from(schema.roomMembers)
+        .where(
+          and(
+            eq(schema.roomMembers.id, input.memberId),
+            eq(schema.roomMembers.roomId, input.roomId),
+            isNull(schema.roomMembers.removedAt),
+          ),
+        );
+      if (!target) throw AppError.notFound('MEMBER_NOT_FOUND', 'Member not found');
+      if (target.id === input.removedByMemberId || target.role === 'host')
+        throw AppError.conflict('CANNOT_REMOVE_SELF', 'Cannot remove the current host');
       // Match claim and CMS removal: session before membership. Otherwise a
       // host removal holding the member can deadlock with either guest writer.
       if (candidate?.guestSessionId)
@@ -675,6 +699,20 @@ export class RoomsRepository {
     return { member: member!, created: true };
   }
 
+  readonly transferHost = (
+    actor: Parameters<typeof transferRoomHost>[1],
+    roomId: string,
+    input: Parameters<typeof transferRoomHost>[3],
+    scope: Parameters<typeof transferRoomHost>[4],
+  ) => transferRoomHost(this.db, actor, roomId, input, scope);
+
+  readSummary<T>(work: (repo: RoomsRepository, policy: RoomPolicy) => Promise<T>): Promise<T> {
+    return this.db.transaction(
+      (tx) => work(new RoomsRepository(tx as unknown as Db), new RoomPolicy(tx as unknown as Db)),
+      { isolationLevel: 'repeatable read', accessMode: 'read only' },
+    );
+  }
+
   /** Run `work` in one transaction (GoGo-BE#605 join path). */
   transaction<T>(work: (tx: Tx) => Promise<T>): Promise<T> {
     return this.db.transaction(work);
@@ -699,14 +737,22 @@ export class RoomsRepository {
 
   // --- invites (FR-ROOM-006/009) -------------------------------------------
 
-  async createInvite(input: {
-    roomId: string;
-    codeHash: string;
-    createdByMemberId: string;
-    expiresAt: Date;
-    maxUses?: number;
-  }): Promise<InviteRow> {
-    const [row] = await this.db.insert(schema.roomInvites).values(input).returning();
+  async createInvite(
+    input: {
+      roomId: string;
+      codeHash: string;
+      createdByMemberId: string;
+      expiresAt: Date;
+      maxUses?: number;
+    },
+    authority: HostAuthority,
+    tx?: Tx,
+  ): Promise<InviteRow> {
+    if (!tx) return this.db.transaction((own) => this.createInvite(input, authority, own));
+    const room = await lockHostRoom(tx, input.roomId, authority);
+    if (!['draft', 'collecting'].includes(room.status))
+      throw AppError.conflict('ROOM_NOT_JOINABLE', 'Room is not accepting new members');
+    const [row] = await tx.insert(schema.roomInvites).values(input).returning();
     return row!;
   }
 
@@ -727,11 +773,19 @@ export class RoomsRepository {
       .orderBy(asc(schema.roomInvites.createdAt));
   }
 
-  async revokeInvite(inviteId: string): Promise<void> {
-    await this.db
-      .update(schema.roomInvites)
-      .set({ revokedAt: sql`now()` })
-      .where(eq(schema.roomInvites.id, inviteId));
+  async revokeInvite(roomId: string, inviteId: string, authority: HostAuthority): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await lockHostRoom(tx, roomId, authority);
+      const [invite] = await tx
+        .select()
+        .from(schema.roomInvites)
+        .where(and(eq(schema.roomInvites.id, inviteId), eq(schema.roomInvites.roomId, roomId)));
+      if (!invite) throw AppError.notFound('INVITE_NOT_FOUND', 'Invite not found');
+      await tx
+        .update(schema.roomInvites)
+        .set({ revokedAt: sql`now()` })
+        .where(eq(schema.roomInvites.id, inviteId));
+    });
   }
 
   /**

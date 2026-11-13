@@ -1,3 +1,4 @@
+import { hostAuthority } from '../../rooms/domain/host-authority';
 import { Inject, Injectable } from '@nestjs/common';
 import { AppError } from '../../shared/app-error';
 import type { Actor } from '../../identity/domain/actor';
@@ -185,7 +186,7 @@ export class PlansService {
     },
   ) {
     const plan = await this.repo.getPlan(planId);
-    const { room } = await this.policy.requireHost(actor, plan.roomId);
+    const { room, member } = await this.policy.requireHost(actor, plan.roomId);
     if (plan.status !== 'current') {
       throw AppError.conflict('PLAN_NOT_CURRENT', 'Only the current plan can be edited');
     }
@@ -284,6 +285,7 @@ export class PlansService {
       totals: built.totals,
       generatedByRunId: plan.generatedByRunId ?? undefined,
       // ADR-0029 — publish only over exactly what was read above.
+      authority: hostAuthority(actor, room, member),
       guard: {
         sourcePlanId: plan.id,
         sourceVersion: plan.version,
@@ -359,10 +361,14 @@ export class PlansService {
       );
     }
 
-    const result = await this.builder.regenerate(planId, {
-      ...(feedback.excludePlaceIds ? { excludePlaceIds: feedback.excludePlaceIds } : {}),
-      ...(interpreted?.applied ?? {}),
-    });
+    const result = await this.builder.regenerate(
+      planId,
+      {
+        ...(feedback.excludePlaceIds ? { excludePlaceIds: feedback.excludePlaceIds } : {}),
+        ...(interpreted?.applied ?? {}),
+      },
+      hostAuthority(actor, room, member),
+    );
     await this.publishPlan(plan.roomId, result.plan.id, result.plan.version, 'regenerate');
     const dto = await this.toDto(result.plan, result.stops);
     return {
@@ -384,13 +390,20 @@ export class PlansService {
 
   async lockStop(actor: Actor, planId: string, stopId: string, locked: boolean) {
     const plan = await this.repo.getPlan(planId);
-    const { member } = await this.policy.requireHost(actor, plan.roomId);
+    const { room, member } = await this.policy.requireHost(actor, plan.roomId);
     const stop = await this.repo.getStop(stopId);
     if (!stop || stop.planId !== planId) {
       throw AppError.notFound('STOP_NOT_FOUND', 'Stop not found');
     }
     // Lock/unlock never touches optionality (ADR-0029).
-    await this.repo.setStopLock(planId, plan.roomId, stopId, locked, member.id);
+    await this.repo.setStopLock(
+      planId,
+      plan.roomId,
+      stopId,
+      locked,
+      member.id,
+      hostAuthority(actor, room, member),
+    );
     await this.publishPlan(
       plan.roomId,
       planId,

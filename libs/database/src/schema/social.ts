@@ -144,6 +144,7 @@ export const notificationKind = pgEnum('notification_kind', [
   'campaign',
   /** GoGo-BE#256 — a secure privacy export is ready to download. In-app only. */
   'privacy_export_ready',
+  'host_transferred',
 ]);
 
 export const notifications = pgTable(

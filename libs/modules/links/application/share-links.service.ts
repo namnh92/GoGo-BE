@@ -1,3 +1,4 @@
+import type { Tx } from '../../shared/outbox';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { METRICS, NoopMetrics, type MetricsPort } from '@gogo/observability';
 import {
@@ -93,7 +94,6 @@ export class ShareLinksService {
     }
 
     const slug = newShareSlug();
-    let inviteId: string | undefined;
     let expiresAt: Date | null = null;
 
     switch (input.type) {
@@ -101,11 +101,7 @@ export class ShareLinksService {
         // The slug is the invite code: host check, room joinable, one invite row
         // whose hash is the slug's hash. Joining goes through the same door as
         // a typed code — POST /rooms/join { inviteCode: slug }.
-        const invite = await this.rooms.createInvite(actor, input.entityId, undefined, {
-          code: slug,
-        });
-        inviteId = invite.inviteId;
-        expiresAt = new Date(invite.expiresAt);
+        await this.policy.requireHost(actor, input.entityId);
         break;
       }
       case 'PLAN': {
@@ -130,24 +126,41 @@ export class ShareLinksService {
     // Only *which vendor* is recorded; the URL is rebuilt on every resolve from
     // the slug the caller presents.
     const provider = await this.attributionProvider(url, input);
-    const row = await this.repo.insert({
-      slugHash: this.tokens.hashOpaqueToken(slug),
-      type: input.type,
-      targetId: input.entityId,
-      ...(inviteId ? { inviteId } : {}),
-      createdByUserId: actor.id,
-      provider,
-      ...(input.source ? { source: input.source } : {}),
-      ...(input.medium ? { medium: input.medium } : {}),
-      ...(input.campaign ? { campaign: input.campaign } : {}),
-      expiresAt,
-    });
+    const persist = async (tx?: Tx) => {
+      const invite =
+        input.type === 'ROOM_INVITE'
+          ? await this.rooms.createInvite(actor, input.entityId, undefined, {
+              code: slug,
+              ...(tx ? { tx } : {}),
+            })
+          : undefined;
+      expiresAt = invite ? new Date(invite.expiresAt) : null;
+      return this.repo.insert(
+        {
+          slugHash: this.tokens.hashOpaqueToken(slug),
+          type: input.type,
+          targetId: input.entityId,
+          ...(invite ? { inviteId: invite.inviteId } : {}),
+          createdByUserId: actor.id,
+          provider,
+          ...(input.source ? { source: input.source } : {}),
+          ...(input.medium ? { medium: input.medium } : {}),
+          ...(input.campaign ? { campaign: input.campaign } : {}),
+          expiresAt,
+        },
+        tx,
+      );
+    };
+    const row =
+      input.type === 'ROOM_INVITE'
+        ? await this.repo.transaction((tx) => persist(tx))
+        : await persist();
     this.metrics.increment('share_link_created_total', { type: input.type });
     return {
       id: row.id,
       url,
       type: input.type,
-      expiresAt: expiresAt ? expiresAt.toISOString() : null,
+      expiresAt: row.expiresAt ? row.expiresAt.toISOString() : null,
     };
   }
 
@@ -262,7 +275,7 @@ export class ShareLinksService {
         throw AppError.forbidden('NOT_LINK_OWNER', 'Only the creator can revoke this link');
       await this.policy.requireHost(actor, roomId);
     }
-    if (!row.revokedAt) await this.repo.revoke(row);
+    if (!row.revokedAt) await this.repo.revoke(row, actor);
     return { revoked: true };
   }
 

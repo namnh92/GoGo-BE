@@ -6,7 +6,10 @@ import { AppError } from './app-error';
 @Injectable()
 export class ZodValidationPipe<T> implements PipeTransform<unknown, T> {
   // Input type is unknown so schemas with coercion/transform/refine all fit.
-  constructor(private readonly schema: ZodType<T, ZodTypeDef, unknown>) {}
+  constructor(
+    private readonly schema: ZodType<T, ZodTypeDef, unknown>,
+    private readonly errorCode = 'VALIDATION_FAILED',
+  ) {}
 
   transform(value: unknown, metadata?: ArgumentMetadata): T {
     // Fastify hands `undefined` for a body-less request. Endpoints whose
@@ -17,7 +20,7 @@ export class ZodValidationPipe<T> implements PipeTransform<unknown, T> {
     const result = this.schema.safeParse(input);
     if (!result.success) {
       throw AppError.badRequest(
-        'VALIDATION_FAILED',
+        this.errorCode,
         'Request validation failed',
         result.error.issues.map((issue) => ({
           field: issue.path.join('.') || '(root)',

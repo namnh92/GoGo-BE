@@ -48,24 +48,26 @@ async function expectConstraint(promise: Promise<unknown>, constraint: string): 
 }
 
 async function createRoomFixture() {
-  const [user] = await db
-    .insert(schema.users)
-    .values({ displayName: 'Host', email: `h${Date.now()}-${Math.random()}@x.vn` })
-    .returning();
-  const [room] = await db
-    .insert(schema.rooms)
-    .values({
-      code: `code-${Date.now()}-${Math.random()}`,
-      type: 'couple',
-      decisionMode: 'match',
-      hostUserId: user!.id,
-    })
-    .returning();
-  const [member] = await db
-    .insert(schema.roomMembers)
-    .values({ roomId: room!.id, userId: user!.id, role: 'host', displayName: 'Host' })
-    .returning();
-  return { user: user!, room: room!, member: member! };
+  return db.transaction(async (tx) => {
+    const [user] = await tx
+      .insert(schema.users)
+      .values({ displayName: 'Host', email: `h${Date.now()}-${Math.random()}@x.vn` })
+      .returning();
+    const [room] = await tx
+      .insert(schema.rooms)
+      .values({
+        code: `code-${Date.now()}-${Math.random()}`,
+        type: 'couple',
+        decisionMode: 'match',
+        hostUserId: user!.id,
+      })
+      .returning();
+    const [member] = await tx
+      .insert(schema.roomMembers)
+      .values({ roomId: room!.id, userId: user!.id, role: 'host', displayName: 'Host' })
+      .returning();
+    return { user: user!, room: room!, member: member! };
+  });
 }
 
 describe('schema integrity', () => {

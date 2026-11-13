@@ -70,6 +70,19 @@ describe('#878 contribution policy', () => {
       expect.objectContaining({ code: 'ROOM_NOT_EDITABLE' }),
     );
   });
+  it('moves management to the new host while preserving membership contribution ownership', () => {
+    const transferred = { ...room, hostUserId: member.userId };
+    const oldHost = { ...host, role: 'member' };
+    const newHost = { ...member, role: 'host' };
+    const members = [oldHost, newHost];
+    expect(assertSeedContributor(user, transferred, members)).toBe(newHost);
+    expect(assertSeedContributor({ ...user, id: host.userId }, transferred, members)).toBe(oldHost);
+    expect(() => assertSeedOwnership(newHost, 'third-member')).not.toThrow();
+    expect(() => assertSeedOwnership(oldHost, 'third-member')).toThrowError(
+      expect.objectContaining({ code: 'SEED_PLACE_NOT_OWNED' }),
+    );
+    expect(() => assertSeedOwnership(oldHost, host.id)).not.toThrow();
+  });
   it('ownership belongs to the membership; host manages removed creators', () => {
     expect(() => assertSeedOwnership(member, member.id)).not.toThrow();
     expect(() => assertSeedOwnership(host, 'removed-member')).not.toThrow();
